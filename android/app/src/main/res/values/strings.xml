@@ -26,6 +26,11 @@
     <string name="hint">点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏。打开后上方会显示 ROM 存档位置。</string>
     <string name="save_location">ROM 存档位置：%1$s</string>
     <string name="save_location_copied">已复制 ROM 存档位置</string>
+    <string name="save_access_title">允许访问手机存储</string>
+    <string name="save_access_message">游戏存档会写到内部存储的 mGBA/saves。请允许「所有文件访问」，文件管理里打开「内部存储/mGBA/saves」就能找到。</string>
+    <string name="save_access_message_legacy">游戏存档会写到内部存储的 mGBA/saves。请允许存储权限，文件管理里才能找到。</string>
+    <string name="save_access_allow">去允许</string>
+    <string name="save_access_later">以后再说</string>
     <string name="video_title">画质</string>
     <string name="video_blend">帧间混合</string>
     <string name="video_bilinear">双线性过滤</string>

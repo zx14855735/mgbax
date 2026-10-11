@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import android.Manifest;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -13,10 +14,12 @@ import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.text.InputType;
 import android.text.format.DateFormat;
 import android.view.Gravity;
@@ -53,6 +56,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_ROM = 1;
     private static final int REQ_BIOS = 2;
+    private static final int REQ_STORAGE = 3;
     private static final int CMD_SAVE = 1;
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
@@ -95,6 +99,9 @@ public class EmulatorActivity extends AppCompatActivity {
     private final AtomicBoolean presentQueued = new AtomicBoolean();
     private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
     private int lastLinkState = -1;
+    private boolean emulatorStarted;
+    private boolean awaitingStorage;
+    private boolean leftForStorage;
     private TextView savePathView;
     private TextView linkStatusView;
     private EditText linkRoomView;
@@ -110,9 +117,6 @@ public class EmulatorActivity extends AppCompatActivity {
         pauseButton = findViewById(R.id.btn_pause);
         fastButton = findViewById(R.id.btn_fast);
         slotButton = findViewById(R.id.btn_slot);
-
-        File files = getFilesDir();
-        core = new MgbaCore(new File(files, "saves"), new File(files, "states"));
 
         controls = findViewById(R.id.controls);
         controls.setListener(mask -> {
@@ -138,7 +142,9 @@ public class EmulatorActivity extends AppCompatActivity {
                 speed = 1;
             }
             fastButton.setText(speedText(speed));
-            core.clearAudio();
+            if (core != null) {
+                core.clearAudio();
+            }
         });
         slotButton.setOnClickListener(v -> {
             slot = slot % 9 + 1;
@@ -151,7 +157,6 @@ public class EmulatorActivity extends AppCompatActivity {
         findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
-        applyVideo();
 
         gameView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
@@ -170,15 +175,73 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         });
 
-        String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
-        if (last != null && new File(last).isFile()) {
-            pendingPath.set(last);
-        }
+        ensureSaveAccess();
+        hideSystemUi();
+    }
 
+    private void ensureSaveAccess() {
+        if (SaveLocation.hasAccess(this) || getPreferences(MODE_PRIVATE).getBoolean("save_access_declined", false)) {
+            startEmulator();
+            return;
+        }
+        int message = Build.VERSION.SDK_INT >= 30 ? R.string.save_access_message : R.string.save_access_message_legacy;
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.save_access_title)
+                .setMessage(message)
+                .setPositiveButton(R.string.save_access_allow, (d, w) -> requestSaveAccess())
+                .setNegativeButton(R.string.save_access_later, (d, w) -> {
+                    getPreferences(MODE_PRIVATE).edit().putBoolean("save_access_declined", true).apply();
+                    startEmulator();
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    private void requestSaveAccess() {
+        awaitingStorage = true;
+        leftForStorage = false;
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivityForResult(intent, REQ_STORAGE);
+                return;
+            } catch (Exception ignored) {
+            }
+            try {
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION), REQ_STORAGE);
+                return;
+            } catch (Exception ignored) {
+            }
+            awaitingStorage = false;
+            startEmulator();
+            return;
+        }
+        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
+    }
+
+    private void startEmulator() {
+        if (emulatorStarted || isFinishing()) {
+            return;
+        }
+        emulatorStarted = true;
+        awaitingStorage = false;
+        leftForStorage = false;
+        if (SaveLocation.hasAccess(this)) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("save_access_declined", false).apply();
+        }
+        File saves = SaveLocation.prepare(this);
+        core = new MgbaCore(saves, new File(getFilesDir(), "states"));
+        applyVideo();
+        if (pendingPath.get() == null) {
+            String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+            if (last != null && new File(last).isFile()) {
+                pendingPath.set(last);
+            }
+        }
         running = true;
         emuThread = new Thread(this::emulationLoop, "mGBA");
         emuThread.start();
-        hideSystemUi();
     }
 
     private void publishKeys() {
@@ -267,6 +330,10 @@ public class EmulatorActivity extends AppCompatActivity {
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        if (requestCode == REQ_STORAGE) {
+            startEmulator();
+            return;
+        }
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             return;
@@ -857,6 +924,9 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void applyVideo() {
+        if (core == null) {
+            return;
+        }
         boolean blend = getPreferences(MODE_PRIVATE).getBoolean("vf_blend", false);
         boolean linear = getPreferences(MODE_PRIVATE).getBoolean("vf_linear", true);
         boolean aspect = getPreferences(MODE_PRIVATE).getBoolean("vf_aspect", true);
@@ -1350,6 +1420,9 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        if (awaitingStorage) {
+            leftForStorage = true;
+        }
         paused = true;
         inputHandler.removeCallbacks(armTurbo);
         stopTurbo();
@@ -1359,8 +1432,19 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_STORAGE) {
+            startEmulator();
+        }
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
+        if (awaitingStorage && (SaveLocation.hasAccess(this) || (leftForStorage && Build.VERSION.SDK_INT >= 30))) {
+            startEmulator();
+        }
         if (pauseButton.getText().toString().contentEquals(getString(R.string.pause))) {
             paused = false;
             if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED) {
