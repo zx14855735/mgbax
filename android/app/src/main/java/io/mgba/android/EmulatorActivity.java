@@ -1,8 +1,14 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
@@ -11,11 +17,19 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.OpenableColumns;
+import android.text.InputType;
 import android.text.format.DateFormat;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -27,6 +41,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -74,6 +93,12 @@ public class EmulatorActivity extends AppCompatActivity {
     private double resamplePos;
     private Bitmap frame;
     private final AtomicBoolean presentQueued = new AtomicBoolean();
+    private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
+    private int lastLinkState = -1;
+    private TextView savePathView;
+    private TextView linkStatusView;
+    private EditText linkRoomView;
+    private RemoteLink remoteLink;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -122,6 +147,11 @@ public class EmulatorActivity extends AppCompatActivity {
         findViewById(R.id.btn_save).setOnClickListener(v -> chooseSlot(true));
         findViewById(R.id.btn_load).setOnClickListener(v -> chooseSlot(false));
         findViewById(R.id.btn_reset).setOnClickListener(v -> command.set(CMD_RESET));
+        findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
+        findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
+        savePathView = findViewById(R.id.save_path);
+        savePathView.setOnClickListener(v -> copySavePath());
+        applyVideo();
 
         gameView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
@@ -360,6 +390,9 @@ public class EmulatorActivity extends AppCompatActivity {
         long fpsStamp = System.nanoTime();
         while (running) {
             try {
+                if (core != null) {
+                    core.pumpLink();
+                }
                 String path = pendingPath.getAndSet(null);
                 if (path != null) {
                     loadRom(path);
@@ -434,6 +467,7 @@ public class EmulatorActivity extends AppCompatActivity {
         runOnUiThread(() -> {
             hint.setVisibility(View.GONE);
             pauseButton.setText(R.string.pause);
+            showSaveLocation();
             setTitle(title == null || title.trim().isEmpty() ? getString(R.string.app_name) : title.trim());
             if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED && audio.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
                 audio.play();
@@ -449,6 +483,11 @@ public class EmulatorActivity extends AppCompatActivity {
         int current = slot;
         if (cmd == CMD_SAVE) {
             boolean ok = core.saveState(current);
+            if (ok) {
+                writeStatePreview(current);
+            } else {
+                recyclePendingPreview();
+            }
             toast(ok ? getString(R.string.state_saved, current) : getString(R.string.state_failed));
             runOnUiThread(this::refreshSlotButton);
         } else if (cmd == CMD_LOAD) {
@@ -490,7 +529,6 @@ public class EmulatorActivity extends AppCompatActivity {
             try {
                 gameView.present(shown);
             } finally {
-                shown.recycle();
                 presentQueued.set(false);
             }
         });
@@ -632,28 +670,561 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.no_rom));
             return;
         }
-        String[] labels = new String[9];
+        ArrayList<Bitmap> owned = new ArrayList<>();
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(8);
+        list.setPadding(pad, pad, pad, pad);
+        scroll.addView(list);
+        if (save) {
+            Bitmap now = gameView.copyLast();
+            if (now != null) {
+                owned.add(now);
+                list.addView(slotRow(getString(R.string.state_now), now));
+            }
+        }
         for (int i = 1; i <= 9; i++) {
             File file = stateFile(i);
-            String when = file.isFile() && file.length() > 0
+            boolean filled = file.isFile() && file.length() > 0;
+            String when = filled
                     ? DateFormat.format("M月d日 HH:mm", file.lastModified()).toString()
                     : getString(R.string.slot_empty);
-            labels[i - 1] = getString(R.string.slot_entry, i, when);
+            Bitmap preview = filled ? decodePreview(i) : null;
+            if (preview != null) {
+                owned.add(preview);
+            }
+            String label = getString(R.string.slot_entry, i, when);
+            if (filled && preview == null) {
+                label = label + "　" + getString(R.string.state_no_preview);
+            }
+            View row = slotRow(label, preview);
+            row.setTag(i);
+            list.addView(row);
         }
-        new AlertDialog.Builder(this)
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(save ? R.string.state_pick_save : R.string.state_pick_load)
-                .setItems(labels, (dialog, which) -> {
-                    int picked = which + 1;
-                    if (!save && !(stateFile(picked).isFile() && stateFile(picked).length() > 0)) {
-                        toast(getString(R.string.state_missing, picked));
+                .setView(scroll)
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        for (int i = 0; i < list.getChildCount(); i++) {
+            View child = list.getChildAt(i);
+            if (!(child.getTag() instanceof Integer)) {
+                continue;
+            }
+            child.setOnClickListener(v -> {
+                int picked = (Integer) v.getTag();
+                if (!save && !(stateFile(picked).isFile() && stateFile(picked).length() > 0)) {
+                    toast(getString(R.string.state_missing, picked));
+                    return;
+                }
+                slot = picked;
+                refreshSlotButton();
+                if (save) {
+                    recyclePendingPreview();
+                    pendingPreview.set(gameView.copyLast());
+                }
+                command.set(save ? CMD_SAVE : CMD_LOAD);
+                dialog.dismiss();
+            });
+        }
+        dialog.setOnDismissListener(d -> {
+            for (int i = 0; i < list.getChildCount(); i++) {
+                View child = list.getChildAt(i);
+                if (child instanceof LinearLayout) {
+                    View image = ((LinearLayout) child).getChildAt(0);
+                    if (image instanceof ImageView) {
+                        ((ImageView) image).setImageDrawable(null);
+                    }
+                }
+            }
+            for (Bitmap bitmap : owned) {
+                if (bitmap != null && !bitmap.isRecycled()) {
+                    bitmap.recycle();
+                }
+            }
+        });
+        dialog.show();
+    }
+
+    private View slotRow(String label, Bitmap preview) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int pad = dp(6);
+        row.setPadding(pad, pad, pad, pad);
+        ImageView image = new ImageView(this);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(120), dp(80));
+        lp.setMarginEnd(dp(10));
+        image.setLayoutParams(lp);
+        image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        image.setBackgroundColor(0xFF1A1A1A);
+        if (preview != null) {
+            image.setImageBitmap(preview);
+        }
+        TextView text = new TextView(this);
+        text.setText(label);
+        text.setTextColor(0xFF222222);
+        text.setTextSize(15);
+        row.addView(image);
+        row.addView(text);
+        return row;
+    }
+
+    private File statePreviewFile(int index) {
+        return new File(stateFile(index).getAbsolutePath() + ".png");
+    }
+
+    private Bitmap decodePreview(int index) {
+        File preview = statePreviewFile(index);
+        Bitmap bitmap = null;
+        if (preview.isFile()) {
+            bitmap = BitmapFactory.decodeFile(preview.getAbsolutePath());
+        }
+        if (bitmap == null) {
+            File state = stateFile(index);
+            if (state.isFile()) {
+                bitmap = BitmapFactory.decodeFile(state.getAbsolutePath());
+            }
+        }
+        return bitmap;
+    }
+
+    private void recyclePendingPreview() {
+        Bitmap leftover = pendingPreview.getAndSet(null);
+        if (leftover != null && !leftover.isRecycled()) {
+            leftover.recycle();
+        }
+    }
+
+    private void writeStatePreview(int index) {
+        Bitmap shown = pendingPreview.getAndSet(null);
+        if (shown != null) {
+            try (FileOutputStream out = new FileOutputStream(statePreviewFile(index))) {
+                if (!shown.isRecycled()) {
+                    shown.compress(Bitmap.CompressFormat.PNG, 100, out);
+                }
+            } catch (Exception ignored) {
+            } finally {
+                if (!shown.isRecycled()) {
+                    shown.recycle();
+                }
+            }
+            return;
+        }
+        int w = core.width();
+        int h = core.height();
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        try {
+            if (!core.copyVideo(bmp)) {
+                return;
+            }
+            try (FileOutputStream out = new FileOutputStream(statePreviewFile(index))) {
+                bmp.compress(Bitmap.CompressFormat.PNG, 100, out);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            bmp.recycle();
+        }
+    }
+
+    private void showSaveLocation() {
+        String path = core.saveFile();
+        if (path == null || path.isEmpty()) {
+            savePathView.setVisibility(View.GONE);
+            return;
+        }
+        savePathView.setTag(path);
+        savePathView.setText(getString(R.string.save_location, path));
+        savePathView.setVisibility(View.VISIBLE);
+        toast(getString(R.string.save_location, path));
+    }
+
+    private void copySavePath() {
+        Object tag = savePathView.getTag();
+        if (!(tag instanceof String) || ((String) tag).isEmpty()) {
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("sav", (String) tag));
+        toast(getString(R.string.save_location_copied));
+    }
+
+    private void applyVideo() {
+        boolean blend = getPreferences(MODE_PRIVATE).getBoolean("vf_blend", false);
+        boolean linear = getPreferences(MODE_PRIVATE).getBoolean("vf_linear", true);
+        boolean aspect = getPreferences(MODE_PRIVATE).getBoolean("vf_aspect", true);
+        boolean integer = getPreferences(MODE_PRIVATE).getBoolean("vf_integer", false);
+        boolean scan = getPreferences(MODE_PRIVATE).getBoolean("vf_scan", false);
+        int skip = getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
+        int bright = getPreferences(MODE_PRIVATE).getInt("vf_bright", 100);
+        core.setInterframe(blend);
+        core.setFrameskip(skip);
+        gameView.setBilinear(linear);
+        gameView.setLockAspect(aspect);
+        gameView.setIntegerScale(integer);
+        gameView.setScanlines(scan);
+        gameView.setBrightness(bright);
+    }
+
+    private void showVideoDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        CheckBox blend = check(R.string.video_blend, getPreferences(MODE_PRIVATE).getBoolean("vf_blend", false));
+        CheckBox linear = check(R.string.video_bilinear, getPreferences(MODE_PRIVATE).getBoolean("vf_linear", true));
+        CheckBox aspect = check(R.string.video_aspect, getPreferences(MODE_PRIVATE).getBoolean("vf_aspect", true));
+        CheckBox integer = check(R.string.video_integer, getPreferences(MODE_PRIVATE).getBoolean("vf_integer", false));
+        CheckBox scan = check(R.string.video_scan, getPreferences(MODE_PRIVATE).getBoolean("vf_scan", false));
+        int skipNow = getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
+        int brightNow = getPreferences(MODE_PRIVATE).getInt("vf_bright", 100);
+        TextView skipLabel = new TextView(this);
+        skipLabel.setText(getString(R.string.video_skip, skipNow));
+        skipLabel.setTextColor(0xFF222222);
+        SeekBar skipBar = new SeekBar(this);
+        skipBar.setMax(5);
+        skipBar.setProgress(skipNow);
+        TextView brightLabel = new TextView(this);
+        brightLabel.setText(getString(R.string.video_bright, brightNow));
+        brightLabel.setTextColor(0xFF222222);
+        SeekBar brightBar = new SeekBar(this);
+        brightBar.setMax(100);
+        brightBar.setProgress(brightNow - 50);
+        box.addView(blend);
+        box.addView(linear);
+        box.addView(aspect);
+        box.addView(integer);
+        box.addView(scan);
+        box.addView(skipLabel);
+        box.addView(skipBar);
+        box.addView(brightLabel);
+        box.addView(brightBar);
+        Runnable persist = () -> {
+            getPreferences(MODE_PRIVATE).edit()
+                    .putBoolean("vf_blend", blend.isChecked())
+                    .putBoolean("vf_linear", linear.isChecked())
+                    .putBoolean("vf_aspect", aspect.isChecked())
+                    .putBoolean("vf_integer", integer.isChecked())
+                    .putBoolean("vf_scan", scan.isChecked())
+                    .putInt("vf_skip", skipBar.getProgress())
+                    .putInt("vf_bright", brightBar.getProgress() + 50)
+                    .apply();
+            applyVideo();
+        };
+        View.OnClickListener toggle = v -> persist.run();
+        blend.setOnClickListener(toggle);
+        linear.setOnClickListener(toggle);
+        aspect.setOnClickListener(toggle);
+        integer.setOnClickListener(toggle);
+        scan.setOnClickListener(toggle);
+        skipBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                skipLabel.setText(getString(R.string.video_skip, progress));
+                if (fromUser) {
+                    persist.run();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        brightBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                brightLabel.setText(getString(R.string.video_bright, progress + 50));
+                if (fromUser) {
+                    persist.run();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.video_title)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private CheckBox check(int label, boolean checked) {
+        CheckBox box = new CheckBox(this);
+        box.setText(label);
+        box.setTextColor(0xFF222222);
+        box.setChecked(checked);
+        return box;
+    }
+
+    private void showLinkDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        TextView help = new TextView(this);
+        help.setText(R.string.link_help);
+        help.setTextColor(0xFF222222);
+        EditText host = new EditText(this);
+        host.setHint(R.string.link_ip_hint);
+        host.setSingleLine(true);
+        host.setText(getPreferences(MODE_PRIVATE).getString("link_host", ""));
+        EditText port = new EditText(this);
+        port.setInputType(InputType.TYPE_CLASS_NUMBER);
+        port.setSingleLine(true);
+        port.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("link_port", 8765)));
+        EditText relay = new EditText(this);
+        relay.setHint(R.string.link_relay_hint);
+        relay.setSingleLine(true);
+        relay.setText(getPreferences(MODE_PRIVATE).getString("link_relay", ""));
+        EditText room = new EditText(this);
+        room.setHint(R.string.link_room_hint);
+        room.setSingleLine(true);
+        room.setText(getPreferences(MODE_PRIVATE).getString("link_room", ""));
+        linkRoomView = room;
+        TextView status = new TextView(this);
+        status.setTextColor(0xFF1B5E20);
+        status.setPadding(0, pad, 0, 0);
+        status.setText(linkMessage());
+        linkStatusView = status;
+        box.addView(help);
+        box.addView(host);
+        box.addView(port);
+        box.addView(buttonRow(
+                linkButton(getString(R.string.link_host), v -> {
+                    int p = parsePort(port.getText().toString());
+                    if (p < 0) {
+                        status.setText(R.string.link_bad_port);
                         return;
                     }
-                    slot = picked;
-                    refreshSlotButton();
-                    command.set(save ? CMD_SAVE : CMD_LOAD);
-                })
+                    if (remoteLink != null) {
+                        remoteLink.close();
+                    }
+                    if (core.linkHost(p)) {
+                        getPreferences(MODE_PRIVATE).edit().putInt("link_port", p).apply();
+                        status.setText(getString(R.string.link_waiting, localIpv4(), p));
+                        startLinkWatch();
+                    } else {
+                        status.setText(linkMessage());
+                    }
+                }),
+                linkButton(getString(R.string.link_join), v -> {
+                    String ip = host.getText().toString().trim();
+                    int p = parsePort(port.getText().toString());
+                    if (ip.isEmpty() || p < 0) {
+                        status.setText(R.string.link_bad_port);
+                        return;
+                    }
+                    if (remoteLink != null) {
+                        remoteLink.close();
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putString("link_host", ip).putInt("link_port", p).apply();
+                    if (core.linkJoin(ip, p)) {
+                        status.setText(linkMessage());
+                        startLinkWatch();
+                    } else {
+                        status.setText(linkMessage());
+                    }
+                })));
+        box.addView(relay);
+        box.addView(room);
+        box.addView(buttonRow(
+                linkButton(getString(R.string.link_remote_create), v -> {
+                    String relayText = relay.getText().toString().trim();
+                    getPreferences(MODE_PRIVATE).edit().putString("link_relay", relayText).apply();
+                    ensureRemote().create(relayText, localIpv4());
+                    startLinkWatch();
+                }),
+                linkButton(getString(R.string.link_remote_join), v -> {
+                    String relayText = relay.getText().toString().trim();
+                    String code = room.getText().toString().trim();
+                    getPreferences(MODE_PRIVATE).edit().putString("link_relay", relayText).putString("link_room", code).apply();
+                    ensureRemote().join(relayText, code);
+                    startLinkWatch();
+                })));
+        box.addView(linkButton(getString(R.string.link_close), v -> {
+            if (remoteLink != null) {
+                remoteLink.close();
+            } else if (core != null) {
+                core.linkClose();
+            }
+            inputHandler.removeCallbacks(linkWatch);
+            lastLinkState = 0;
+            status.setText(R.string.link_close);
+        }));
+        box.addView(status);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.link_title)
+                .setView(scroll)
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    private RemoteLink ensureRemote() {
+        if (remoteLink == null) {
+            remoteLink = new RemoteLink(new RemoteLink.Hooks() {
+                @Override
+                public void onStatus(String text) {
+                    inputHandler.post(() -> {
+                        if (linkStatusView != null) {
+                            linkStatusView.setText(text);
+                        }
+                    });
+                }
+
+                @Override
+                public void onRoom(String code, String relayForPeer) {
+                    inputHandler.post(() -> {
+                        if (isFinishing() || isDestroyed()) {
+                            return;
+                        }
+                        if (linkRoomView != null) {
+                            linkRoomView.setText(code);
+                        }
+                        getPreferences(MODE_PRIVATE).edit().putString("link_room", code).apply();
+                        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (clipboard != null) {
+                            clipboard.setPrimaryClip(ClipData.newPlainText("room", code));
+                        }
+                        toast(getString(R.string.link_room_copied, code, relayForPeer));
+                    });
+                }
+
+                @Override
+                public boolean hostLink(int port) {
+                    return core != null && core.linkHost(port);
+                }
+
+                @Override
+                public boolean joinLink(String host, int port) {
+                    return core != null && core.linkJoin(host, port);
+                }
+
+                @Override
+                public void closeLink() {
+                    if (core != null) {
+                        core.linkClose();
+                    }
+                }
+            });
+        }
+        return remoteLink;
+    }
+
+    private Button linkButton(String text, View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(12);
+        button.setOnClickListener(listener);
+        return button;
+    }
+
+    private LinearLayout buttonRow(View left, View right) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        row.addView(left, lp);
+        row.addView(right, lp);
+        return row;
+    }
+
+    private final Runnable linkWatch = new Runnable() {
+        @Override
+        public void run() {
+            String status = core == null ? "" : core.linkStatus();
+            int state = linkState(status);
+            if (state != lastLinkState && state == 3) {
+                toast(linkMessage());
+            }
+            lastLinkState = state;
+            if (state == 1 || state == 2) {
+                inputHandler.postDelayed(this, 700);
+            }
+        }
+    };
+
+    private void startLinkWatch() {
+        inputHandler.removeCallbacks(linkWatch);
+        inputHandler.post(linkWatch);
+    }
+
+    private static int linkState(String status) {
+        if (status == null || status.isEmpty()) {
+            return 0;
+        }
+        int space = status.indexOf(' ');
+        try {
+            return Integer.parseInt(space < 0 ? status : status.substring(0, space));
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    private String linkMessage() {
+        String status = core == null ? "" : core.linkStatus();
+        if (status == null) {
+            return "";
+        }
+        int first = status.indexOf(' ');
+        int second = first < 0 ? -1 : status.indexOf(' ', first + 1);
+        if (second < 0 || second + 1 >= status.length()) {
+            return status;
+        }
+        return status.substring(second + 1);
+    }
+
+    private int parsePort(String text) {
+        try {
+            int port = Integer.parseInt(text.trim());
+            if (port >= 1 && port <= 65535) {
+                return port;
+            }
+        } catch (NumberFormatException ignored) {
+        }
+        return -1;
+    }
+
+    private String localIpv4() {
+        try {
+            ArrayList<NetworkInterface> ifaces = Collections.list(NetworkInterface.getNetworkInterfaces());
+            for (NetworkInterface iface : ifaces) {
+                if (!iface.isUp() || iface.isLoopback()) {
+                    continue;
+                }
+                for (InetAddress address : Collections.list(iface.getInetAddresses())) {
+                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
+                        return address.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "0.0.0.0";
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private int speedText(int value) {
@@ -802,6 +1373,9 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        if (remoteLink != null) {
+            remoteLink.close();
+        }
         inputHandler.removeCallbacksAndMessages(null);
         releaseAudio();
         if (emuThread != null) {

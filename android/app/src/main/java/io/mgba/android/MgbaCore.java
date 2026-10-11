@@ -1,3 +1,6 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
 import android.graphics.Bitmap;
@@ -93,6 +96,46 @@ public final class MgbaCore {
         return handle == 0 ? "" : nativeTitle(handle);
     }
 
+    public void setInterframe(boolean enabled) {
+        if (handle != 0) {
+            nativeSetInterframe(handle, enabled);
+        }
+    }
+
+    public void setFrameskip(int skip) {
+        if (handle != 0) {
+            nativeSetFrameskip(handle, skip);
+        }
+    }
+
+    public String saveFile() {
+        return handle == 0 ? "" : nativeSaveFile(handle);
+    }
+
+    public void pumpLink() {
+        if (handle != 0) {
+            nativePumpLink(handle);
+        }
+    }
+
+    public boolean linkHost(int port) {
+        return handle != 0 && nativeLinkHost(handle, port);
+    }
+
+    public boolean linkJoin(String host, int port) {
+        return handle != 0 && host != null && nativeLinkJoin(handle, host, port);
+    }
+
+    public void linkClose() {
+        if (handle != 0) {
+            nativeLinkClose(handle);
+        }
+    }
+
+    public String linkStatus() {
+        return handle == 0 ? "" : nativeLinkStatus(handle);
+    }
+
     private static native long nativeCreate(String saveDir, String stateDir);
 
     private static native void nativeDestroy(long handle);
@@ -126,4 +169,20 @@ public final class MgbaCore {
     private static native void nativeReset(long handle);
 
     private static native String nativeTitle(long handle);
+
+    private static native void nativeSetInterframe(long handle, boolean enabled);
+
+    private static native void nativeSetFrameskip(long handle, int skip);
+
+    private static native String nativeSaveFile(long handle);
+
+    private static native void nativePumpLink(long handle);
+
+    private static native boolean nativeLinkHost(long handle, int port);
+
+    private static native boolean nativeLinkJoin(long handle, String host, int port);
+
+    private static native void nativeLinkClose(long handle);
+
+    private static native String nativeLinkStatus(long handle);
 }

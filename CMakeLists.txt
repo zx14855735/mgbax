@@ -1397,7 +1397,9 @@ if(NOT QUIET AND NOT LIBMGBA_ONLY)
 endif()
 
 if(ANDROID)
-	add_library(mgba_jni SHARED android/app/src/main/cpp/jni_bridge.cpp)
+	add_library(mgba_jni SHARED
+		android/app/src/main/cpp/jni_bridge.cpp
+		android/app/src/main/cpp/link_net.cpp)
 	target_link_libraries(mgba_jni PRIVATE ${BINARY_NAME} android log jnigraphics)
 	get_target_property(MGBA_JNI_DEFS ${BINARY_NAME} COMPILE_DEFINITIONS)
 	if(MGBA_JNI_DEFS)
