@@ -3,23 +3,96 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "link_net.h"
 
-#include <android/log.h>
-
-#include <arpa/inet.h>
 #include <errno.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LINK_LOG(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
+#else
+#define LINK_LOG(...) ((void) 0)
+#endif
+
+#ifdef _WIN32
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#ifndef SHUT_RD
+#define SHUT_RD SD_RECEIVE
+#endif
+#ifndef SHUT_WR
+#define SHUT_WR SD_SEND
+#endif
+#ifndef SHUT_RDWR
+#define SHUT_RDWR SD_BOTH
+#endif
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+#define link_close closesocket
+static void linkSockInit(void) {
+	static int ready;
+	if (!ready) {
+		WSADATA data;
+		WSAStartup(MAKEWORD(2, 2), &data);
+		ready = 1;
+	}
+}
+#else
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
-#include <pthread.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <unistd.h>
+#define link_close close
+static void linkSockInit(void) {
+}
+#endif
 
-#include <stdio.h>
-#include <stdlib.h>
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
-#define LINK_LOG(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
+static int waitReadable(int fd, int timeoutMs) {
+#ifdef _WIN32
+	fd_set set;
+	struct timeval tv;
+	if (fd < 0) {
+		return -1;
+	}
+	FD_ZERO(&set);
+	FD_SET((SOCKET) fd, &set);
+	tv.tv_sec = timeoutMs / 1000;
+	tv.tv_usec = (timeoutMs % 1000) * 1000;
+	return select(0, &set, NULL, NULL, &tv);
+#else
+	struct pollfd pfd;
+	pfd.fd = fd;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+	return poll(&pfd, 1, timeoutMs);
+#endif
+}
+
+static void linkTune(int fd) {
+	int one = 1;
+	if (fd < 0) {
+		return;
+	}
+	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char*) &one, sizeof(one));
+#ifdef __APPLE__
+	setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
+}
 
 enum {
 	LINK_OFF = 0,
@@ -231,7 +304,7 @@ static void* readerMain(void* arg) {
 	pthread_mutex_lock(&link->mu);
 	if (link->sock >= 0) {
 		shutdown(link->sock, SHUT_RDWR);
-		close(link->sock);
+		link_close(link->sock);
 		link->sock = -1;
 	}
 	if (!link->stop) {
@@ -264,10 +337,7 @@ static void* hostMain(void* arg) {
 		if (stop || listenFd < 0) {
 			break;
 		}
-		struct pollfd pfd;
-		pfd.fd = listenFd;
-		pfd.events = POLLIN;
-		int pr = poll(&pfd, 1, 200);
+		int pr = waitReadable(listenFd, 200);
 		pthread_mutex_lock(&link->mu);
 		stop = link->stop;
 		pthread_mutex_unlock(&link->mu);
@@ -284,8 +354,7 @@ static void* hostMain(void* arg) {
 			}
 			break;
 		}
-		int one = 1;
-		setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+		linkTune(fd);
 		pthread_mutex_lock(&link->mu);
 		link->sock = fd;
 		link->player = 0;
@@ -317,20 +386,21 @@ static int openListen(int port) {
 		return -1;
 	}
 	int one = 1;
-	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*) &one, sizeof(one));
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons((uint16_t) port);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	if (bind(fd, (struct sockaddr*) &addr, sizeof(addr)) < 0 || listen(fd, 1) < 0) {
-		close(fd);
+		link_close(fd);
 		return -1;
 	}
 	return fd;
 }
 
 struct NetLink* netLinkCreate(void) {
+	linkSockInit();
 	struct NetLink* link = (struct NetLink*) calloc(1, sizeof(struct NetLink));
 	if (!link) {
 		return NULL;
@@ -367,11 +437,11 @@ void netLinkClose(struct NetLink* link) {
 		writeAll(sock, &bye, sizeof(bye));
 		pthread_mutex_unlock(&link->sendMu);
 		shutdown(sock, SHUT_RDWR);
-		close(sock);
+		link_close(sock);
 	}
 	if (listenFd >= 0) {
 		shutdown(listenFd, SHUT_RDWR);
-		close(listenFd);
+		link_close(listenFd);
 	}
 	if (link->threadLive) {
 		pthread_join(link->ioThread, NULL);
@@ -441,7 +511,7 @@ bool netLinkJoin(struct NetLink* link, const char* host, int port) {
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons((uint16_t) port);
 	if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-		close(fd);
+		link_close(fd);
 		pthread_mutex_lock(&link->mu);
 		link->state = LINK_DOWN;
 		setMessage(link, "IP 地址无效");
@@ -449,15 +519,14 @@ bool netLinkJoin(struct NetLink* link, const char* host, int port) {
 		return false;
 	}
 	if (connect(fd, (struct sockaddr*) &addr, sizeof(addr)) < 0) {
-		close(fd);
+		link_close(fd);
 		pthread_mutex_lock(&link->mu);
 		link->state = LINK_DOWN;
 		setMessage(link, "连不上对方");
 		pthread_mutex_unlock(&link->mu);
 		return false;
 	}
-	int one = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	linkTune(fd);
 	pthread_mutex_lock(&link->mu);
 	link->sock = fd;
 	link->player = 1;
