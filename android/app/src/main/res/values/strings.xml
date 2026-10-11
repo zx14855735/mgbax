@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">mGBA</string>
+    <string name="open_rom">打开</string>
+    <string name="pause">暂停</string>
+    <string name="resume">继续</string>
+    <string name="fast_forward">快进</string>
+    <string name="speed_normal">常速</string>
+    <string name="speed_1">1倍</string>
+    <string name="speed_4">4倍</string>
+    <string name="speed_8">8倍</string>
+    <string name="speed_16">16倍</string>
+    <string name="reset">复位</string>
+    <string name="slot_initial">槽位 1</string>
+    <string name="slot">槽位 %1$d</string>
+    <string name="slot_filled">槽位 %1$d ●</string>
+    <string name="slot_empty">空</string>
+    <string name="slot_entry">槽位 %1$d　%2$s</string>
+    <string name="state_pick_save">保存到哪个槽位</string>
+    <string name="state_pick_load">读取哪个槽位</string>
+    <string name="save_state">存档</string>
+    <string name="load_state">读档</string>
+    <string name="bios">BIOS</string>
+    <string name="hint">点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏</string>
+    <string name="loading">正在读取游戏…</string>
+    <string name="load_failed">无法加载这个游戏</string>
+    <string name="no_rom">请先打开一个游戏</string>
+    <string name="state_saved">已保存即时存档 %1$d</string>
+    <string name="state_loaded">已读取即时存档 %1$d</string>
+    <string name="state_missing">没有即时存档 %1$d</string>
+    <string name="state_failed">即时存档失败</string>
+    <string name="reset_done">已复位</string>
+    <string name="bios_imported">已导入 %1$s，重新打开游戏后生效</string>
+    <string name="bios_failed">BIOS 导入失败</string>
+</resources>

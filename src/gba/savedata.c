@@ -289,8 +289,11 @@ void GBASavedataInitFlash(struct GBASavedata* savedata) {
 	}
 
 	savedata->currentBank = savedata->data;
-	if (end < GBA_SIZE_FLASH512) {
-		memset(&savedata->data[end], 0xFF, flashSize - end);
+	// A file that was already 64KiB (FLASH512) must still get 0xFF in the new
+	// upper bank. Erased flash is 0xFF; leftover 0x00 makes 128KiB games treat
+	// the save as corrupt and spin.
+	if (savedata->data && end >= 0 && end < flashSize) {
+		memset(&savedata->data[end], 0xFF, (size_t) flashSize - (size_t) end);
 	}
 
 	mCALLBACKS_INVOKE(savedata->p, memoryBlocksChanged);
@@ -386,6 +389,9 @@ uint8_t GBASavedataReadFlash(struct GBASavedata* savedata, uint16_t address) {
 			}
 		}
 	}
+	if (!savedata->currentBank) {
+		return 0xFF;
+	}
 	if (mTimingIsScheduled(&savedata->p->timing, &savedata->dust) && (address >> 12) == savedata->settling) {
 		// This should read Q7 XOR data bit 7 (data# polling), Q6 flipping
 		// every read (toggle bit), and /Q5 (error bit cleared), but implementing
@@ -400,6 +406,10 @@ void GBASavedataWriteFlash(struct GBASavedata* savedata, uint16_t address, uint8
 	case FLASH_STATE_RAW:
 		switch (savedata->command) {
 		case FLASH_COMMAND_PROGRAM:
+			if (!savedata->currentBank) {
+				savedata->command = FLASH_COMMAND_NONE;
+				break;
+			}
 			savedata->dirty |= mSAVEDATA_DIRT_NEW;
 			savedata->currentBank[address] = value;
 			savedata->command = FLASH_COMMAND_NONE;
@@ -762,16 +772,24 @@ void _flashSwitchBank(struct GBASavedata* savedata, int bank) {
 		mLOG(GBA_SAVE, INFO, "Updating flash chip from 512kb to 1Mb");
 		savedata->type = GBA_SAVEDATA_FLASH1M;
 		if (savedata->vf) {
-			savedata->vf->unmap(savedata->vf, savedata->data, GBA_SIZE_FLASH512);
+			if (savedata->data) {
+				savedata->vf->unmap(savedata->vf, savedata->data, GBA_SIZE_FLASH512);
+			}
 			if (savedata->vf->size(savedata->vf) < GBA_SIZE_FLASH1M) {
 				savedata->vf->truncate(savedata->vf, GBA_SIZE_FLASH1M);
 				savedata->data = savedata->vf->map(savedata->vf, GBA_SIZE_FLASH1M, MAP_WRITE);
-				memset(&savedata->data[GBA_SIZE_FLASH512], 0xFF, GBA_SIZE_FLASH512);
+				if (savedata->data) {
+					memset(&savedata->data[GBA_SIZE_FLASH512], 0xFF, GBA_SIZE_FLASH512);
+				}
 			} else {
 				savedata->data = savedata->vf->map(savedata->vf, GBA_SIZE_FLASH1M, MAP_WRITE);
 			}
 		}
 		mCALLBACKS_INVOKE(savedata->p, memoryBlocksChanged);
+	}
+	if (!savedata->data) {
+		savedata->currentBank = NULL;
+		return;
 	}
 	savedata->currentBank = &savedata->data[bank << 16];
 }
