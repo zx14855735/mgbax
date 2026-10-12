@@ -8,6 +8,8 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Environment;
+import android.os.storage.StorageManager;
+import android.os.storage.StorageVolume;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -34,6 +36,69 @@ final class SaveLocation {
         File dest = resolve(context);
         migrate(context, dest);
         return dest;
+    }
+
+    static String visibleFolder(Context context) {
+        return displayPath(context, publicDir().getAbsolutePath());
+    }
+
+    static String displayPath(Context context, String absolutePath) {
+        if (absolutePath == null || absolutePath.isEmpty()) {
+            return "";
+        }
+        String path = absolutePath.replace('\\', '/');
+        String relative = relativeToPrimary(path);
+        if (relative == null) {
+            return path;
+        }
+        String label = storageLabel(context);
+        if (relative.isEmpty()) {
+            return label;
+        }
+        return label + "/" + relative;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String relativeToPrimary(String path) {
+        String primary = Environment.getExternalStorageDirectory().getAbsolutePath();
+        String[] roots = new String[] {primary, "/storage/emulated/0", "/storage/self/primary", "/sdcard", "/mnt/sdcard"};
+        for (int i = 0; i < roots.length; i++) {
+            String root = roots[i];
+            if (root == null || root.isEmpty()) {
+                continue;
+            }
+            if (path.equals(root)) {
+                return "";
+            }
+            String prefix = root.endsWith("/") ? root : root + "/";
+            if (path.startsWith(prefix)) {
+                return path.substring(prefix.length());
+            }
+        }
+        return null;
+    }
+
+    private static String storageLabel(Context context) {
+        String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
+        String brand = Build.BRAND == null ? "" : Build.BRAND;
+        if (isHonor(maker) || isHonor(brand)) {
+            return "我的手机";
+        }
+        StorageManager manager = (StorageManager) context.getSystemService(Context.STORAGE_SERVICE);
+        if (manager != null) {
+            StorageVolume volume = manager.getPrimaryStorageVolume();
+            if (volume != null) {
+                String desc = volume.getDescription(context);
+                if (desc != null && !desc.trim().isEmpty()) {
+                    return desc.trim();
+                }
+            }
+        }
+        return "内部存储";
+    }
+
+    private static boolean isHonor(String name) {
+        return "HONOR".equalsIgnoreCase(name) || "HUAWEI".equalsIgnoreCase(name);
     }
 
     @SuppressWarnings("deprecation")

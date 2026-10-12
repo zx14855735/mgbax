@@ -185,9 +185,10 @@ public class EmulatorActivity extends AppCompatActivity {
             return;
         }
         int message = Build.VERSION.SDK_INT >= 30 ? R.string.save_access_message : R.string.save_access_message_legacy;
+        String folder = SaveLocation.visibleFolder(this);
         new AlertDialog.Builder(this)
                 .setTitle(R.string.save_access_title)
-                .setMessage(message)
+                .setMessage(getString(message, folder))
                 .setPositiveButton(R.string.save_access_allow, (d, w) -> requestSaveAccess())
                 .setNegativeButton(R.string.save_access_later, (d, w) -> {
                     getPreferences(MODE_PRIVATE).edit().putBoolean("save_access_declined", true).apply();
@@ -899,7 +900,7 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void showSaveLocation() {
-        String path = core.saveFile();
+        String path = SaveLocation.displayPath(this, core.saveFile());
         if (path == null || path.isEmpty()) {
             savePathView.setVisibility(View.GONE);
             return;
