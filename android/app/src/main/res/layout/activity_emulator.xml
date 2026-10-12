@@ -69,6 +69,11 @@
                 style="@style/MgbaButton"
                 android:text="@string/link" />
 
+            <Button
+                android:id="@+id/btn_layout"
+                style="@style/MgbaButton"
+                android:text="@string/layout" />
+
             <TextView
                 android:id="@+id/fps"
                 android:layout_width="wrap_content"
@@ -120,5 +125,41 @@
             android:id="@+id/controls"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <LinearLayout
+            android:id="@+id/layout_editor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:background="#E6101810"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="6dp"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/layout_hint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/layout_hint"
+                android:textColor="#F6E7A8"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_reset"
+                style="@style/MgbaButton"
+                android:text="@string/layout_reset" />
+
+            <Button
+                android:id="@+id/layout_done"
+                style="@style/MgbaButton"
+                android:text="@string/layout_done" />
+        </LinearLayout>
     </FrameLayout>
 </LinearLayout>

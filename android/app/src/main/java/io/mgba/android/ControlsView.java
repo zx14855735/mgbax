@@ -13,6 +13,9 @@ import android.util.SparseIntArray;
 import android.view.MotionEvent;
 import android.view.View;
 
+import java.util.HashMap;
+import java.util.Map;
+
 public class ControlsView extends View {
     public static final int A = 1 << 0;
     public static final int B = 1 << 1;
@@ -29,6 +32,12 @@ public class ControlsView extends View {
         void onKeysChanged(int mask);
     }
 
+    public interface EditListener {
+        void onCursorMoved(String key, float nx, float ny);
+
+        void onCursorStopped(String key, float nx, float ny);
+    }
+
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -39,8 +48,19 @@ public class ControlsView extends View {
     private final RectF buttonB = new RectF();
     private final RectF buttonSelect = new RectF();
     private final RectF buttonStart = new RectF();
+    private final RectF dpadDefault = new RectF();
+    private final RectF buttonLDefault = new RectF();
+    private final RectF buttonRDefault = new RectF();
+    private final RectF buttonADefault = new RectF();
+    private final RectF buttonBDefault = new RectF();
+    private final RectF buttonSelectDefault = new RectF();
+    private final RectF buttonStartDefault = new RectF();
+    private final Map<String, float[]> centers = new HashMap<>();
     private final SparseIntArray pointers = new SparseIntArray();
     private Listener listener;
+    private EditListener editListener;
+    private boolean editing;
+    private float density = 1f;
     private int pressed;
     private boolean turboB;
     private boolean turboLit;
@@ -66,6 +86,40 @@ public class ControlsView extends View {
 
     public void setListener(Listener listener) {
         this.listener = listener;
+    }
+
+    public void setEditListener(EditListener editListener) {
+        this.editListener = editListener;
+    }
+
+    public void setCenters(Map<String, float[]> next) {
+        centers.clear();
+        if (next != null) {
+            for (Map.Entry<String, float[]> entry : next.entrySet()) {
+                float[] point = entry.getValue();
+                if (point != null && point.length >= 2) {
+                    centers.put(entry.getKey(), new float[] {point[0], point[1]});
+                }
+            }
+        }
+        if (getWidth() > 0 && getHeight() > 0) {
+            applyCenters();
+            invalidate();
+        }
+    }
+
+    public void setEditing(boolean editing) {
+        this.editing = editing;
+        dragKey = null;
+        dragPointer = -1;
+        pointers.clear();
+        if (pressed != 0) {
+            pressed = 0;
+            if (listener != null) {
+                listener.onKeysChanged(0);
+            }
+        }
+        invalidate();
     }
 
     public void setBTurbo(boolean active, boolean lit) {
@@ -106,30 +160,36 @@ public class ControlsView extends View {
         float center = w / 2f;
         buttonSelect.set(center - menuW - 8 * d, menuTop, center - 8 * d, menuTop + menuH);
         buttonStart.set(center + 8 * d, menuTop, center + 8 * d + menuW, menuTop + menuH);
+        density = d;
         text.setTextSize(14 * d);
         stroke.setStrokeWidth(Math.max(2f, 1.5f * d));
+        snapDefaults();
+        applyCenters();
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
-        drawButton(canvas, buttonL, "L", (pressed & L) != 0);
-        drawButton(canvas, buttonR, "R", (pressed & R) != 0);
-        drawButton(canvas, buttonA, "A", (pressed & A) != 0);
-        drawButton(canvas, buttonB, "B", bDown());
-        drawButton(canvas, buttonSelect, "SELECT", (pressed & SELECT) != 0);
-        drawButton(canvas, buttonStart, "START", (pressed & START) != 0);
+        drawButton(canvas, buttonL, "L", (pressed & L) != 0, editing);
+        drawButton(canvas, buttonR, "R", (pressed & R) != 0, editing);
+        drawButton(canvas, buttonA, "A", (pressed & A) != 0, editing);
+        drawButton(canvas, buttonB, "B", bDown(), editing);
+        drawButton(canvas, buttonSelect, "SELECT", (pressed & SELECT) != 0, editing);
+        drawButton(canvas, buttonStart, "START", (pressed & START) != 0, editing);
         drawDpad(canvas);
     }
 
-    private void drawButton(Canvas canvas, RectF rect, String label, boolean down) {
+    private void drawButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected) {
         if (down) {
             fill.setColor(Color.argb(70, 80, 210, 130));
             canvas.drawRoundRect(rect, 12, 12, fill);
         }
-        stroke.setColor(down ? Color.argb(210, 120, 230, 160) : Color.argb(140, 255, 255, 255));
+        stroke.setColor(selected ? Color.argb(230, 255, 214, 64) : down ? Color.argb(210, 120, 230, 160) : Color.argb(140, 255, 255, 255));
         canvas.drawRoundRect(rect, 12, 12, stroke);
-        text.setColor(down ? Color.argb(230, 255, 255, 255) : Color.argb(180, 255, 255, 255));
+        text.setColor(down || selected ? Color.argb(230, 255, 255, 255) : Color.argb(180, 255, 255, 255));
         canvas.drawText(label, rect.centerX(), rect.centerY() - (text.descent() + text.ascent()) / 2f, text);
+        if (selected) {
+            drawCursor(canvas, rect);
+        }
     }
 
     private void drawDpad(Canvas canvas) {
@@ -139,9 +199,13 @@ public class ControlsView extends View {
         float thick = dpad.width() * 0.22f;
         RectF vertical = new RectF(cx - thick, cy - arm * 1.6f, cx + thick, cy + arm * 1.6f);
         RectF horizontal = new RectF(cx - arm * 1.6f, cy - thick, cx + arm * 1.6f, cy + thick);
-        stroke.setColor(Color.argb(140, 255, 255, 255));
+        boolean selected = editing;
+        stroke.setColor(selected ? Color.argb(230, 255, 214, 64) : Color.argb(140, 255, 255, 255));
         canvas.drawRoundRect(vertical, 10, 10, stroke);
         canvas.drawRoundRect(horizontal, 10, 10, stroke);
+        if (selected) {
+            drawCursor(canvas, dpad);
+        }
         fill.setColor(Color.argb(70, 80, 210, 130));
         if ((pressed & UP) != 0) {
             canvas.drawRoundRect(new RectF(cx - thick, cy - arm * 1.6f, cx + thick, cy), 10, 10, fill);
@@ -159,6 +223,9 @@ public class ControlsView extends View {
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (editing) {
+            return editTouch(event);
+        }
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
             requestUnbufferedDispatch(event);
@@ -266,6 +333,179 @@ public class ControlsView extends View {
             best = START;
         }
         return best;
+    }
+
+    private void snapDefaults() {
+        dpadDefault.set(dpad);
+        buttonLDefault.set(buttonL);
+        buttonRDefault.set(buttonR);
+        buttonADefault.set(buttonA);
+        buttonBDefault.set(buttonB);
+        buttonSelectDefault.set(buttonSelect);
+        buttonStartDefault.set(buttonStart);
+    }
+
+    private void applyCenters() {
+        place(dpad, dpadDefault, "dpad");
+        place(buttonL, buttonLDefault, "l");
+        place(buttonR, buttonRDefault, "r");
+        place(buttonA, buttonADefault, "a");
+        place(buttonB, buttonBDefault, "b");
+        place(buttonSelect, buttonSelectDefault, "select");
+        place(buttonStart, buttonStartDefault, "start");
+    }
+
+    private void place(RectF rect, RectF base, String key) {
+        if (base.width() <= 0f || base.height() <= 0f) {
+            return;
+        }
+        rect.set(base);
+        float[] center = centers.get(key);
+        if (center == null || getWidth() <= 0 || getHeight() <= 0) {
+            return;
+        }
+        float cx = KeyLayout.clampCenter(center[0] * getWidth(), rect.width() / 2f, getWidth());
+        float cy = KeyLayout.clampCenter(center[1] * getHeight(), rect.height() / 2f, getHeight());
+        rect.offset(cx - rect.centerX(), cy - rect.centerY());
+    }
+
+    private void drawCursor(Canvas canvas, RectF rect) {
+        float cx = rect.centerX();
+        float cy = rect.centerY();
+        float arm = Math.max(18f * density, Math.min(rect.width(), rect.height()) * 0.45f);
+        float previous = stroke.getStrokeWidth();
+        float mark = Math.max(2.5f, 1.5f * density);
+        stroke.setColor(Color.argb(240, 255, 214, 64));
+        stroke.setStrokeWidth(mark);
+        canvas.drawLine(cx - arm, cy, cx + arm, cy, stroke);
+        canvas.drawLine(cx, cy - arm, cx, cy + arm, stroke);
+        canvas.drawCircle(cx, cy, 4f * density, stroke);
+        stroke.setStrokeWidth(previous);
+    }
+
+    private String dragKey;
+    private int dragPointer = -1;
+    private float grabDx;
+    private float grabDy;
+    private float downX;
+    private float downY;
+    private float lastNx;
+    private float lastNy;
+    private boolean dragMoved;
+
+    private boolean editTouch(MotionEvent event) {
+        if (editListener == null || getWidth() <= 0 || getHeight() <= 0) {
+            return true;
+        }
+        int action = event.getActionMasked();
+        int index = event.getActionIndex();
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+                dragPointer = event.getPointerId(index);
+                dragKey = keyAt(event.getX(index), event.getY(index));
+                dragMoved = false;
+                downX = event.getX(index);
+                downY = event.getY(index);
+                if (dragKey != null) {
+                    RectF rect = rectFor(dragKey);
+                    grabDx = downX - rect.centerX();
+                    grabDy = downY - rect.centerY();
+                }
+                break;
+            case MotionEvent.ACTION_MOVE:
+                moveDrag(event);
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_POINTER_UP:
+                if (event.getPointerId(index) != dragPointer) {
+                    break;
+                }
+                moveDrag(event);
+                if (dragKey != null && dragMoved) {
+                    editListener.onCursorStopped(dragKey, lastNx, lastNy);
+                }
+                dragKey = null;
+                dragPointer = -1;
+                break;
+            case MotionEvent.ACTION_CANCEL:
+                dragKey = null;
+                dragPointer = -1;
+                break;
+            default:
+                break;
+        }
+        return true;
+    }
+
+    private void moveDrag(MotionEvent event) {
+        if (dragKey == null || dragPointer < 0) {
+            return;
+        }
+        int index = event.findPointerIndex(dragPointer);
+        if (index < 0) {
+            return;
+        }
+        float x = event.getX(index);
+        float y = event.getY(index);
+        float dx = x - downX;
+        float dy = y - downY;
+        if (dx * dx + dy * dy > 36f * density * density) {
+            dragMoved = true;
+        }
+        if (!dragMoved) {
+            return;
+        }
+        lastNx = (x - grabDx) / getWidth();
+        lastNy = (y - grabDy) / getHeight();
+        editListener.onCursorMoved(dragKey, lastNx, lastNy);
+    }
+
+    private String keyAt(float x, float y) {
+        int face = nearestFace(x, y);
+        if (face == A) {
+            return "a";
+        }
+        if (face == B) {
+            return "b";
+        }
+        if (face == L) {
+            return "l";
+        }
+        if (face == R) {
+            return "r";
+        }
+        if (face == SELECT) {
+            return "select";
+        }
+        if (face == START) {
+            return "start";
+        }
+        if (dpad.contains(x, y)) {
+            return "dpad";
+        }
+        return null;
+    }
+
+    private RectF rectFor(String key) {
+        if ("dpad".equals(key)) {
+            return dpad;
+        }
+        if ("a".equals(key)) {
+            return buttonA;
+        }
+        if ("b".equals(key)) {
+            return buttonB;
+        }
+        if ("l".equals(key)) {
+            return buttonL;
+        }
+        if ("r".equals(key)) {
+            return buttonR;
+        }
+        if ("select".equals(key)) {
+            return buttonSelect;
+        }
+        return buttonStart;
     }
 
     private static float consider(RectF rect, float x, float y, float extra, float bestDist) {

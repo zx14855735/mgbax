@@ -103,6 +103,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean awaitingStorage;
     private boolean leftForStorage;
     private TextView savePathView;
+    private KeyLayout keyLayout = new KeyLayout();
+    private boolean layoutEditing;
     private TextView linkStatusView;
     private EditText linkRoomView;
     private RemoteLink remoteLink;
@@ -127,6 +129,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 wakeInput();
             }
         });
+        bindLayoutEditor();
 
         findViewById(R.id.btn_open).setOnClickListener(v -> openDocument(REQ_ROM));
         findViewById(R.id.btn_bios).setOnClickListener(v -> openDocument(REQ_BIOS));
@@ -155,6 +158,7 @@ public class EmulatorActivity extends AppCompatActivity {
         findViewById(R.id.btn_reset).setOnClickListener(v -> command.set(CMD_RESET));
         findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
         findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
+        findViewById(R.id.btn_layout).setOnClickListener(v -> setLayoutEditing(!layoutEditing));
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
 
@@ -922,6 +926,40 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         clipboard.setPrimaryClip(ClipData.newPlainText("sav", (String) tag));
         toast(getString(R.string.save_location_copied));
+    }
+
+    private void bindLayoutEditor() {
+        keyLayout = KeyLayout.decode(getPreferences(MODE_PRIVATE).getString("key_layout", ""));
+        controls.setCenters(keyLayout.resolved());
+        controls.setEditListener(new ControlsView.EditListener() {
+            @Override
+            public void onCursorMoved(String key, float nx, float ny) {
+                keyLayout.place(key, nx, ny);
+                controls.setCenters(keyLayout.resolved());
+            }
+
+            @Override
+            public void onCursorStopped(String key, float nx, float ny) {
+                keyLayout.place(key, nx, ny);
+                controls.setCenters(keyLayout.resolved());
+                getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
+            }
+        });
+        findViewById(R.id.layout_reset).setOnClickListener(v -> resetLayout());
+        findViewById(R.id.layout_done).setOnClickListener(v -> setLayoutEditing(false));
+    }
+
+    private void setLayoutEditing(boolean on) {
+        layoutEditing = on;
+        findViewById(R.id.layout_editor).setVisibility(on ? View.VISIBLE : View.GONE);
+        controls.setEditing(on);
+    }
+
+    private void resetLayout() {
+        keyLayout.resetAll();
+        getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
+        controls.setCenters(keyLayout.resolved());
+        toast(getString(R.string.layout_reset_done));
     }
 
     private void applyVideo() {
