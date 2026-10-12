@@ -41,6 +41,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdSave = 1
     private let cmdLoad = 2
     private let cmdReset = 3
+    private let layoutBar = UIView()
+    private var keyLayout = KeyLayout()
+    private var layoutEditing = false
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -55,6 +58,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.touchKeys = mask
             self.noteUserKeys(prevTouch: prev, prevHw: self.hwKeys, prevPad: self.padKeys)
             if (mask & ~prev) != 0 { self.wakeInput() }
+        }
+        keyLayout = KeyLayout.decode(defaults.string(forKey: "key_layout") ?? "")
+        controls.setCenters(keyLayout.resolved())
+        controls.onCursorMoved = { [weak self] key, x, y in
+            guard let self else { return }
+            self.keyLayout.place(key, x, y)
+            self.controls.setCenters(self.keyLayout.resolved())
+        }
+        controls.onCursorStopped = { [weak self] key, x, y in
+            guard let self else { return }
+            self.keyLayout.place(key, x, y)
+            self.controls.setCenters(self.keyLayout.resolved())
+            self.defaults.set(self.keyLayout.encode(), forKey: "key_layout")
         }
         if let last = defaults.string(forKey: "lastRom"), FileManager.default.fileExists(atPath: last) {
             gate.lock()
@@ -94,7 +110,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("读档", #selector(loadState)),
             ("BIOS", #selector(openBios)),
             ("画质", #selector(showVideo)),
-            ("联机", #selector(showLink))
+            ("联机", #selector(showLink)),
+            ("键位", #selector(toggleLayout))
         ]
         for (index, item) in titles.enumerated() {
             let button = UIButton(type: .system)
@@ -113,7 +130,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stack.addArrangedSubview(fpsView)
         savePathView.textColor = UIColor(red: 183 / 255, green: 227 / 255, blue: 183 / 255, alpha: 1)
         savePathView.font = .systemFont(ofSize: 12)
-        savePathView.numberOfLines = 2
+        savePathView.numberOfLines = 3
         savePathView.isHidden = true
         savePathView.isUserInteractionEnabled = true
         savePathView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(copySavePath)))
@@ -125,7 +142,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stage.addSubview(gameView)
         stage.addSubview(hint)
         stage.addSubview(controls)
-        for item in [bar, stack, savePathView, stage, gameView, hint, controls] {
+        buildLayoutBar()
+        stage.addSubview(layoutBar)
+        for item in [bar, stack, savePathView, stage, gameView, hint, controls, layoutBar] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
         view.addSubview(bar)
@@ -159,8 +178,62 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             controls.topAnchor.constraint(equalTo: stage.topAnchor),
             controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             controls.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
-            controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor)
+            controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            layoutBar.topAnchor.constraint(equalTo: stage.topAnchor),
+            layoutBar.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            layoutBar.trailingAnchor.constraint(equalTo: stage.trailingAnchor)
         ])
+    }
+
+    private func buildLayoutBar() {
+        layoutBar.backgroundColor = UIColor(red: 16 / 255, green: 24 / 255, blue: 16 / 255, alpha: 0.92)
+        layoutBar.isHidden = true
+        let hintLabel = UILabel()
+        hintLabel.text = "直接拖动按键到想要的位置，松手即保存"
+        hintLabel.textColor = UIColor(red: 246 / 255, green: 231 / 255, blue: 168 / 255, alpha: 1)
+        hintLabel.font = .systemFont(ofSize: 12)
+        hintLabel.numberOfLines = 2
+        let reset = UIButton(type: .system)
+        reset.setTitle("重置", for: .normal)
+        reset.setTitleColor(.white, for: .normal)
+        reset.titleLabel?.font = .systemFont(ofSize: 15)
+        reset.addTarget(self, action: #selector(resetLayout), for: .touchUpInside)
+        let done = UIButton(type: .system)
+        done.setTitle("完成", for: .normal)
+        done.setTitleColor(.white, for: .normal)
+        done.titleLabel?.font = .systemFont(ofSize: 15)
+        done.addTarget(self, action: #selector(finishLayout), for: .touchUpInside)
+        let row = UIStackView(arrangedSubviews: [hintLabel, reset, done])
+        row.axis = .horizontal
+        row.spacing = 8
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        layoutBar.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: layoutBar.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: layoutBar.bottomAnchor, constant: -6),
+            row.leadingAnchor.constraint(equalTo: layoutBar.leadingAnchor, constant: 8),
+            row.trailingAnchor.constraint(equalTo: layoutBar.trailingAnchor, constant: -8)
+        ])
+    }
+
+    @objc private func toggleLayout() {
+        layoutEditing.toggle()
+        layoutBar.isHidden = !layoutEditing
+        controls.editing = layoutEditing
+    }
+
+    @objc private func finishLayout() {
+        layoutEditing = false
+        layoutBar.isHidden = true
+        controls.editing = false
+    }
+
+    @objc private func resetLayout() {
+        keyLayout.resetAll()
+        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        controls.setCenters([:])
+        toast("已恢复默认键位")
     }
 
     @objc private func emulationLoop() {
@@ -571,7 +644,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let core else { return }
         var path = [CChar](repeating: 0, count: 1200)
         mgbaMobileSaveFile(core, &path, 1200)
-        let text = String(cString: path)
+        let text = filesPath(String(cString: path))
         if text.isEmpty {
             savePathView.isHidden = true
             return
@@ -587,6 +660,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if text.isEmpty { return }
         UIPasteboard.general.string = text
         toast("已复制 ROM 存档位置")
+    }
+
+    private func filesPath(_ absolute: String) -> String {
+        let root = docs.path
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let label = UIDevice.current.userInterfaceIdiom == .pad ? "我的 iPad" : "我的 iPhone"
+        guard absolute.hasPrefix(prefix) else { return absolute }
+        let rest = String(absolute.dropFirst(prefix.count))
+        return rest.isEmpty ? "\(label)/mGBA" : "\(label)/mGBA/\(rest)"
     }
 
     private func applyVideo() {

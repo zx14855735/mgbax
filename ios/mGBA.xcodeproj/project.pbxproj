@@ -13,6 +13,7 @@
 		B10000000000000000000004 /* ControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000004 /* ControlsView.swift */; };
 		B10000000000000000000005 /* AudioOut.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000005 /* AudioOut.swift */; };
 		B10000000000000000000006 /* RemoteLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000006 /* RemoteLink.swift */; };
+		B10000000000000000000009 /* KeyLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000009 /* KeyLayout.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -22,6 +23,7 @@
 		E10000000000000000000004 /* ControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlsView.swift; sourceTree = "<group>"; };
 		E10000000000000000000005 /* AudioOut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOut.swift; sourceTree = "<group>"; };
 		E10000000000000000000006 /* RemoteLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLink.swift; sourceTree = "<group>"; };
+		E10000000000000000000009 /* KeyLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyLayout.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -54,6 +56,7 @@
 				E10000000000000000000004 /* ControlsView.swift */,
 				E10000000000000000000005 /* AudioOut.swift */,
 				E10000000000000000000006 /* RemoteLink.swift */,
+				E10000000000000000000009 /* KeyLayout.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -155,6 +158,7 @@
 				B10000000000000000000004 /* ControlsView.swift in Sources */,
 				B10000000000000000000005 /* AudioOut.swift in Sources */,
 				B10000000000000000000006 /* RemoteLink.swift in Sources */,
+				B10000000000000000000009 /* KeyLayout.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
