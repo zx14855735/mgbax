@@ -7,6 +7,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.util.SparseIntArray;
@@ -41,7 +42,12 @@ public class ControlsView extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Path arrow = new Path();
     private final RectF dpad = new RectF();
+    private final RectF dpadUp = new RectF();
+    private final RectF dpadDown = new RectF();
+    private final RectF dpadLeft = new RectF();
+    private final RectF dpadRight = new RectF();
     private final RectF buttonL = new RectF();
     private final RectF buttonR = new RectF();
     private final RectF buttonA = new RectF();
@@ -139,7 +145,7 @@ public class ControlsView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         float d = getResources().getDisplayMetrics().density;
         float pad = 10 * d;
-        float dpadSize = Math.min(150 * d, Math.min(w, h) * 0.42f);
+        float dpadSize = Math.min(240 * d, Math.min(w, h) * 0.62f);
         dpad.set(pad, h - pad - dpadSize, pad + dpadSize, h - pad);
 
         float shoulderW = 72 * d;
@@ -193,32 +199,55 @@ public class ControlsView extends View {
     }
 
     private void drawDpad(Canvas canvas) {
-        float cx = dpad.centerX();
-        float cy = dpad.centerY();
-        float arm = dpad.width() * 0.28f;
-        float thick = dpad.width() * 0.22f;
-        RectF vertical = new RectF(cx - thick, cy - arm * 1.6f, cx + thick, cy + arm * 1.6f);
-        RectF horizontal = new RectF(cx - arm * 1.6f, cy - thick, cx + arm * 1.6f, cy + thick);
-        boolean selected = editing;
-        stroke.setColor(selected ? Color.argb(230, 255, 214, 64) : Color.argb(140, 255, 255, 255));
-        canvas.drawRoundRect(vertical, 10, 10, stroke);
-        canvas.drawRoundRect(horizontal, 10, 10, stroke);
-        if (selected) {
+        drawDirection(canvas, dpadUp, UP);
+        drawDirection(canvas, dpadDown, DOWN);
+        drawDirection(canvas, dpadLeft, LEFT);
+        drawDirection(canvas, dpadRight, RIGHT);
+        if (editing) {
             drawCursor(canvas, dpad);
         }
-        fill.setColor(Color.argb(70, 80, 210, 130));
-        if ((pressed & UP) != 0) {
-            canvas.drawRoundRect(new RectF(cx - thick, cy - arm * 1.6f, cx + thick, cy), 10, 10, fill);
+    }
+
+    private void drawDirection(Canvas canvas, RectF rect, int bit) {
+        if (rect.width() <= 0f) {
+            return;
         }
-        if ((pressed & DOWN) != 0) {
-            canvas.drawRoundRect(new RectF(cx - thick, cy, cx + thick, cy + arm * 1.6f), 10, 10, fill);
+        boolean down = (pressed & bit) != 0;
+        float radius = 8f * density;
+        if (down) {
+            fill.setColor(Color.argb(90, 80, 210, 130));
+            canvas.drawRoundRect(rect, radius, radius, fill);
         }
-        if ((pressed & LEFT) != 0) {
-            canvas.drawRoundRect(new RectF(cx - arm * 1.6f, cy - thick, cx, cy + thick), 10, 10, fill);
+        stroke.setColor(editing ? Color.argb(230, 255, 214, 64) : down ? Color.argb(220, 120, 230, 160) : Color.argb(170, 255, 255, 255));
+        canvas.drawRoundRect(rect, radius, radius, stroke);
+        drawArrow(canvas, rect, bit, down);
+    }
+
+    private void drawArrow(Canvas canvas, RectF rect, int bit, boolean down) {
+        float cx = rect.centerX();
+        float cy = rect.centerY();
+        float a = Math.min(rect.width(), rect.height()) * 0.36f;
+        arrow.reset();
+        if (bit == UP) {
+            arrow.moveTo(cx, cy - a);
+            arrow.lineTo(cx + a * 0.92f, cy + a * 0.7f);
+            arrow.lineTo(cx - a * 0.92f, cy + a * 0.7f);
+        } else if (bit == DOWN) {
+            arrow.moveTo(cx, cy + a);
+            arrow.lineTo(cx + a * 0.92f, cy - a * 0.7f);
+            arrow.lineTo(cx - a * 0.92f, cy - a * 0.7f);
+        } else if (bit == LEFT) {
+            arrow.moveTo(cx - a, cy);
+            arrow.lineTo(cx + a * 0.7f, cy - a * 0.92f);
+            arrow.lineTo(cx + a * 0.7f, cy + a * 0.92f);
+        } else {
+            arrow.moveTo(cx + a, cy);
+            arrow.lineTo(cx - a * 0.7f, cy - a * 0.92f);
+            arrow.lineTo(cx - a * 0.7f, cy + a * 0.92f);
         }
-        if ((pressed & RIGHT) != 0) {
-            canvas.drawRoundRect(new RectF(cx, cy - thick, cx + arm * 1.6f, cy + thick), 10, 10, fill);
-        }
+        arrow.close();
+        fill.setColor(down ? Color.argb(245, 255, 255, 255) : Color.argb(210, 255, 255, 255));
+        canvas.drawPath(arrow, fill);
     }
 
     @Override
@@ -281,23 +310,46 @@ public class ControlsView extends View {
         if (face != 0) {
             return face;
         }
-        if (!dpad.contains(x, y)) {
-            return 0;
-        }
-        float dx = x - dpad.centerX();
-        float dy = y - dpad.centerY();
-        float radius = dpad.width() * 0.72f;
-        if (dx * dx + dy * dy > radius * radius) {
+        return hitDpad(x, y);
+    }
+
+    private int hitDpad(float x, float y) {
+        if (dpad.width() <= 0f || !dpad.contains(x, y)) {
             return 0;
         }
         int bits = 0;
-        if (Math.abs(dx) > Math.abs(dy) * 0.35f) {
-            bits |= dx > 0 ? RIGHT : LEFT;
+        if (hitArm(dpadUp, x, y)) {
+            bits |= UP;
         }
-        if (Math.abs(dy) > Math.abs(dx) * 0.35f) {
-            bits |= dy > 0 ? DOWN : UP;
+        if (hitArm(dpadDown, x, y)) {
+            bits |= DOWN;
+        }
+        if (hitArm(dpadLeft, x, y)) {
+            bits |= LEFT;
+        }
+        if (hitArm(dpadRight, x, y)) {
+            bits |= RIGHT;
         }
         return bits;
+    }
+
+    private boolean hitArm(RectF rect, float x, float y) {
+        float extra = dpad.width() * 0.05f;
+        float left = rect.left;
+        float top = rect.top;
+        float right = rect.right;
+        float bottom = rect.bottom;
+        if (rect.centerX() < dpad.centerX()) {
+            right += extra;
+        } else if (rect.centerX() > dpad.centerX()) {
+            left -= extra;
+        }
+        if (rect.centerY() < dpad.centerY()) {
+            bottom += extra;
+        } else if (rect.centerY() > dpad.centerY()) {
+            top -= extra;
+        }
+        return x >= left && x < right && y >= top && y < bottom;
     }
 
     private int nearestFace(float x, float y) {
@@ -353,6 +405,23 @@ public class ControlsView extends View {
         place(buttonB, buttonBDefault, "b");
         place(buttonSelect, buttonSelectDefault, "select");
         place(buttonStart, buttonStartDefault, "start");
+        layoutDpadArms();
+    }
+
+    private void layoutDpadArms() {
+        if (dpad.width() <= 0f) {
+            return;
+        }
+        float size = dpad.width();
+        float gap = size * 0.06f;
+        float thick = size * 0.34f;
+        float arm = (size - thick - gap * 2f) / 2f;
+        float cx = dpad.centerX();
+        float cy = dpad.centerY();
+        dpadUp.set(cx - thick / 2f, dpad.top, cx + thick / 2f, dpad.top + arm);
+        dpadDown.set(cx - thick / 2f, dpad.bottom - arm, cx + thick / 2f, dpad.bottom);
+        dpadLeft.set(dpad.left, cy - thick / 2f, dpad.left + arm, cy + thick / 2f);
+        dpadRight.set(dpad.right - arm, cy - thick / 2f, dpad.right, cy + thick / 2f);
     }
 
     private void place(RectF rect, RectF base, String key) {

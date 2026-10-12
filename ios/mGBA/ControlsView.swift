@@ -34,6 +34,10 @@ final class ControlsView: UIView {
     private var pointers: [ObjectIdentifier: Int] = [:]
     private var centers: [String: CGPoint] = [:]
     private var dpad = CGRect.zero
+    private var dpadUp = CGRect.zero
+    private var dpadDown = CGRect.zero
+    private var dpadLeft = CGRect.zero
+    private var dpadRight = CGRect.zero
     private var buttonL = CGRect.zero
     private var buttonR = CGRect.zero
     private var buttonA = CGRect.zero
@@ -85,7 +89,7 @@ final class ControlsView: UIView {
         let w = bounds.width
         let h = bounds.height
         let pad: CGFloat = 10
-        let dpadSize = min(150, min(w, h) * 0.42)
+        let dpadSize = min(240, min(w, h) * 0.62)
         dpad = CGRect(x: pad, y: h - pad - dpadSize, width: dpadSize, height: dpadSize)
         buttonL = CGRect(x: pad, y: pad, width: 72, height: 36)
         buttonR = CGRect(x: w - pad - 72, y: pad, width: 72, height: 36)
@@ -138,35 +142,56 @@ final class ControlsView: UIView {
     }
 
     private func drawDpad() {
-        let cx = dpad.midX
-        let cy = dpad.midY
-        let arm = dpad.width * 0.28
-        let thick = dpad.width * 0.22
-        let vertical = CGRect(x: cx - thick, y: cy - arm * 1.6, width: thick * 2, height: arm * 3.2)
-        let horizontal = CGRect(x: cx - arm * 1.6, y: cy - thick, width: arm * 3.2, height: thick * 2)
+        drawDirection(dpadUp, Self.up)
+        drawDirection(dpadDown, Self.down)
+        drawDirection(dpadLeft, Self.left)
+        drawDirection(dpadRight, Self.right)
+        if editing { drawCursor(dpad) }
+    }
+
+    private func drawDirection(_ rect: CGRect, _ bit: Int) {
+        guard rect.width > 0 else { return }
+        let down = (pressed & bit) != 0
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: 8)
+        if down {
+            UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: 90 / 255).setFill()
+            path.fill()
+        }
         let stroke = editing
             ? UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: 230 / 255)
-            : UIColor(white: 1, alpha: 140 / 255)
+            : (down ? UIColor(red: 120 / 255, green: 230 / 255, blue: 160 / 255, alpha: 220 / 255) : UIColor(white: 1, alpha: 170 / 255))
         stroke.setStroke()
-        for rect in [vertical, horizontal] {
-            let path = UIBezierPath(roundedRect: rect, cornerRadius: 10)
-            path.lineWidth = 2
-            path.stroke()
+        path.lineWidth = 2
+        path.stroke()
+        drawArrow(rect, bit, down)
+    }
+
+    private func drawArrow(_ rect: CGRect, _ bit: Int, _ down: Bool) {
+        let cx = rect.midX
+        let cy = rect.midY
+        let a = min(rect.width, rect.height) * 0.36
+        let path = UIBezierPath()
+        switch bit {
+        case Self.up:
+            path.move(to: CGPoint(x: cx, y: cy - a))
+            path.addLine(to: CGPoint(x: cx + a * 0.92, y: cy + a * 0.7))
+            path.addLine(to: CGPoint(x: cx - a * 0.92, y: cy + a * 0.7))
+        case Self.down:
+            path.move(to: CGPoint(x: cx, y: cy + a))
+            path.addLine(to: CGPoint(x: cx + a * 0.92, y: cy - a * 0.7))
+            path.addLine(to: CGPoint(x: cx - a * 0.92, y: cy - a * 0.7))
+        case Self.left:
+            path.move(to: CGPoint(x: cx - a, y: cy))
+            path.addLine(to: CGPoint(x: cx + a * 0.7, y: cy - a * 0.92))
+            path.addLine(to: CGPoint(x: cx + a * 0.7, y: cy + a * 0.92))
+        default:
+            path.move(to: CGPoint(x: cx + a, y: cy))
+            path.addLine(to: CGPoint(x: cx - a * 0.7, y: cy - a * 0.92))
+            path.addLine(to: CGPoint(x: cx - a * 0.7, y: cy + a * 0.92))
         }
-        if editing { drawCursor(dpad) }
-        UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: 70 / 255).setFill()
-        if (pressed & Self.up) != 0 {
-            UIBezierPath(roundedRect: CGRect(x: cx - thick, y: cy - arm * 1.6, width: thick * 2, height: arm * 1.6), cornerRadius: 10).fill()
-        }
-        if (pressed & Self.down) != 0 {
-            UIBezierPath(roundedRect: CGRect(x: cx - thick, y: cy, width: thick * 2, height: arm * 1.6), cornerRadius: 10).fill()
-        }
-        if (pressed & Self.left) != 0 {
-            UIBezierPath(roundedRect: CGRect(x: cx - arm * 1.6, y: cy - thick, width: arm * 1.6, height: thick * 2), cornerRadius: 10).fill()
-        }
-        if (pressed & Self.right) != 0 {
-            UIBezierPath(roundedRect: CGRect(x: cx, y: cy - thick, width: arm * 1.6, height: thick * 2), cornerRadius: 10).fill()
-        }
+        path.close()
+        UIColor(white: 1, alpha: down ? 245 / 255 : 210 / 255).setFill()
+        path.fill()
     }
 
     private func drawCursor(_ rect: CGRect) {
@@ -275,15 +300,35 @@ final class ControlsView: UIView {
 
     private func hitTest(_ point: CGPoint) -> Int {
         if let face = nearestFace(point) { return face }
-        guard dpad.contains(point) else { return 0 }
-        let dx = point.x - dpad.midX
-        let dy = point.y - dpad.midY
-        let radius = dpad.width * 0.72
-        if dx * dx + dy * dy > radius * radius { return 0 }
+        return hitDpad(point)
+    }
+
+    private func hitDpad(_ point: CGPoint) -> Int {
+        guard dpad.width > 0, dpad.contains(point) else { return 0 }
         var bits = 0
-        if abs(dx) > abs(dy) * 0.35 { bits |= dx > 0 ? Self.right : Self.left }
-        if abs(dy) > abs(dx) * 0.35 { bits |= dy > 0 ? Self.down : Self.up }
+        if hitArm(dpadUp, point) { bits |= Self.up }
+        if hitArm(dpadDown, point) { bits |= Self.down }
+        if hitArm(dpadLeft, point) { bits |= Self.left }
+        if hitArm(dpadRight, point) { bits |= Self.right }
         return bits
+    }
+
+    private func hitArm(_ rect: CGRect, _ point: CGPoint) -> Bool {
+        let extra = dpad.width * 0.05
+        var box = rect
+        if rect.midX < dpad.midX {
+            box.size.width += extra
+        } else if rect.midX > dpad.midX {
+            box.origin.x -= extra
+            box.size.width += extra
+        }
+        if rect.midY < dpad.midY {
+            box.size.height += extra
+        } else if rect.midY > dpad.midY {
+            box.origin.y -= extra
+            box.size.height += extra
+        }
+        return box.contains(point)
     }
 
     private func nearestFace(_ point: CGPoint) -> Int? {
@@ -352,6 +397,21 @@ final class ControlsView: UIView {
         place(&buttonB, buttonBDefault, "b")
         place(&buttonSelect, buttonSelectDefault, "select")
         place(&buttonStart, buttonStartDefault, "start")
+        layoutDpadArms()
+    }
+
+    private func layoutDpadArms() {
+        guard dpad.width > 0 else { return }
+        let size = dpad.width
+        let gap = size * 0.06
+        let thick = size * 0.34
+        let arm = (size - thick - gap * 2) / 2
+        let cx = dpad.midX
+        let cy = dpad.midY
+        dpadUp = CGRect(x: cx - thick / 2, y: dpad.minY, width: thick, height: arm)
+        dpadDown = CGRect(x: cx - thick / 2, y: dpad.maxY - arm, width: thick, height: arm)
+        dpadLeft = CGRect(x: dpad.minX, y: cy - thick / 2, width: arm, height: thick)
+        dpadRight = CGRect(x: dpad.maxX - arm, y: cy - thick / 2, width: arm, height: thick)
     }
 
     private func place(_ rect: inout CGRect, _ base: CGRect, _ key: String) {

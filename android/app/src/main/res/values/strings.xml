@@ -10,6 +10,8 @@
     <string name="speed_4">4倍</string>
     <string name="speed_8">8倍</string>
     <string name="speed_16">16倍</string>
+    <string name="speed_value">%1$d倍</string>
+    <string name="speed_pick">倍速</string>
     <string name="reset">复位</string>
     <string name="slot_initial">槽位 1</string>
     <string name="slot">槽位 %1$d</string>
@@ -24,6 +26,10 @@
     <string name="video">画质</string>
     <string name="link">联机</string>
     <string name="layout">键位</string>
+    <string name="settings">设置</string>
+    <string name="orientation_title">屏幕方向</string>
+    <string name="orientation_landscape">横屏</string>
+    <string name="orientation_portrait">竖屏</string>
     <string name="layout_hint">直接拖动按键到想要的位置，松手即保存</string>
     <string name="layout_reset">重置</string>
     <string name="layout_done">完成</string>

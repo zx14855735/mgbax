@@ -7,9 +7,11 @@ import android.Manifest;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioTrack;
@@ -29,6 +31,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -71,6 +74,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private Button pauseButton;
     private Button fastButton;
     private Button slotButton;
+    private HorizontalScrollView speedBar;
+    private final Button[] speedButtons = new Button[17];
 
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
     private final AtomicInteger command = new AtomicInteger();
@@ -112,6 +117,7 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applyOrientation();
         setContentView(R.layout.activity_emulator);
         gameView = findViewById(R.id.game);
         hint = findViewById(R.id.hint);
@@ -134,21 +140,10 @@ public class EmulatorActivity extends AppCompatActivity {
         findViewById(R.id.btn_open).setOnClickListener(v -> openDocument(REQ_ROM));
         findViewById(R.id.btn_bios).setOnClickListener(v -> openDocument(REQ_BIOS));
         pauseButton.setOnClickListener(v -> setPaused(!paused));
-        fastButton.setOnClickListener(v -> {
-            if (speed == 1) {
-                speed = 4;
-            } else if (speed == 4) {
-                speed = 8;
-            } else if (speed == 8) {
-                speed = 16;
-            } else {
-                speed = 1;
-            }
-            fastButton.setText(speedText(speed));
-            if (core != null) {
-                core.clearAudio();
-            }
-        });
+        int savedSpeed = getPreferences(MODE_PRIVATE).getInt("speed", 1);
+        speed = savedSpeed >= 1 && savedSpeed <= 16 ? savedSpeed : 1;
+        buildSpeedBar();
+        fastButton.setOnClickListener(v -> speedBar.setVisibility(speedBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         slotButton.setOnClickListener(v -> {
             slot = slot % 9 + 1;
             refreshSlotButton();
@@ -159,6 +154,7 @@ public class EmulatorActivity extends AppCompatActivity {
         findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
         findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
         findViewById(R.id.btn_layout).setOnClickListener(v -> setLayoutEditing(!layoutEditing));
+        findViewById(R.id.btn_settings).setOnClickListener(v -> showSettingsDialog());
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
 
@@ -1336,17 +1332,80 @@ public class EmulatorActivity extends AppCompatActivity {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    private int speedText(int value) {
-        if (value == 4) {
-            return R.string.speed_4;
+    private void buildSpeedBar() {
+        speedBar = findViewById(R.id.speed_bar);
+        LinearLayout row = findViewById(R.id.speed_row);
+        TextView label = new TextView(this);
+        label.setText(R.string.speed_pick);
+        label.setTextColor(Color.WHITE);
+        label.setPadding(dp(8), 0, dp(4), 0);
+        row.addView(label);
+        for (int i = 1; i <= 16; i++) {
+            Button button = new Button(this);
+            button.setText(String.valueOf(i));
+            button.setAllCaps(false);
+            button.setMinWidth(dp(44));
+            button.setMinHeight(dp(36));
+            button.setMinimumWidth(dp(44));
+            button.setMinimumHeight(dp(36));
+            button.setTextSize(14);
+            button.setPadding(dp(8), 0, dp(8), 0);
+            int value = i;
+            button.setOnClickListener(v -> setSpeed(value));
+            speedButtons[i] = button;
+            row.addView(button);
         }
-        if (value == 8) {
-            return R.string.speed_8;
+        refreshSpeedButtons();
+    }
+
+    private void setSpeed(int value) {
+        speed = Math.max(1, Math.min(16, value));
+        getPreferences(MODE_PRIVATE).edit().putInt("speed", speed).apply();
+        refreshSpeedButtons();
+        if (core != null) {
+            core.clearAudio();
         }
-        if (value == 16) {
-            return R.string.speed_16;
+    }
+
+    private void refreshSpeedButtons() {
+        fastButton.setText(getString(R.string.speed_value, speed));
+        for (int i = 1; i <= 16; i++) {
+            boolean on = i == speed;
+            speedButtons[i].setTextColor(on ? 0xFF102010 : Color.WHITE);
+            speedButtons[i].setBackgroundColor(on ? 0xFF3DDC84 : Color.TRANSPARENT);
         }
-        return R.string.speed_1;
+    }
+
+    private void showSettingsDialog() {
+        boolean portrait = prefersPortrait();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.orientation_title)
+                .setSingleChoiceItems(new CharSequence[] {
+                        getString(R.string.orientation_landscape),
+                        getString(R.string.orientation_portrait)
+                }, portrait ? 1 : 0, (dialog, which) -> {
+                    boolean nextPortrait = which == 1;
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putString("orientation", nextPortrait ? "portrait" : "landscape")
+                            .apply();
+                    applyOrientation(nextPortrait);
+                    dialog.dismiss();
+                })
+                .show();
+    }
+
+    private boolean prefersPortrait() {
+        return "portrait".equals(getPreferences(MODE_PRIVATE).getString("orientation", "landscape"));
+    }
+
+    private void applyOrientation() {
+        applyOrientation(prefersPortrait());
+    }
+
+    private void applyOrientation(boolean portrait) {
+        setRequestedOrientation(portrait
+                ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
     }
 
     private void setPaused(boolean value) {

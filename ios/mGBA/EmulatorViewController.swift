@@ -15,11 +15,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var pauseButton: UIButton!
     private var fastButton: UIButton!
     private var slotButton: UIButton!
+    private let speedBar = UIScrollView()
+    private var speedButtons: [UIButton] = []
+    private var speedBarHeight: NSLayoutConstraint!
     private let gate = NSCondition()
     private var running = false
     private var paused = false
     private var speed = 1
     private var fastHold = false
+    private var portrait = false
     private var touchKeys = 0
     private var hwKeys = 0
     private var padKeys = 0
@@ -48,6 +52,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        let savedSpeed = defaults.integer(forKey: "speed")
+        speed = (1...16).contains(savedSpeed) ? savedSpeed : 1
+        portrait = defaults.string(forKey: "orientation") == "portrait"
         buildChrome()
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
@@ -89,8 +96,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
-    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { .landscapeRight }
+    override var shouldAutorotate: Bool { true }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { portrait ? .portrait : .landscape }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { portrait ? .portrait : .landscapeRight }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        applyOrientation()
+    }
 
     private func buildChrome() {
         let bar = UIScrollView()
@@ -103,7 +116,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let titles: [(String, Selector)] = [
             ("打开", #selector(openRom)),
             ("暂停", #selector(togglePause)),
-            ("1倍", #selector(cycleSpeed)),
+            ("1倍", #selector(toggleSpeedBar)),
             ("复位", #selector(resetGame)),
             ("槽位 1", #selector(cycleSlot)),
             ("存档", #selector(saveState)),
@@ -111,7 +124,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("BIOS", #selector(openBios)),
             ("画质", #selector(showVideo)),
             ("联机", #selector(showLink)),
-            ("键位", #selector(toggleLayout))
+            ("键位", #selector(toggleLayout)),
+            ("设置", #selector(showSettings))
         ]
         for (index, item) in titles.enumerated() {
             let button = UIButton(type: .system)
@@ -122,12 +136,41 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             button.addTarget(self, action: item.1, for: .touchUpInside)
             stack.addArrangedSubview(button)
             if index == 1 { pauseButton = button }
-            if index == 2 { fastButton = button }
+            if index == 2 {
+                fastButton = button
+                button.setTitle("\(speed)倍", for: .normal)
+            }
             if index == 4 { slotButton = button }
         }
         fpsView.textColor = UIColor(red: 156 / 255, green: 204 / 255, blue: 156 / 255, alpha: 1)
         fpsView.font = .systemFont(ofSize: 12)
         stack.addArrangedSubview(fpsView)
+        speedBar.backgroundColor = UIColor(red: 16 / 255, green: 24 / 255, blue: 16 / 255, alpha: 1)
+        speedBar.showsHorizontalScrollIndicator = false
+        speedBar.isHidden = true
+        let speedStack = UIStackView()
+        speedStack.axis = .horizontal
+        speedStack.spacing = 4
+        speedStack.alignment = .center
+        speedStack.translatesAutoresizingMaskIntoConstraints = false
+        speedBar.addSubview(speedStack)
+        let speedLabel = UILabel()
+        speedLabel.text = "倍速"
+        speedLabel.textColor = .white
+        speedLabel.font = .systemFont(ofSize: 13)
+        speedStack.addArrangedSubview(speedLabel)
+        for value in 1...16 {
+            let button = UIButton(type: .system)
+            button.setTitle("\(value)", for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+            button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+            button.layer.cornerRadius = 6
+            button.tag = value
+            button.addTarget(self, action: #selector(pickSpeed(_:)), for: .touchUpInside)
+            speedStack.addArrangedSubview(button)
+            speedButtons.append(button)
+        }
+        refreshSpeedButtons()
         savePathView.textColor = UIColor(red: 183 / 255, green: 227 / 255, blue: 183 / 255, alpha: 1)
         savePathView.font = .systemFont(ofSize: 12)
         savePathView.numberOfLines = 3
@@ -144,12 +187,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stage.addSubview(controls)
         buildLayoutBar()
         stage.addSubview(layoutBar)
-        for item in [bar, stack, savePathView, stage, gameView, hint, controls, layoutBar] {
+        for item in [bar, stack, speedBar, savePathView, stage, gameView, hint, controls, layoutBar] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
         view.addSubview(bar)
+        view.addSubview(speedBar)
         view.addSubview(savePathView)
         view.addSubview(stage)
+        speedBarHeight = speedBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -160,7 +205,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 4),
             stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -4),
             stack.heightAnchor.constraint(equalTo: bar.heightAnchor),
-            savePathView.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            speedBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            speedBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            speedBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            speedBarHeight,
+            speedStack.topAnchor.constraint(equalTo: speedBar.contentLayoutGuide.topAnchor),
+            speedStack.bottomAnchor.constraint(equalTo: speedBar.contentLayoutGuide.bottomAnchor),
+            speedStack.leadingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.leadingAnchor, constant: 4),
+            speedStack.trailingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.trailingAnchor, constant: -4),
+            speedStack.heightAnchor.constraint(equalTo: speedBar.frameLayoutGuide.heightAnchor),
+            savePathView.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
             savePathView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             savePathView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             stage.topAnchor.constraint(equalTo: savePathView.bottomAnchor),
@@ -546,13 +600,61 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if !value { wakeInput() }
     }
 
-    @objc private func cycleSpeed() {
-        if speed == 1 { speed = 4 }
-        else if speed == 4 { speed = 8 }
-        else if speed == 8 { speed = 16 }
-        else { speed = 1 }
-        fastButton.setTitle(speed == 1 ? "1倍" : speed == 4 ? "4倍" : speed == 8 ? "8倍" : "16倍", for: .normal)
+    @objc private func toggleSpeedBar() {
+        let show = speedBar.isHidden
+        speedBar.isHidden = !show
+        speedBarHeight.constant = show ? 40 : 0
+    }
+
+    @objc private func pickSpeed(_ sender: UIButton) {
+        setSpeed(sender.tag)
+    }
+
+    private func setSpeed(_ value: Int) {
+        speed = min(16, max(1, value))
+        defaults.set(speed, forKey: "speed")
+        refreshSpeedButtons()
         if let core { mgbaMobileClearAudio(core) }
+    }
+
+    private func refreshSpeedButtons() {
+        fastButton.setTitle("\(speed)倍", for: .normal)
+        for button in speedButtons {
+            let on = button.tag == speed
+            button.setTitleColor(on ? UIColor(red: 0.06, green: 0.13, blue: 0.06, alpha: 1) : .white, for: .normal)
+            button.backgroundColor = on ? UIColor(red: 61 / 255, green: 220 / 255, blue: 132 / 255, alpha: 1) : .clear
+        }
+    }
+
+    @objc private func showSettings() {
+        let alert = UIAlertController(title: "屏幕方向", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: portrait ? "横屏" : "横屏 ✓", style: .default) { [weak self] _ in
+            self?.chooseOrientation(false)
+        })
+        alert.addAction(UIAlertAction(title: portrait ? "竖屏 ✓" : "竖屏", style: .default) { [weak self] _ in
+            self?.chooseOrientation(true)
+        })
+        alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func chooseOrientation(_ portrait: Bool) {
+        self.portrait = portrait
+        defaults.set(portrait ? "portrait" : "landscape", forKey: "orientation")
+        DispatchQueue.main.async { [weak self] in
+            self?.applyOrientation()
+        }
+    }
+
+    private func applyOrientation() {
+        let mask: UIInterfaceOrientationMask = portrait ? .portrait : .landscape
+        if #available(iOS 16.0, *) {
+            setNeedsUpdateOfSupportedInterfaceOrientations()
+            view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+        }
+        let value = portrait ? UIInterfaceOrientation.portrait.rawValue : UIInterfaceOrientation.landscapeRight.rawValue
+        UIDevice.current.setValue(value, forKey: "orientation")
+        UIViewController.attemptRotationToDeviceOrientation()
     }
 
     @objc private func cycleSlot() {
