@@ -185,7 +185,7 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	mCoreConfigSetOverrideIntValue(&core->config, "skipBios", 1);
 	mCoreConfigSetOverrideIntValue(&core->config, "audioSync", 0);
 	mCoreConfigSetOverrideIntValue(&core->config, "videoSync", 0);
-	mCoreConfigSetOverrideUIntValue(&core->config, "audioBuffers", 4096);
+	mCoreConfigSetOverrideUIntValue(&core->config, "audioBuffers", 16384);
 	emu->core = core;
 	mCoreLoadConfig(core);
 
@@ -195,7 +195,7 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		return false;
 	}
 	mCoreAutoloadSave(core);
-	core->setAudioBufferSize(core, 4096);
+	core->setAudioBufferSize(core, 16384);
 	if (!ensureVideo(emu)) {
 		MOBILE_LOGE("No video buffer before reset for %s", filename);
 		destroyCore(emu);
@@ -301,19 +301,12 @@ static void applyFrameskip(struct mCore* core, int skip) {
 }
 
 static void setFastAudio(struct MgbaMobile* emu, int fast) {
-	if (!emu->core || emu->fast == fast) {
+	if (!emu || !emu->core || emu->fast == fast) {
 		return;
 	}
 	emu->fast = fast;
-	if (emu->core->platform(emu->core) != mPLATFORM_GBA) {
-		return;
-	}
-	struct GBA* gba = (struct GBA*) emu->core->board;
-	mTimingDeschedule(&gba->timing, &gba->audio.sampleEvent);
-	if (!fast) {
-		int32_t when = gba->audio.sampleInterval > 0 ? gba->audio.sampleInterval : 1;
-		mTimingSchedule(&gba->timing, &gba->audio.sampleEvent, when);
-	}
+	// 倍速也有声音：不再关闭音频采样，保持音频缓冲持续产生�?
+	// 变速播放由前端 AudioTrack / AVAudioUnitVarispeed 完成�?
 }
 
 static struct mTiming* coreTiming(struct MgbaMobile* emu) {
@@ -687,12 +680,6 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		}
 		emu->core->setKeys(emu->core, nowKeys);
 		emu->core->runFrame(emu->core);
-	}
-	if (count > 1) {
-		struct mAudioBuffer* buffer = emu->core->getAudioBuffer(emu->core);
-		if (buffer) {
-			mAudioBufferClear(buffer);
-		}
 	}
 	ensureVideo(emu);
 	return true;

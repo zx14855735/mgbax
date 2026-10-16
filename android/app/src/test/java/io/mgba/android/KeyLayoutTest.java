@@ -11,6 +11,9 @@ public final class KeyLayoutTest {
         roundTrip();
         junkIsIgnored();
         clampCenterKeepsTheButtonOnScreen();
+        scaleRoundTrip();
+        scaleClamped();
+        oldStringsStayCompatible();
         System.out.println("KeyLayoutTest ok");
     }
 
@@ -65,6 +68,34 @@ public final class KeyLayoutTest {
         near(KeyLayout.clampCenter(99f, 20f, 100f), 80f, "right edge");
         near(KeyLayout.clampCenter(50f, 20f, 100f), 50f, "middle");
         near(KeyLayout.clampCenter(10f, 40f, 50f), 25f, "button wider than the view");
+    }
+
+    private static void scaleRoundTrip() {
+        KeyLayout layout = new KeyLayout();
+        layout.place("a", 0.2f, 0.8f);
+        layout.setScale("a", 1.5f);
+        layout.setScale("dpad", 0.8f);
+        KeyLayout again = KeyLayout.decode(layout.encode());
+        near(again.scaleFor("a"), 1.5f, "a scale kept");
+        near(again.scaleFor("dpad"), 0.8f, "dpad scale kept");
+        near(again.savedPoint("a")[0], 0.2f, "pos kept with scale");
+        check(Math.abs(again.scaleFor("b") - 1f) < 0.001f, "default scale is 1");
+    }
+
+    private static void scaleClamped() {
+        KeyLayout layout = new KeyLayout();
+        layout.setScale("b", 10f);
+        near(layout.scaleFor("b"), KeyLayout.MAX_SCALE, "scale clamped high");
+        layout.setScale("b", 0.01f);
+        near(layout.scaleFor("b"), KeyLayout.MIN_SCALE, "scale clamped low");
+        layout.setScale("b", 1f);
+        check(layout.encode().indexOf("b.s") < 0, "scale 1 not encoded");
+    }
+
+    private static void oldStringsStayCompatible() {
+        KeyLayout layout = KeyLayout.decode("a=0.2000,0.8000;dpad=0.1500,0.7200");
+        near(layout.savedPoint("a")[0], 0.2f, "old format kept");
+        check(Math.abs(layout.scaleFor("a") - 1f) < 0.001f, "old format scale defaults");
     }
 
     private static void near(float actual, float expected, String label) {

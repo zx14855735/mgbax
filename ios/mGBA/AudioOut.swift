@@ -2,20 +2,22 @@ import AVFoundation
 
 final class AudioOut {
     private let engine = AVAudioEngine()
+    private let speedNode = AVAudioUnitVarispeed()
     private let lock = NSLock()
     private var storage: [Int16]
     private var readPos = 0
     private var writePos = 0
     private let capacity: Int
     private var paused = false
-    private var fast = false
+    private var rate: Float = 1
     private(set) var outputRate = 48000
     var sourceRate = 32768
     private var resamplePos = 0.0
     private var started = false
+    private var soundEnabled = true
 
     init() {
-        capacity = 48000 * 2
+        capacity = 48000 * 4
         storage = [Int16](repeating: 0, count: capacity)
     }
 
@@ -27,14 +29,20 @@ final class AudioOut {
         try? session.setActive(true)
         outputRate = Int(session.sampleRate.rounded())
         if outputRate <= 0 { outputRate = 48000 }
-        if started { return }
+        if started {
+            applyRate()
+            return
+        }
         let format = AVAudioFormat(standardFormatWithSampleRate: Double(outputRate), channels: 2)!
         let node = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
             self?.render(frameCount: Int(frameCount), list: audioBufferList)
             return noErr
         }
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.attach(speedNode)
+        engine.connect(node, to: speedNode, format: format)
+        engine.connect(speedNode, to: engine.mainMixerNode, format: format)
+        applyRate()
         try? engine.start()
         started = true
     }
@@ -44,11 +52,31 @@ final class AudioOut {
         if value { clear() }
     }
 
+    func setSoundEnabled(_ value: Bool) {
+        soundEnabled = value
+        if !value { clear() }
+    }
+
+    /// 兼容旧调用：是否倍速（静音式）。现在默认有声，由 setRate 接管。
     func setFast(_ value: Bool) {
-        if fast == value { return }
-        fast = value
+        // 不再丢弃音频，变速由 setRate 控制
+        if !value {
+            setRate(1)
+        }
+    }
+
+    func setRate(_ value: Float) {
+        let clamped = min(16, max(1, value))
+        if abs(clamped - rate) < 0.001 { return }
+        rate = clamped
         resamplePos = 0
         clear()
+        applyRate()
+    }
+
+    private func applyRate() {
+        // Varispeed 同时变速+变调（磁带式），和安卓 PlaybackParams(speed+pitch) 一致。
+        speedNode.rate = rate
     }
 
     func stop() {
@@ -58,7 +86,8 @@ final class AudioOut {
     }
 
     func pump(samples: UnsafePointer<Int16>, frames: Int) {
-        if paused || fast || frames <= 0 { return }
+        if paused || frames <= 0 { return }
+        if !soundEnabled { return }
         if outputRate == sourceRate {
             write(samples, frames: frames)
             return

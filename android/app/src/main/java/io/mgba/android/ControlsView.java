@@ -37,6 +37,12 @@ public class ControlsView extends View {
         void onCursorMoved(String key, float nx, float ny);
 
         void onCursorStopped(String key, float nx, float ny);
+
+        default void onScaleChanged(String key, float scale) {
+        }
+
+        default void onSelected(String key) {
+        }
     }
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -62,6 +68,9 @@ public class ControlsView extends View {
     private final RectF buttonSelectDefault = new RectF();
     private final RectF buttonStartDefault = new RectF();
     private final Map<String, float[]> centers = new HashMap<>();
+    private final Map<String, Float> scales = new HashMap<>();
+    public static final float MIN_SCALE = 0.4f;
+    public static final float MAX_SCALE = 3.0f;
     private final SparseIntArray pointers = new SparseIntArray();
     private Listener listener;
     private EditListener editListener;
@@ -114,10 +123,58 @@ public class ControlsView extends View {
         }
     }
 
+    public void setScales(Map<String, Float> next) {
+        scales.clear();
+        if (next != null) {
+            for (Map.Entry<String, Float> entry : next.entrySet()) {
+                if (entry.getValue() != null) {
+                    scales.put(entry.getKey(), clampScale(entry.getValue()));
+                }
+            }
+        }
+        if (getWidth() > 0 && getHeight() > 0) {
+            applyCenters();
+            invalidate();
+        }
+    }
+
+    public void setKeyScale(String key, float scale) {
+        if (key == null) {
+            return;
+        }
+        float clamped = clampScale(scale);
+        if (Math.abs(clamped - 1f) < 0.001f) {
+            scales.remove(key);
+        } else {
+            scales.put(key, clamped);
+        }
+        if (getWidth() > 0 && getHeight() > 0) {
+            applyCenters();
+            invalidate();
+        }
+    }
+
+    public float getKeyScale(String key) {
+        Float scale = scales.get(key);
+        return scale == null ? 1f : scale;
+    }
+
+    private static float clampScale(float scale) {
+        if (scale < MIN_SCALE) {
+            return MIN_SCALE;
+        }
+        if (scale > MAX_SCALE) {
+            return MAX_SCALE;
+        }
+        return scale;
+    }
+
     public void setEditing(boolean editing) {
         this.editing = editing;
         dragKey = null;
         dragPointer = -1;
+        pinchPointer = -1;
+        pinchActive = false;
         pointers.clear();
         if (pressed != 0) {
             pressed = 0;
@@ -428,14 +485,25 @@ public class ControlsView extends View {
         if (base.width() <= 0f || base.height() <= 0f) {
             return;
         }
-        rect.set(base);
-        float[] center = centers.get(key);
-        if (center == null || getWidth() <= 0 || getHeight() <= 0) {
+        Float scaleBox = scales.get(key);
+        float s = scaleBox == null ? 1f : clampScale(scaleBox);
+        float w = base.width() * s;
+        float h = base.height() * s;
+        if (getWidth() <= 0 || getHeight() <= 0) {
+            rect.set(base);
+            float cx0 = rect.centerX();
+            float cy0 = rect.centerY();
+            rect.set(cx0 - w / 2f, cy0 - h / 2f, cx0 + w / 2f, cy0 + h / 2f);
             return;
         }
-        float cx = KeyLayout.clampCenter(center[0] * getWidth(), rect.width() / 2f, getWidth());
-        float cy = KeyLayout.clampCenter(center[1] * getHeight(), rect.height() / 2f, getHeight());
-        rect.offset(cx - rect.centerX(), cy - rect.centerY());
+        float[] center = centers.get(key);
+        float baseCx = base.centerX();
+        float baseCy = base.centerY();
+        float nx = center != null && center.length >= 2 ? center[0] : baseCx / getWidth();
+        float ny = center != null && center.length >= 2 ? center[1] : baseCy / getHeight();
+        float cx = KeyLayout.clampCenter(nx * getWidth(), w / 2f, getWidth());
+        float cy = KeyLayout.clampCenter(ny * getHeight(), h / 2f, getHeight());
+        rect.set(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f);
     }
 
     private void drawCursor(Canvas canvas, RectF rect) {
@@ -454,6 +522,7 @@ public class ControlsView extends View {
 
     private String dragKey;
     private int dragPointer = -1;
+    private int pinchPointer = -1;
     private float grabDx;
     private float grabDy;
     private float downX;
@@ -461,6 +530,9 @@ public class ControlsView extends View {
     private float lastNx;
     private float lastNy;
     private boolean dragMoved;
+    private float pinchStartDist;
+    private float pinchStartScale = 1f;
+    private boolean pinchActive;
 
     private boolean editTouch(MotionEvent event) {
         if (editListener == null || getWidth() <= 0 || getHeight() <= 0) {
@@ -471,6 +543,8 @@ public class ControlsView extends View {
         switch (action) {
             case MotionEvent.ACTION_DOWN:
                 dragPointer = event.getPointerId(index);
+                pinchPointer = -1;
+                pinchActive = false;
                 dragKey = keyAt(event.getX(index), event.getY(index));
                 dragMoved = false;
                 downX = event.getX(index);
@@ -479,31 +553,128 @@ public class ControlsView extends View {
                     RectF rect = rectFor(dragKey);
                     grabDx = downX - rect.centerX();
                     grabDy = downY - rect.centerY();
+                    editListener.onSelected(dragKey);
+                }
+                break;
+            case MotionEvent.ACTION_POINTER_DOWN:
+                if (dragKey != null && dragPointer >= 0 && pinchPointer < 0 && event.getPointerCount() >= 2) {
+                    int other = event.getPointerId(index);
+                    if (other != dragPointer) {
+                        pinchPointer = other;
+                        pinchStartDist = fingerDist(event, dragPointer, pinchPointer);
+                        if (pinchStartDist < 10f) {
+                            pinchStartDist = 10f;
+                        }
+                        Float s = scales.get(dragKey);
+                        pinchStartScale = s == null ? 1f : s;
+                        pinchActive = true;
+                    }
+                } else if (dragKey == null && event.getPointerCount() >= 2) {
+                    // Two fingers landed together: pick key under midpoint.
+                    int p0 = event.getPointerId(0);
+                    int p1 = event.getPointerId(1);
+                    int i0 = event.findPointerIndex(p0);
+                    int i1 = event.findPointerIndex(p1);
+                    if (i0 >= 0 && i1 >= 0) {
+                        float mx = (event.getX(i0) + event.getX(i1)) / 2f;
+                        float my = (event.getY(i0) + event.getY(i1)) / 2f;
+                        String mid = keyAt(mx, my);
+                        if (mid != null) {
+                            dragKey = mid;
+                            dragPointer = p0;
+                            pinchPointer = p1;
+                            RectF rect = rectFor(dragKey);
+                            downX = mx;
+                            downY = my;
+                            grabDx = mx - rect.centerX();
+                            grabDy = my - rect.centerY();
+                            pinchStartDist = fingerDist(event, dragPointer, pinchPointer);
+                            if (pinchStartDist < 10f) {
+                                pinchStartDist = 10f;
+                            }
+                            Float s = scales.get(dragKey);
+                            pinchStartScale = s == null ? 1f : s;
+                            pinchActive = true;
+                            dragMoved = false;
+                            editListener.onSelected(dragKey);
+                        }
+                    }
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
-                moveDrag(event);
+                if (pinchActive) {
+                    movePinch(event);
+                    moveDrag(event);
+                } else {
+                    moveDrag(event);
+                }
                 break;
             case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_POINTER_UP:
-                if (event.getPointerId(index) != dragPointer) {
+            case MotionEvent.ACTION_POINTER_UP: {
+                int gone = event.getPointerId(index);
+                if (gone == pinchPointer) {
+                    pinchPointer = -1;
+                    pinchActive = false;
+                    // Persist scale when pinch ends.
+                    if (dragKey != null) {
+                        Float s = scales.get(dragKey);
+                        editListener.onScaleChanged(dragKey, s == null ? 1f : s);
+                    }
+                    break;
+                }
+                if (gone != dragPointer) {
                     break;
                 }
                 moveDrag(event);
                 if (dragKey != null && dragMoved) {
                     editListener.onCursorStopped(dragKey, lastNx, lastNy);
                 }
+                if (pinchActive) {
+                    Float s = scales.get(dragKey);
+                    if (dragKey != null) {
+                        editListener.onScaleChanged(dragKey, s == null ? 1f : s);
+                    }
+                }
                 dragKey = null;
                 dragPointer = -1;
+                pinchPointer = -1;
+                pinchActive = false;
                 break;
+            }
             case MotionEvent.ACTION_CANCEL:
                 dragKey = null;
                 dragPointer = -1;
+                pinchPointer = -1;
+                pinchActive = false;
                 break;
             default:
                 break;
         }
         return true;
+    }
+
+    private float fingerDist(MotionEvent event, int idA, int idB) {
+        int ia = event.findPointerIndex(idA);
+        int ib = event.findPointerIndex(idB);
+        if (ia < 0 || ib < 0) {
+            return 10f;
+        }
+        float dx = event.getX(ia) - event.getX(ib);
+        float dy = event.getY(ia) - event.getY(ib);
+        float dist = (float) Math.sqrt(dx * dx + dy * dy);
+        return dist < 10f ? 10f : dist;
+    }
+
+    private void movePinch(MotionEvent event) {
+        if (dragKey == null || dragPointer < 0 || pinchPointer < 0) {
+            return;
+        }
+        float dist = fingerDist(event, dragPointer, pinchPointer);
+        float next = clampScale(pinchStartScale * dist / pinchStartDist);
+        scales.put(dragKey, next);
+        applyCenters();
+        invalidate();
+        editListener.onScaleChanged(dragKey, next);
     }
 
     private void moveDrag(MotionEvent event) {

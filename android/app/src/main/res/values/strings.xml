@@ -12,6 +12,7 @@
     <string name="speed_16">16倍</string>
     <string name="speed_value">%1$d倍</string>
     <string name="speed_pick">倍速</string>
+    <string name="speed_sound">倍速声音</string>
     <string name="reset">复位</string>
     <string name="slot_initial">槽位 1</string>
     <string name="slot">槽位 %1$d</string>
@@ -30,10 +31,13 @@
     <string name="orientation_title">屏幕方向</string>
     <string name="orientation_landscape">横屏</string>
     <string name="orientation_portrait">竖屏</string>
-    <string name="layout_hint">直接拖动按键到想要的位置，松手即保存</string>
+    <string name="layout_hint">单指拖动移动按键，双指捏合缩放按键，也可用下方滑杆微调，松手即保存</string>
     <string name="layout_reset">重置</string>
     <string name="layout_done">完成</string>
     <string name="layout_reset_done">已恢复默认键位</string>
+    <string name="layout_selected">选中 %1$s %2$d%%</string>
+    <string name="layout_selected_none">点一下按键选中，再捏合或拖滑杆缩放</string>
+    <string name="layout_tap_first">先点一下要缩放的按键</string>
     <string name="hint">点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏。打开后上方会显示 ROM 存档位置。</string>
     <string name="save_location">ROM 存档位置：%1$s</string>
     <string name="save_location_copied">已复制 ROM 存档位置</string>

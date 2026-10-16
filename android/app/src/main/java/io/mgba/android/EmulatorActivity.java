@@ -94,6 +94,7 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private AudioTrack audio;
     private boolean fastAudio;
+    private int appliedSpeed = 1;
     private long nextFastPresent;
     private int outputRate;
     private int sourceRate;
@@ -110,6 +111,9 @@ public class EmulatorActivity extends AppCompatActivity {
     private TextView savePathView;
     private KeyLayout keyLayout = new KeyLayout();
     private boolean layoutEditing;
+    private String selectedKey;
+    private TextView scaleLabel;
+    private SeekBar scaleBar;
     private TextView linkStatusView;
     private EditText linkRoomView;
     private RemoteLink remoteLink;
@@ -477,8 +481,9 @@ public class EmulatorActivity extends AppCompatActivity {
                 syncFastAudio(mult);
                 long sliceStart = System.nanoTime();
                 core.runFrames(touchKeys | hwKeys, mult);
+                // 倍速也有声音：一直 pump，由 AudioTrack 变速播放。
+                pumpAudio();
                 if (mult == 1) {
-                    pumpAudio();
                     presentFrame();
                 } else {
                     long now = System.nanoTime();
@@ -530,6 +535,7 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         setupAudio();
         fastAudio = false;
+        appliedSpeed = 1;
         paused = false;
         String title = core.title();
         runOnUiThread(() -> {
@@ -616,7 +622,7 @@ public class EmulatorActivity extends AppCompatActivity {
         if (min <= 0) {
             return;
         }
-        int bufferBytes = Math.max(min * 2, outputRate / 5 * 4);
+        int bufferBytes = Math.max(min * 3, outputRate / 4 * 4);
         try {
             audio = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder()
@@ -631,6 +637,8 @@ public class EmulatorActivity extends AppCompatActivity {
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .setBufferSizeInBytes(bufferBytes)
                     .build();
+            appliedSpeed = 1;
+            applyPlaybackSpeed(1f);
             if (!paused) {
                 audio.play();
             }
@@ -640,20 +648,66 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void syncFastAudio(int mult) {
-        boolean fast = mult > 1;
-        if (fast == fastAudio) {
+        boolean wantSound = getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
+        if (!wantSound) {
+            boolean fast = mult > 1;
+            if (fast == fastAudio && appliedSpeed == 1) {
+                return;
+            }
+            fastAudio = fast;
+            appliedSpeed = 1;
+            resamplePos = 0;
+            core.clearAudio();
+            applyPlaybackSpeed(1f);
+            if (audio == null || audio.getState() != AudioTrack.STATE_INITIALIZED) {
+                return;
+            }
+            if (fast) {
+                audio.pause();
+                audio.flush();
+            } else if (!paused) {
+                audio.play();
+            }
             return;
         }
-        fastAudio = fast;
-        core.clearAudio();
+        // 有声倍速：保持播放，用变速实现同时倍速。
+        if (mult == appliedSpeed && !fastAudio) {
+            // 已经是目标速度且在播放
+        }
+        boolean changed = mult != appliedSpeed;
+        fastAudio = false;
+        if (changed) {
+            appliedSpeed = mult;
+            resamplePos = 0;
+            core.clearAudio();
+            applyPlaybackSpeed((float) mult);
+        }
+        if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED
+                && !paused && audio.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
+            try {
+                audio.play();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void applyPlaybackSpeed(float speed) {
         if (audio == null || audio.getState() != AudioTrack.STATE_INITIALIZED) {
             return;
         }
-        if (fast) {
-            audio.pause();
-            audio.flush();
-        } else if (!paused) {
-            audio.play();
+        if (Build.VERSION.SDK_INT < 23) {
+            return;
+        }
+        try {
+            android.media.PlaybackParams params = audio.getPlaybackParams();
+            params.setSpeed(speed);
+            // 变速同时变调（磁带式快进），和 iOS Varispeed 保持一致。
+            try {
+                params.setPitch(speed);
+            } catch (Exception ignored) {
+            }
+            audio.setPlaybackParams(params);
+        } catch (Exception ignored) {
         }
     }
 
@@ -662,20 +716,26 @@ public class EmulatorActivity extends AppCompatActivity {
             core.readAudio(nativeAudio);
             return;
         }
-        int frames = core.readAudio(nativeAudio);
-        if (frames <= 0) {
-            return;
+        // 倍速时一帧会产生多倍采样，循环抽干避免滞后。
+        for (int round = 0; round < 4; round++) {
+            int frames = core.readAudio(nativeAudio);
+            if (frames <= 0) {
+                break;
+            }
+            short[] data = nativeAudio;
+            int shorts = frames * 2;
+            if (outputRate != sourceRate) {
+                frames = resample(nativeAudio, frames, sourceRate, outputRate, outputAudio);
+                data = outputAudio;
+                shorts = frames * 2;
+            }
+            // One non-blocking write. Waiting on a full AudioTrack used to stall
+            // the next frame for tens of milliseconds, so short taps never landed.
+            audio.write(data, 0, shorts, AudioTrack.WRITE_NON_BLOCKING);
+            if (frames < nativeAudio.length / 4) {
+                break;
+            }
         }
-        short[] data = nativeAudio;
-        int shorts = frames * 2;
-        if (outputRate != sourceRate) {
-            frames = resample(nativeAudio, frames, sourceRate, outputRate, outputAudio);
-            data = outputAudio;
-            shorts = frames * 2;
-        }
-        // One non-blocking write. Waiting on a full AudioTrack used to stall
-        // the next frame for tens of milliseconds, so short taps never landed.
-        audio.write(data, 0, shorts, AudioTrack.WRITE_NON_BLOCKING);
     }
 
     private int resample(short[] in, int inFrames, int inRate, int outRate, short[] out) {
@@ -927,34 +987,136 @@ public class EmulatorActivity extends AppCompatActivity {
     private void bindLayoutEditor() {
         keyLayout = KeyLayout.decode(getPreferences(MODE_PRIVATE).getString("key_layout", ""));
         controls.setCenters(keyLayout.resolved());
+        controls.setScales(keyLayout.resolvedScales());
+        selectedKey = null;
+        scaleLabel = findViewById(R.id.layout_selected);
+        scaleBar = findViewById(R.id.layout_scale);
+        TextView scaleValue = findViewById(R.id.layout_scale_value);
+        if (scaleBar != null) {
+            scaleBar.setMax(260);
+            scaleBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    int percent = progress + 40;
+                    if (scaleValue != null) {
+                        scaleValue.setText(percent + "%");
+                    }
+                    if (!fromUser || selectedKey == null) {
+                        return;
+                    }
+                    float scale = percent / 100f;
+                    keyLayout.setScale(selectedKey, scale);
+                    controls.setKeyScale(selectedKey, scale);
+                    persistLayout();
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar seekBar) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar seekBar) {
+                }
+            });
+        }
         controls.setEditListener(new ControlsView.EditListener() {
             @Override
             public void onCursorMoved(String key, float nx, float ny) {
                 keyLayout.place(key, nx, ny);
                 controls.setCenters(keyLayout.resolved());
+                selectKey(key);
             }
 
             @Override
             public void onCursorStopped(String key, float nx, float ny) {
                 keyLayout.place(key, nx, ny);
                 controls.setCenters(keyLayout.resolved());
-                getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
+                persistLayout();
+                selectKey(key);
+            }
+
+            @Override
+            public void onScaleChanged(String key, float scale) {
+                keyLayout.setScale(key, scale);
+                persistLayout();
+                selectKey(key);
+                refreshScaleBar();
+            }
+
+            @Override
+            public void onSelected(String key) {
+                selectKey(key);
+                refreshScaleBar();
             }
         });
         findViewById(R.id.layout_reset).setOnClickListener(v -> resetLayout());
         findViewById(R.id.layout_done).setOnClickListener(v -> setLayoutEditing(false));
+        View minus = findViewById(R.id.layout_minus);
+        if (minus != null) {
+            minus.setOnClickListener(v -> nudgeScale(-0.05f));
+        }
+        View plus = findViewById(R.id.layout_plus);
+        if (plus != null) {
+            plus.setOnClickListener(v -> nudgeScale(0.05f));
+        }
+        refreshScaleBar();
+    }
+
+    private void selectKey(String key) {
+        selectedKey = key;
+        runOnUiThread(this::refreshScaleBar);
+    }
+
+    private void refreshScaleBar() {
+        if (scaleLabel == null || scaleBar == null) {
+            return;
+        }
+        if (selectedKey == null) {
+            scaleLabel.setText(getString(R.string.layout_selected_none));
+            return;
+        }
+        float scale = keyLayout.scaleFor(selectedKey);
+        int percent = Math.round(scale * 100);
+        scaleLabel.setText(getString(R.string.layout_selected, selectedKey.toUpperCase(), percent));
+        scaleBar.setProgress(percent - 40);
+        TextView value = findViewById(R.id.layout_scale_value);
+        if (value != null) {
+            value.setText(percent + "%");
+        }
+    }
+
+    private void nudgeScale(float delta) {
+        if (selectedKey == null) {
+            toast(getString(R.string.layout_tap_first));
+            return;
+        }
+        float next = keyLayout.scaleFor(selectedKey) + delta;
+        keyLayout.setScale(selectedKey, next);
+        controls.setKeyScale(selectedKey, keyLayout.scaleFor(selectedKey));
+        persistLayout();
+        refreshScaleBar();
+    }
+
+    private void persistLayout() {
+        getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
     }
 
     private void setLayoutEditing(boolean on) {
         layoutEditing = on;
         findViewById(R.id.layout_editor).setVisibility(on ? View.VISIBLE : View.GONE);
         controls.setEditing(on);
+        if (on) {
+            refreshScaleBar();
+        }
     }
 
     private void resetLayout() {
         keyLayout.resetAll();
+        selectedKey = null;
         getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
         controls.setCenters(keyLayout.resolved());
+        controls.setScales(keyLayout.resolvedScales());
+        refreshScaleBar();
         toast(getString(R.string.layout_reset_done));
     }
 
@@ -1355,6 +1517,18 @@ public class EmulatorActivity extends AppCompatActivity {
             speedButtons[i] = button;
             row.addView(button);
         }
+        CheckBox sound = new CheckBox(this);
+        sound.setText(R.string.speed_sound);
+        sound.setTextColor(Color.WHITE);
+        sound.setChecked(getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true));
+        sound.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("fast_audio", checked).apply();
+            appliedSpeed = -1;
+            if (core != null) {
+                core.clearAudio();
+            }
+        });
+        row.addView(sound);
         refreshSpeedButtons();
     }
 

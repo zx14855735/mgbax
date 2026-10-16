@@ -5,6 +5,91 @@
     android:background="#000000"
     android:orientation="vertical">
 
+    <LinearLayout
+        android:id="@+id/layout_editor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#E6101810"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingStart="8dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/layout_hint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/layout_hint"
+                android:textColor="#F6E7A8"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_reset"
+                style="@style/MgbaButton"
+                android:text="@string/layout_reset" />
+
+            <Button
+                android:id="@+id/layout_done"
+                style="@style/MgbaButton"
+                android:text="@string/layout_done" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="4dp">
+
+            <TextView
+                android:id="@+id/layout_selected"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/layout_selected_none"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_minus"
+                style="@style/MgbaButton"
+                android:text="−" />
+
+            <SeekBar
+                android:id="@+id/layout_scale"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="260" />
+
+            <Button
+                android:id="@+id/layout_plus"
+                style="@style/MgbaButton"
+                android:text="＋" />
+
+            <TextView
+                android:id="@+id/layout_scale_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="48dp"
+                android:gravity="center"
+                android:text="100%"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+
     <HorizontalScrollView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -151,41 +236,5 @@
             android:id="@+id/controls"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
-
-        <LinearLayout
-            android:id="@+id/layout_editor"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_gravity="top"
-            android:background="#E6101810"
-            android:clickable="true"
-            android:focusable="true"
-            android:gravity="center_vertical"
-            android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="8dp"
-            android:paddingBottom="6dp"
-            android:visibility="gone">
-
-            <TextView
-                android:id="@+id/layout_hint"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/layout_hint"
-                android:textColor="#F6E7A8"
-                android:textSize="12sp" />
-
-            <Button
-                android:id="@+id/layout_reset"
-                style="@style/MgbaButton"
-                android:text="@string/layout_reset" />
-
-            <Button
-                android:id="@+id/layout_done"
-                style="@style/MgbaButton"
-                android:text="@string/layout_done" />
-        </LinearLayout>
     </FrameLayout>
 </LinearLayout>

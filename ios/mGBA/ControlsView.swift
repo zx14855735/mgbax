@@ -16,10 +16,14 @@ final class ControlsView: UIView {
     var onKeysChanged: ((Int) -> Void)?
     var onCursorMoved: ((String, CGFloat, CGFloat) -> Void)?
     var onCursorStopped: ((String, CGFloat, CGFloat) -> Void)?
+    var onScaleChanged: ((String, CGFloat) -> Void)?
+    var onSelected: ((String) -> Void)?
     var editing = false {
         didSet {
             dragTouch = nil
             dragKey = nil
+            pinchTouch = nil
+            pinchActive = false
             pointers.removeAll()
             if pressed != 0 {
                 pressed = 0
@@ -33,6 +37,9 @@ final class ControlsView: UIView {
     private var turboLit = false
     private var pointers: [ObjectIdentifier: Int] = [:]
     private var centers: [String: CGPoint] = [:]
+    private var scales: [String: CGFloat] = [:]
+    static let minScale: CGFloat = 0.4
+    static let maxScale: CGFloat = 3.0
     private var dpad = CGRect.zero
     private var dpadUp = CGRect.zero
     private var dpadDown = CGRect.zero
@@ -54,6 +61,11 @@ final class ControlsView: UIView {
     private var slopA: CGFloat = 18
     private var slopFace: CGFloat = 10
     private var dragTouch: ObjectIdentifier?
+    private var pinchTouch: ObjectIdentifier?
+    private var pinchActive = false
+    private var pinchStartDist: CGFloat = 10
+    private var pinchStartScale: CGFloat = 1
+    private var lastSelectedKey: String?
     private var dragKey: String?
     private var grab = CGPoint.zero
     private var down = CGPoint.zero
@@ -65,9 +77,34 @@ final class ControlsView: UIView {
         isOpaque = false
         backgroundColor = .clear
         isMultipleTouchEnabled = true
+        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
+        pinch.cancelsTouchesInView = false
+        addGestureRecognizer(pinch)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+        guard editing else { return }
+        let key = dragKey ?? lastSelectedKey
+        guard let key else { return }
+        switch gesture.state {
+        case .began:
+            pinchStartScale = scales[key] ?? 1
+            onSelected?(key)
+        case .changed:
+            let next = Self.clampScale(pinchStartScale * gesture.scale)
+            scales[key] = next
+            applyCenters()
+            setNeedsDisplay()
+            onScaleChanged?(key, next)
+        case .ended, .cancelled:
+            let final = scales[key] ?? 1
+            onScaleChanged?(key, final)
+        default:
+            break
+        }
+    }
 
     func setCenters(_ next: [String: CGPoint]) {
         centers = next
@@ -75,6 +112,39 @@ final class ControlsView: UIView {
             applyCenters()
             setNeedsDisplay()
         }
+    }
+
+    func setScales(_ next: [String: CGFloat]) {
+        var clamped: [String: CGFloat] = [:]
+        for (key, value) in next {
+            clamped[key] = Self.clampScale(value)
+        }
+        scales = clamped
+        if bounds.width > 0 && bounds.height > 0 {
+            applyCenters()
+            setNeedsDisplay()
+        }
+    }
+
+    func setKeyScale(_ key: String, _ scale: CGFloat) {
+        let clamped = Self.clampScale(scale)
+        if abs(clamped - 1) < 0.001 {
+            scales.removeValue(forKey: key)
+        } else {
+            scales[key] = clamped
+        }
+        if bounds.width > 0 && bounds.height > 0 {
+            applyCenters()
+            setNeedsDisplay()
+        }
+    }
+
+    func keyScale(_ key: String) -> CGFloat {
+        scales[key] ?? 1
+    }
+
+    private static func clampScale(_ value: CGFloat) -> CGFloat {
+        min(maxScale, max(minScale, value))
     }
 
     func setBTurbo(active: Bool, lit: Bool) {
@@ -245,9 +315,14 @@ final class ControlsView: UIView {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         if editing {
             for touch in touches {
-                if dragTouch == ObjectIdentifier(touch) {
+                let id = ObjectIdentifier(touch)
+                if dragTouch == id {
                     dragTouch = nil
                     dragKey = nil
+                }
+                if pinchTouch == id {
+                    pinchTouch = nil
+                    pinchActive = false
                 }
             }
             return
@@ -271,10 +346,12 @@ final class ControlsView: UIView {
         guard let key = keyAt(point) else { return }
         dragTouch = ObjectIdentifier(touch)
         dragKey = key
+        lastSelectedKey = key
         dragMoved = false
         down = point
         let rect = rectFor(key)
         grab = CGPoint(x: point.x - rect.midX, y: point.y - rect.midY)
+        onSelected?(key)
     }
 
     private func moveDrag(_ touch: UITouch) {
@@ -416,11 +493,21 @@ final class ControlsView: UIView {
 
     private func place(_ rect: inout CGRect, _ base: CGRect, _ key: String) {
         guard base.width > 0, base.height > 0 else { return }
-        rect = base
-        guard let center = centers[key], bounds.width > 0, bounds.height > 0 else { return }
-        let cx = KeyLayout.clampCenter(center.x * bounds.width, rect.width / 2, bounds.width)
-        let cy = KeyLayout.clampCenter(center.y * bounds.height, rect.height / 2, bounds.height)
-        rect.origin.x += cx - rect.midX
-        rect.origin.y += cy - rect.midY
+        let s = Self.clampScale(scales[key] ?? 1)
+        let w = base.width * s
+        let h = base.height * s
+        guard bounds.width > 0, bounds.height > 0 else {
+            let cx0 = rect.midX
+            let cy0 = rect.midY
+            rect = CGRect(x: cx0 - w / 2, y: cy0 - h / 2, width: w, height: h)
+            return
+        }
+        let baseCx = base.midX
+        let baseCy = base.midY
+        let nx = centers[key]?.x ?? baseCx / bounds.width
+        let ny = centers[key]?.y ?? baseCy / bounds.height
+        let cx = KeyLayout.clampCenter(nx * bounds.width, w / 2, bounds.width)
+        let cy = KeyLayout.clampCenter(ny * bounds.height, h / 2, bounds.height)
+        rect = CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h)
     }
 }

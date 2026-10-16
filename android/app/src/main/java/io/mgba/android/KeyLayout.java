@@ -12,8 +12,11 @@ import java.util.Map;
  */
 public final class KeyLayout {
     public static final String[] KEYS = {"dpad", "a", "b", "l", "r", "select", "start"};
+    public static final float MIN_SCALE = 0.4f;
+    public static final float MAX_SCALE = 3.0f;
 
     private final Map<String, float[]> saved = new HashMap<>();
+    private final Map<String, Float> scales = new HashMap<>();
 
     public static KeyLayout decode(String text) {
         KeyLayout layout = new KeyLayout();
@@ -24,18 +27,36 @@ public final class KeyLayout {
         for (int i = 0; i < parts.length; i++) {
             String part = parts[i];
             int eq = part.indexOf('=');
-            int comma = part.indexOf(',');
-            if (eq <= 0 || comma <= eq + 1) {
+            if (eq <= 0) {
                 continue;
             }
             String key = part.substring(0, eq);
+            String value = part.substring(eq + 1);
+            if (key.endsWith(".s")) {
+                String base = key.substring(0, key.length() - 2);
+                if (!known(base)) {
+                    continue;
+                }
+                try {
+                    layout.scales.put(base, clampScale(Float.parseFloat(value.trim())));
+                } catch (NumberFormatException ignored) {
+                }
+                continue;
+            }
             if (!known(key)) {
                 continue;
             }
+            String[] fields = value.split(",");
+            if (fields.length < 2) {
+                continue;
+            }
             try {
-                float x = Float.parseFloat(part.substring(eq + 1, comma));
-                float y = Float.parseFloat(part.substring(comma + 1));
+                float x = Float.parseFloat(fields[0].trim());
+                float y = Float.parseFloat(fields[1].trim());
                 layout.saved.put(key, new float[] {clamp01(x), clamp01(y)});
+                if (fields.length >= 3) {
+                    layout.scales.put(key, clampScale(Float.parseFloat(fields[2].trim())));
+                }
             } catch (NumberFormatException ignored) {
             }
         }
@@ -46,14 +67,24 @@ public final class KeyLayout {
         StringBuilder out = new StringBuilder();
         for (int i = 0; i < KEYS.length; i++) {
             float[] point = saved.get(KEYS[i]);
-            if (point == null) {
+            if (point != null) {
+                if (out.length() > 0) {
+                    out.append(';');
+                }
+                out.append(KEYS[i]).append('=');
+                out.append(String.format(Locale.US, "%.4f,%.4f", point[0], point[1]));
+            }
+        }
+        for (int i = 0; i < KEYS.length; i++) {
+            Float scale = scales.get(KEYS[i]);
+            if (scale == null || Math.abs(scale - 1f) < 0.001f) {
                 continue;
             }
             if (out.length() > 0) {
                 out.append(';');
             }
-            out.append(KEYS[i]).append('=');
-            out.append(String.format(Locale.US, "%.4f,%.4f", point[0], point[1]));
+            out.append(KEYS[i]).append(".s=");
+            out.append(String.format(Locale.US, "%.3f", scale));
         }
         return out.toString();
     }
@@ -67,6 +98,35 @@ public final class KeyLayout {
 
     public void resetAll() {
         saved.clear();
+        scales.clear();
+    }
+
+    public void setScale(String key, float scale) {
+        if (!known(key)) {
+            return;
+        }
+        float clamped = clampScale(scale);
+        if (Math.abs(clamped - 1f) < 0.001f) {
+            scales.remove(key);
+        } else {
+            scales.put(key, clamped);
+        }
+    }
+
+    public float scaleFor(String key) {
+        Float scale = scales.get(key);
+        return scale == null ? 1f : scale;
+    }
+
+    public Map<String, Float> resolvedScales() {
+        Map<String, Float> out = new HashMap<>();
+        for (int i = 0; i < KEYS.length; i++) {
+            Float scale = scales.get(KEYS[i]);
+            if (scale != null) {
+                out.put(KEYS[i], scale);
+            }
+        }
+        return out;
     }
 
     public float[] savedPoint(String key) {
@@ -108,6 +168,16 @@ public final class KeyLayout {
             return span - half;
         }
         return center;
+    }
+
+    public static float clampScale(float scale) {
+        if (scale < MIN_SCALE) {
+            return MIN_SCALE;
+        }
+        if (scale > MAX_SCALE) {
+            return MAX_SCALE;
+        }
+        return scale;
     }
 
     private static boolean known(String key) {

@@ -48,6 +48,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let layoutBar = UIView()
     private var keyLayout = KeyLayout()
     private var layoutEditing = false
+    private var selectedKey: String?
+    private var scaleSlider: UISlider?
+    private var scaleLabel: UILabel?
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -56,6 +59,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         speed = (1...16).contains(savedSpeed) ? savedSpeed : 1
         portrait = defaults.string(forKey: "orientation") == "portrait"
         buildChrome()
+        audio.setSoundEnabled(defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio"))
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         core = mgbaMobileCreate(saves, states, "ios")
@@ -68,16 +72,28 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         keyLayout = KeyLayout.decode(defaults.string(forKey: "key_layout") ?? "")
         controls.setCenters(keyLayout.resolved())
+        controls.setScales(keyLayout.resolvedScales())
         controls.onCursorMoved = { [weak self] key, x, y in
             guard let self else { return }
             self.keyLayout.place(key, x, y)
             self.controls.setCenters(self.keyLayout.resolved())
+            self.selectKey(key)
         }
         controls.onCursorStopped = { [weak self] key, x, y in
             guard let self else { return }
             self.keyLayout.place(key, x, y)
             self.controls.setCenters(self.keyLayout.resolved())
             self.defaults.set(self.keyLayout.encode(), forKey: "key_layout")
+            self.selectKey(key)
+        }
+        controls.onScaleChanged = { [weak self] key, scale in
+            guard let self else { return }
+            self.keyLayout.setScale(key, scale)
+            self.defaults.set(self.keyLayout.encode(), forKey: "key_layout")
+            self.selectKey(key)
+        }
+        controls.onSelected = { [weak self] key in
+            self?.selectKey(key)
         }
         if let last = defaults.string(forKey: "lastRom"), FileManager.default.fileExists(atPath: last) {
             gate.lock()
@@ -170,6 +186,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             speedStack.addArrangedSubview(button)
             speedButtons.append(button)
         }
+        let soundToggle = UISwitch()
+        soundToggle.isOn = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
+        soundToggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(soundToggle.isOn, forKey: "fast_audio")
+            self.audio.setSoundEnabled(soundToggle.isOn)
+        }, for: .valueChanged)
+        let soundLabel = UILabel()
+        soundLabel.text = "倍速声音"
+        soundLabel.textColor = .white
+        soundLabel.font = .systemFont(ofSize: 13)
+        speedStack.addArrangedSubview(soundLabel)
+        speedStack.addArrangedSubview(soundToggle)
         refreshSpeedButtons()
         savePathView.textColor = UIColor(red: 183 / 255, green: 227 / 255, blue: 183 / 255, alpha: 1)
         savePathView.font = .systemFont(ofSize: 12)
@@ -186,7 +215,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stage.addSubview(hint)
         stage.addSubview(controls)
         buildLayoutBar()
-        stage.addSubview(layoutBar)
         for item in [bar, stack, speedBar, savePathView, stage, gameView, hint, controls, layoutBar] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -194,6 +222,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         view.addSubview(speedBar)
         view.addSubview(savePathView)
         view.addSubview(stage)
+        view.addSubview(layoutBar)
         speedBarHeight = speedBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -233,9 +262,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             controls.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
             controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
-            layoutBar.topAnchor.constraint(equalTo: stage.topAnchor),
-            layoutBar.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
-            layoutBar.trailingAnchor.constraint(equalTo: stage.trailingAnchor)
+            layoutBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            layoutBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            layoutBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
     }
 
@@ -243,7 +272,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         layoutBar.backgroundColor = UIColor(red: 16 / 255, green: 24 / 255, blue: 16 / 255, alpha: 0.92)
         layoutBar.isHidden = true
         let hintLabel = UILabel()
-        hintLabel.text = "直接拖动按键到想要的位置，松手即保存"
+        hintLabel.text = "单指拖动移动，双指捏合缩放，也可用下方滑杆微调，松手即保存"
         hintLabel.textColor = UIColor(red: 246 / 255, green: 231 / 255, blue: 168 / 255, alpha: 1)
         hintLabel.font = .systemFont(ofSize: 12)
         hintLabel.numberOfLines = 2
@@ -261,20 +290,101 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
-        row.translatesAutoresizingMaskIntoConstraints = false
-        layoutBar.addSubview(row)
+        let label = UILabel()
+        label.text = "点一下按键选中，再捏合或拖滑杆缩放"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 12)
+        label.numberOfLines = 1
+        scaleLabel = label
+        let slider = UISlider()
+        slider.minimumValue = 0.4
+        slider.maximumValue = 3.0
+        slider.value = 1
+        slider.addTarget(self, action: #selector(scaleChanged(_:)), for: .valueChanged)
+        scaleSlider = slider
+        let minus = UIButton(type: .system)
+        minus.setTitle("−", for: .normal)
+        minus.setTitleColor(.white, for: .normal)
+        minus.addTarget(self, action: #selector(shrinkSelected), for: .touchUpInside)
+        let plus = UIButton(type: .system)
+        plus.setTitle("＋", for: .normal)
+        plus.setTitleColor(.white, for: .normal)
+        plus.addTarget(self, action: #selector(enlargeSelected), for: .touchUpInside)
+        let scaleRow = UIStackView(arrangedSubviews: [label, minus, slider, plus])
+        scaleRow.axis = .horizontal
+        scaleRow.spacing = 8
+        scaleRow.alignment = .center
+        let column = UIStackView(arrangedSubviews: [row, scaleRow])
+        column.axis = .vertical
+        column.spacing = 4
+        column.translatesAutoresizingMaskIntoConstraints = false
+        layoutBar.addSubview(column)
         NSLayoutConstraint.activate([
-            row.topAnchor.constraint(equalTo: layoutBar.topAnchor, constant: 6),
-            row.bottomAnchor.constraint(equalTo: layoutBar.bottomAnchor, constant: -6),
-            row.leadingAnchor.constraint(equalTo: layoutBar.leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: layoutBar.trailingAnchor, constant: -8)
+            column.topAnchor.constraint(equalTo: layoutBar.topAnchor, constant: 6),
+            column.bottomAnchor.constraint(equalTo: layoutBar.bottomAnchor, constant: -6),
+            column.leadingAnchor.constraint(equalTo: layoutBar.leadingAnchor, constant: 8),
+            column.trailingAnchor.constraint(equalTo: layoutBar.trailingAnchor, constant: -8)
         ])
+    }
+
+    @objc private func scaleChanged(_ sender: UISlider) {
+        guard let key = selectedKey else {
+            toast("先点一下要缩放的按键")
+            refreshScaleUI()
+            return
+        }
+        keyLayout.setScale(key, CGFloat(sender.value))
+        controls.setKeyScale(key, CGFloat(sender.value))
+        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        refreshScaleUI()
+    }
+
+    @objc private func shrinkSelected() {
+        guard let key = selectedKey else {
+            toast("先点一下要缩放的按键")
+            return
+        }
+        let next = keyLayout.scale(for: key) - 0.05
+        keyLayout.setScale(key, next)
+        controls.setKeyScale(key, keyLayout.scale(for: key))
+        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        refreshScaleUI()
+    }
+
+    @objc private func enlargeSelected() {
+        guard let key = selectedKey else {
+            toast("先点一下要缩放的按键")
+            return
+        }
+        let next = keyLayout.scale(for: key) + 0.05
+        keyLayout.setScale(key, next)
+        controls.setKeyScale(key, keyLayout.scale(for: key))
+        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        refreshScaleUI()
+    }
+
+    private func selectKey(_ key: String) {
+        selectedKey = key
+        DispatchQueue.main.async { [weak self] in self?.refreshScaleUI() }
+    }
+
+    private func refreshScaleUI() {
+        guard let label = scaleLabel, let slider = scaleSlider else { return }
+        guard let key = selectedKey else {
+            label.text = "点一下按键选中，再捏合或拖滑杆缩放"
+            return
+        }
+        let scale = keyLayout.scale(for: key)
+        let percent = Int((scale * 100).rounded())
+        label.text = "选中 \(key.uppercased()) \(percent)%"
+        slider.value = Float(scale)
     }
 
     @objc private func toggleLayout() {
         layoutEditing.toggle()
         layoutBar.isHidden = !layoutEditing
         controls.editing = layoutEditing
+        if layoutEditing { refreshScaleUI() }
     }
 
     @objc private func finishLayout() {
@@ -285,8 +395,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func resetLayout() {
         keyLayout.resetAll()
+        selectedKey = nil
         defaults.set(keyLayout.encode(), forKey: "key_layout")
         controls.setCenters([:])
+        controls.setScales([:])
+        refreshScaleUI()
         toast("已恢复默认键位")
     }
 
@@ -322,11 +435,31 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 continue
             }
             let slice = DispatchTime.now().uptimeNanoseconds
-            audio.setFast(mult > 1)
+            let wantSound = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
+            audio.setSoundEnabled(wantSound)
+            if wantSound {
+                audio.setRate(Float(mult))
+            } else {
+                audio.setRate(1)
+            }
             _ = mgbaMobileRunFrames(core, Int32(mult))
-            if mult == 1 {
+            // 倍速也有声音：一直 pump，由 Varispeed 变速播放。
+            if wantSound {
+                var rounds = 0
+                while rounds < 4 {
+                    let got = mgbaMobileReadAudio(core, audioIn, 8192)
+                    if got <= 0 { break }
+                    audio.pump(samples: audioIn, frames: Int(got))
+                    rounds += 1
+                    if got < 4096 { break }
+                }
+            } else if mult == 1 {
                 let got = mgbaMobileReadAudio(core, audioIn, 8192)
                 if got > 0 { audio.pump(samples: audioIn, frames: Int(got)) }
+            } else {
+                _ = mgbaMobileReadAudio(core, audioIn, 8192)
+            }
+            if mult == 1 {
                 present(core, &video, &videoCap)
             } else {
                 let now = DispatchTime.now().uptimeNanoseconds
