@@ -18,6 +18,8 @@ final class ControlsView: UIView {
     var onCursorStopped: ((String, CGFloat, CGFloat) -> Void)?
     var onScaleChanged: ((String, CGFloat) -> Void)?
     var onSelected: ((String) -> Void)?
+    /// Fired after the keys were placed again, so the menu handle can follow.
+    var onLayoutChanged: (() -> Void)?
     var editing = false {
         didSet {
             dragTouch = nil
@@ -161,8 +163,10 @@ final class ControlsView: UIView {
         let pad: CGFloat = 10
         let dpadSize = min(240, min(w, h) * 0.62)
         dpad = CGRect(x: pad, y: h - pad - dpadSize, width: dpadSize, height: dpadSize)
-        buttonL = CGRect(x: pad, y: pad, width: 72, height: 36)
-        buttonR = CGRect(x: w - pad - 72, y: pad, width: 72, height: 36)
+        // Shoulder buttons sit a little lower so the top edge stays reachable.
+        let shoulderTop = pad + 40
+        buttonL = CGRect(x: pad, y: shoulderTop, width: 72, height: 36)
+        buttonR = CGRect(x: w - pad - 72, y: shoulderTop, width: 72, height: 36)
         let faceA: CGFloat = 76
         let face: CGFloat = 58
         buttonA = CGRect(x: w - pad - faceA, y: h - pad - faceA, width: faceA, height: faceA)
@@ -475,6 +479,12 @@ final class ControlsView: UIView {
         place(&buttonSelect, buttonSelectDefault, "select")
         place(&buttonStart, buttonStartDefault, "start")
         layoutDpadArms()
+        onLayoutChanged?()
+    }
+
+    /// Current bounds of the START key, in this view's coordinates.
+    func startButtonRect() -> CGRect {
+        buttonStart
     }
 
     private func layoutDpadArms() {

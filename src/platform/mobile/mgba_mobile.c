@@ -13,6 +13,7 @@
 #include <mgba/internal/gb/gb.h>
 #include <mgba/internal/gb/io.h>
 #include <mgba-util/audio-buffer.h>
+#include <mgba-util/audio-resampler.h>
 
 #include "link_net.h"
 
@@ -73,7 +74,22 @@ struct MgbaMobile {
 	uint32_t turboMask;
 	unsigned turboCounter;
 	struct mKeyCallback keyCallback;
+	struct mAudioResampler audioResampler;
+	struct mAudioBuffer audioOut;
+	bool audioResamplerInited;
+	int audioOutRate;
 };
+
+/*
+ * Both mobile front ends pace emulation at a fixed 60 frames per second no
+ * matter what the emulated console's own frame rate is, so the core hands the
+ * front end 60 native frame times worth of audio per second. The resampler
+ * input rate has to be scaled by that same factor, otherwise the stream would
+ * slowly drift away from the audio device's clock.
+ */
+#define MOBILE_AUDIO_PACE_FPS 60.0
+/* How much already-resampled audio the reader may hold back between pumps. */
+#define MOBILE_AUDIO_OUT_FRAMES 16384
 
 static void attachKeyCallback(struct MgbaMobile* emu);
 static void detachLink(struct MgbaMobile* emu);
@@ -87,11 +103,32 @@ static void copyPath(char* dst, size_t dstLen, const char* src) {
 	snprintf(dst, dstLen, "%s", src);
 }
 
+static void resetAudioOutput(struct MgbaMobile* emu) {
+	if (!emu->audioResamplerInited) {
+		return;
+	}
+	// The source buffer belongs to the core; drop the resampler's bookkeeping
+	// so a freshly loaded core starts from a clean state.
+	emu->audioResampler.timestamp = 0;
+	mAudioBufferClear(&emu->audioOut);
+}
+
+static void deinitAudioOutput(struct MgbaMobile* emu) {
+	if (!emu->audioResamplerInited) {
+		return;
+	}
+	mAudioResamplerDeinit(&emu->audioResampler);
+	mAudioBufferDeinit(&emu->audioOut);
+	emu->audioResamplerInited = false;
+	emu->audioOutRate = 0;
+}
+
 static void destroyCore(struct MgbaMobile* emu) {
 	if (!emu->core) {
 		return;
 	}
 	detachLink(emu);
+	resetAudioOutput(emu);
 	mCoreConfigDeinit(&emu->core->config);
 	emu->core->deinit(emu->core);
 	emu->core = NULL;
@@ -157,6 +194,7 @@ void mgbaMobileDestroy(struct MgbaMobile* emu) {
 		return;
 	}
 	destroyCore(emu);
+	deinitAudioOutput(emu);
 	netLinkDestroy(emu->link);
 	emu->link = NULL;
 	free(emu);
@@ -305,8 +343,8 @@ static void setFastAudio(struct MgbaMobile* emu, int fast) {
 		return;
 	}
 	emu->fast = fast;
-	// 倍速也有声音：不再关闭音频采样，保持音频缓冲持续产生�?
-	// 变速播放由前端 AudioTrack / AVAudioUnitVarispeed 完成�?
+	// 倍速也有声音：不再关闭音频采样，保持音频缓冲持续产生�?
+	// 变速播放由前端 AudioTrack / AVAudioUnitVarispeed 完成�?
 }
 
 static struct mTiming* coreTiming(struct MgbaMobile* emu) {
@@ -711,6 +749,86 @@ void mgbaMobileClearAudio(struct MgbaMobile* emu) {
 	if (buffer) {
 		mAudioBufferClear(buffer);
 	}
+	resetAudioOutput(emu);
+}
+
+/*
+ * Installs the quality resampler that converts the core's native sample rate to
+ * the device's output rate. Call with the rate the front end's audio device
+ * runs at; pass 0 to disable conversion again.
+ */
+bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate) {
+	if (!emu) {
+		return false;
+	}
+	if (outRate <= 0) {
+		deinitAudioOutput(emu);
+		return false;
+	}
+	if (emu->audioResamplerInited) {
+		if (emu->audioOutRate == outRate) {
+			return true;
+		}
+		deinitAudioOutput(emu);
+	}
+	mAudioBufferInit(&emu->audioOut, MOBILE_AUDIO_OUT_FRAMES, 2);
+	mAudioResamplerInit(&emu->audioResampler, mINTERPOLATOR_SINC);
+	mAudioResamplerSetDestination(&emu->audioResampler, &emu->audioOut, outRate);
+	emu->audioResamplerInited = true;
+	emu->audioOutRate = outRate;
+	MOBILE_LOGI("Audio output resampler at %d Hz", outRate);
+	return true;
+}
+
+/*
+ * Reads audio converted to the output rate set by mgbaMobileSetAudioOutput.
+ *
+ * speed is how many emulated frames the front end runs per paced frame (the
+ * fast-forward factor) and drift is a small ratio adjustment (about +/-0.02)
+ * the front end derives from its playback buffer level: positive drift makes
+ * the resampler consume the core stream slightly faster, which drains the
+ * output buffer, negative drift refills it. This is the standard dynamic rate
+ * control used by mGBA's other front ends, and it keeps the audio clock locked
+ * to the audio device without ever dropping samples.
+ *
+ * Falls back to raw core-rate audio when no output rate was configured.
+ */
+int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, int speed, float drift) {
+	if (!emu || !emu->core || !out || maxFrames <= 0) {
+		return 0;
+	}
+	if (!emu->audioResamplerInited) {
+		return mgbaMobileReadAudio(emu, out, maxFrames);
+	}
+	struct mAudioBuffer* source = emu->core->getAudioBuffer(emu->core);
+	unsigned coreRate = emu->core->audioSampleRate(emu->core);
+	if (!source || !coreRate) {
+		return 0;
+	}
+	if (speed < 1) {
+		speed = 1;
+	} else if (speed > 64) {
+		speed = 64;
+	}
+	if (drift > 0.05f) {
+		drift = 0.05f;
+	} else if (drift < -0.05f) {
+		drift = -0.05f;
+	}
+	double fpsRatio = mCoreCalculateFramerateRatio(emu->core, MOBILE_AUDIO_PACE_FPS);
+	if (fpsRatio <= 0.5 || fpsRatio > 2.0) {
+		// Unknown frame timing (should not happen): assume the front end paces
+		// audio at the console's own frame rate.
+		fpsRatio = 1.0;
+	}
+	double inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
+	size_t got = mAudioBufferRead(&emu->audioOut, out, (size_t) maxFrames);
+	mAudioResamplerSetSource(&emu->audioResampler, source, inRate, true);
+	mAudioResamplerProcess(&emu->audioResampler);
+	if (got < (size_t) maxFrames) {
+		got += mAudioBufferRead(&emu->audioOut, out + got * 2, (size_t) maxFrames - got);
+	}
+	return (int) got;
 }
 
 int mgbaMobileWidth(const struct MgbaMobile* emu) {

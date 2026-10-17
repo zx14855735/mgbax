@@ -22,6 +22,14 @@ void mgbaMobileSetKeys(struct MgbaMobile* emu, uint32_t keys);
 void mgbaMobileSetTurbo(struct MgbaMobile* emu, uint32_t mask);
 bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count);
 int mgbaMobileReadAudio(struct MgbaMobile* emu, int16_t* out, int maxFrames);
+/* Quality resampler to the audio device's rate; 0 disables it. */
+bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate);
+/*
+ * Resampled read at the configured output rate. speed is the fast-forward
+ * factor (>= 1) and drift a small ratio adjustment (about +/-0.02) used to
+ * keep the front end's playback buffer at its target level.
+ */
+int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, int speed, float drift);
 void mgbaMobileClearAudio(struct MgbaMobile* emu);
 int mgbaMobileWidth(const struct MgbaMobile* emu);
 int mgbaMobileHeight(const struct MgbaMobile* emu);

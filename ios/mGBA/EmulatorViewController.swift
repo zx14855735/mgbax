@@ -46,6 +46,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdLoad = 2
     private let cmdReset = 3
     private let layoutBar = UIView()
+    private let bar = UIScrollView()
+    private let stage = UIView()
+    private var menuButton: UIButton!
+    private var menuVisible = true
+    private var speedBarWanted = false
+    private var savePathWanted = false
+    private var menuHideWork: DispatchWorkItem?
+    private var menuLeading: NSLayoutConstraint!
+    private var menuCenterY: NSLayoutConstraint!
+    private var savePathHeight: NSLayoutConstraint!
+    private var menuLeft: CGFloat = -1
+    private var menuTop: CGFloat = -1
+    private var scopedURL: URL?
+    private var lastAudioSpeed = 0
+    private static let menuHideSeconds: TimeInterval = 4
+    private static let audioStepFrames = 4
     private var keyLayout = KeyLayout()
     private var layoutEditing = false
     private var selectedKey: String?
@@ -95,7 +111,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         controls.onSelected = { [weak self] key in
             self?.selectKey(key)
         }
-        if let last = defaults.string(forKey: "lastRom"), FileManager.default.fileExists(atPath: last) {
+        controls.onLayoutChanged = { [weak self] in
+            self?.layoutMenuButton()
+        }
+        var alreadyPending = false
+        gate.lock()
+        alreadyPending = pendingPath != nil
+        gate.unlock()
+        if !alreadyPending, let bookmark = defaults.data(forKey: "lastRomBookmark"), let url = resolveBookmark(bookmark) {
+            scopedURL = url
+            gate.lock()
+            pendingPath = url.path
+            gate.unlock()
+        } else if !alreadyPending, let last = defaults.string(forKey: "lastRom"), FileManager.default.fileExists(atPath: last) {
             gate.lock()
             pendingPath = last
             gate.unlock()
@@ -122,7 +150,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func buildChrome() {
-        let bar = UIScrollView()
         bar.backgroundColor = UIColor(white: 22 / 255, alpha: 1)
         bar.showsHorizontalScrollIndicator = false
         let stack = UIStackView()
@@ -206,15 +233,35 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         savePathView.isHidden = true
         savePathView.isUserInteractionEnabled = true
         savePathView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(copySavePath)))
-        hint.text = "点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏。打开后上方会显示 ROM 存档位置。"
+        hint.text = "点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏；也可以在文件 App 里用 mGBA 打开 ROM。"
         hint.textColor = UIColor(white: 0.87, alpha: 1)
         hint.numberOfLines = 0
         hint.textAlignment = .center
-        let stage = UIView()
         stage.addSubview(gameView)
         stage.addSubview(hint)
         stage.addSubview(controls)
         buildLayoutBar()
+        // Always-visible handle that pops the menu open. Added last so it stays
+        // above the controls and gets taps first; placed by the activity just
+        // right of the on-screen START key.
+        let menu = UIButton(type: .system)
+        menu.setTitle("☰ 菜单", for: .normal)
+        menu.setTitleColor(UIColor(white: 1, alpha: 0.55), for: .normal)
+        menu.titleLabel?.font = .systemFont(ofSize: 16)
+        menu.backgroundColor = .clear
+        menu.addTarget(self, action: #selector(toggleMenu), for: .touchUpInside)
+        menuButton = menu
+        stage.addSubview(menu)
+        menu.translatesAutoresizingMaskIntoConstraints = false
+        menuLeading = menu.leadingAnchor.constraint(equalTo: stage.leadingAnchor)
+        menuCenterY = menu.centerYAnchor.constraint(equalTo: stage.topAnchor)
+        // Touching the menu at all keeps it open.
+        let menuTap = UITapGestureRecognizer(target: self, action: #selector(menuTouched(_:)))
+        menuTap.cancelsTouchesInView = false
+        view.addGestureRecognizer(menuTap)
+        let menuPan = UIPanGestureRecognizer(target: self, action: #selector(menuTouched(_:)))
+        menuPan.cancelsTouchesInView = false
+        view.addGestureRecognizer(menuPan)
         for item in [bar, stack, speedBar, savePathView, stage, gameView, hint, controls, layoutBar] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
@@ -224,6 +271,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         view.addSubview(stage)
         view.addSubview(layoutBar)
         speedBarHeight = speedBar.heightAnchor.constraint(equalToConstant: 0)
+        savePathHeight = savePathView.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -246,6 +294,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             savePathView.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
             savePathView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             savePathView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            savePathHeight,
             stage.topAnchor.constraint(equalTo: savePathView.bottomAnchor),
             stage.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stage.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -262,6 +311,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             controls.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
             controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            menuLeading,
+            menuCenterY,
             layoutBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             layoutBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             layoutBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
@@ -381,16 +432,25 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     @objc private func toggleLayout() {
-        layoutEditing.toggle()
-        layoutBar.isHidden = !layoutEditing
-        controls.editing = layoutEditing
-        if layoutEditing { refreshScaleUI() }
+        setLayoutEditing(!layoutEditing)
     }
 
     @objc private func finishLayout() {
-        layoutEditing = false
-        layoutBar.isHidden = true
-        controls.editing = false
+        setLayoutEditing(false)
+    }
+
+    private func setLayoutEditing(_ on: Bool) {
+        layoutEditing = on
+        layoutBar.isHidden = !on
+        controls.editing = on
+        menuButton.isHidden = on
+        if on {
+            refreshScaleUI()
+            showMenu()
+            menuHideWork?.cancel()
+        } else {
+            armMenuAutoHide()
+        }
     }
 
     @objc private func resetLayout() {
@@ -437,27 +497,26 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let slice = DispatchTime.now().uptimeNanoseconds
             let wantSound = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
             audio.setSoundEnabled(wantSound)
-            if wantSound {
-                audio.setRate(Float(mult))
-            } else {
-                audio.setRate(1)
+            // Fast-forward keeps its sound unless it was switched off; the core's
+            // resampler plays that stream faster (tape style), so a change only
+            // needs the queues dropped.
+            let audioSpeed = wantSound ? mult : 1
+            if audioSpeed != lastAudioSpeed {
+                lastAudioSpeed = audioSpeed
+                audio.flush()
+                mgbaMobileClearAudio(core)
             }
-            _ = mgbaMobileRunFrames(core, Int32(mult))
-            // 倍速也有声音：一直 pump，由 Varispeed 变速播放。
-            if wantSound {
-                var rounds = 0
-                while rounds < 4 {
-                    let got = mgbaMobileReadAudio(core, audioIn, 8192)
-                    if got <= 0 { break }
-                    audio.pump(samples: audioIn, frames: Int(got))
-                    rounds += 1
-                    if got < 4096 { break }
-                }
-            } else if mult == 1 {
-                let got = mgbaMobileReadAudio(core, audioIn, 8192)
-                if got > 0 { audio.pump(samples: audioIn, frames: Int(got)) }
-            } else {
-                _ = mgbaMobileReadAudio(core, audioIn, 8192)
+            // Run in a few steps, pumping audio in between: a fast-forward burst
+            // makes several frames of audio at once and the core's audio buffer
+            // only holds a little more, so leaving it undrained garbles the sound.
+            let steps = max(1, (mult + Self.audioStepFrames - 1) / Self.audioStepFrames)
+            let step = (mult + steps - 1) / steps
+            var done = 0
+            while done < mult {
+                let n = min(step, mult - done)
+                _ = mgbaMobileRunFrames(core, Int32(n))
+                pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
+                done += n
             }
             if mult == 1 {
                 present(core, &video, &videoCap)
@@ -487,6 +546,24 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
         stopped.signal()
+    }
+
+    /// Hands the core's resampled output to the playback queue, telling it how
+    /// full that queue is so the audio clock stays locked to the device.
+    private func pumpAudio(core: OpaquePointer, buffer: UnsafeMutablePointer<Int16>, speed: Int, drop: Bool) {
+        if drop {
+            mgbaMobileClearAudio(core)
+            return
+        }
+        let drift = audio.rateDrift()
+        var rounds = 0
+        while rounds < 8 {
+            let got = mgbaMobileReadAudioOut(core, buffer, 8192, Int32(speed), drift)
+            if got <= 0 { break }
+            audio.pump(samples: buffer, frames: Int(got))
+            rounds += 1
+            if got < 8192 { break }
+        }
     }
 
     private func present(_ core: OpaquePointer, _ video: inout UnsafeMutablePointer<UInt32>?, _ cap: inout Int) {
@@ -522,14 +599,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self?.hint.isHidden = false
                 self?.hint.text = "无法加载这个游戏"
                 self?.toast("无法加载这个游戏")
+                self?.showMenu()
             }
             return
         }
         var title = [CChar](repeating: 0, count: 32)
         mgbaMobileTitle(core, &title, 32)
         let name = String(cString: title).trimmingCharacters(in: .whitespaces)
-        let rate = Int(mgbaMobileSampleRate(core))
-        audio.start(sourceRate: rate)
+        // The core converts its own stream to the rate the device runs at; the
+        // queue level then steers that resampler (see AudioOut.rateDrift).
+        audio.start()
+        _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
         gate.lock()
         paused = false
         gate.unlock()
@@ -540,6 +620,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.title = name.isEmpty ? "mGBA" : name
             self.showSaveLocation()
             self.refreshSlotButton()
+            self.armMenuAutoHide()
         }
     }
 
@@ -639,7 +720,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func pick(kind: Int) {
         pickerKind = kind
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.data], asCopy: false)
         picker.delegate = self
         present(picker, animated: true)
     }
@@ -647,22 +728,61 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard let url = urls.first else { return }
         if pickerKind == 1 {
-            hint.isHidden = false
-            hint.text = "正在读取游戏…"
-            DispatchQueue.global().async { [weak self] in
-                guard let self, let path = self.copyIn(url, self.docs.appendingPathComponent("roms"), nil) else {
-                    self?.toast("无法加载这个游戏")
-                    return
-                }
-                self.defaults.set(path, forKey: "lastRom")
-                self.gate.lock()
-                self.pendingPath = path
-                self.gate.signal()
-                self.gate.unlock()
-            }
+            openExternal(url)
         } else {
             DispatchQueue.global().async { [weak self] in self?.importBios(url) }
         }
+    }
+
+    /// Loads a ROM handed over by the file picker or by another app ("用 mGBA
+    /// 打开" in the Files app). Like the Android build, the file stays where it
+    /// is; only a location that cannot be read back is copied into the app.
+    func openExternal(_ url: URL) {
+        hint.isHidden = false
+        hint.text = "正在读取游戏…"
+        guard let path = adoptRomURL(url) else {
+            toast("无法加载这个游戏")
+            return
+        }
+        defaults.set(path, forKey: "lastRom")
+        gate.lock()
+        pendingPath = path
+        gate.signal()
+        gate.unlock()
+    }
+
+    private func adoptRomURL(_ url: URL) -> String? {
+        stopAccessingScopedRom()
+        if url.startAccessingSecurityScopedResource() {
+            scopedURL = url
+        }
+        if FileManager.default.isReadableFile(atPath: url.path) {
+            // Remember the file so the next launch can reopen it directly.
+            if let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                defaults.set(bookmark, forKey: "lastRomBookmark")
+            } else {
+                defaults.removeObject(forKey: "lastRomBookmark")
+            }
+            return url.path
+        }
+        defaults.removeObject(forKey: "lastRomBookmark")
+        return copyIn(url, docs.appendingPathComponent("roms", isDirectory: true), nil)
+    }
+
+    private func resolveBookmark(_ data: Data) -> URL? {
+        var stale = false
+        guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil, bookmarkDataIsStale: &stale) else {
+            return nil
+        }
+        if url.startAccessingSecurityScopedResource() {
+            return url
+        }
+        return FileManager.default.isReadableFile(atPath: url.path) ? url : nil
+    }
+
+    private func stopAccessingScopedRom() {
+        scopedURL?.stopAccessingSecurityScopedResource()
+        scopedURL = nil
     }
 
     private func importBios(_ url: URL) {
@@ -734,9 +854,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     @objc private func toggleSpeedBar() {
-        let show = speedBar.isHidden
-        speedBar.isHidden = !show
-        speedBarHeight.constant = show ? 40 : 0
+        speedBarWanted.toggle()
+        updateMenuLayout()
+        armMenuAutoHide()
     }
 
     @objc private func pickSpeed(_ sender: UIButton) {
@@ -747,7 +867,84 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         speed = min(16, max(1, value))
         defaults.set(speed, forKey: "speed")
         refreshSpeedButtons()
+        audio.flush()
         if let core { mgbaMobileClearAudio(core) }
+        armMenuAutoHide()
+    }
+
+    @objc private func toggleMenu() {
+        if menuVisible {
+            hideMenuNow()
+        } else {
+            showMenu()
+        }
+    }
+
+    /// Pops the menu open and arms the auto-hide timer.
+    private func showMenu() {
+        setMenuVisible(true)
+        armMenuAutoHide()
+    }
+
+    private func hideMenuNow() {
+        menuHideWork?.cancel()
+        setMenuVisible(false)
+    }
+
+    private func setMenuVisible(_ visible: Bool) {
+        menuVisible = visible
+        updateMenuLayout()
+    }
+
+    /// Collapses the top rows while the menu is away, so the game fills the
+    /// screen the way it does on Android.
+    private func updateMenuLayout() {
+        let showSpeed = menuVisible && speedBarWanted
+        let showPath = menuVisible && savePathWanted
+        bar.isHidden = !menuVisible
+        speedBar.isHidden = !showSpeed
+        savePathView.isHidden = !showPath
+        speedBarHeight.constant = showSpeed ? 40 : 0
+        if showPath {
+            let width = max(0, view.bounds.width - 16)
+            let height = savePathView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+            savePathHeight.constant = max(14, height)
+        } else {
+            savePathHeight.constant = 0
+        }
+    }
+
+    /// Hides the menu again after a moment without use; only while a game runs.
+    private func armMenuAutoHide() {
+        menuHideWork?.cancel()
+        guard !layoutEditing, let core, mgbaMobileIsLoaded(core) else { return }
+        let work = DispatchWorkItem { [weak self] in self?.hideMenuNow() }
+        menuHideWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.menuHideSeconds, execute: work)
+    }
+
+    /// Touching the menu at all keeps it open.
+    @objc private func menuTouched(_ gesture: UIGestureRecognizer) {
+        guard menuVisible else { return }
+        let point = gesture.location(in: view)
+        let inside = bar.frame.contains(point)
+            || (speedBarWanted && speedBar.frame.contains(point))
+            || (savePathWanted && savePathView.frame.contains(point))
+        if inside { armMenuAutoHide() }
+    }
+
+    /// Keeps the menu handle a little to the right of the on-screen START key.
+    private func layoutMenuButton() {
+        guard menuButton != nil, menuLeading != nil, menuCenterY != nil else { return }
+        let start = controls.startButtonRect()
+        if start.width <= 0 { return }
+        let left = start.maxX + 4
+        let top = start.midY
+        if abs(left - menuLeft) < 0.5 && abs(top - menuTop) < 0.5 { return }
+        menuLeft = left
+        menuTop = top
+        menuLeading.constant = left
+        menuCenterY.constant = top
     }
 
     private func refreshSpeedButtons() {
@@ -881,12 +1078,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         mgbaMobileSaveFile(core, &path, 1200)
         let text = filesPath(String(cString: path))
         if text.isEmpty {
-            savePathView.isHidden = true
+            savePathWanted = false
+            updateMenuLayout()
             return
         }
-        savePathView.isHidden = false
+        savePathWanted = true
         savePathView.text = "ROM 存档位置：\(text)"
         savePathView.accessibilityValue = text
+        updateMenuLayout()
         toast(savePathView.text ?? "")
     }
 

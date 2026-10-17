@@ -19,9 +19,11 @@
 #define test_close closesocket
 #else
 #include <arpa/inet.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #define test_close close
 #endif
@@ -170,6 +172,118 @@ static void testGba(const char* dir) {
 	expect(mgbaMobileRunFrames(emu, 2), "run gba frames");
 	mgbaMobileSaveFile(emu, save, sizeof(save));
 	expect(strstr(save, ".sav") != NULL, "gba save path");
+	mgbaMobileDestroy(emu);
+}
+
+/* Runs frames in bursts of at most step frames, draining between bursts. */
+static int drainBurst(struct MgbaMobile* emu, int frames, int step, int16_t* out, int maxFrames, int speed, float drift) {
+	int total = 0;
+	while (frames > 0) {
+		int got;
+		int rounds = 0;
+		int n = step < frames ? step : frames;
+		mgbaMobileRunFrames(emu, n);
+		frames -= n;
+		while (rounds++ < 16 && (got = mgbaMobileReadAudioOut(emu, out, maxFrames, speed, drift)) > 0) {
+			total += got;
+		}
+	}
+	return total;
+}
+
+static int drainAudio(struct MgbaMobile* emu, int frames, int16_t* out, int maxFrames, int speed, float drift) {
+	return drainBurst(emu, frames, 1, out, maxFrames, speed, drift);
+}
+
+static int audioSignal(const int16_t* samples, int frames) {
+	int i;
+	for (i = 0; i < frames * 2; ++i) {
+		if (samples[i] != 0) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void testAudioOut(const char* dir) {
+	unsigned char* rom;
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	int plain;
+	int fast;
+	int slow;
+	int total;
+	snprintf(path, sizeof(path), "%s/audio.gb", dir);
+	rom = (unsigned char*) calloc(1, 32768);
+	expect(rom != NULL, "audio rom buffer");
+	if (!rom) {
+		return;
+	}
+	rom[0x100] = 0x00;
+	rom[0x101] = 0xC3;
+	rom[0x102] = 0x50;
+	rom[0x103] = 0x01;
+	rom[0x104] = 0xCE;
+	rom[0x105] = 0xED;
+	rom[0x106] = 0x66;
+	rom[0x107] = 0x66;
+	memcpy(rom + 0x134, "AUDIOTEST", 9);
+	/* Sound on, both outputs at max, then a square wave on channel 1. */
+	rom[0x150] = 0x3E; rom[0x151] = 0x80; rom[0x152] = 0xE0; rom[0x153] = 0x26;
+	rom[0x154] = 0x3E; rom[0x155] = 0x77; rom[0x156] = 0xE0; rom[0x157] = 0x24;
+	rom[0x158] = 0x3E; rom[0x159] = 0xFF; rom[0x15A] = 0xE0; rom[0x15B] = 0x25;
+	rom[0x15C] = 0x3E; rom[0x15D] = 0xF0; rom[0x15E] = 0xE0; rom[0x15F] = 0x12;
+	rom[0x160] = 0x3E; rom[0x161] = 0x00; rom[0x162] = 0xE0; rom[0x163] = 0x13;
+	rom[0x164] = 0x3E; rom[0x165] = 0x87; rom[0x166] = 0xE0; rom[0x167] = 0x14;
+	rom[0x168] = 0x18; rom[0x169] = 0xFE;
+	expect(writeFile(path, rom, 32768), "write audio rom");
+	free(rom);
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load audio rom");
+	out = (int16_t*) calloc(8192 * 2, sizeof(int16_t));
+	expect(out != NULL, "audio out buffer");
+	if (!out) {
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, 48000), "enable audio output resampler");
+	// 120 paced frames are two seconds of emulated audio; converting to 48 kHz
+	// makes that two seconds of output whatever rate the core itself runs at.
+	total = drainAudio(emu, 120, out, 8192, 1, 0.0f);
+	expect(total > 94000 && total < 98000, "audio output is two seconds long");
+	memset(out, 0, 8192 * 2 * sizeof(int16_t));
+	total = drainAudio(emu, 5, out, 8192, 1, 0.0f);
+	expect(total > 0 && audioSignal(out, 8192), "audio output carries a signal");
+	plain = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	fast = drainAudio(emu, 30, out, 8192, 1, 0.02f);
+	slow = drainAudio(emu, 30, out, 8192, 1, -0.02f);
+	// Positive drift makes the resampler consume its input faster, so the same
+	// amount of emulated audio turns into fewer output frames.
+	expect(fast < plain && plain < slow, "drift moves the output rate");
+	expect((double) plain / fast > 1.015 && (double) plain / fast < 1.025, "positive drift drains");
+	expect((double) slow / plain > 1.015 && (double) slow / plain < 1.025, "negative drift fills");
+	total = drainAudio(emu, 30, out, 8192, 4, 0.0f);
+	expect((double) plain / total > 3.8 && (double) plain / total < 4.2, "speed scales the output rate");
+	// Fast-forward must be run in small steps: the core's audio buffer holds
+	// only a few frames' worth, so one big burst would silently drop samples.
+	plain = drainAudio(emu, 16, out, 8192, 16, 0.0f);
+	total = drainBurst(emu, 16, 4, out, 8192, 16, 0.0f);
+	expect((double) total / plain > 0.98 && (double) total / plain < 1.02, "stepped fast-forward keeps audio");
+	// A single burst does not: the core's audio buffer is smaller than 16 frames
+	// of samples, and it drops whatever does not fit. Front ends must step.
+	total = drainBurst(emu, 16, 16, out, 8192, 16, 0.0f);
+	expect((double) total / plain < 0.9, "one big burst drops audio");
+	mgbaMobileClearAudio(emu);
+	total = drainAudio(emu, 5, out, 8192, 1, 0.0f);
+	expect(total > 0, "audio flows again after clear");
+	expect(mgbaMobileSetAudioOutput(emu, 44100), "switch audio output rate");
+	total = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect(total > 21400 && total < 22600, "audio follows the output rate");
+	expect(!mgbaMobileSetAudioOutput(emu, 0), "disable audio output resampler");
+	total = drainAudio(emu, 2, out, 8192, 1, 0.0f);
+	expect(total > 2000, "raw audio keeps the core rate");
+	free(out);
 	mgbaMobileDestroy(emu);
 }
 
@@ -461,6 +575,7 @@ int main(int argc, char** argv) {
 	testResample();
 	testGb(dir);
 	testGba(dir);
+	testAudioOut(dir);
 	testLink();
 	testRelay();
 	if (g_failed) {

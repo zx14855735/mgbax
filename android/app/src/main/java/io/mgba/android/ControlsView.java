@@ -31,6 +31,10 @@ public class ControlsView extends View {
 
     public interface Listener {
         void onKeysChanged(int mask);
+
+        /** Fired after the on-screen keys were placed again (size or layout change). */
+        default void onControlsLayout() {
+        }
     }
 
     public interface EditListener {
@@ -207,8 +211,9 @@ public class ControlsView extends View {
 
         float shoulderW = 72 * d;
         float shoulderH = 36 * d;
-        buttonL.set(pad, pad, pad + shoulderW, pad + shoulderH);
-        buttonR.set(w - pad - shoulderW, pad, w - pad, pad + shoulderH);
+        float shoulderTop = pad + 40 * d;
+        buttonL.set(pad, shoulderTop, pad + shoulderW, shoulderTop + shoulderH);
+        buttonR.set(w - pad - shoulderW, shoulderTop, w - pad, shoulderTop + shoulderH);
 
         float face = 58 * d;
         float faceA = 76 * d;
@@ -463,6 +468,14 @@ public class ControlsView extends View {
         place(buttonSelect, buttonSelectDefault, "select");
         place(buttonStart, buttonStartDefault, "start");
         layoutDpadArms();
+        if (listener != null) {
+            listener.onControlsLayout();
+        }
+    }
+
+    /** Current bounds of the START key, in this view's coordinates. */
+    public void getStartRect(RectF out) {
+        out.set(buttonStart);
     }
 
     private void layoutDpadArms() {

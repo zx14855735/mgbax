@@ -58,8 +58,13 @@ Java_io_mgba_android_MgbaCore_nativeRunFrames(JNIEnv*, jobject, jlong handle, ji
 	return mgbaMobileRunFrames((struct MgbaMobile*) handle, count) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetAudioOutput(JNIEnv*, jobject, jlong handle, jint outRate) {
+	return mgbaMobileSetAudioOutput((struct MgbaMobile*) handle, outRate) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jint JNICALL
-Java_io_mgba_android_MgbaCore_nativeReadAudio(JNIEnv* env, jobject, jlong handle, jshortArray out) {
+Java_io_mgba_android_MgbaCore_nativeReadAudioOut(JNIEnv* env, jobject, jlong handle, jshortArray out, jint speed, jfloat drift) {
 	if (!out) {
 		return 0;
 	}
@@ -67,7 +72,7 @@ Java_io_mgba_android_MgbaCore_nativeReadAudio(JNIEnv* env, jobject, jlong handle
 	jshort* samples = env->GetShortArrayElements(out, NULL);
 	int frames = 0;
 	if (samples) {
-		frames = mgbaMobileReadAudio((struct MgbaMobile*) handle, (int16_t*) samples, (int) (length / 2));
+		frames = mgbaMobileReadAudioOut((struct MgbaMobile*) handle, (int16_t*) samples, (int) (length / 2), (int) speed, (float) drift);
 		env->ReleaseShortArrayElements(out, samples, 0);
 	}
 	return frames;

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">mGBA</string>
+    <string name="menu">☰ 菜单</string>
     <string name="open_rom">打开</string>
     <string name="pause">暂停</string>
     <string name="resume">继续</string>
@@ -38,7 +39,7 @@
     <string name="layout_selected">选中 %1$s %2$d%%</string>
     <string name="layout_selected_none">点一下按键选中，再捏合或拖滑杆缩放</string>
     <string name="layout_tap_first">先点一下要缩放的按键</string>
-    <string name="hint">点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏。打开后上方会显示 ROM 存档位置。</string>
+    <string name="hint">点击「打开」选择 .gba、.gbc、.gb 游戏；长按「打开」可扫描下载目录和模拟器共享目录。打开后上方会显示 ROM 存档位置。</string>
     <string name="save_location">ROM 存档位置：%1$s</string>
     <string name="save_location_copied">已复制 ROM 存档位置</string>
     <string name="save_access_title">允许访问手机存储</string>
@@ -79,4 +80,9 @@
     <string name="reset_done">已复位</string>
     <string name="bios_imported">已导入 %1$s，重新打开游戏后生效</string>
     <string name="bios_failed">BIOS 导入失败</string>
+    <string name="scan_button">扫描 ROM</string>
+    <string name="scan_scanning">正在扫描…</string>
+    <string name="scan_title">找到的 ROM</string>
+    <string name="scan_empty">没找到 ROM 文件。\n把 .gba/.gb/.gbc 放进 Download 目录（模拟器共享目录也可以），或者在文件管理器里用「打开方式」选择本应用。</string>
+    <string name="scan_entry">%1$s\n%2$s  %3$s</string>
 </resources>

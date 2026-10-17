@@ -52,8 +52,23 @@ public final class MgbaCore {
         }
     }
 
-    public int readAudio(short[] out) {
-        return handle == 0 ? 0 : nativeReadAudio(handle, out);
+    /**
+     * Configures the native audio resampler for the given output rate.
+     * Returns false when the core cannot be converted to that rate.
+     */
+    public boolean setAudioOutput(int outRate) {
+        return handle != 0 && nativeSetAudioOutput(handle, outRate);
+    }
+
+    /**
+     * Reads audio already converted to the configured output rate.
+     *
+     * @param speed emulated frames per paced frame, i.e. the fast-forward factor
+     * @param drift small ratio adjustment (about +/-0.02) for playback buffer level control
+     * @return number of stereo frames written into {@code out}
+     */
+    public int readAudioOut(short[] out, int speed, float drift) {
+        return handle == 0 ? 0 : nativeReadAudioOut(handle, out, speed, drift);
     }
 
     public void clearAudio() {
@@ -150,7 +165,9 @@ public final class MgbaCore {
 
     private static native boolean nativeRunFrames(long handle, int keys, int count);
 
-    private static native int nativeReadAudio(long handle, short[] out);
+    private static native int nativeReadAudioOut(long handle, short[] out, int speed, float drift);
+
+    private static native boolean nativeSetAudioOutput(long handle, int outRate);
 
     private static native void nativeClearAudio(long handle);
 

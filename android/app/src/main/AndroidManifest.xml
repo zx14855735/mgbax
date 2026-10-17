@@ -27,6 +27,19 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Lets file managers (including the Windows-share folders of Android
+                 emulators) hand a ROM to the app through "open with". -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.[gG][bB]" />
+                <data android:pathPattern=".*\\.[gG][bB][aA]" />
+                <data android:pathPattern=".*\\.[gG][bB][cC]" />
+                <data android:pathPattern=".*\\.[sS][gG][bB]" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>

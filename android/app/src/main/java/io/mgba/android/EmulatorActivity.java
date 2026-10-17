@@ -12,25 +12,32 @@ import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.RectF;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.format.DateFormat;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -51,7 +58,13 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,6 +78,18 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int CMD_RESET = 3;
     private static final int TURBO_ARM_MS = 200;
     private static final int TURBO_PULSE_MS = 40;
+    /** Frames requested from the resampler per read; also the size of the read buffer. */
+    private static final int AUDIO_READ_FRAMES = 8192;
+    /** Emulated frames run per audio pump while fast-forwarding. */
+    private static final int AUDIO_STEP_FRAMES = 4;
+    /** Local backlog of resampled frames the playback buffer had no room for. */
+    private static final int AUDIO_CARRY_FRAMES = 2560;
+    /** How full the playback buffer is kept while playing. */
+    private static final float AUDIO_TARGET_FILL = 0.65f;
+    /** Most ROMs offered at once by the scan. */
+    private static final int ROM_SCAN_LIMIT = 60;
+    /** How long the menu stays open after it was last used. */
+    private static final int MENU_HIDE_MS = 4000;
 
     private MgbaCore core;
     private GameView gameView;
@@ -74,10 +99,17 @@ public class EmulatorActivity extends AppCompatActivity {
     private Button pauseButton;
     private Button fastButton;
     private Button slotButton;
+    private View menuBar;
+    private TextView menuButton;
+    private final Runnable hideMenu = this::hideMenuNow;
     private HorizontalScrollView speedBar;
     private final Button[] speedButtons = new Button[17];
 
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
+    /** True while a picked/opened ROM is being imported, so startEmulator() does not arm the old one. */
+    private volatile boolean importingRom;
+    /** Last "open with" URI already handled, so config changes do not load it twice. */
+    private String handledRomUri;
     private final AtomicInteger command = new AtomicInteger();
     private volatile boolean running;
     private volatile boolean paused;
@@ -93,14 +125,19 @@ public class EmulatorActivity extends AppCompatActivity {
     private Thread emuThread;
 
     private AudioTrack audio;
-    private boolean fastAudio;
-    private int appliedSpeed = 1;
+    private boolean audioMuted;
+    private volatile boolean audioStarted;
+    private int appliedSpeed = -1;
     private long nextFastPresent;
     private int outputRate;
     private int sourceRate;
-    private final short[] nativeAudio = new short[8192 * 2];
-    private final short[] outputAudio = new short[8192 * 2];
-    private double resamplePos;
+    private final short[] audioRead = new short[AUDIO_READ_FRAMES * 2];
+    private final short[] audioCarry = new short[AUDIO_CARRY_FRAMES * 2];
+    private int carryFrames;
+    private long framesWritten;
+    private int trackFrames;
+    private int targetFrames;
+    private AudioRateControl rateControl;
     private Bitmap frame;
     private final AtomicBoolean presentQueued = new AtomicBoolean();
     private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
@@ -131,17 +168,29 @@ public class EmulatorActivity extends AppCompatActivity {
         slotButton = findViewById(R.id.btn_slot);
 
         controls = findViewById(R.id.controls);
-        controls.setListener(mask -> {
-            int prev = touchKeys;
-            touchKeys = mask;
-            noteUserKeys(prev, hwKeys);
-            if ((mask & ~prev) != 0) {
-                wakeInput();
+        controls.setListener(new ControlsView.Listener() {
+            @Override
+            public void onKeysChanged(int mask) {
+                int prev = touchKeys;
+                touchKeys = mask;
+                noteUserKeys(prev, hwKeys);
+                if ((mask & ~prev) != 0) {
+                    wakeInput();
+                }
+            }
+
+            @Override
+            public void onControlsLayout() {
+                positionMenuButton();
             }
         });
         bindLayoutEditor();
 
         findViewById(R.id.btn_open).setOnClickListener(v -> openDocument(REQ_ROM));
+        findViewById(R.id.btn_open).setOnLongClickListener(v -> {
+            showRomScan();
+            return true;
+        });
         findViewById(R.id.btn_bios).setOnClickListener(v -> openDocument(REQ_BIOS));
         pauseButton.setOnClickListener(v -> setPaused(!paused));
         int savedSpeed = getPreferences(MODE_PRIVATE).getInt("speed", 1);
@@ -162,6 +211,21 @@ public class EmulatorActivity extends AppCompatActivity {
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
 
+        menuBar = findViewById(R.id.menu_bar);
+        menuButton = findViewById(R.id.btn_menu);
+        menuButton.setOnClickListener(v -> {
+            if (menuBar.getVisibility() == View.VISIBLE) {
+                hideMenuNow();
+            } else {
+                showMenu();
+            }
+        });
+        watchMenuTouches(menuBar);
+        positionMenuButton();
+        // The first placement runs before the handle is measured; redo it once
+        // its real height is known so it lines up with the START key.
+        menuButton.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> positionMenuButton());
+
         gameView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
@@ -179,6 +243,7 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         });
 
+        handleViewIntent(getIntent());
         ensureSaveAccess();
         hideSystemUi();
     }
@@ -238,7 +303,7 @@ public class EmulatorActivity extends AppCompatActivity {
         File saves = SaveLocation.prepare(this);
         core = new MgbaCore(saves, new File(getFilesDir(), "states"));
         applyVideo();
-        if (pendingPath.get() == null) {
+        if (pendingPath.get() == null && !importingRom) {
             String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
             if (last != null && new File(last).isFile()) {
                 pendingPath.set(last);
@@ -345,20 +410,105 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         Uri uri = data.getData();
         if (requestCode == REQ_ROM) {
-            hint.setText(R.string.loading);
-            hint.setVisibility(View.VISIBLE);
-            new Thread(() -> {
-                String path = copyTo(uri, new File(getFilesDir(), "roms"), null);
-                if (path == null) {
-                    toast(getString(R.string.load_failed));
-                    return;
-                }
-                getPreferences(MODE_PRIVATE).edit().putString("lastRom", path).apply();
-                pendingPath.set(path);
-            }, "rom-copy").start();
+            importRom(uri);
         } else if (requestCode == REQ_BIOS) {
             new Thread(() -> importBios(uri), "bios-copy").start();
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleViewIntent(intent);
+    }
+
+    /** Handles a ROM the user opened from a file manager ("open with"). */
+    private void handleViewIntent(@Nullable Intent intent) {
+        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+            return;
+        }
+        Uri uri = intent.getData();
+        if (uri == null) {
+            return;
+        }
+        String key = uri.toString();
+        if (key.equals(handledRomUri)) {
+            return;
+        }
+        handledRomUri = key;
+        importRom(uri);
+    }
+
+    private void importRom(Uri uri) {
+        importingRom = true;
+        hint.setText(R.string.loading);
+        hint.setVisibility(View.VISIBLE);
+        new Thread(() -> {
+            String path = resolveRom(uri);
+            importingRom = false;
+            if (path == null) {
+                toast(getString(R.string.load_failed));
+                return;
+            }
+            getPreferences(MODE_PRIVATE).edit().putString("lastRom", path).apply();
+            pendingPath.set(path);
+        }, "rom-import").start();
+    }
+
+    /**
+     * Returns a path the loader can open. Files on shared storage are used in
+     * place: copying a 32 MB ROM into the app directory doubles the space it
+     * needs and fails outright when the device is nearly full.
+     */
+    @Nullable
+    private String resolveRom(Uri uri) {
+        String local = localPath(uri);
+        if (local != null && new File(local).canRead()) {
+            return local;
+        }
+        return copyTo(uri, new File(getFilesDir(), "roms"), null);
+    }
+
+    /** Maps a document Uri to a real file path when its provider exposes one. */
+    @Nullable
+    private String localPath(@Nullable Uri uri) {
+        if (uri == null) {
+            return null;
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null || "file".equals(scheme)) {
+            return uri.getPath();
+        }
+        if (!"content".equals(scheme) || !DocumentsContract.isDocumentUri(this, uri)) {
+            return null;
+        }
+        String id;
+        try {
+            id = DocumentsContract.getDocumentId(uri);
+        } catch (Exception e) {
+            return null;
+        }
+        if (id == null) {
+            return null;
+        }
+        String authority = uri.getAuthority();
+        if ("com.android.externalstorage.documents".equals(authority)) {
+            int colon = id.indexOf(':');
+            if (colon <= 0 || colon + 1 >= id.length()) {
+                return null;
+            }
+            String volume = id.substring(0, colon);
+            String rest = id.substring(colon + 1);
+            File base = "primary".equalsIgnoreCase(volume)
+                    ? Environment.getExternalStorageDirectory()
+                    : new File("/storage", volume);
+            return new File(base, rest).getAbsolutePath();
+        }
+        if ("com.android.providers.downloads.documents".equals(authority) && id.startsWith("raw:")) {
+            return id.substring(4);
+        }
+        return null;
     }
 
     private void importBios(Uri uri) {
@@ -456,6 +606,198 @@ public class EmulatorActivity extends AppCompatActivity {
         return clean;
     }
 
+    /**
+     * Looks for ROMs in the places they usually land: the download folder,
+     * the app's own import folder, and the host-share folders that Windows
+     * Android emulators (BlueStacks, MuMu, LDPlayer) mount on shared storage.
+     * Those shares are how a file like {@code D:\gen8\rom.gba} becomes
+     * reachable from inside the emulator.
+     */
+    private void showRomScan() {
+        toast(getString(R.string.scan_scanning));
+        new Thread(() -> {
+            List<File> found = scanRoms();
+            runOnUiThread(() -> showRomList(found));
+        }, "rom-scan").start();
+    }
+
+    private void showRomList(List<File> found) {
+        if (isFinishing()) {
+            return;
+        }
+        if (found.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.scan_title)
+                    .setMessage(R.string.scan_empty)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .show();
+            return;
+        }
+        String root = Environment.getExternalStorageDirectory().getAbsolutePath();
+        String[] labels = new String[found.size()];
+        for (int i = 0; i < found.size(); i++) {
+            File file = found.get(i);
+            String path = file.getAbsolutePath();
+            if (path.startsWith(root + File.separator)) {
+                path = path.substring(root.length() + 1);
+            }
+            long bytes = file.length();
+            String size = bytes >= (1 << 20)
+                    ? String.format(Locale.ROOT, "%.1fMB", bytes / 1048576.0)
+                    : Math.max(1, (bytes + 1023) / 1024) + "KB";
+            labels[i] = getString(R.string.scan_entry, file.getName(), path, size);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.scan_title)
+                .setItems(labels, (dialog, which) -> openFoundRom(found.get(which)))
+                .show();
+    }
+
+    private void openFoundRom(File file) {
+        if (!file.canRead()) {
+            toast(getString(R.string.load_failed));
+            return;
+        }
+        getPreferences(MODE_PRIVATE).edit().putString("lastRom", file.getAbsolutePath()).apply();
+        hint.setText(R.string.loading);
+        hint.setVisibility(View.VISIBLE);
+        pendingPath.set(file.getAbsolutePath());
+    }
+
+    private List<File> scanRoms() {
+        List<File> dirs = new ArrayList<>();
+        File external = Environment.getExternalStorageDirectory();
+        File[] roots = {
+                new File(external, "Download"),
+                new File(external, "Downloads"),
+                new File(external, "roms"),
+                new File(external, "ROMs"),
+                new File(external, "games"),
+                new File(external, "mGBA"),
+                // Host-share folders of Windows Android emulators.
+                new File(external, "windows/BstSharedFolder"),
+                new File(external, "MuMuSharedFolder"),
+                new File(external, "BlueStacks"),
+                new File("/mnt/shared"),
+                new File(getFilesDir(), "roms"),
+        };
+        Collections.addAll(dirs, roots);
+        String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        if (last != null) {
+            File parent = new File(last).getParentFile();
+            if (parent != null) {
+                dirs.add(parent);
+            }
+        }
+        List<File> found = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (File dir : dirs) {
+            if (dir.isDirectory() && dir.canRead()) {
+                collectRoms(dir, 0, found, seen);
+            }
+            if (found.size() >= ROM_SCAN_LIMIT) {
+                break;
+            }
+        }
+        Collections.sort(found, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        return found.size() > ROM_SCAN_LIMIT ? new ArrayList<>(found.subList(0, ROM_SCAN_LIMIT)) : found;
+    }
+
+    private static void collectRoms(File dir, int depth, List<File> out, Set<String> seen) {
+        if (depth > 2 || out.size() >= ROM_SCAN_LIMIT) {
+            return;
+        }
+        File[] entries = dir.listFiles();
+        if (entries == null) {
+            return;
+        }
+        Arrays.sort(entries, Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER));
+        for (File entry : entries) {
+            if (out.size() >= ROM_SCAN_LIMIT) {
+                return;
+            }
+            String path = entry.getAbsolutePath();
+            if (!seen.add(path)) {
+                continue;
+            }
+            if (entry.isDirectory()) {
+                if (!entry.getName().startsWith(".")) {
+                    collectRoms(entry, depth + 1, out, seen);
+                }
+            } else if (entry.isFile() && entry.length() > 0 && isRomFile(entry.getName())) {
+                out.add(entry);
+            }
+        }
+    }
+
+    private static boolean isRomFile(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        return lower.endsWith(".gba") || lower.endsWith(".gbc") || lower.endsWith(".gb") || lower.endsWith(".sgb");
+    }
+
+    /** Pops the menu open and arms the auto-hide timer. */
+    private void showMenu() {
+        menuBar.setVisibility(View.VISIBLE);
+        autoHideMenu();
+    }
+
+    private void hideMenuNow() {
+        inputHandler.removeCallbacks(hideMenu);
+        menuBar.setVisibility(View.GONE);
+    }
+
+    /** Hides the menu again after a moment without use; only while a game runs. */
+    private void autoHideMenu() {
+        inputHandler.removeCallbacks(hideMenu);
+        if (core == null || !core.isLoaded() || layoutEditing) {
+            return;
+        }
+        inputHandler.postDelayed(hideMenu, MENU_HIDE_MS);
+    }
+
+    /** Touching the menu at all keeps it open. */
+    private void watchMenuTouches(View view) {
+        view.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                autoHideMenu();
+            }
+            return false;
+        });
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                watchMenuTouches(group.getChildAt(i));
+            }
+        }
+    }
+
+    /** Keeps the menu handle a little to the right of the on-screen START key. */
+    private void positionMenuButton() {
+        if (menuButton == null || controls == null) {
+            return;
+        }
+        ViewGroup.LayoutParams params = menuButton.getLayoutParams();
+        if (!(params instanceof FrameLayout.LayoutParams)) {
+            return;
+        }
+        RectF start = new RectF();
+        controls.getStartRect(start);
+        if (start.width() <= 0f) {
+            return;
+        }
+        int height = menuButton.getHeight() > 0 ? menuButton.getHeight() : dp(24);
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) params;
+        int left = (int) start.right + dp(4);
+        int top = (int) start.centerY() - height / 2;
+        if (lp.gravity == (Gravity.TOP | Gravity.START) && lp.leftMargin == left && lp.topMargin == top) {
+            return;
+        }
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.leftMargin = left;
+        lp.topMargin = top;
+        menuButton.setLayoutParams(lp);
+    }
+
     private void emulationLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         long frames = 0;
@@ -480,9 +822,20 @@ public class EmulatorActivity extends AppCompatActivity {
                 int mult = fastHold ? Math.max(speed, 16) : speed;
                 syncFastAudio(mult);
                 long sliceStart = System.nanoTime();
-                core.runFrames(touchKeys | hwKeys, mult);
-                // 倍速也有声音：一直 pump，由 AudioTrack 变速播放。
-                pumpAudio();
+                // Run in a few steps, pumping audio in between: a fast-forward
+                // burst produces several frames of audio at once and the core's
+                // audio buffer only holds a little more than that, so leaving it
+                // undrained drops samples and makes fast-forward sound garbled.
+                int steps = (mult + AUDIO_STEP_FRAMES - 1) / AUDIO_STEP_FRAMES;
+                int step = (mult + steps - 1) / steps;
+                for (int done = 0; done < mult; ) {
+                    int n = Math.min(step, mult - done);
+                    core.runFrames(touchKeys | hwKeys, n);
+                    // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
+                    // Keep in sync with MOBILE_AUDIO_PACE_FPS on the native side.
+                    pumpAudio();
+                    done += n;
+                }
                 if (mult == 1) {
                     presentFrame();
                 } else {
@@ -522,20 +875,18 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private void loadRom(String path) {
         releaseAudio();
-        resamplePos = 0;
         boolean ok = core.load(path);
         if (!ok) {
             runOnUiThread(() -> {
                 hint.setText(R.string.load_failed);
                 hint.setVisibility(View.VISIBLE);
                 setTitle(R.string.app_name);
+                showMenu();
             });
             toast(getString(R.string.load_failed));
             return;
         }
         setupAudio();
-        fastAudio = false;
-        appliedSpeed = 1;
         paused = false;
         String title = core.title();
         runOnUiThread(() -> {
@@ -543,9 +894,7 @@ public class EmulatorActivity extends AppCompatActivity {
             pauseButton.setText(R.string.pause);
             showSaveLocation();
             setTitle(title == null || title.trim().isEmpty() ? getString(R.string.app_name) : title.trim());
-            if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED && audio.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
-                audio.play();
-            }
+            autoHideMenu();
         });
     }
 
@@ -613,156 +962,220 @@ public class EmulatorActivity extends AppCompatActivity {
         if (sourceRate <= 0) {
             sourceRate = 32768;
         }
-        outputRate = sourceRate;
-        int min = AudioTrack.getMinBufferSize(outputRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
-        if (min <= 0) {
-            outputRate = 48000;
-            min = AudioTrack.getMinBufferSize(outputRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+        appliedSpeed = -1;
+        audioMuted = false;
+        // Prefer the rate the device's audio hardware actually runs at so the
+        // system does not have to resample our output; the core's own rate is
+        // the fallback when that cannot be opened.
+        if (!buildAudioTrack(deviceOutputRate())) {
+            buildAudioTrack(sourceRate);
         }
-        if (min <= 0) {
-            return;
-        }
-        int bufferBytes = Math.max(min * 3, outputRate / 4 * 4);
+    }
+
+    /** Sample rate Android's audio output runs at, defaulting to the usual 48 kHz. */
+    private int deviceOutputRate() {
         try {
-            audio = new AudioTrack.Builder()
+            AudioManager manager = (AudioManager) getSystemService(AUDIO_SERVICE);
+            if (manager != null) {
+                String rate = manager.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE);
+                if (rate != null) {
+                    int parsed = Integer.parseInt(rate.trim());
+                    if (parsed >= 8000 && parsed <= 192000) {
+                        return parsed;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return 48000;
+    }
+
+    /**
+     * Builds a playback track at the given rate and points the core's resampler at it.
+     * The track stays paused here; {@link #pumpAudio()} fills it and starts playback.
+     */
+    private boolean buildAudioTrack(int rate) {
+        releaseAudio();
+        int minBytes = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+        if (minBytes <= 0) {
+            return false;
+        }
+        AudioTrack track = null;
+        try {
+            int minFrames = minBytes / 4;
+            int wantFrames = Math.min(Math.max(minFrames * 2, 3072), 6144);
+            track = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_GAME)
                             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                             .build())
                     .setAudioFormat(new AudioFormat.Builder()
-                            .setSampleRate(outputRate)
+                            .setSampleRate(rate)
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                             .build())
                     .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(bufferBytes)
+                    .setBufferSizeInBytes(wantFrames * 4)
                     .build();
-            appliedSpeed = 1;
-            applyPlaybackSpeed(1f);
-            if (!paused) {
-                audio.play();
+            if (track.getState() != AudioTrack.STATE_INITIALIZED) {
+                track.release();
+                return false;
             }
+            boolean resampled = core.setAudioOutput(rate);
+            if (!resampled && rate != sourceRate) {
+                // The core cannot be converted to this rate; the caller retries
+                // with the core's own rate, where no conversion is needed.
+                track.release();
+                return false;
+            }
+            int frames = track.getBufferSizeInFrames();
+            if (frames <= 0) {
+                frames = wantFrames;
+            }
+            outputRate = rate;
+            trackFrames = frames;
+            targetFrames = Math.max(1, (int) (frames * AUDIO_TARGET_FILL));
+            rateControl = new AudioRateControl(frames, targetFrames);
+            framesWritten = 0;
+            carryFrames = 0;
+            audio = track;
+            return true;
         } catch (Exception e) {
-            releaseAudio();
+            if (track != null) {
+                track.release();
+            }
+            return false;
         }
     }
 
+    /**
+     * Applies a speed or sound setting change. Fast-forward sound is produced by
+     * resampling at that speed (tape style, matching the iOS varispeed unit), so
+     * a change only needs the audio pipeline restarted.
+     */
     private void syncFastAudio(int mult) {
-        boolean wantSound = getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
-        if (!wantSound) {
-            boolean fast = mult > 1;
-            if (fast == fastAudio && appliedSpeed == 1) {
-                return;
-            }
-            fastAudio = fast;
-            appliedSpeed = 1;
-            resamplePos = 0;
+        boolean mute = mult > 1 && !getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
+        if (mute != audioMuted) {
+            audioMuted = mute;
+            resetAudio();
+        }
+        if (audioMuted) {
             core.clearAudio();
-            applyPlaybackSpeed(1f);
-            if (audio == null || audio.getState() != AudioTrack.STATE_INITIALIZED) {
-                return;
-            }
-            if (fast) {
+            return;
+        }
+        if (mult != appliedSpeed) {
+            appliedSpeed = mult;
+            core.clearAudio();
+            resetAudio();
+        }
+    }
+
+    /** Discards queued audio and pauses the track; the pump refills and resumes it. */
+    private void resetAudio() {
+        if (audio != null) {
+            try {
                 audio.pause();
                 audio.flush();
-            } else if (!paused) {
-                audio.play();
-            }
-            return;
-        }
-        // 有声倍速：保持播放，用变速实现同时倍速。
-        if (mult == appliedSpeed && !fastAudio) {
-            // 已经是目标速度且在播放
-        }
-        boolean changed = mult != appliedSpeed;
-        fastAudio = false;
-        if (changed) {
-            appliedSpeed = mult;
-            resamplePos = 0;
-            core.clearAudio();
-            applyPlaybackSpeed((float) mult);
-        }
-        if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED
-                && !paused && audio.getPlayState() != AudioTrack.PLAYSTATE_PLAYING) {
-            try {
-                audio.play();
             } catch (Exception ignored) {
             }
         }
-    }
-
-    private void applyPlaybackSpeed(float speed) {
-        if (audio == null || audio.getState() != AudioTrack.STATE_INITIALIZED) {
-            return;
-        }
-        if (Build.VERSION.SDK_INT < 23) {
-            return;
-        }
-        try {
-            android.media.PlaybackParams params = audio.getPlaybackParams();
-            params.setSpeed(speed);
-            // 变速同时变调（磁带式快进），和 iOS Varispeed 保持一致。
-            try {
-                params.setPitch(speed);
-            } catch (Exception ignored) {
-            }
-            audio.setPlaybackParams(params);
-        } catch (Exception ignored) {
-        }
+        audioStarted = false;
+        framesWritten = 0;
+        carryFrames = 0;
     }
 
     private void pumpAudio() {
-        if (audio == null) {
-            core.readAudio(nativeAudio);
+        if (core == null) {
             return;
         }
-        // 倍速时一帧会产生多倍采样，循环抽干避免滞后。
-        for (int round = 0; round < 4; round++) {
-            int frames = core.readAudio(nativeAudio);
+        if (audio == null || audioMuted || paused || audio.getState() != AudioTrack.STATE_INITIALIZED) {
+            core.clearAudio();
+            return;
+        }
+        boolean playing = audioStarted;
+        float drift = rateControl.drift(bufferedFrames() + carryFrames, playing);
+        // Fast-forward produces several frames worth of audio per pump; keep
+        // draining so the core's buffer never backs up.
+        for (int round = 0; round < 8; round++) {
+            int frames = core.readAudioOut(audioRead, Math.max(appliedSpeed, 1), drift);
             if (frames <= 0) {
                 break;
             }
-            short[] data = nativeAudio;
-            int shorts = frames * 2;
-            if (outputRate != sourceRate) {
-                frames = resample(nativeAudio, frames, sourceRate, outputRate, outputAudio);
-                data = outputAudio;
-                shorts = frames * 2;
-            }
-            // One non-blocking write. Waiting on a full AudioTrack used to stall
-            // the next frame for tens of milliseconds, so short taps never landed.
-            audio.write(data, 0, shorts, AudioTrack.WRITE_NON_BLOCKING);
-            if (frames < nativeAudio.length / 4) {
+            pushAudio(frames);
+            if (frames < AUDIO_READ_FRAMES) {
                 break;
+            }
+        }
+        if (!audioStarted && bufferedFrames() + carryFrames >= targetFrames) {
+            // Start playback only once there is enough queued to survive the
+            // device's mixer period; from then on the level control keeps it fed.
+            try {
+                audio.play();
+                audioStarted = true;
+            } catch (Exception ignored) {
             }
         }
     }
 
-    private int resample(short[] in, int inFrames, int inRate, int outRate, short[] out) {
-        double step = (double) inRate / (double) outRate;
-        int outFrames = 0;
-        int max = out.length / 2;
-        while (resamplePos < inFrames && outFrames < max) {
-            int i0 = (int) resamplePos;
-            if (i0 < 0) {
-                i0 = 0;
+    /** Frames queued inside the playback buffer. */
+    private int bufferedFrames() {
+        if (audio == null) {
+            return 0;
+        }
+        long head = audio.getPlaybackHeadPosition() & 0xFFFFFFFFL;
+        long fill = (framesWritten - head) & 0xFFFFFFFFL;
+        if (fill > 0x7FFFFFFFL) {
+            return 0;
+        }
+        return (int) fill;
+    }
+
+    /**
+     * Hands frames to the playback buffer. Whatever does not fit is kept in a
+     * small backlog and written on the next pump, so audio is never cut in the
+     * middle of a sample; only a runaway backlog sheds its oldest frames.
+     */
+    private void pushAudio(int frames) {
+        if (carryFrames > 0) {
+            int written = writeAudio(audioCarry, carryFrames);
+            if (written > 0) {
+                carryFrames -= written;
+                if (carryFrames > 0) {
+                    System.arraycopy(audioCarry, written * 2, audioCarry, 0, carryFrames * 2);
+                }
             }
-            int i1 = Math.min(i0 + 1, inFrames - 1);
-            double frac = resamplePos - i0;
-            int l0 = in[i0 * 2];
-            int r0 = in[i0 * 2 + 1];
-            int l1 = in[i1 * 2];
-            int r1 = in[i1 * 2 + 1];
-            out[outFrames * 2] = (short) (l0 + (l1 - l0) * frac);
-            out[outFrames * 2 + 1] = (short) (r0 + (r1 - r0) * frac);
-            outFrames++;
-            resamplePos += step;
+            if (carryFrames > 0) {
+                int room = AUDIO_CARRY_FRAMES - carryFrames;
+                int keep = Math.min(room, frames);
+                System.arraycopy(audioRead, (frames - keep) * 2, audioCarry, carryFrames * 2, keep * 2);
+                carryFrames += keep;
+                return;
+            }
         }
-        resamplePos -= inFrames;
-        if (resamplePos < 0) {
-            resamplePos = 0;
+        int written = writeAudio(audioRead, frames);
+        int left = frames - written;
+        if (left > 0) {
+            int keep = Math.min(left, AUDIO_CARRY_FRAMES);
+            System.arraycopy(audioRead, (frames - keep) * 2, audioCarry, 0, keep * 2);
+            carryFrames = keep;
         }
-        return outFrames;
+    }
+
+    private int writeAudio(short[] data, int frames) {
+        try {
+            int written = audio.write(data, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING);
+            if (written <= 0) {
+                return 0;
+            }
+            int count = written / 2;
+            // Track how much audio the device holds: the playback head counts
+            // everything that has been played since the last flush, so written
+            // minus head is what is still queued.
+            framesWritten += count;
+            return count;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private void releaseAudio() {
@@ -775,6 +1188,9 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             audio = null;
         }
+        audioStarted = false;
+        carryFrames = 0;
+        framesWritten = 0;
     }
 
     private File stateFile(int index) {
@@ -1105,8 +1521,13 @@ public class EmulatorActivity extends AppCompatActivity {
         layoutEditing = on;
         findViewById(R.id.layout_editor).setVisibility(on ? View.VISIBLE : View.GONE);
         controls.setEditing(on);
+        menuButton.setVisibility(on ? View.GONE : View.VISIBLE);
         if (on) {
+            showMenu();
+            inputHandler.removeCallbacks(hideMenu);
             refreshScaleBar();
+        } else {
+            autoHideMenu();
         }
     }
 
@@ -1521,13 +1942,7 @@ public class EmulatorActivity extends AppCompatActivity {
         sound.setText(R.string.speed_sound);
         sound.setTextColor(Color.WHITE);
         sound.setChecked(getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true));
-        sound.setOnCheckedChangeListener((v, checked) -> {
-            getPreferences(MODE_PRIVATE).edit().putBoolean("fast_audio", checked).apply();
-            appliedSpeed = -1;
-            if (core != null) {
-                core.clearAudio();
-            }
-        });
+        sound.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("fast_audio", checked).apply());
         row.addView(sound);
         refreshSpeedButtons();
     }
@@ -1536,9 +1951,6 @@ public class EmulatorActivity extends AppCompatActivity {
         speed = Math.max(1, Math.min(16, value));
         getPreferences(MODE_PRIVATE).edit().putInt("speed", speed).apply();
         refreshSpeedButtons();
-        if (core != null) {
-            core.clearAudio();
-        }
     }
 
     private void refreshSpeedButtons() {
@@ -1565,6 +1977,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     applyOrientation(nextPortrait);
                     dialog.dismiss();
                 })
+                .setNeutralButton(R.string.scan_button, (dialog, which) -> showRomScan())
                 .show();
     }
 
@@ -1585,12 +1998,11 @@ public class EmulatorActivity extends AppCompatActivity {
     private void setPaused(boolean value) {
         paused = value;
         pauseButton.setText(value ? R.string.resume : R.string.pause);
-        if (audio != null) {
-            if (value) {
-                audio.pause();
-            } else if (audio.getState() == AudioTrack.STATE_INITIALIZED) {
-                audio.play();
-            }
+        // Resuming is left to the audio pump, which restarts playback once the
+        // buffer has been refilled.
+        if (value && audio != null) {
+            audio.pause();
+            audioStarted = false;
         }
     }
 
@@ -1700,6 +2112,7 @@ public class EmulatorActivity extends AppCompatActivity {
         stopTurbo();
         if (audio != null) {
             audio.pause();
+            audioStarted = false;
         }
     }
 
@@ -1719,11 +2132,9 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         if (pauseButton.getText().toString().contentEquals(getString(R.string.pause))) {
             paused = false;
-            if (audio != null && audio.getState() == AudioTrack.STATE_INITIALIZED) {
-                audio.play();
-            }
         }
         hideSystemUi();
+        autoHideMenu();
     }
 
     @Override
