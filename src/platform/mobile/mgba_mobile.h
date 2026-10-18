@@ -41,6 +41,12 @@ void mgbaMobileClearAudio(struct MgbaMobile* emu);
 int mgbaMobileWidth(const struct MgbaMobile* emu);
 int mgbaMobileHeight(const struct MgbaMobile* emu);
 int mgbaMobileSampleRate(const struct MgbaMobile* emu);
+/*
+ * Length of one emulated frame in nanoseconds (using the console's own frame
+ * rate); 0 when no console is loaded. Front ends pace with this so game speed
+ * and audio pitch match hardware instead of a rounded 60 fps.
+ */
+int64_t mgbaMobileFrameNanos(const struct MgbaMobile* emu);
 bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride);
 bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot);
 bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot);

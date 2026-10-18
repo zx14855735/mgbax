@@ -71,8 +71,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        let savedSpeed = defaults.integer(forKey: "speed")
-        speed = (1...16).contains(savedSpeed) ? savedSpeed : 1
+        // Every launch starts at 1x. Fast-forward is a temporary choice: a
+        // remembered speed would auto-resume the game, and its tape-style
+        // raised audio pitch, before the player asks for it.
         portrait = defaults.string(forKey: "orientation") == "portrait"
         buildChrome()
         audio.setSoundEnabled(defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio"))
@@ -535,7 +536,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             frames += Int64(mult)
             slices += 1
-            let remain = 1_000_000_000 / 60 - Int64(DispatchTime.now().uptimeNanoseconds - slice)
+            // Pace at the console's own frame time (about 16.74 ms, 59.73 fps,
+            // for GBA and GB): a rounded 60 fps would play games and their
+            // audio about 0.46% fast, which sounds slightly sharp.
+            let frameNanos = mgbaMobileFrameNanos(core)
+            let sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
+            let remain = sliceNanos - Int64(DispatchTime.now().uptimeNanoseconds - slice)
             if remain > 1_000_000 {
                 gate.lock()
                 gate.wait(until: Date(timeIntervalSinceNow: Double(remain) / 1_000_000_000))
@@ -551,13 +557,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 slices = 0
                 fpsStamp = now
                 // How many pacing cycles the loop really completed this
-                // window: the audio resampler follows this rate instead of a
-                // nominal 60 so heavy games do not starve it.
+                // window: the audio resampler follows this rate so heavy games
+                // that cannot hold the console's frame time do not starve it.
                 if elapsed > 0 {
                     mgbaMobileSetAudioPaceFps(core, Double(cycles) * 1_000_000_000 / Double(elapsed))
                 }
+                // Rounded so the console's own 59.73 fps still shows as the 60
+                // the counter has always displayed.
+                let shownFps = elapsed > 0 ? Int((Double(shown) * 1_000_000_000 / Double(elapsed)).rounded()) : 0
                 DispatchQueue.main.async { [weak self] in
-                    self?.fpsView.text = "\(shownSpeed)倍 \(shown)fps"
+                    self?.fpsView.text = "\(shownSpeed)倍 \(shownFps)fps"
                 }
             }
         }
@@ -881,7 +890,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func setSpeed(_ value: Int) {
         speed = min(16, max(1, value))
-        defaults.set(speed, forKey: "speed")
         refreshSpeedButtons()
         audio.flush()
         if let core { mgbaMobileClearAudio(core) }
@@ -1409,6 +1417,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if !handled { super.pressesEnded(presses, with: event) }
     }
 
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // A held fast-forward key can be cut off by a system overlay before its
+        // key-up arrives; drop the hold so the game cannot come back stuck at
+        // 16x speed with raised audio.
+        for press in presses {
+            guard let key = press.key else { continue }
+            if key.keyCode == .keyboardTab || key.keyCode == .keyboardSpacebar {
+                fastHold = false
+            }
+        }
+        super.pressesCancelled(presses, with: event)
+    }
+
     private func mapKey(_ code: UIKeyboardHIDUsage) -> Int {
         switch code {
         case .keyboardUpArrow, .keyboardW: return ControlsView.up
@@ -1481,6 +1502,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         super.viewWillDisappear(animated)
         gate.lock()
         paused = true
+        // Do not stay held at 16x (raised pitch) when the key-up never arrives
+        // because the screen went away under a held key.
+        fastHold = false
         gate.unlock()
         audio.setPaused(true)
     }

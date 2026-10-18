@@ -103,6 +103,11 @@ Java_io_mgba_android_MgbaCore_nativeSampleRate(JNIEnv*, jobject, jlong handle) {
 	return mgbaMobileSampleRate((struct MgbaMobile*) handle);
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_io_mgba_android_MgbaCore_nativeFrameNanos(JNIEnv*, jobject, jlong handle) {
+	return (jlong) mgbaMobileFrameNanos((const struct MgbaMobile*) handle);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeCopyVideo(JNIEnv* env, jobject, jlong handle, jobject bitmap) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) handle;

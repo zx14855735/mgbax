@@ -118,10 +118,14 @@ static void testGb(const char* dir) {
 	free(rom);
 	emu = mgbaMobileCreate(dir, dir, "test");
 	expect(emu != NULL, "create emu");
+	expect(mgbaMobileFrameNanos(emu) == 0, "no frame time without rom");
 	expect(!mgbaMobileLoad(emu, "missing.gb"), "reject missing rom");
 	expect(mgbaMobileLoad(emu, path), "load gb");
 	expect(mgbaMobileWidth(emu) == 160 && mgbaMobileHeight(emu) == 144, "gb dimensions");
 	expect(mgbaMobileSampleRate(emu) > 0, "gb sample rate");
+	// The console's own frame time (about 59.73 fps), so front ends can pace
+	// at hardware speed instead of a rounded 60 that plays audio sharp.
+	expect(mgbaMobileFrameNanos(emu) > 16740000 && mgbaMobileFrameNanos(emu) < 16750000, "gb frame time");
 	mgbaMobileTitle(emu, title, sizeof(title));
 	expect(strstr(title, "TESTROM") != NULL, "gb title");
 	mgbaMobileSetKeys(emu, 1u << 0);
@@ -169,6 +173,7 @@ static void testGba(const char* dir) {
 	emu = mgbaMobileCreate(dir, dir, "test");
 	expect(mgbaMobileLoad(emu, path), "load gba");
 	expect(mgbaMobileWidth(emu) == 240 && mgbaMobileHeight(emu) == 160, "gba dimensions");
+	expect(mgbaMobileFrameNanos(emu) > 16740000 && mgbaMobileFrameNanos(emu) < 16750000, "gba frame time");
 	expect(mgbaMobileRunFrames(emu, 2), "run gba frames");
 	mgbaMobileSaveFile(emu, save, sizeof(save));
 	expect(strstr(save, ".sav") != NULL, "gba save path");

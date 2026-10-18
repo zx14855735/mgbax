@@ -100,6 +100,16 @@ public final class MgbaCore {
         return handle == 0 ? 0 : nativeSampleRate(handle);
     }
 
+    /**
+     * Nanoseconds per emulated frame at the console's own rate (about 59.73 Hz
+     * for GBA and GB), or 0 when no core is loaded. The emulation loop paces
+     * with this so game speed and audio pitch match hardware instead of a
+     * rounded 60 fps.
+     */
+    public long frameNanos() {
+        return handle == 0 ? 0 : nativeFrameNanos(handle);
+    }
+
     public boolean copyVideo(Bitmap bitmap) {
         return handle != 0 && nativeCopyVideo(handle, bitmap);
     }
@@ -188,6 +198,8 @@ public final class MgbaCore {
     private static native int nativeHeight(long handle);
 
     private static native int nativeSampleRate(long handle);
+
+    private static native long nativeFrameNanos(long handle);
 
     private static native boolean nativeCopyVideo(long handle, Bitmap bitmap);
 

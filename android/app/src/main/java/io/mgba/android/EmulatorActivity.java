@@ -131,6 +131,13 @@ public class EmulatorActivity extends AppCompatActivity {
     private long nextFastPresent;
     private int outputRate;
     private int sourceRate;
+    /**
+     * Wall-clock target for one emulation slice. This is one frame of the
+     * emulated console (about 16.74 ms, i.e. 59.73 fps, for GBA and GB), not a
+     * rounded 60: pacing at 60 would play games and their audio about 0.46%
+     * fast, which sounds slightly sharp.
+     */
+    private long sliceNanos = 1_000_000_000L / 60L;
     private final short[] audioRead = new short[AUDIO_READ_FRAMES * 2];
     private final short[] audioCarry = new short[AUDIO_CARRY_FRAMES * 2];
     private int carryFrames;
@@ -193,8 +200,9 @@ public class EmulatorActivity extends AppCompatActivity {
         });
         findViewById(R.id.btn_bios).setOnClickListener(v -> openDocument(REQ_BIOS));
         pauseButton.setOnClickListener(v -> setPaused(!paused));
-        int savedSpeed = getPreferences(MODE_PRIVATE).getInt("speed", 1);
-        speed = savedSpeed >= 1 && savedSpeed <= 16 ? savedSpeed : 1;
+        // Every launch starts at 1x. Fast-forward is a temporary choice: a
+        // remembered speed would auto-resume the game, and its tape-style
+        // raised audio pitch, before the player asks for it.
         buildSpeedBar();
         fastButton.setOnClickListener(v -> speedBar.setVisibility(speedBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         slotButton.setOnClickListener(v -> {
@@ -838,7 +846,8 @@ public class EmulatorActivity extends AppCompatActivity {
                     int n = Math.min(step, mult - done);
                     core.runFrames(touchKeys | hwKeys, n);
                     // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
-                    // Keep in sync with MOBILE_AUDIO_PACE_FPS on the native side.
+                    // The resampler follows the console's true frame time; the
+                    // measured pace is reported to the core once a second.
                     pumpAudio();
                     done += n;
                 }
@@ -853,7 +862,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
                 frames += mult;
                 slices++;
-                long remain = 1_000_000_000L / 60L - (System.nanoTime() - sliceStart);
+                long remain = sliceNanos - (System.nanoTime() - sliceStart);
                 if (remain > 1_000_000L) {
                     Thread.sleep(remain / 1_000_000L, (int) (remain % 1_000_000L));
                 }
@@ -867,10 +876,14 @@ public class EmulatorActivity extends AppCompatActivity {
                     slices = 0;
                     fpsStamp = now;
                     // How many pacing cycles the loop really completed this
-                    // window: the audio resampler follows this rate instead of
-                    // a nominal 60 so heavy games do not starve it.
+                    // window: the audio resampler follows this rate so heavy
+                    // games that cannot hold the console's frame time do not
+                    // starve it.
                     core.setAudioPaceFps(elapsed > 0 ? cycles * 1_000_000_000f / elapsed : 0f);
-                    runOnUiThread(() -> fpsView.setText(shownSpeed + "倍 " + shown + "fps"));
+                    // Rounded so the console's own 59.73 fps still shows as the
+                    // 60 the counter has always displayed.
+                    long shownFps = elapsed > 0 ? Math.round(shown * 1_000_000_000.0 / elapsed) : 0;
+                    runOnUiThread(() -> fpsView.setText(shownSpeed + "倍 " + shownFps + "fps"));
                 }
             } catch (InterruptedException e) {
                 if (!running) {
@@ -900,6 +913,8 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.load_failed));
             return;
         }
+        long frameNanos = core.frameNanos();
+        sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000L / 60L;
         setupAudio();
         paused = false;
         String title = core.title();
@@ -1963,7 +1978,6 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private void setSpeed(int value) {
         speed = Math.max(1, Math.min(16, value));
-        getPreferences(MODE_PRIVATE).edit().putInt("speed", speed).apply();
         refreshSpeedButtons();
     }
 
@@ -2102,6 +2116,11 @@ public class EmulatorActivity extends AppCompatActivity {
         super.onWindowFocusChanged(hasFocus);
         if (hasFocus) {
             hideSystemUi();
+        } else {
+            // A key-up for the fast-forward hold can get lost (window switched,
+            // gamepad disconnected); drop the hold so the game cannot come back
+            // stuck at 16x speed with raised audio.
+            fastHold = false;
         }
     }
 
@@ -2122,6 +2141,9 @@ public class EmulatorActivity extends AppCompatActivity {
             leftForStorage = true;
         }
         paused = true;
+        // Do not stay held at 16x (raised pitch) when the key-up never arrives
+        // because the app went to the background under a held key.
+        fastHold = false;
         inputHandler.removeCallbacks(armTurbo);
         stopTurbo();
         if (audio != null) {

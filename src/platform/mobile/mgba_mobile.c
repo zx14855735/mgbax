@@ -86,14 +86,15 @@ struct MgbaMobile {
 };
 
 /*
- * Both mobile front ends nominally pace emulation at 60 frames per second no
- * matter what the emulated console's own frame rate is, so the core hands the
- * front end that many native frame times worth of audio per second. The
- * resampler input rate has to be scaled by the rate the front end is actually
- * managing, otherwise the stream slowly drifts away from the audio device's
- * clock whenever a heavy game makes the front end miss its target. Front ends
- * feed that rate back with mgbaMobileSetAudioPaceFps; until they do, the
- * nominal 60 is assumed.
+ * The mobile front ends pace emulation at the emulated console's own frame
+ * rate (about 59.73 fps for GBA and GB), so games and audio run at hardware
+ * speed. The resampler input rate still has to be scaled by the rate the front
+ * end is actually managing: that is the console's frame rate when the device
+ * keeps up, but a heavy game makes the front end miss its target and the
+ * stream would slowly drift away from the audio device's clock. Front ends
+ * feed the measured rate back with mgbaMobileSetAudioPaceFps; until they do,
+ * the console's own frame rate is assumed, with this nominal rate left as the
+ * fallback for consoles the core cannot describe.
  */
 #define MOBILE_AUDIO_PACE_FPS 60.0
 /* Range of front end paces the feedback is trusted for. */
@@ -913,6 +914,19 @@ static void processAudioResampler(struct MgbaMobile* emu) {
 	resampler->timestamp = timestamp;
 }
 
+/* Frame rate of the emulated console, or the nominal fallback when unknown. */
+static double audioNativeFps(const struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return MOBILE_AUDIO_PACE_FPS;
+	}
+	uint32_t frequency = emu->core->frequency(emu->core);
+	uint32_t frameCycles = emu->core->frameCycles(emu->core);
+	if (!frequency || !frameCycles) {
+		return MOBILE_AUDIO_PACE_FPS;
+	}
+	return (double) frequency / (double) frameCycles;
+}
+
 /*
  * Reads audio converted to the output rate set by mgbaMobileSetAudioOutput.
  *
@@ -948,7 +962,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	} else if (drift < -0.05f) {
 		drift = -0.05f;
 	}
-	double pace = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : MOBILE_AUDIO_PACE_FPS;
+	double pace = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : audioNativeFps(emu);
 	double fpsRatio = mCoreCalculateFramerateRatio(emu->core, pace);
 	if (fpsRatio <= 0.1 || fpsRatio > 20.0) {
 		// Unknown frame timing (should not happen): assume the front end paces
@@ -978,6 +992,25 @@ int mgbaMobileSampleRate(const struct MgbaMobile* emu) {
 		return 0;
 	}
 	return (int) emu->core->audioSampleRate(emu->core);
+}
+
+/*
+ * Length of one emulated frame in nanoseconds. Front ends pace their frame
+ * slices with this so the game and its audio run at the console's own speed
+ * (about 59.73 fps for GBA and GB) instead of a rounded 60, which would play
+ * everything slightly fast and sharp. 0 when no console is loaded or its frame
+ * timing is unknown.
+ */
+int64_t mgbaMobileFrameNanos(const struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	uint32_t frequency = emu->core->frequency(emu->core);
+	uint32_t frameCycles = emu->core->frameCycles(emu->core);
+	if (!frequency || !frameCycles) {
+		return 0;
+	}
+	return ((int64_t) frameCycles * 1000000000 + frequency / 2) / frequency;
 }
 
 bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride) {
