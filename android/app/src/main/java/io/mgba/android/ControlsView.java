@@ -206,7 +206,14 @@ public class ControlsView extends View {
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         float d = getResources().getDisplayMetrics().density;
         float pad = 10 * d;
+        float menuW = 64 * d;
+        float menuH = 32 * d;
+        float center = w / 2f;
+        // Keep the d-pad clear of SELECT: on the narrow portrait screen a
+        // full sized d-pad would otherwise sit on top of it.
+        float dpadRoom = center - menuW - 8 * d - pad - 6 * d;
         float dpadSize = Math.min(240 * d, Math.min(w, h) * 0.62f);
+        dpadSize = Math.min(dpadSize, Math.max(48 * d, dpadRoom));
         dpad.set(pad, h - pad - dpadSize, pad + dpadSize, h - pad);
 
         float shoulderW = 72 * d;
@@ -222,10 +229,7 @@ public class ControlsView extends View {
         slopA = 18 * d;
         slopFace = 10 * d;
 
-        float menuW = 64 * d;
-        float menuH = 32 * d;
         float menuTop = h - pad - menuH;
-        float center = w / 2f;
         buttonSelect.set(center - menuW - 8 * d, menuTop, center - 8 * d, menuTop + menuH);
         buttonStart.set(center + 8 * d, menuTop, center + 8 * d + menuW, menuTop + menuH);
         density = d;

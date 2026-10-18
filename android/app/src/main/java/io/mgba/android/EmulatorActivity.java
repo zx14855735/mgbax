@@ -8,6 +8,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -101,6 +102,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private Button slotButton;
     private View menuBar;
     private TextView menuButton;
+    private ScreenArea screenArea;
     private final Runnable hideMenu = this::hideMenuNow;
     private HorizontalScrollView speedBar;
     private final Button[] speedButtons = new Button[17];
@@ -169,6 +171,7 @@ public class EmulatorActivity extends AppCompatActivity {
         setContentView(R.layout.activity_emulator);
         gameView = findViewById(R.id.game);
         hint = findViewById(R.id.hint);
+        screenArea = findViewById(R.id.screen_area);
         fpsView = findViewById(R.id.fps);
         pauseButton = findViewById(R.id.btn_pause);
         fastButton = findViewById(R.id.btn_fast);
@@ -233,6 +236,7 @@ public class EmulatorActivity extends AppCompatActivity {
         // The first placement runs before the handle is measured; redo it once
         // its real height is known so it lines up with the START key.
         menuButton.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> positionMenuButton());
+        applyScreenMode();
 
         gameView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
@@ -779,7 +783,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
-    /** Keeps the menu handle a little to the right of the on-screen START key. */
+    /**
+     * Keeps the menu handle out of the keys' way: next to the on-screen START
+     * key in landscape, on the top edge of the lower screen in portrait.
+     */
     private void positionMenuButton() {
         if (menuButton == null || controls == null) {
             return;
@@ -788,15 +795,25 @@ public class EmulatorActivity extends AppCompatActivity {
         if (!(params instanceof FrameLayout.LayoutParams)) {
             return;
         }
-        RectF start = new RectF();
-        controls.getStartRect(start);
-        if (start.width() <= 0f) {
-            return;
-        }
-        int height = menuButton.getHeight() > 0 ? menuButton.getHeight() : dp(24);
         FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) params;
-        int left = (int) start.right + dp(4);
-        int top = (int) start.centerY() - height / 2;
+        int height = menuButton.getHeight() > 0 ? menuButton.getHeight() : dp(24);
+        int left;
+        int top;
+        if (screenArea != null && screenArea.isPortraitMode()) {
+            // Portrait: the lower screen belongs to the keys, so the handle
+            // moves to its top edge instead of crowding START and A. The stage
+            // centres it horizontally; only the offset below the split is set.
+            left = 0;
+            top = dp(8);
+        } else {
+            RectF start = new RectF();
+            controls.getStartRect(start);
+            if (start.width() <= 0f) {
+                return;
+            }
+            left = (int) start.right + dp(4);
+            top = (int) start.centerY() - height / 2;
+        }
         if (lp.gravity == (Gravity.TOP | Gravity.START) && lp.leftMargin == left && lp.topMargin == top) {
             return;
         }
@@ -2044,6 +2061,43 @@ public class EmulatorActivity extends AppCompatActivity {
         setRequestedOrientation(portrait
                 ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                 : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+    }
+
+    /** Orientation changes are handled in place, so rearrange the chrome here. */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        applyScreenMode();
+    }
+
+    /**
+     * Portrait becomes a DS-like pair of screens: the game on the upper screen,
+     * the keys and the menu below. Landscape keeps the classic full-screen
+     * overlay with the menu bar on top.
+     */
+    private void applyScreenMode() {
+        if (screenArea == null) {
+            return;
+        }
+        boolean portrait = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_PORTRAIT;
+        screenArea.setPortraitMode(portrait);
+        ViewGroup root = findViewById(R.id.root);
+        if (root == null || menuBar == null || root.indexOfChild(menuBar) < 0) {
+            return;
+        }
+        if (portrait) {
+            // The menu bar docks below the split, as the last row of the screen.
+            if (root.indexOfChild(menuBar) != root.getChildCount() - 1) {
+                root.removeView(menuBar);
+                root.addView(menuBar);
+            }
+        } else if (root.indexOfChild(menuBar) != 1) {
+            // Back under the key editor, above the stage.
+            root.removeView(menuBar);
+            root.addView(menuBar, 1);
+        }
+        positionMenuButton();
     }
 
     private void setPaused(boolean value) {

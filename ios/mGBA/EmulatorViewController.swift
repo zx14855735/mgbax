@@ -48,6 +48,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let layoutBar = UIView()
     private let bar = UIScrollView()
     private let stage = UIView()
+    private let lowerScreen = UIView()
+    private let hinge = UIView()
+    private var stageLandscape: [NSLayoutConstraint] = []
+    private var stagePortrait: [NSLayoutConstraint] = []
+    private var appliedStagePortrait: Bool?
     private var menuButton: UIButton!
     private var menuVisible = true
     private var speedBarWanted = false
@@ -150,6 +155,31 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         applyOrientation()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        applyStageLayout()
+    }
+
+    /** Portrait splits the stage into a DS-like pair of screens. */
+    private func applyStageLayout() {
+        if appliedStagePortrait == portrait {
+            return
+        }
+        appliedStagePortrait = portrait
+        if portrait {
+            NSLayoutConstraint.deactivate(stageLandscape)
+            NSLayoutConstraint.activate(stagePortrait)
+        } else {
+            NSLayoutConstraint.deactivate(stagePortrait)
+            NSLayoutConstraint.activate(stageLandscape)
+        }
+        hinge.isHidden = !portrait
+        // The handle follows the keys, which move between the screens.
+        menuLeft = -1
+        menuTop = -1
+        layoutMenuButton()
+    }
+
     private func buildChrome() {
         bar.backgroundColor = UIColor(white: 22 / 255, alpha: 1)
         bar.showsHorizontalScrollIndicator = false
@@ -238,9 +268,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         hint.textColor = UIColor(white: 0.87, alpha: 1)
         hint.numberOfLines = 0
         hint.textAlignment = .center
+        // Portrait turns the stage into a DS-like pair of screens: a black
+        // upper screen with the game, a slightly grey lower one with the keys.
+        lowerScreen.backgroundColor = UIColor(white: 0.043, alpha: 1)
+        hinge.backgroundColor = UIColor(white: 0.18, alpha: 1)
+        hinge.isUserInteractionEnabled = false
+        stage.addSubview(lowerScreen)
         stage.addSubview(gameView)
         stage.addSubview(hint)
         stage.addSubview(controls)
+        stage.addSubview(hinge)
         buildLayoutBar()
         // Always-visible handle that pops the menu open. Added last so it stays
         // above the controls and gets taps first; placed by the activity just
@@ -263,7 +300,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let menuPan = UIPanGestureRecognizer(target: self, action: #selector(menuTouched(_:)))
         menuPan.cancelsTouchesInView = false
         view.addGestureRecognizer(menuPan)
-        for item in [bar, stack, speedBar, savePathView, stage, gameView, hint, controls, layoutBar] {
+        for item in [bar, stack, speedBar, savePathView, stage, lowerScreen, gameView, hint, controls, layoutBar, hinge] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
         view.addSubview(bar)
@@ -273,8 +310,32 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         view.addSubview(layoutBar)
         speedBarHeight = speedBar.heightAnchor.constraint(equalToConstant: 0)
         savePathHeight = savePathView.heightAnchor.constraint(equalToConstant: 0)
-        NSLayoutConstraint.activate([
+        // Landscape: the menu bar on top, the keys over the full-screen game.
+        stageLandscape = [
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            speedBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
+            savePathView.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
+            stage.topAnchor.constraint(equalTo: savePathView.bottomAnchor),
+            stage.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            gameView.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            controls.topAnchor.constraint(equalTo: stage.topAnchor),
+            controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            hint.centerYAnchor.constraint(equalTo: stage.centerYAnchor)
+        ]
+        // Portrait: a DS-like split, game on the upper screen, keys and the
+        // menu (docked at the bottom) on the lower one.
+        stagePortrait = [
+            stage.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            stage.bottomAnchor.constraint(equalTo: savePathView.topAnchor),
+            savePathView.bottomAnchor.constraint(equalTo: speedBar.topAnchor),
+            speedBar.bottomAnchor.constraint(equalTo: bar.topAnchor),
+            bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            gameView.heightAnchor.constraint(equalTo: stage.heightAnchor, multiplier: 0.5),
+            controls.topAnchor.constraint(equalTo: gameView.bottomAnchor),
+            controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            hint.centerYAnchor.constraint(equalTo: gameView.centerYAnchor)
+        ]
+        NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bar.heightAnchor.constraint(equalToConstant: 44),
@@ -283,7 +344,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 4),
             stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -4),
             stack.heightAnchor.constraint(equalTo: bar.heightAnchor),
-            speedBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
             speedBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             speedBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             speedBarHeight,
@@ -292,32 +352,38 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             speedStack.leadingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.leadingAnchor, constant: 4),
             speedStack.trailingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.trailingAnchor, constant: -4),
             speedStack.heightAnchor.constraint(equalTo: speedBar.frameLayoutGuide.heightAnchor),
-            savePathView.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
             savePathView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             savePathView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             savePathHeight,
-            stage.topAnchor.constraint(equalTo: savePathView.bottomAnchor),
             stage.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stage.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            stage.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             gameView.topAnchor.constraint(equalTo: stage.topAnchor),
-            gameView.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             gameView.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
             gameView.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
-            hint.centerXAnchor.constraint(equalTo: stage.centerXAnchor),
-            hint.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
-            hint.leadingAnchor.constraint(greaterThanOrEqualTo: stage.leadingAnchor, constant: 24),
-            hint.trailingAnchor.constraint(lessThanOrEqualTo: stage.trailingAnchor, constant: -24),
-            controls.topAnchor.constraint(equalTo: stage.topAnchor),
-            controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             controls.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
             controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            hint.centerXAnchor.constraint(equalTo: stage.centerXAnchor),
+            hint.leadingAnchor.constraint(greaterThanOrEqualTo: stage.leadingAnchor, constant: 24),
+            hint.trailingAnchor.constraint(lessThanOrEqualTo: stage.trailingAnchor, constant: -24),
+            // The lower screen collapses to nothing in landscape, where it
+            // simply ends where the game does.
+            lowerScreen.topAnchor.constraint(equalTo: gameView.bottomAnchor),
+            lowerScreen.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            lowerScreen.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            lowerScreen.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            hinge.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            hinge.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            hinge.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
+            hinge.heightAnchor.constraint(equalToConstant: 2),
             menuLeading,
             menuCenterY,
             layoutBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             layoutBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             layoutBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
+        NSLayoutConstraint.activate(portrait ? stagePortrait : stageLandscape)
+        appliedStagePortrait = portrait
+        hinge.isHidden = !portrait
     }
 
     private func buildLayoutBar() {
@@ -985,13 +1051,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if inside { armMenuAutoHide() }
     }
 
-    /// Keeps the menu handle a little to the right of the on-screen START key.
+    /// Keeps the menu handle out of the keys' way: next to the on-screen START
+    /// key in landscape, on the top edge of the lower screen in portrait.
     private func layoutMenuButton() {
         guard menuButton != nil, menuLeading != nil, menuCenterY != nil else { return }
-        let start = controls.startButtonRect()
-        if start.width <= 0 { return }
-        let left = start.maxX + 4
-        let top = start.midY
+        let size = menuButton.bounds.size == .zero ? menuButton.intrinsicContentSize : menuButton.bounds.size
+        let left: CGFloat
+        let top: CGFloat
+        if portrait {
+            left = max(4, (stage.bounds.width - size.width) / 2)
+            top = stage.bounds.height / 2 + 8 + size.height / 2
+        } else {
+            let start = controls.startButtonRect()
+            if start.width <= 0 { return }
+            left = start.maxX + 4
+            top = start.midY
+        }
         if abs(left - menuLeft) < 0.5 && abs(top - menuTop) < 0.5 { return }
         menuLeft = left
         menuTop = top

@@ -161,7 +161,14 @@ final class ControlsView: UIView {
         let w = bounds.width
         let h = bounds.height
         let pad: CGFloat = 10
-        let dpadSize = min(240, min(w, h) * 0.62)
+        let menuW: CGFloat = 64
+        let menuH: CGFloat = 32
+        let center = w / 2
+        // Keep the d-pad clear of SELECT: on the narrow portrait screen a
+        // full sized d-pad would otherwise sit on top of it.
+        let dpadRoom = center - menuW - 8 - pad - 6
+        var dpadSize = min(240, min(w, h) * 0.62)
+        dpadSize = min(dpadSize, max(48, dpadRoom))
         dpad = CGRect(x: pad, y: h - pad - dpadSize, width: dpadSize, height: dpadSize)
         // Shoulder buttons sit a little lower so the top edge stays reachable.
         let shoulderTop = pad + 40
@@ -171,10 +178,7 @@ final class ControlsView: UIView {
         let face: CGFloat = 58
         buttonA = CGRect(x: w - pad - faceA, y: h - pad - faceA, width: faceA, height: faceA)
         buttonB = CGRect(x: buttonA.minX - face - 14, y: buttonA.minY - 36, width: face, height: face)
-        let menuW: CGFloat = 64
-        let menuH: CGFloat = 32
         let menuTop = h - pad - menuH
-        let center = w / 2
         buttonSelect = CGRect(x: center - menuW - 8, y: menuTop, width: menuW, height: menuH)
         buttonStart = CGRect(x: center + 8, y: menuTop, width: menuW, height: menuH)
         slopA = 18

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#000000"
@@ -217,7 +218,10 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <FrameLayout
+    <!-- Landscape: keys float over the game. Portrait: a DS-like split, the
+         game on the upper screen and the keys on the lower one. -->
+    <io.mgba.android.ScreenArea
+        android:id="@+id/screen_area"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
@@ -261,5 +265,5 @@
             android:text="@string/menu"
             android:textColor="#8CFFFFFF"
             android:textSize="16sp" />
-    </FrameLayout>
+    </io.mgba.android.ScreenArea>
 </LinearLayout>
