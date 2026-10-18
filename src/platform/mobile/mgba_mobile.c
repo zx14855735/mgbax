@@ -78,16 +78,27 @@ struct MgbaMobile {
 	struct mAudioBuffer audioOut;
 	bool audioResamplerInited;
 	int audioOutRate;
+	/* Linear copy of the core's audio the interpolator runs against. */
+	int16_t* audioWindow;
+	size_t audioWindowFrames;
+	/* Frames per second the front end actually paces at. */
+	double audioPaceFps;
 };
 
 /*
- * Both mobile front ends pace emulation at a fixed 60 frames per second no
+ * Both mobile front ends nominally pace emulation at 60 frames per second no
  * matter what the emulated console's own frame rate is, so the core hands the
- * front end 60 native frame times worth of audio per second. The resampler
- * input rate has to be scaled by that same factor, otherwise the stream would
- * slowly drift away from the audio device's clock.
+ * front end that many native frame times worth of audio per second. The
+ * resampler input rate has to be scaled by the rate the front end is actually
+ * managing, otherwise the stream slowly drifts away from the audio device's
+ * clock whenever a heavy game makes the front end miss its target. Front ends
+ * feed that rate back with mgbaMobileSetAudioPaceFps; until they do, the
+ * nominal 60 is assumed.
  */
 #define MOBILE_AUDIO_PACE_FPS 60.0
+/* Range of front end paces the feedback is trusted for. */
+#define MOBILE_AUDIO_PACE_FPS_MIN 15.0
+#define MOBILE_AUDIO_PACE_FPS_MAX 240.0
 /* How much already-resampled audio the reader may hold back between pumps. */
 #define MOBILE_AUDIO_OUT_FRAMES 16384
 
@@ -114,6 +125,9 @@ static void resetAudioOutput(struct MgbaMobile* emu) {
 }
 
 static void deinitAudioOutput(struct MgbaMobile* emu) {
+	free(emu->audioWindow);
+	emu->audioWindow = NULL;
+	emu->audioWindowFrames = 0;
 	if (!emu->audioResamplerInited) {
 		return;
 	}
@@ -183,6 +197,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (emu->statePath[0]) {
 		mobile_mkdir(emu->statePath);
 	}
+	emu->audioPaceFps = MOBILE_AUDIO_PACE_FPS;
 	emu->link = netLinkCreate();
 	emu->gbaLink.emu = emu;
 	emu->gbLink.emu = emu;
@@ -781,6 +796,124 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate) {
 }
 
 /*
+ * Feeds back how many frames per second the front end is actually managing to
+ * pace emulation at. The resampler scales its input rate by the emulated
+ * console's frame rate over this pace, so a game the device cannot run at full
+ * speed still produces audio the playback buffer can consume without
+ * underruns. Call about once a second with a measured value; small
+ * fluctuations are eased over so a single noisy window cannot yank the stream
+ * around, while a real change is followed immediately.
+ */
+void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
+	if (!emu || !(fps > 0.0)) {
+		return;
+	}
+	if (fps < MOBILE_AUDIO_PACE_FPS_MIN) {
+		fps = MOBILE_AUDIO_PACE_FPS_MIN;
+	} else if (fps > MOBILE_AUDIO_PACE_FPS_MAX) {
+		fps = MOBILE_AUDIO_PACE_FPS_MAX;
+	}
+	double old = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : MOBILE_AUDIO_PACE_FPS;
+	double delta = fps - old;
+	if (delta < 0.0) {
+		delta = -delta;
+	}
+	if (delta > old * 0.1) {
+		if (fps != emu->audioPaceFps) {
+			MOBILE_LOGI("Audio pace %.1f fps", fps);
+		}
+		emu->audioPaceFps = fps;
+	} else {
+		emu->audioPaceFps = old + (fps - old) * 0.5;
+	}
+}
+
+struct MgbaMobileAudioWindow {
+	int16_t* samples;
+	size_t frames;
+	unsigned channels;
+	unsigned channel;
+};
+
+static int16_t _audioWindowSampleAt(int index, const void* context) {
+	const struct MgbaMobileAudioWindow* window = context;
+	if (index < 0 || (size_t) index >= window->frames) {
+		return 0;
+	}
+	return window->samples[(size_t) index * window->channels + window->channel];
+}
+
+static bool ensureAudioWindow(struct MgbaMobile* emu, size_t frames) {
+	if (!frames) {
+		return false;
+	}
+	if (emu->audioWindow && emu->audioWindowFrames >= frames) {
+		return true;
+	}
+	// Storage for stereo int16 frames; mobile cores never use more channels.
+	int16_t* window = (int16_t*) realloc(emu->audioWindow, frames * 2 * sizeof(int16_t));
+	if (!window) {
+		return false;
+	}
+	emu->audioWindow = window;
+	emu->audioWindowFrames = frames;
+	return true;
+}
+
+/*
+ * mAudioResamplerProcess with the interpolator running against a linear copy
+ * of the source. The stock implementation peeks every tap straight out of the
+ * source's ring buffer, which costs one wrap-handling dump per tap and made
+ * SINC resampling too slow to keep up on phones. Here the ring buffer is only
+ * touched twice per pump - one bulk dump and one seek - while the timestep
+ * accumulation, the stop conditions and the amount of source consumed stay
+ * identical to the stock resampler.
+ */
+static void processAudioResampler(struct MgbaMobile* emu) {
+	struct mAudioResampler* resampler = &emu->audioResampler;
+	struct mAudioBuffer* source = resampler->source;
+	struct mAudioBuffer* destination = resampler->destination;
+	unsigned channels = source->channels;
+	size_t available = mAudioBufferAvailable(source);
+	if (!channels || channels > 2 || !ensureAudioWindow(emu, available)) {
+		// Unexpected format or out of memory: take the slow but correct path.
+		mAudioResamplerProcess(resampler);
+		return;
+	}
+	size_t dumped = mAudioBufferDump(source, emu->audioWindow, available, 0);
+	struct MgbaMobileAudioWindow window = {
+		.samples = emu->audioWindow,
+		.frames = dumped,
+		.channels = channels,
+	};
+	struct mInterpolationData data = {
+		.at = _audioWindowSampleAt,
+		.context = &window,
+	};
+	struct mInterpolator* interp = &resampler->interp;
+	double timestep = resampler->sourceRate / resampler->destRate;
+	double timestamp = resampler->timestamp;
+	int16_t samples[2] = { 0 };
+	while (timestamp + resampler->highWaterMark < (double) dumped && !mAudioBufferFull(destination)) {
+		unsigned channel;
+		for (channel = 0; channel < channels; ++channel) {
+			window.channel = channel;
+			samples[channel] = interp->interpolate(interp, &data, timestamp, timestep);
+		}
+		if (!mAudioBufferWrite(destination, samples, 1)) {
+			break;
+		}
+		timestamp += timestep;
+	}
+	if (resampler->consume && timestamp > resampler->lowWaterMark) {
+		size_t drop = timestamp - resampler->lowWaterMark;
+		drop = mAudioBufferRead(source, NULL, drop);
+		timestamp -= drop;
+	}
+	resampler->timestamp = timestamp;
+}
+
+/*
  * Reads audio converted to the output rate set by mgbaMobileSetAudioOutput.
  *
  * speed is how many emulated frames the front end runs per paced frame (the
@@ -815,8 +948,9 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	} else if (drift < -0.05f) {
 		drift = -0.05f;
 	}
-	double fpsRatio = mCoreCalculateFramerateRatio(emu->core, MOBILE_AUDIO_PACE_FPS);
-	if (fpsRatio <= 0.5 || fpsRatio > 2.0) {
+	double pace = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : MOBILE_AUDIO_PACE_FPS;
+	double fpsRatio = mCoreCalculateFramerateRatio(emu->core, pace);
+	if (fpsRatio <= 0.1 || fpsRatio > 20.0) {
 		// Unknown frame timing (should not happen): assume the front end paces
 		// audio at the console's own frame rate.
 		fpsRatio = 1.0;
@@ -824,7 +958,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	double inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
 	size_t got = mAudioBufferRead(&emu->audioOut, out, (size_t) maxFrames);
 	mAudioResamplerSetSource(&emu->audioResampler, source, inRate, true);
-	mAudioResamplerProcess(&emu->audioResampler);
+	processAudioResampler(emu);
 	if (got < (size_t) maxFrames) {
 		got += mAudioBufferRead(&emu->audioOut, out + got * 2, (size_t) maxFrames - got);
 	}

@@ -30,6 +30,13 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate);
  * keep the front end's playback buffer at its target level.
  */
 int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, int speed, float drift);
+/*
+ * Frames per second the front end is actually pacing emulation at (measured,
+ * not nominal). Call about once a second; the resampler follows it so audio
+ * stays locked to the playback device even when the front end cannot hold its
+ * target rate. Values outside 15-240 are clamped.
+ */
+void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps);
 void mgbaMobileClearAudio(struct MgbaMobile* emu);
 int mgbaMobileWidth(const struct MgbaMobile* emu);
 int mgbaMobileHeight(const struct MgbaMobile* emu);

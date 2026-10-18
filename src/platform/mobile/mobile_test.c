@@ -263,6 +263,20 @@ static void testAudioOut(const char* dir) {
 	expect(fast < plain && plain < slow, "drift moves the output rate");
 	expect((double) plain / fast > 1.015 && (double) plain / fast < 1.025, "positive drift drains");
 	expect((double) slow / plain > 1.015 && (double) slow / plain < 1.025, "negative drift fills");
+	// The pace feedback stretches the same emulated audio into more output: a
+	// front end that only manages half the slices per second needs twice as
+	// many output frames, or the playback buffer would slowly run dry.
+	plain = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	slow = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect((double) slow / plain > 1.9 && (double) slow / plain < 2.1, "half pace doubles the stream");
+	// Out-of-range measurements are clamped instead of trusted.
+	mgbaMobileSetAudioPaceFps(emu, 1.0);
+	fast = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect((double) fast / plain > 3.8 && (double) fast / plain < 4.2, "out-of-range pace is clamped");
+	mgbaMobileSetAudioPaceFps(emu, 60.0);
+	total = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect((double) total / plain > 0.98 && (double) total / plain < 1.02, "pace returns to nominal");
 	total = drainAudio(emu, 30, out, 8192, 4, 0.0f);
 	expect((double) plain / total > 3.8 && (double) plain / total < 4.2, "speed scales the output rate");
 	// Fast-forward must be run in small steps: the core's audio buffer holds

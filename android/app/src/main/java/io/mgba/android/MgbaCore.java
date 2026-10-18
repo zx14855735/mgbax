@@ -71,6 +71,17 @@ public final class MgbaCore {
         return handle == 0 ? 0 : nativeReadAudioOut(handle, out, speed, drift);
     }
 
+    /**
+     * Reports how many frames per second the emulation loop is really managing
+     * so the resampler can follow the device instead of a nominal 60. Call
+     * about once a second with a measured average.
+     */
+    public void setAudioPaceFps(float fps) {
+        if (handle != 0) {
+            nativeSetAudioPaceFps(handle, fps);
+        }
+    }
+
     public void clearAudio() {
         if (handle != 0) {
             nativeClearAudio(handle);
@@ -166,6 +177,7 @@ public final class MgbaCore {
     private static native boolean nativeRunFrames(long handle, int keys, int count);
 
     private static native int nativeReadAudioOut(long handle, short[] out, int speed, float drift);
+    private static native void nativeSetAudioPaceFps(long handle, float fps);
 
     private static native boolean nativeSetAudioOutput(long handle, int outRate);
 

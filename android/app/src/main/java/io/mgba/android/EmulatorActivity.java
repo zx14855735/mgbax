@@ -801,6 +801,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private void emulationLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         long frames = 0;
+        long slices = 0;
         long fpsStamp = System.nanoTime();
         while (running) {
             try {
@@ -816,6 +817,11 @@ public class EmulatorActivity extends AppCompatActivity {
                     runCommand(cmd);
                 }
                 if (!surfaceReady || paused || !core.isLoaded()) {
+                    // Do not carry stale pacing across a paused stretch: a
+                    // resumed game would otherwise be reported as a slow front
+                    // end for one window.
+                    slices = 0;
+                    fpsStamp = System.nanoTime();
                     Thread.sleep(16);
                     continue;
                 }
@@ -846,6 +852,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     }
                 }
                 frames += mult;
+                slices++;
                 long remain = 1_000_000_000L / 60L - (System.nanoTime() - sliceStart);
                 if (remain > 1_000_000L) {
                     Thread.sleep(remain / 1_000_000L, (int) (remain % 1_000_000L));
@@ -853,9 +860,16 @@ public class EmulatorActivity extends AppCompatActivity {
                 long now = System.nanoTime();
                 if (now - fpsStamp >= 1000000000L) {
                     long shown = frames;
+                    long cycles = slices;
+                    long elapsed = now - fpsStamp;
                     int shownSpeed = fastHold ? Math.max(speed, 16) : speed;
                     frames = 0;
+                    slices = 0;
                     fpsStamp = now;
+                    // How many pacing cycles the loop really completed this
+                    // window: the audio resampler follows this rate instead of
+                    // a nominal 60 so heavy games do not starve it.
+                    core.setAudioPaceFps(elapsed > 0 ? cycles * 1_000_000_000f / elapsed : 0f);
                     runOnUiThread(() -> fpsView.setText(shownSpeed + "倍 " + shown + "fps"));
                 }
             } catch (InterruptedException e) {

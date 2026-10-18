@@ -465,6 +465,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func emulationLoop() {
         var frames: Int64 = 0
+        var slices: Int64 = 0
         var fpsStamp = DispatchTime.now().uptimeNanoseconds
         var nextFastPresent: UInt64 = 0
         let audioIn = UnsafeMutablePointer<Int16>.allocate(capacity: 8192 * 2)
@@ -488,6 +489,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             if let path { loadRom(path) }
             if cmd != 0 { runCommand(cmd) }
             if isPaused || !mgbaMobileIsLoaded(core) {
+                // Do not carry stale pacing across a paused stretch: a resumed
+                // game would otherwise be reported as a slow front end for one
+                // window.
+                slices = 0
+                fpsStamp = DispatchTime.now().uptimeNanoseconds
                 gate.lock()
                 let until = Date(timeIntervalSinceNow: 0.016)
                 gate.wait(until: until)
@@ -528,6 +534,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
             frames += Int64(mult)
+            slices += 1
             let remain = 1_000_000_000 / 60 - Int64(DispatchTime.now().uptimeNanoseconds - slice)
             if remain > 1_000_000 {
                 gate.lock()
@@ -537,9 +544,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let now = DispatchTime.now().uptimeNanoseconds
             if now &- fpsStamp >= 1_000_000_000 {
                 let shown = frames
+                let cycles = slices
+                let elapsed = now &- fpsStamp
                 let shownSpeed = mult
                 frames = 0
+                slices = 0
                 fpsStamp = now
+                // How many pacing cycles the loop really completed this
+                // window: the audio resampler follows this rate instead of a
+                // nominal 60 so heavy games do not starve it.
+                if elapsed > 0 {
+                    mgbaMobileSetAudioPaceFps(core, Double(cycles) * 1_000_000_000 / Double(elapsed))
+                }
                 DispatchQueue.main.async { [weak self] in
                     self?.fpsView.text = "\(shownSpeed)倍 \(shown)fps"
                 }

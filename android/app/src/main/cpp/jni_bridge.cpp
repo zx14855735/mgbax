@@ -79,6 +79,11 @@ Java_io_mgba_android_MgbaCore_nativeReadAudioOut(JNIEnv* env, jobject, jlong han
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetAudioPaceFps(JNIEnv*, jobject, jlong handle, jfloat fps) {
+	mgbaMobileSetAudioPaceFps((struct MgbaMobile*) handle, (double) fps);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeClearAudio(JNIEnv*, jobject, jlong handle) {
 	mgbaMobileClearAudio((struct MgbaMobile*) handle);
 }

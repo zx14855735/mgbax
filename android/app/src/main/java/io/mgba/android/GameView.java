@@ -126,7 +126,13 @@ public class GameView extends SurfaceView {
             post(this::requestLayout);
         }
         SurfaceHolder holder = getHolder();
-        Canvas canvas = holder.lockCanvas();
+        // Scale and blit on the GPU: locking a software canvas would run the
+        // upscale of the 240x160 frame on the UI thread every frame, which
+        // alone can blow the 60 Hz budget on high resolution screens.
+        Canvas canvas = holder.lockHardwareCanvas();
+        if (canvas == null) {
+            canvas = holder.lockCanvas();
+        }
         if (canvas != null) {
             try {
                 canvas.drawColor(Color.BLACK);
