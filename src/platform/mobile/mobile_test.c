@@ -210,20 +210,12 @@ static int audioSignal(const int16_t* samples, int frames) {
 	return 0;
 }
 
-static void testAudioOut(const char* dir) {
-	unsigned char* rom;
-	char path[512];
-	struct MgbaMobile* emu;
-	int16_t* out;
-	int plain;
-	int fast;
-	int slow;
-	int total;
-	snprintf(path, sizeof(path), "%s/audio.gb", dir);
-	rom = (unsigned char*) calloc(1, 32768);
-	expect(rom != NULL, "audio rom buffer");
+/* A GB ROM that plays a 512 Hz square wave on channel 1 forever. */
+static int writeAudioRom(const char* dir, char* path, size_t pathLen) {
+	unsigned char* rom = (unsigned char*) calloc(1, 32768);
+	int ok;
 	if (!rom) {
-		return;
+		return 0;
 	}
 	rom[0x100] = 0x00;
 	rom[0x101] = 0xC3;
@@ -239,11 +231,95 @@ static void testAudioOut(const char* dir) {
 	rom[0x154] = 0x3E; rom[0x155] = 0x77; rom[0x156] = 0xE0; rom[0x157] = 0x24;
 	rom[0x158] = 0x3E; rom[0x159] = 0xFF; rom[0x15A] = 0xE0; rom[0x15B] = 0x25;
 	rom[0x15C] = 0x3E; rom[0x15D] = 0xF0; rom[0x15E] = 0xE0; rom[0x15F] = 0x12;
-	rom[0x160] = 0x3E; rom[0x161] = 0x00; rom[0x162] = 0xE0; rom[0x163] = 0x13;
-	rom[0x164] = 0x3E; rom[0x165] = 0x87; rom[0x166] = 0xE0; rom[0x167] = 0x14;
-	rom[0x168] = 0x18; rom[0x169] = 0xFE;
-	expect(writeFile(path, rom, 32768), "write audio rom");
+	rom[0x160] = 0x3E; rom[0x161] = 0x80; rom[0x162] = 0xE0; rom[0x163] = 0x11;
+	rom[0x164] = 0x3E; rom[0x165] = 0x00; rom[0x166] = 0xE0; rom[0x167] = 0x13;
+	rom[0x168] = 0x3E; rom[0x169] = 0x87; rom[0x16A] = 0xE0; rom[0x16B] = 0x14;
+	rom[0x16C] = 0x18; rom[0x16D] = 0xFE;
+	snprintf(path, pathLen, "%s/audio.gb", dir);
+	ok = writeFile(path, rom, 32768);
 	free(rom);
+	return ok;
+}
+
+/* Collected pitch windows are this long, measured after PITCH_SKIP_FRAMES. */
+#define PITCH_WINDOW_FRAMES 16384
+#define PITCH_SKIP_FRAMES 4096
+
+/*
+ * Frequency of the square wave in resampled audio. Counting sign flips is not
+ * enough: the sinc interpolator rings around each edge, and the wave's own
+ * period is only about a hundred samples. Rising edges alone, taken with a
+ * quarter-amplitude threshold so the ringing never crosses back in, count one
+ * period each.
+ */
+static double audioPitchHz(const int16_t* samples, int frames, int rate) {
+	int peak = 0;
+	int threshold;
+	int above = 0;
+	int cooldown = 0;
+	int edges = 0;
+	int i;
+	for (i = 0; i < frames; ++i) {
+		int value = samples[i * 2];
+		if (value < 0) {
+			value = -value;
+		}
+		if (value > peak) {
+			peak = value;
+		}
+	}
+	if (peak < 500) {
+		return 0.0;
+	}
+	threshold = peak / 4;
+	for (i = 0; i < frames; ++i) {
+		int value = samples[i * 2];
+		if (cooldown > 0) {
+			--cooldown;
+		}
+		if (!above && value >= threshold) {
+			if (!cooldown) {
+				++edges;
+				cooldown = 8;
+			}
+			above = 1;
+		} else if (above && value <= 0) {
+			above = 0;
+		}
+	}
+	if (frames <= 0) {
+		return 0.0;
+	}
+	return edges * (double) rate / frames;
+}
+
+/* Runs the emulator until exactly the requested output frames were collected. */
+static int collectAudio(struct MgbaMobile* emu, int16_t* out, int frames, int speed, float drift) {
+	int total = 0;
+	int guard = 0;
+	while (total < frames && guard++ < 8192) {
+		int rounds = 0;
+		mgbaMobileRunFrames(emu, 1);
+		while (rounds++ < 16 && total < frames) {
+			int got = mgbaMobileReadAudioOut(emu, out + total * 2, frames - total, speed, drift);
+			if (got <= 0) {
+				break;
+			}
+			total += got;
+		}
+	}
+	return total;
+}
+
+static void testAudioOut(const char* dir) {
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	int plain;
+	int fast;
+	int slow;
+	int total;
+	expect(writeAudioRom(dir, path, sizeof(path)), "write audio rom");
 	emu = mgbaMobileCreate(dir, dir, "test");
 	expect(mgbaMobileLoad(emu, path), "load audio rom");
 	out = (int16_t*) calloc(8192 * 2, sizeof(int16_t));
@@ -270,18 +346,34 @@ static void testAudioOut(const char* dir) {
 	expect((double) slow / plain > 1.015 && (double) slow / plain < 1.025, "negative drift fills");
 	// The pace feedback stretches the same emulated audio into more output: a
 	// front end that only manages half the slices per second needs twice as
-	// many output frames, or the playback buffer would slowly run dry.
+	// many output frames, or the playback buffer would slowly run dry. A
+	// single reading can just as well be a stall (the front end was loading a
+	// ROM or the system paused it), so only a slow-down that repeats for a
+	// second window is followed.
 	plain = drainAudio(emu, 30, out, 8192, 1, 0.0f);
 	mgbaMobileSetAudioPaceFps(emu, 30.0);
 	slow = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect((double) slow / plain > 0.98 && (double) slow / plain < 1.02, "one slow window is not followed");
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	slow = drainAudio(emu, 30, out, 8192, 1, 0.0f);
 	expect((double) slow / plain > 1.9 && (double) slow / plain < 2.1, "half pace doubles the stream");
-	// Out-of-range measurements are clamped instead of trusted.
+	// Readings inside the deadband are left to the playback buffer's drift
+	// control: following them would modulate the pitch once per second.
+	mgbaMobileSetAudioPaceFps(emu, 30.1);
+	mgbaMobileSetAudioPaceFps(emu, 29.9);
+	total = drainAudio(emu, 30, out, 8192, 1, 0.0f);
+	expect((double) total / slow > 0.98 && (double) total / slow < 1.02, "jitter inside the deadband is ignored");
+	// Out-of-range measurements are clamped instead of trusted: 1 fps is read
+	// as the 15 fps floor, a quarter of the pace, so four times the output.
+	mgbaMobileSetAudioPaceFps(emu, 1.0);
 	mgbaMobileSetAudioPaceFps(emu, 1.0);
 	fast = drainAudio(emu, 30, out, 8192, 1, 0.0f);
 	expect((double) fast / plain > 3.8 && (double) fast / plain < 4.2, "out-of-range pace is clamped");
 	mgbaMobileSetAudioPaceFps(emu, 60.0);
+	mgbaMobileSetAudioPaceFps(emu, 60.0);
 	total = drainAudio(emu, 30, out, 8192, 1, 0.0f);
 	expect((double) total / plain > 0.98 && (double) total / plain < 1.02, "pace returns to nominal");
+	plain = total;
 	total = drainAudio(emu, 30, out, 8192, 4, 0.0f);
 	expect((double) plain / total > 3.8 && (double) plain / total < 4.2, "speed scales the output rate");
 	// Fast-forward must be run in small steps: the core's audio buffer holds
@@ -302,6 +394,71 @@ static void testAudioOut(const char* dir) {
 	expect(!mgbaMobileSetAudioOutput(emu, 0), "disable audio output resampler");
 	total = drainAudio(emu, 2, out, 8192, 1, 0.0f);
 	expect(total > 2000, "raw audio keeps the core rate");
+	free(out);
+	mgbaMobileDestroy(emu);
+}
+
+/*
+ * The pitch the player hears must follow the game's real speed, not the noise
+ * of the front end's one-second pacing windows. A window dragged down by
+ * something that is not pacing - loading a ROM takes hundreds of milliseconds
+ * inside one window, the system can pause the thread, a garbage collection can
+ * run - used to move the resampler ratio immediately and detune the music for
+ * a second or more. Here the same readings are fed to the pace feedback while
+ * the resampled square wave is measured. The first frames of a window can
+ * still hold audio the resampler queued before the pace changed, so the
+ * measurement skips them and reads the steady state.
+ */
+static void testAudioPitch(const char* dir) {
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	double base;
+	double pitch;
+	expect(writeAudioRom(dir, path, sizeof(path)), "write pitch rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load pitch rom");
+	out = (int16_t*) calloc(PITCH_WINDOW_FRAMES * 2, sizeof(int16_t));
+	expect(out != NULL, "pitch buffer");
+	if (!out) {
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, 48000), "pitch resampler");
+	expect(collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f) == PITCH_WINDOW_FRAMES, "pitch audio collected");
+	base = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("pitch baseline %.1f Hz\n", base);
+	expect(base > 480.0 && base < 545.0, "square wave plays at its own frequency");
+	// One slow window: the pitch must not move.
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("pitch after one slow window %.1f Hz\n", pitch);
+	expect(pitch > base * 0.97 && pitch < base * 1.03, "one slow window keeps the pitch");
+	// A front end that stays slow is followed: the music slows down with the
+	// game, like a tape played slower.
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("pitch at sustained half pace %.1f Hz\n", pitch);
+	expect(pitch > base * 0.45 && pitch < base * 0.55, "sustained half pace halves the pitch");
+	// Back at full speed: two windows of readings and the pitch returns.
+	mgbaMobileSetAudioPaceFps(emu, 59.73);
+	mgbaMobileSetAudioPaceFps(emu, 59.73);
+	collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("pitch after recovery %.1f Hz\n", pitch);
+	expect(pitch > base * 0.97 && pitch < base * 1.03, "pitch returns at full speed");
+	// Loading a game resets the feedback: a reading from just before the load
+	// must not combine with one from after it to look like a confirmed change,
+	// or a slow window around a ROM change would detune the new game.
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	expect(mgbaMobileLoad(emu, path), "reload pitch rom");
+	mgbaMobileSetAudioPaceFps(emu, 30.0);
+	collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("pitch after reload %.1f Hz\n", pitch);
+	expect(pitch > base * 0.97 && pitch < base * 1.03, "reload drops a pending pace change");
 	free(out);
 	mgbaMobileDestroy(emu);
 }
@@ -595,6 +752,7 @@ int main(int argc, char** argv) {
 	testGb(dir);
 	testGba(dir);
 	testAudioOut(dir);
+	testAudioPitch(dir);
 	testLink();
 	testRelay();
 	if (g_failed) {

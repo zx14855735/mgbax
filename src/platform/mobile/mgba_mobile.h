@@ -34,7 +34,12 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
  * Frames per second the front end is actually pacing emulation at (measured,
  * not nominal). Call about once a second; the resampler follows it so audio
  * stays locked to the playback device even when the front end cannot hold its
- * target rate. Values outside 15-240 are clamped.
+ * target rate. Values outside 15-240 are clamped. A reading close to the
+ * current pace is treated as noise and ignored (the playback queue's drift
+ * control absorbs it), and a larger change is only followed once a second,
+ * agreeing window confirms it, so a single stall - a ROM load, a system
+ * pause - cannot detune the music. After loading a game the console's own
+ * frame rate is assumed until readings accumulate again.
  */
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps);
 void mgbaMobileClearAudio(struct MgbaMobile* emu);

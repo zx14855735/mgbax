@@ -468,6 +468,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         var frames: Int64 = 0
         var slices: Int64 = 0
         var fpsStamp = DispatchTime.now().uptimeNanoseconds
+        // Start of the next emulation slice. Slices are scheduled against this
+        // absolute target (instead of waiting out the rest of each slice), so
+        // a gate wait that oversleeps cannot accumulate and slow the loop -
+        // and with it the audio's pitch - down.
+        var nextSlice = Int64(bitPattern: fpsStamp)
         var nextFastPresent: UInt64 = 0
         let audioIn = UnsafeMutablePointer<Int16>.allocate(capacity: 8192 * 2)
         var video: UnsafeMutablePointer<UInt32>?
@@ -487,8 +492,21 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let isPaused = paused
             let mult = fastHold ? max(speed, 16) : speed
             gate.unlock()
-            if let path { loadRom(path) }
-            if cmd != 0 { runCommand(cmd) }
+            if let path {
+                loadRom(path)
+                // Loading blocks for a while; start the pacing schedule and
+                // the feedback window fresh so the stall is not measured as
+                // this front end being slow.
+                nextSlice = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)
+                slices = 0
+                fpsStamp = UInt64(bitPattern: nextSlice)
+            }
+            if cmd != 0 {
+                runCommand(cmd)
+                nextSlice = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)
+                slices = 0
+                fpsStamp = UInt64(bitPattern: nextSlice)
+            }
             if isPaused || !mgbaMobileIsLoaded(core) {
                 // Do not carry stale pacing across a paused stretch: a resumed
                 // game would otherwise be reported as a slow front end for one
@@ -501,7 +519,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 gate.unlock()
                 continue
             }
-            let slice = DispatchTime.now().uptimeNanoseconds
             let wantSound = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
             audio.setSoundEnabled(wantSound)
             // Fast-forward keeps its sound unless it was switched off; the core's
@@ -541,11 +558,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // audio about 0.46% fast, which sounds slightly sharp.
             let frameNanos = mgbaMobileFrameNanos(core)
             let sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
-            let remain = sliceNanos - Int64(DispatchTime.now().uptimeNanoseconds - slice)
-            if remain > 1_000_000 {
-                gate.lock()
-                gate.wait(until: Date(timeIntervalSinceNow: Double(remain) / 1_000_000_000))
-                gate.unlock()
+            // Schedule slices against an absolute next start. A gate wait that
+            // oversleeps then cannot accumulate into a loop that runs (and
+            // pitches the music) slightly slow; a stall that leaves the loop
+            // more than two slices behind starts a fresh schedule instead of
+            // replaying a catching-up burst.
+            nextSlice += sliceNanos
+            let sliceNow = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)
+            if sliceNow - nextSlice > 2 * sliceNanos {
+                nextSlice = sliceNow
+            } else {
+                let remain = nextSlice - sliceNow
+                if remain > 1_000_000 {
+                    gate.lock()
+                    gate.wait(until: Date(timeIntervalSinceNow: Double(remain) / 1_000_000_000))
+                    gate.unlock()
+                }
             }
             let now = DispatchTime.now().uptimeNanoseconds
             if now &- fpsStamp >= 1_000_000_000 {

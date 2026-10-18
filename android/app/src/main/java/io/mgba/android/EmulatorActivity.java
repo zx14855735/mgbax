@@ -811,6 +811,11 @@ public class EmulatorActivity extends AppCompatActivity {
         long frames = 0;
         long slices = 0;
         long fpsStamp = System.nanoTime();
+        // Wall-clock start of the next emulation slice. Slices are scheduled
+        // against this absolute target (instead of sleeping for the rest of
+        // each slice), so a sleep that oversleeps cannot accumulate and slow
+        // the loop - and with it the audio's pitch - down.
+        long nextSlice = fpsStamp;
         while (running) {
             try {
                 if (core != null) {
@@ -819,10 +824,19 @@ public class EmulatorActivity extends AppCompatActivity {
                 String path = pendingPath.getAndSet(null);
                 if (path != null) {
                     loadRom(path);
+                    // Loading blocks for a while; start the pacing schedule
+                    // and the feedback window fresh so the stall is not
+                    // measured as this front end being slow.
+                    nextSlice = System.nanoTime();
+                    slices = 0;
+                    fpsStamp = nextSlice;
                 }
                 int cmd = command.getAndSet(0);
                 if (cmd != 0) {
                     runCommand(cmd);
+                    nextSlice = System.nanoTime();
+                    slices = 0;
+                    fpsStamp = nextSlice;
                 }
                 if (!surfaceReady || paused || !core.isLoaded()) {
                     // Do not carry stale pacing across a paused stretch: a
@@ -835,7 +849,6 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
                 int mult = fastHold ? Math.max(speed, 16) : speed;
                 syncFastAudio(mult);
-                long sliceStart = System.nanoTime();
                 // Run in a few steps, pumping audio in between: a fast-forward
                 // burst produces several frames of audio at once and the core's
                 // audio buffer only holds a little more than that, so leaving it
@@ -862,9 +875,19 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
                 frames += mult;
                 slices++;
-                long remain = sliceNanos - (System.nanoTime() - sliceStart);
-                if (remain > 1_000_000L) {
-                    Thread.sleep(remain / 1_000_000L, (int) (remain % 1_000_000L));
+                // Schedule slices against an absolute next start. A sleep that
+                // oversleeps then cannot accumulate into a loop that runs (and
+                // pitches the music) slightly slow; a stall that leaves the
+                // loop more than two slices behind starts a fresh schedule
+                // instead of replaying a catching-up burst.
+                nextSlice += sliceNanos;
+                if (System.nanoTime() - nextSlice > 2 * sliceNanos) {
+                    nextSlice = System.nanoTime();
+                } else {
+                    long remain = nextSlice - System.nanoTime();
+                    if (remain > 1_000_000L) {
+                        Thread.sleep(remain / 1_000_000L, (int) (remain % 1_000_000L));
+                    }
                 }
                 long now = System.nanoTime();
                 if (now - fpsStamp >= 1000000000L) {
