@@ -1592,8 +1592,10 @@ public class EmulatorActivity extends AppCompatActivity {
         controls.setEditing(on);
         menuButton.setVisibility(on ? View.GONE : View.VISIBLE);
         if (on) {
-            showMenu();
-            inputHandler.removeCallbacks(hideMenu);
+            // The menu bar floats over the stage now. Hide it while editing so
+            // it cannot cover the bottom row of keys (START/SELECT) that is
+            // being dragged; the editor has its own Done button.
+            hideMenuNow();
             refreshScaleBar();
         } else {
             autoHideMenu();
@@ -2074,6 +2076,11 @@ public class EmulatorActivity extends AppCompatActivity {
      * Portrait becomes a DS-like pair of screens: the game on the upper screen,
      * the keys and the menu below. Landscape keeps the classic full-screen
      * overlay with the menu bar on top.
+     *
+     * <p>The menu bar and the key editor float over the stage instead of
+     * taking part in its layout, so showing either one never rescales the
+     * game. That keeps the keys in the same place relative to the picture
+     * while they are being adjusted.
      */
     private void applyScreenMode() {
         if (screenArea == null) {
@@ -2082,20 +2089,32 @@ public class EmulatorActivity extends AppCompatActivity {
         boolean portrait = getResources().getConfiguration().orientation
                 == Configuration.ORIENTATION_PORTRAIT;
         screenArea.setPortraitMode(portrait);
-        ViewGroup root = findViewById(R.id.root);
-        if (root == null || menuBar == null || root.indexOfChild(menuBar) < 0) {
+        if (menuBar == null) {
             return;
         }
-        if (portrait) {
-            // The menu bar docks below the split, as the last row of the screen.
-            if (root.indexOfChild(menuBar) != root.getChildCount() - 1) {
-                root.removeView(menuBar);
-                root.addView(menuBar);
+        ViewGroup.LayoutParams params = menuBar.getLayoutParams();
+        if (params instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) params;
+            int gravity = portrait
+                    ? (Gravity.BOTTOM | Gravity.START)
+                    : (Gravity.TOP | Gravity.START);
+            if (lp.gravity != gravity) {
+                lp.gravity = gravity;
+                menuBar.setLayoutParams(lp);
             }
-        } else if (root.indexOfChild(menuBar) != 1) {
-            // Back under the key editor, above the stage.
-            root.removeView(menuBar);
-            root.addView(menuBar, 1);
+        }
+        // In landscape the shoulder keys sit in the top corners. Inset the
+        // floating key editor so it no longer covers L/R while they are being
+        // dragged. The margin also follows an in-place rotation.
+        View editor = findViewById(R.id.layout_editor);
+        if (editor != null && editor.getLayoutParams() instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) editor.getLayoutParams();
+            int side = getResources().getDimensionPixelSize(R.dimen.layout_editor_side_margin);
+            if (lp.leftMargin != side || lp.rightMargin != side) {
+                lp.leftMargin = side;
+                lp.rightMargin = side;
+                editor.setLayoutParams(lp);
+            }
         }
         positionMenuButton();
     }

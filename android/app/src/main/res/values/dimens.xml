@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Keep the key editor clear of the shoulder keys. In portrait they live
+         on the lower screen, so the editor may span the full width. -->
+    <dimen name="layout_editor_side_margin">0dp</dimen>
+</resources>
