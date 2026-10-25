@@ -17,6 +17,10 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.RectF;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
@@ -194,6 +198,43 @@ public class EmulatorActivity extends AppCompatActivity {
     private TextView linkStatusView;
     private EditText linkRoomView;
     private RemoteLink remoteLink;
+    /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
+    private GBoyLink gboyLink;
+    private volatile int gboyRemoteKeys;
+    /** Tilt cartridge input: device posture fed to the core when enabled. */
+    private SensorManager sensorManager;
+    private boolean tiltListening;
+    /** Auto frameskip state on the emulation thread. */
+    private volatile boolean skipAuto;
+    private int autoSkipLevel;
+    private int lateStreak;
+
+    /**
+     * GB DMG palettes, light to dark, expanded to the twelve gb.pal entries
+     * (the same four colors for BG, OBJ0 and OBJ1).
+     */
+    private static final int[][] GB_PALETTES = {
+            {0xFFFFFF, 0xA8B8A8, 0x285050, 0x000000},
+            {0xFFFFFF, 0xA9A9A9, 0x545454, 0x000000},
+            {0xFFFFFF, 0xAAAAAA, 0x555555, 0x000000},
+            {0xF8E0C0, 0xD89058, 0xA85038, 0x381808},
+            {0xF8F8D8, 0xD8B098, 0xA06848, 0x583020},
+            {0xFFF8FF, 0xF8B8B8, 0xC85050, 0x680808},
+            {0xFFFBE7, 0xC8D8A0, 0x789868, 0x183018},
+            {0xF8FFD8, 0xB8F8B8, 0x70C078, 0x184818},
+            {0xE0F8FF, 0xA0B8F8, 0x5078D8, 0x001888},
+            {0xF8E8F8, 0xB8A0F0, 0x7858E8, 0x180090},
+            {0xFFF0E0, 0xF8B888, 0xC07038, 0x602010},
+            {0xFFF8D8, 0xF8D888, 0xC0A040, 0x604000},
+            {0xFFF8F8, 0xE8C0C8, 0xC88898, 0x704858},
+            {0x000000, 0x285050, 0xA8B8A8, 0xFFFFFF},
+    };
+
+    private static final String[] GB_PALETTE_KEYS = {
+            "gbpal_default", "gbpal_original", "gbpal_gray", "gbpal_brown", "gbpal_dark_brown",
+            "gbpal_red", "gbpal_green", "gbpal_dark_green", "gbpal_blue", "gbpal_dark_blue",
+            "gbpal_orange", "gbpal_yellow", "gbpal_pastel", "gbpal_inverted",
+    };
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -402,11 +443,16 @@ public class EmulatorActivity extends AppCompatActivity {
         if (core == null) {
             return;
         }
-        int mask = touchKeys | hwKeys;
+        int mask = touchKeys | hwKeys | gboyRemoteKeys;
         if (turboB) {
             mask &= ~ControlsView.B;
         }
         core.setKeys(mask);
+    }
+
+    /** Keys applied this frame: local input plus the GBoy peer's mask. */
+    private int userKeys() {
+        return touchKeys | hwKeys | gboyRemoteKeys;
     }
 
     private void noteUserKeys(int prevTouch, int prevHw) {
@@ -966,7 +1012,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     int step = (framesToRun + steps - 1) / steps;
                     for (int done = 0; done < framesToRun; ) {
                         int n = Math.min(step, framesToRun - done);
-                        core.runFrames(touchKeys | hwKeys, n);
+                        core.runFrames(userKeys(), n);
                         // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
                         // The resampler follows the console's true frame time;
                         // the measured pace is reported to the core once a
@@ -1001,6 +1047,18 @@ public class EmulatorActivity extends AppCompatActivity {
                     long remain = nextSlice - System.nanoTime();
                     if (remain > 1_000_000L) {
                         Thread.sleep(remain / 1_000_000L, (int) (remain % 1_000_000L));
+                    }
+                }
+                // 自动跳帧：the loop keeps score of how consistently it lands
+                // late, and eases one or two skip levels in or out so slow
+                // devices hold speed without stuttering every frame.
+                if (skipAuto) {
+                    long late = System.nanoTime() - nextSlice;
+                    lateStreak = late > 0 ? Math.min(lateStreak + 1, 90) : Math.max(lateStreak - 3, 0);
+                    int want = lateStreak > 60 ? 2 : lateStreak > 30 ? 1 : 0;
+                    if (want != autoSkipLevel) {
+                        autoSkipLevel = want;
+                        core.setFrameskip(want);
                     }
                 }
                 long now = System.nanoTime();
@@ -1062,7 +1120,7 @@ public class EmulatorActivity extends AppCompatActivity {
         if (getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
                 && core.loadState(AUTO_SLOT)) {
             core.clearAudio();
-            core.runFrames(touchKeys | hwKeys, 1);
+            core.runFrames(userKeys(), 1);
         }
         String title = core.title();
         runOnUiThread(() -> {
@@ -1093,7 +1151,7 @@ public class EmulatorActivity extends AppCompatActivity {
             boolean ok = core.loadState(current);
             core.clearAudio();
             if (ok) {
-                core.runFrames(touchKeys | hwKeys, 1);
+                core.runFrames(userKeys(), 1);
                 presentFrame();
             }
             toast(ok ? getString(R.string.state_loaded, current) : getString(R.string.state_missing, current));
@@ -1101,6 +1159,9 @@ public class EmulatorActivity extends AppCompatActivity {
         } else if (cmd == CMD_RESET) {
             core.reset();
             core.clearAudio();
+            if (gboyLink != null) {
+                gboyLink.sendReset();
+            }
             toast(getString(R.string.reset_done));
         } else if (cmd == CMD_AUTOSAVE) {
             // Silent save into the reserved slot on the way to the background.
@@ -1960,23 +2021,28 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void applyVideo() {
-        if (core == null) {
-            return;
-        }
         boolean blend = getPreferences(MODE_PRIVATE).getBoolean("vf_blend", false);
         boolean linear = getPreferences(MODE_PRIVATE).getBoolean("vf_linear", true);
         boolean aspect = getPreferences(MODE_PRIVATE).getBoolean("vf_aspect", true);
         boolean integer = getPreferences(MODE_PRIVATE).getBoolean("vf_integer", false);
         boolean scan = getPreferences(MODE_PRIVATE).getBoolean("vf_scan", false);
-        int skip = getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
+        boolean autoSkip = getPreferences(MODE_PRIVATE).getBoolean("vf_skip_auto", false);
+        int skip = autoSkip ? 0 : getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
         int bright = getPreferences(MODE_PRIVATE).getInt("vf_bright", 100);
-        core.setInterframe(blend);
-        core.setFrameskip(skip);
+        skipAuto = autoSkip;
+        autoSkipLevel = 0;
+        lateStreak = 0;
         gameView.setBilinear(linear);
         gameView.setLockAspect(aspect);
         gameView.setIntegerScale(integer);
         gameView.setScanlines(scan);
         gameView.setBrightness(bright);
+        gameView.setFilter(getPreferences(MODE_PRIVATE).getInt("vf_filter", Shaders.FILTER_NONE));
+        if (core == null) {
+            return;
+        }
+        core.setInterframe(blend);
+        core.setFrameskip(skip);
     }
 
     private void showVideoDialog() {
@@ -1993,12 +2059,33 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox scan = check(R.string.video_scan, getPreferences(MODE_PRIVATE).getBoolean("vf_scan", false));
         int skipNow = getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
         int brightNow = getPreferences(MODE_PRIVATE).getInt("vf_bright", 100);
+        final Button filter = new Button(this);
+        filter.setAllCaps(false);
+        filter.setText(getString(R.string.video_filter_value, filterName(filterPref())));
+        filter.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.video_filter)
+                .setSingleChoiceItems(filterNames(), filterPref(), (dialog, which) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("vf_filter", which).apply();
+                    filter.setText(getString(R.string.video_filter_value, filterName(which)));
+                    applyVideo();
+                    dialog.dismiss();
+                })
+                .show());
+        CheckBox skipAuto = check(R.string.video_skip_auto, getPreferences(MODE_PRIVATE).getBoolean("vf_skip_auto", false));
         TextView skipLabel = new TextView(this);
         skipLabel.setText(getString(R.string.video_skip, skipNow));
         skipLabel.setTextColor(0xFF222222);
         SeekBar skipBar = new SeekBar(this);
         skipBar.setMax(5);
         skipBar.setProgress(skipNow);
+        skipBar.setEnabled(!skipAuto.isChecked());
+        skipLabel.setEnabled(!skipAuto.isChecked());
+        skipAuto.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("vf_skip_auto", checked).apply();
+            skipBar.setEnabled(!checked);
+            skipLabel.setEnabled(!checked);
+            applyVideo();
+        });
         TextView brightLabel = new TextView(this);
         brightLabel.setText(getString(R.string.video_bright, brightNow));
         brightLabel.setTextColor(0xFF222222);
@@ -2010,6 +2097,8 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(aspect);
         box.addView(integer);
         box.addView(scan);
+        box.addView(filter);
+        box.addView(skipAuto);
         box.addView(skipLabel);
         box.addView(skipBar);
         box.addView(brightLabel);
@@ -2071,6 +2160,59 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setView(scroll)
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
+    }
+
+    private int filterPref() {
+        int id = getPreferences(MODE_PRIVATE).getInt("vf_filter", Shaders.FILTER_NONE);
+        return id >= 0 && id < Shaders.FILTER_COUNT ? id : Shaders.FILTER_NONE;
+    }
+
+    private String filterName(int id) {
+        int res;
+        switch (id) {
+            case Shaders.FILTER_GBA_COLOR: return getString(R.string.filter_gba_color);
+            case Shaders.FILTER_GRAYSCALE: return getString(R.string.filter_grayscale);
+            case Shaders.FILTER_HQ2X: return "HQ2x";
+            case Shaders.FILTER_HQ4X: return "HQ4x";
+            case Shaders.FILTER_2XBR: return "2xBR";
+            case Shaders.FILTER_4XBR: return "4xBR";
+            case Shaders.FILTER_MOTION_BLUR: return getString(R.string.filter_motion_blur);
+            case Shaders.FILTER_DOT: return getString(R.string.filter_dot);
+            case Shaders.FILTER_LCD3X: return "LCD3x";
+            case Shaders.FILTER_SCANLINES: return getString(R.string.filter_scanlines);
+            case Shaders.FILTER_QUILEZ: return getString(R.string.filter_quilez);
+            default: return getString(R.string.filter_none);
+        }
+    }
+
+    private CharSequence[] filterNames() {
+        CharSequence[] names = new CharSequence[Shaders.FILTER_COUNT];
+        for (int i = 0; i < Shaders.FILTER_COUNT; i++) {
+            names[i] = filterName(i);
+        }
+        return names;
+    }
+
+    private int palettePref() {
+        int id = getPreferences(MODE_PRIVATE).getInt("gb_palette", 0);
+        return id >= 0 && id < GB_PALETTES.length ? id : 0;
+    }
+
+    private String paletteName(int id) {
+        return getString(getResources().getIdentifier(GB_PALETTE_KEYS[id], "string", getPackageName()));
+    }
+
+    /**
+     * Twelve gb.pal entries for the chosen palette. Index 0 is the core's own
+     * stock colors, sent explicitly so a previous palette is fully cleared.
+     */
+    private int[] gbPaletteColors() {
+        int[] base = GB_PALETTES[palettePref()];
+        int[] colors = new int[12];
+        for (int i = 0; i < 12; i++) {
+            colors[i] = base[i % 4];
+        }
+        return colors;
     }
 
     private CheckBox check(int label, boolean checked) {
@@ -2166,12 +2308,59 @@ public class EmulatorActivity extends AppCompatActivity {
                     ensureRemote().join(relayText, code);
                     startLinkWatch();
                 })));
+        // ---- GBoy (My Boy) Wi-Fi link ----
+        TextView gboyHelp = new TextView(this);
+        gboyHelp.setText(R.string.link_gboy_help);
+        gboyHelp.setTextColor(0xFF222222);
+        box.addView(gboyHelp);
+        EditText gboyIp = new EditText(this);
+        gboyIp.setHint(R.string.link_gboy_ip_hint);
+        gboyIp.setSingleLine(true);
+        gboyIp.setText(getPreferences(MODE_PRIVATE).getString("gboy_ip", ""));
+        EditText gboyPort = new EditText(this);
+        gboyPort.setInputType(InputType.TYPE_CLASS_NUMBER);
+        gboyPort.setSingleLine(true);
+        gboyPort.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("gboy_port", GBoyLink.DEFAULT_PORT)));
+        box.addView(gboyIp);
+        box.addView(gboyPort);
+        box.addView(buttonRow(
+                linkButton(getString(R.string.link_gboy_host), v -> {
+                    int p = parsePort(gboyPort.getText().toString());
+                    if (p < 0) {
+                        status.setText(R.string.link_bad_port);
+                        return;
+                    }
+                    if (core == null || !core.isLoaded()) {
+                        status.setText(R.string.link_gboy_no_rom);
+                        return;
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putInt("gboy_port", p).apply();
+                    ensureGboy().host(p);
+                }),
+                linkButton(getString(R.string.link_gboy_join), v -> {
+                    String ip = gboyIp.getText().toString().trim();
+                    int p = parsePort(gboyPort.getText().toString());
+                    if (ip.isEmpty() || p < 0) {
+                        status.setText(R.string.link_bad_port);
+                        return;
+                    }
+                    if (core == null || !core.isLoaded()) {
+                        status.setText(R.string.link_gboy_no_rom);
+                        return;
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putString("gboy_ip", ip).putInt("gboy_port", p).apply();
+                    ensureGboy().join(ip, p);
+                })));
         box.addView(linkButton(getString(R.string.link_close), v -> {
             if (remoteLink != null) {
                 remoteLink.close();
             } else if (core != null) {
                 core.linkClose();
             }
+            if (gboyLink != null) {
+                gboyLink.close();
+            }
+            gboyRemoteKeys = 0;
             inputHandler.removeCallbacks(linkWatch);
             lastLinkState = 0;
             status.setText(R.string.link_close);
@@ -2184,6 +2373,53 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setView(scroll)
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    private GBoyLink ensureGboy() {
+        if (gboyLink == null) {
+            gboyLink = new GBoyLink(new GBoyLink.Hooks() {
+                @Override
+                public String romPath() {
+                    return getPreferences(MODE_PRIVATE).getString("lastRom", null);
+                }
+
+                @Override
+                public int localKeys() {
+                    return touchKeys | hwKeys;
+                }
+
+                @Override
+                public void onRemoteKeys(final int keys) {
+                    runOnUiThread(() -> gboyRemoteKeys = keys);
+                }
+
+                @Override
+                public void onStatus(final String text) {
+                    runOnUiThread(() -> {
+                        if (linkStatusView != null) {
+                            linkStatusView.setText(text);
+                        }
+                    });
+                }
+
+                @Override
+                public void onConnected(boolean asHost, String note) {
+                    // The session status lands through onStatus right after.
+                }
+
+                @Override
+                public void onRemoteReset() {
+                    runOnUiThread(() -> {
+                        if (core != null && core.isLoaded()) {
+                            core.reset();
+                            core.clearAudio();
+                            toast(getString(R.string.reset_done));
+                        }
+                    });
+                }
+            });
+        }
+        return gboyLink;
     }
 
     private RemoteLink ensureRemote() {
@@ -2489,18 +2725,25 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void showOrientationDialog() {
-        boolean portrait = prefersPortrait();
+        String mode = getPreferences(MODE_PRIVATE).getString("orientation", "landscape");
+        int checked = "portrait".equals(mode) ? 2
+                : "portrait_rev".equals(mode) ? 3
+                : "landscape_rev".equals(mode) ? 1 : 0;
         new AlertDialog.Builder(this)
                 .setTitle(R.string.orientation_title)
                 .setSingleChoiceItems(new CharSequence[] {
                         getString(R.string.orientation_landscape),
-                        getString(R.string.orientation_portrait)
-                }, portrait ? 1 : 0, (dialog, which) -> {
-                    boolean nextPortrait = which == 1;
+                        getString(R.string.orientation_landscape_rev),
+                        getString(R.string.orientation_portrait),
+                        getString(R.string.orientation_portrait_rev),
+                }, checked, (dialog, which) -> {
+                    String next = which == 2 ? "portrait"
+                            : which == 3 ? "portrait_rev"
+                            : which == 1 ? "landscape_rev" : "landscape";
                     getPreferences(MODE_PRIVATE).edit()
-                            .putString("orientation", nextPortrait ? "portrait" : "landscape")
+                            .putString("orientation", next)
                             .apply();
-                    applyOrientation(nextPortrait);
+                    applyOrientation(next);
                     dialog.dismiss();
                 })
                 .show();
@@ -2603,6 +2846,13 @@ public class EmulatorActivity extends AppCompatActivity {
         rateBar.setMax(28);
         rateBar.setProgress(Math.max(0, Math.min(28, rateNow - 2)));
         CheckBox diagonal = check(R.string.input_no_diagonal, getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
+        int opacityNow = getPreferences(MODE_PRIVATE).getInt("controls_opacity", 100);
+        TextView opacityLabel = new TextView(this);
+        opacityLabel.setText(getString(R.string.input_opacity, opacityNow));
+        opacityLabel.setTextColor(0xFF222222);
+        SeekBar opacityBar = new SeekBar(this);
+        opacityBar.setMax(120);
+        opacityBar.setProgress(opacityNow - 30);
         final Button extras = new Button(this);
         extras.setAllCaps(false);
         extras.setText(R.string.input_extras);
@@ -2612,6 +2862,8 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(rateLabel);
         box.addView(rateBar);
         box.addView(diagonal);
+        box.addView(opacityLabel);
+        box.addView(opacityBar);
         box.addView(extras);
         rateBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -2635,6 +2887,25 @@ public class EmulatorActivity extends AppCompatActivity {
         diagonal.setOnCheckedChangeListener((v, checked) -> {
             getPreferences(MODE_PRIVATE).edit().putBoolean("no_diagonal", checked).apply();
             applyInputSettings();
+        });
+        opacityBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int percent = progress + 30;
+                opacityLabel.setText(getString(R.string.input_opacity, percent));
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit().putInt("controls_opacity", percent).apply();
+                    applyInputSettings();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
         });
         new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_input)
@@ -2781,6 +3052,20 @@ public class EmulatorActivity extends AppCompatActivity {
         solarBar.setMax(10);
         solarBar.setProgress(solarNow);
         CheckBox solarKeys = check(R.string.adv_solar_keys, getPreferences(MODE_PRIVATE).getBoolean("solar_volkeys", false));
+        CheckBox sgbBorders = check(R.string.adv_sgb_border, getPreferences(MODE_PRIVATE).getBoolean("sgb_borders", false));
+        CheckBox tiltSensor = check(R.string.adv_tilt, getPreferences(MODE_PRIVATE).getBoolean("tilt_sensor", false));
+        final Button palette = new Button(this);
+        palette.setAllCaps(false);
+        palette.setText(getString(R.string.adv_palette, paletteName(palettePref())));
+        palette.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.adv_palette_title)
+                .setSingleChoiceItems(paletteNames(), palettePref(), (dialog, which) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("gb_palette", which).apply();
+                    palette.setText(getString(R.string.adv_palette, paletteName(which)));
+                    applyCoreOptions();
+                    dialog.dismiss();
+                })
+                .show());
         TextView fastLabel = new TextView(this);
         int fastNow = (int) fastHoldSpeed();
         fastLabel.setText(getString(R.string.adv_fast_hold, fastNow));
@@ -2796,6 +3081,9 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(solarLabel);
         box.addView(solarBar);
         box.addView(solarKeys);
+        box.addView(sgbBorders);
+        box.addView(tiltSensor);
+        box.addView(palette);
         box.addView(fastLabel);
         box.addView(fastBar);
         useBios.setOnCheckedChangeListener((v, checked) -> {
@@ -2833,6 +3121,18 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         });
         solarKeys.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("solar_volkeys", checked).apply());
+        sgbBorders.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("sgb_borders", checked).apply();
+            applyCoreOptions();
+        });
+        tiltSensor.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("tilt_sensor", checked).apply();
+            updateTiltSensor();
+            if (!checked && core != null) {
+                // Neutral tilt so a held cartridge stops reacting.
+                core.setRotation(0f, 0f, 0f);
+            }
+        });
         fastBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -3053,6 +3353,66 @@ public class EmulatorActivity extends AppCompatActivity {
         core.setSolar(getPreferences(MODE_PRIVATE).getBoolean("solar_on", false)
                 ? getPreferences(MODE_PRIVATE).getInt("solar_level", 5) : -1);
         core.setCartRumble(getPreferences(MODE_PRIVATE).getBoolean("cart_rumble", false));
+        int[] palette = gbPaletteColors();
+        core.setGbPalette(palette);
+        core.setSgbBorders(getPreferences(MODE_PRIVATE).getBoolean("sgb_borders", false));
+        updateTiltSensor();
+        // Neutral until a reading arrives; keeps held cartridges from drifting.
+        core.setRotation(0f, 0f, 0f);
+    }
+
+    private CharSequence[] paletteNames() {
+        CharSequence[] names = new CharSequence[GB_PALETTES.length];
+        for (int i = 0; i < GB_PALETTES.length; i++) {
+            names[i] = paletteName(i);
+        }
+        return names;
+    }
+
+    /** Starts or stops the device posture listener for tilt cartridges. */
+    private void updateTiltSensor() {
+        boolean wanted = getPreferences(MODE_PRIVATE).getBoolean("tilt_sensor", false);
+        if (wanted && !tiltListening) {
+            if (sensorManager == null) {
+                sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+            }
+            Sensor accel = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            if (accel != null) {
+                sensorManager.registerListener(tiltListener, accel, SensorManager.SENSOR_DELAY_GAME);
+                tiltListening = true;
+            }
+        } else if (!wanted && tiltListening) {
+            sensorManager.unregisterListener(tiltListener);
+            tiltListening = false;
+        }
+    }
+
+    private final SensorEventListener tiltListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (core == null || !core.isLoaded()) {
+                return;
+            }
+            // Gravity along the device's x/y axes, normalized to roughly one
+            // gravity at full deflection; re-axed for landscape so tilting the
+            // phone tilts the cartridge the way the screen moves.
+            float x = event.values[0] / 9.81f;
+            float y = event.values[1] / 9.81f;
+            if (getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                float swap = x;
+                x = y;
+                y = -swap;
+            }
+            core.setRotation(clampTilt(x), clampTilt(y), 0f);
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
+
+    private static float clampTilt(float value) {
+        return Math.max(-1f, Math.min(1f, value * 1.4f));
     }
 
     /** Pushes the input-related preferences into the on-screen controls. */
@@ -3061,6 +3421,7 @@ public class EmulatorActivity extends AppCompatActivity {
             controls.setDiagonalLock(getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
             controls.setTurboRate(getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25));
             controls.setVisibleExtras(extraKeys());
+            controls.setOpacity(getPreferences(MODE_PRIVATE).getInt("controls_opacity", 100));
         }
         volumePercent = getPreferences(MODE_PRIVATE).getInt("volume", 100);
     }
@@ -3145,13 +3506,13 @@ public class EmulatorActivity extends AppCompatActivity {
             return;
         }
         String stamp = DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()).toString();
-        String title = "mGBA-" + stamp + ".png";
+        String title = "mGBAx-" + stamp + ".png";
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Images.Media.DISPLAY_NAME, title);
                 values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBA");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBAx");
                 Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
                 if (uri != null) {
                     try (OutputStream out = getContentResolver().openOutputStream(uri)) {
@@ -3159,13 +3520,13 @@ public class EmulatorActivity extends AppCompatActivity {
                     }
                 }
             } else {
-                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBA");
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBAx");
                 dir.mkdirs();
                 try (OutputStream out = new FileOutputStream(new File(dir, title))) {
                     shot.compress(Bitmap.CompressFormat.PNG, 100, out);
                 }
             }
-            toast(getString(R.string.screenshot_saved, "Pictures/mGBA/" + title));
+            toast(getString(R.string.screenshot_saved, "Pictures/mGBAx/" + title));
         } catch (Exception e) {
             toast(getString(R.string.screenshot_failed));
         } finally {
@@ -3208,7 +3569,7 @@ public class EmulatorActivity extends AppCompatActivity {
             return;
         }
         String stamp = DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()).toString();
-        String name = "mGBA-" + stamp + ".gif";
+        String name = "mGBAx-" + stamp + ".gif";
         File temp = new File(getCacheDir(), "gif-recording.gif");
         temp.delete();
         gifQueue = new java.util.concurrent.ArrayBlockingQueue<>(24);
@@ -3278,7 +3639,7 @@ public class EmulatorActivity extends AppCompatActivity {
         });
     }
 
-    /** Moves the finished recording into Pictures/mGBA; returns the shown path. */
+    /** Moves the finished recording into Pictures/mGBAx; returns the shown path. */
     @Nullable
     private String publishGif(File temp, String name) {
         try {
@@ -3286,7 +3647,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
                 values.put(MediaStore.Images.Media.MIME_TYPE, "image/gif");
-                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBA");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBAx");
                 Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
                 if (uri == null) {
                     return null;
@@ -3296,7 +3657,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     copyStreams(in, out);
                 }
             } else {
-                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBA");
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBAx");
                 if (!dir.isDirectory() && !dir.mkdirs()) {
                     throw new java.io.IOException("mkdirs failed");
                 }
@@ -3306,7 +3667,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
             }
             temp.delete();
-            return "Pictures/mGBA/" + name;
+            return "Pictures/mGBAx/" + name;
         } catch (Exception e) {
             try {
                 File dir = new File(getExternalFilesDir(null), "Pictures");
@@ -3555,18 +3916,25 @@ public class EmulatorActivity extends AppCompatActivity {
         }, "sav-import").start();
     }
 
-    private boolean prefersPortrait() {
-        return "portrait".equals(getPreferences(MODE_PRIVATE).getString("orientation", "landscape"));
-    }
-
     private void applyOrientation() {
-        applyOrientation(prefersPortrait());
+        applyOrientation(getPreferences(MODE_PRIVATE).getString("orientation", "landscape"));
     }
 
-    private void applyOrientation(boolean portrait) {
-        setRequestedOrientation(portrait
-                ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                : ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+    private void applyOrientation(String mode) {
+        switch (mode) {
+            case "portrait":
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT);
+                break;
+            case "portrait_rev":
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT);
+                break;
+            case "landscape_rev":
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
+                break;
+            default:
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+                break;
+        }
     }
 
     /** Orientation changes are handled in place, so rearrange the chrome here. */
@@ -3789,6 +4157,10 @@ public class EmulatorActivity extends AppCompatActivity {
             leftForStorage = true;
         }
         paused = true;
+        if (tiltListening) {
+            sensorManager.unregisterListener(tiltListener);
+            tiltListening = false;
+        }
         // Do not stay held at 16x (raised pitch) when the key-up never arrives
         // because the app went to the background under a held key.
         fastHold = false;
@@ -3825,6 +4197,7 @@ public class EmulatorActivity extends AppCompatActivity {
         if (pauseButton.getText().toString().contentEquals(getString(R.string.pause))) {
             paused = false;
         }
+        updateTiltSensor();
         hideSystemUi();
         autoHideMenu();
     }
@@ -3835,6 +4208,11 @@ public class EmulatorActivity extends AppCompatActivity {
         if (remoteLink != null) {
             remoteLink.close();
         }
+        if (gboyLink != null) {
+            gboyLink.close();
+            gboyLink = null;
+        }
+        gboyRemoteKeys = 0;
         inputHandler.removeCallbacksAndMessages(null);
         releaseAudio();
         // Let the GIF encoder drain its queue and publish before the core and

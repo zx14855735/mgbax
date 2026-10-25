@@ -220,6 +220,33 @@ public final class MgbaCore {
         return handle == 0 ? 0 : nativeTakeRumbles(handle);
     }
 
+    /**
+     * Sets the twelve GB DMG palette entries (0xRRGGBB each, for
+     * gb.pal[0..11]); applies live on a running GB core and on every reload.
+     */
+    public void setGbPalette(int[] colors) {
+        if (handle != 0 && colors != null && colors.length >= 12) {
+            nativeSetGbPalette(handle, colors);
+        }
+    }
+
+    /** Super Game Boy border art on SGB-capable games; applies live. */
+    public void setSgbBorders(boolean enabled) {
+        if (handle != 0) {
+            nativeSetSgbBorders(handle, enabled);
+        }
+    }
+
+    /**
+     * Tilt cartridge input (WarioWare Twisted, Kirby Tilt'n'Tumble). Tilt
+     * values are normalized to -1..1; gyroZ follows the same scale.
+     */
+    public void setRotation(float tiltX, float tiltY, float gyroZ) {
+        if (handle != 0) {
+            nativeSetRotation(handle, tiltX, tiltY, gyroZ);
+        }
+    }
+
     public int cheatCount() {
         return handle == 0 ? 0 : nativeCheatCount(handle);
     }
@@ -319,6 +346,12 @@ public final class MgbaCore {
     private static native void nativeSetCartRumble(long handle, boolean enabled);
 
     private static native int nativeTakeRumbles(long handle);
+
+    private static native void nativeSetGbPalette(long handle, int[] colors);
+
+    private static native void nativeSetSgbBorders(long handle, boolean enabled);
+
+    private static native void nativeSetRotation(long handle, float tiltX, float tiltY, float gyroZ);
 
     private static native int nativeCheatCount(long handle);
 

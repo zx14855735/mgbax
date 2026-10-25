@@ -93,6 +93,20 @@ void mgbaMobileSetCartRumble(struct MgbaMobile* emu, bool enabled);
 /* Number of rumble pulses since the last call; each pulse clears on read. */
 int mgbaMobileTakeRumbles(struct MgbaMobile* emu);
 
+/*
+ * GB DMG palette override: twelve 0xRRGGBB entries for gb.pal[0..11] (four
+ * colors each for BG, OBJ0 and OBJ1). Applied live on a running GB core and
+ * replayed on every load.
+ */
+void mgbaMobileSetGbPalette(struct MgbaMobile* emu, const int32_t* colors);
+/* Super Game Boy border art on SGB-capable games (sgb.borders); applied live. */
+void mgbaMobileSetSgbBorders(struct MgbaMobile* emu, bool enabled);
+/*
+ * Tilt cartridge input (WarioWare Twisted, Kirby Tilt'n'Tumble). tiltX/tiltY
+ * are normalized to -1..1; gyroZ follows the same scale.
+ */
+void mgbaMobileSetRotation(struct MgbaMobile* emu, float tiltX, float tiltY, float gyroZ);
+
 /* Cheats. Codes are added as one named set of newline-separated raw lines;
  * format follows the GBA cheat type codes (0 autodetect, 1 CodeBreaker,
  * 2 GameShark, 3 Pro Action Replay, 4 VBA). Sets persist to <save>/<base>.cht

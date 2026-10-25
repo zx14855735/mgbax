@@ -106,6 +106,17 @@ struct MgbaMobile {
 	struct GBALuminanceSource luminance;
 	struct mRTCSource rtc;
 	struct mRumble rumble;
+	/* GB DMG palette override, one 0xRRGGBB entry per gb.pal[0..11] key.
+	 * Applied through the core's config on load and live on the running core. */
+	int32_t gbPalette[12];
+	bool gbPaletteSet;
+	bool sgbBorders;
+	/* Tilt cartridge (WarioWare Twisted, Kirby Tilt'n'Tumble) driven by the
+	 * device's sensors; normalized values scaled to the core's shift range. */
+	struct mRotationSource rotation;
+	volatile int32_t tiltX;
+	volatile int32_t tiltY;
+	volatile int32_t gyroZ;
 };
 
 enum {
@@ -142,6 +153,10 @@ static void detachLink(struct MgbaMobile* emu);
 static void pollLink(struct MgbaMobile* emu);
 static double audioNativeFps(const struct MgbaMobile* emu);
 static void attachCartHw(struct MgbaMobile* emu);
+static void tiltSample(struct mRotationSource* rotation);
+static int32_t tiltReadX(struct mRotationSource* rotation);
+static int32_t tiltReadY(struct mRotationSource* rotation);
+static int32_t tiltReadGyro(struct mRotationSource* rotation);
 static void loadCheats(struct MgbaMobile* emu);
 static void saveCheats(struct MgbaMobile* emu);
 
@@ -253,6 +268,11 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	emu->skipBios = true;
 	emu->solarLevel = -1;
 	emu->cartRumble = false;
+	emu->gbPaletteSet = false;
+	emu->sgbBorders = false;
+	emu->tiltX = 0;
+	emu->tiltY = 0;
+	emu->gyroZ = 0;
 	return emu;
 }
 
@@ -291,6 +311,14 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	mCoreConfigSetOverrideIntValue(&core->config, "audioSync", 0);
 	mCoreConfigSetOverrideIntValue(&core->config, "videoSync", 0);
 	mCoreConfigSetOverrideUIntValue(&core->config, "audioBuffers", 16384);
+	if (emu->gbPaletteSet) {
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			mCoreConfigSetOverrideIntValue(&core->config, key, emu->gbPalette[i]);
+		}
+	}
+	mCoreConfigSetOverrideIntValue(&core->config, "sgb.borders", emu->sgbBorders ? 1 : 0);
 	emu->core = core;
 	mCoreLoadConfig(core);
 
@@ -330,6 +358,13 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 
 	attachKeyCallback(emu);
 	attachCartHw(emu);
+	// The tilt source is inert (all zeros) until the front end feeds it, so
+	// attaching it for every console is harmless for games that never read it.
+	emu->rotation.sample = tiltSample;
+	emu->rotation.readTiltX = tiltReadX;
+	emu->rotation.readTiltY = tiltReadY;
+	emu->rotation.readGyroZ = tiltReadGyro;
+	emu->core->setPeripheral(emu->core, mPERIPH_ROTATION, &emu->rotation);
 	loadCheats(emu);
 	pollLink(emu);
 	MOBILE_LOGI("Loaded %s (%ux%u, %u Hz)", filename, emu->width, emu->height, core->audioSampleRate(core));
@@ -527,6 +562,81 @@ void mgbaMobileSetCartRumble(struct MgbaMobile* emu, bool enabled) {
 			gba->rumble = &emu->rumble;
 		}
 	}
+}
+
+// == GB palette, SGB border and tilt cartridge ==
+
+void mgbaMobileSetGbPalette(struct MgbaMobile* emu, const int32_t* colors) {
+	if (!emu || !colors) {
+		return;
+	}
+	memcpy(emu->gbPalette, colors, sizeof(emu->gbPalette));
+	emu->gbPaletteSet = true;
+	// Live on a running GB core; the same overrides are replayed on every load.
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GB) {
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			mCoreConfigSetOverrideIntValue(&emu->core->config, key, emu->gbPalette[i]);
+		}
+		emu->core->reloadConfigOption(emu->core, "gb.pal", NULL);
+	}
+}
+
+void mgbaMobileSetSgbBorders(struct MgbaMobile* emu, bool enabled) {
+	if (!emu) {
+		return;
+	}
+	emu->sgbBorders = enabled;
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GB) {
+		mCoreConfigSetOverrideIntValue(&emu->core->config, "sgb.borders", enabled ? 1 : 0);
+		emu->core->reloadConfigOption(emu->core, "sgb.borders", NULL);
+	}
+}
+
+static void tiltSample(struct mRotationSource* rotation) {
+	UNUSED(rotation);
+}
+
+static int32_t tiltReadX(struct mRotationSource* rotation) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) rotation - offsetof(struct MgbaMobile, rotation));
+	return __atomic_load_n(&emu->tiltX, __ATOMIC_RELAXED);
+}
+
+static int32_t tiltReadY(struct mRotationSource* rotation) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) rotation - offsetof(struct MgbaMobile, rotation));
+	return __atomic_load_n(&emu->tiltY, __ATOMIC_RELAXED);
+}
+
+static int32_t tiltReadGyro(struct mRotationSource* rotation) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) rotation - offsetof(struct MgbaMobile, rotation));
+	return __atomic_load_n(&emu->gyroZ, __ATOMIC_RELAXED);
+}
+
+/*
+ * Tilt cartridge input. tiltX/tiltY are normalized to -1..1; the core shifts
+ * them (>> 22 for GBA, >> 21 for GB), so the full range spans one complete
+ * sensor deflection, matching what the reference front ends feed it.
+ */
+void mgbaMobileSetRotation(struct MgbaMobile* emu, float tiltX, float tiltY, float gyroZ) {
+	if (!emu) {
+		return;
+	}
+	if (tiltX < -1.0f) {
+		tiltX = -1.0f;
+	}
+	if (tiltX > 1.0f) {
+		tiltX = 1.0f;
+	}
+	if (tiltY < -1.0f) {
+		tiltY = -1.0f;
+	}
+	if (tiltY > 1.0f) {
+		tiltY = 1.0f;
+	}
+	__atomic_store_n(&emu->tiltX, (int32_t) (tiltX * 1073741824.0f), __ATOMIC_RELAXED);
+	__atomic_store_n(&emu->tiltY, (int32_t) (tiltY * 1073741824.0f), __ATOMIC_RELAXED);
+	__atomic_store_n(&emu->gyroZ, (int32_t) (gyroZ * 1073741824.0f), __ATOMIC_RELAXED);
 }
 
 // == Cheats ==

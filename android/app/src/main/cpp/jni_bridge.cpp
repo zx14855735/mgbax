@@ -245,6 +245,32 @@ Java_io_mgba_android_MgbaCore_nativeTakeRumbles(JNIEnv*, jobject, jlong handle) 
 	return mgbaMobileTakeRumbles((struct MgbaMobile*) handle);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetGbPalette(JNIEnv* env, jobject, jlong handle, jintArray colors) {
+	if (!colors) {
+		return;
+	}
+	jsize length = env->GetArrayLength(colors);
+	if (length < 12) {
+		return;
+	}
+	jint* values = env->GetIntArrayElements(colors, NULL);
+	if (values) {
+		mgbaMobileSetGbPalette((struct MgbaMobile*) handle, (const int32_t*) values);
+		env->ReleaseIntArrayElements(colors, values, 0);
+	}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetSgbBorders(JNIEnv*, jobject, jlong handle, jboolean enabled) {
+	mgbaMobileSetSgbBorders((struct MgbaMobile*) handle, enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetRotation(JNIEnv*, jobject, jlong handle, jfloat tiltX, jfloat tiltY, jfloat gyroZ) {
+	mgbaMobileSetRotation((struct MgbaMobile*) handle, tiltX, tiltY, gyroZ);
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_io_mgba_android_MgbaCore_nativeCheatCount(JNIEnv*, jobject, jlong handle) {
 	return mgbaMobileCheatCount((struct MgbaMobile*) handle);

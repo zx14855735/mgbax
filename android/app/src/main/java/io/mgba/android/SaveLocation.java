@@ -103,7 +103,7 @@ final class SaveLocation {
 
     @SuppressWarnings("deprecation")
     private static File publicDir() {
-        return new File(Environment.getExternalStorageDirectory(), "mGBA/saves");
+        return new File(Environment.getExternalStorageDirectory(), "mGBAx/saves");
     }
 
     private static File resolve(Context context) {
@@ -132,6 +132,8 @@ final class SaveLocation {
             copySaves(new File(ext, "saves"), dest, false);
         }
         copySaves(new File(context.getFilesDir(), "roms"), dest, true);
+        // Saves dropped by the pre-rename app (mGBA/saves) carry over too.
+        copySaves(new File(Environment.getExternalStorageDirectory(), "mGBA/saves"), dest, true);
     }
 
     private static void copySaves(File src, File dest, boolean savOnly) {

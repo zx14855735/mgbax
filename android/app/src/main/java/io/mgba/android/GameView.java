@@ -16,7 +16,7 @@ import android.util.AttributeSet;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 
-public class GameView extends SurfaceView {
+public class GameView extends SurfaceView implements SurfaceHolder.Callback {
     private final Paint paint = new Paint();
     private final Paint scanPaint = new Paint();
     private final Rect src = new Rect();
@@ -29,6 +29,9 @@ public class GameView extends SurfaceView {
     private boolean integerScale;
     private boolean scanlines;
     private int brightness = 100;
+    private int filter = Shaders.FILTER_NONE;
+    /** GL path for screen filters; the software path stays as the fallback. */
+    private final ShaderRenderer renderer = new ShaderRenderer();
 
     public GameView(Context context) {
         this(context, null);
@@ -41,6 +44,7 @@ public class GameView extends SurfaceView {
         scanPaint.setColor(0x66000000);
         scanPaint.setStrokeWidth(1f);
         getHolder().setFormat(PixelFormat.OPAQUE);
+        getHolder().addCallback(this);
         setFocusable(true);
     }
 
@@ -67,6 +71,14 @@ public class GameView extends SurfaceView {
 
     public void setScanlines(boolean enabled) {
         scanlines = enabled;
+    }
+
+    /** Selects a screen filter; {@link Shaders#FILTER_NONE} uses the Canvas path. */
+    public void setFilter(int filterId) {
+        if (filter != filterId) {
+            filter = filterId;
+            renderer.setFilter(filterId);
+        }
     }
 
     public void setBrightness(int percent) {
@@ -98,6 +110,25 @@ public class GameView extends SurfaceView {
     }
 
     @Override
+    public void surfaceCreated(SurfaceHolder holder) {
+    }
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    }
+
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        renderer.releaseSurface();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        renderer.release();
+        super.onDetachedFromWindow();
+    }
+
+    @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int w = MeasureSpec.getSize(widthMeasureSpec);
         int h = MeasureSpec.getSize(heightMeasureSpec);
@@ -125,10 +156,26 @@ public class GameView extends SurfaceView {
             srcH = Math.max(1, bitmap.getHeight());
             post(this::requestLayout);
         }
+        boolean drawn = false;
+        // Screen filters run through GL; everything else keeps the hardware
+        // Canvas blit. Locking a software canvas would run the upscale of the
+        // 240x160 frame on the UI thread every frame, which alone can blow the
+        // 60 Hz budget on high resolution screens.
+        if (renderer.usable() && getWidth() > 0 && getHeight() > 0) {
+            place(getWidth(), getHeight(), bitmap == null ? srcW : bitmap.getWidth(),
+                    bitmap == null ? srcH : bitmap.getHeight(), dst);
+            try {
+                drawn = renderer.present(getHolder().getSurface(), bitmap, dst,
+                        getWidth(), getHeight(), filter, brightness / 100f);
+            } catch (Exception e) {
+                drawn = false;
+            }
+        }
+        if (drawn) {
+            keepLast(bitmap);
+            return;
+        }
         SurfaceHolder holder = getHolder();
-        // Scale and blit on the GPU: locking a software canvas would run the
-        // upscale of the 240x160 frame on the UI thread every frame, which
-        // alone can blow the 60 Hz budget on high resolution screens.
         Canvas canvas = holder.lockHardwareCanvas();
         if (canvas == null) {
             canvas = holder.lockCanvas();
@@ -150,6 +197,10 @@ public class GameView extends SurfaceView {
                 holder.unlockCanvasAndPost(canvas);
             }
         }
+        keepLast(bitmap);
+    }
+
+    private void keepLast(Bitmap bitmap) {
         if (last != null && last != bitmap) {
             last.recycle();
         }

@@ -66,6 +66,8 @@ public class ControlsView extends View {
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** Opacity of the drawn keys in percent (100 = the stock translucency). */
+    private int opacity = 100;
     private final Path arrow = new Path();
     private final RectF dpad = new RectF();
     private final RectF dpadUp = new RectF();
@@ -277,6 +279,17 @@ public class ControlsView extends View {
         turboRate = Math.max(2, Math.min(30, rate));
     }
 
+    /** Overall opacity of the on-screen keys, 30-150 percent. */
+    public void setOpacity(int percent) {
+        opacity = Math.max(30, Math.min(150, percent));
+        invalidate();
+    }
+
+    /** Alpha for {@link Color#argb} scaled by the opacity setting. */
+    private int fade(int alpha) {
+        return Math.min(255, alpha * opacity / 100);
+    }
+
     private boolean bDown() {
         return turboB ? turboLit : (pressed & B) != 0;
     }
@@ -367,12 +380,12 @@ public class ControlsView extends View {
 
     private void drawButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected) {
         if (down) {
-            fill.setColor(Color.argb(70, 80, 210, 130));
+            fill.setColor(Color.argb(fade(70), 80, 210, 130));
             canvas.drawRoundRect(rect, 12, 12, fill);
         }
-        stroke.setColor(selected ? Color.argb(230, 255, 214, 64) : down ? Color.argb(210, 120, 230, 160) : Color.argb(140, 255, 255, 255));
+        stroke.setColor(selected ? Color.argb(fade(230), 255, 214, 64) : down ? Color.argb(fade(210), 120, 230, 160) : Color.argb(fade(140), 255, 255, 255));
         canvas.drawRoundRect(rect, 12, 12, stroke);
-        text.setColor(down || selected ? Color.argb(230, 255, 255, 255) : Color.argb(180, 255, 255, 255));
+        text.setColor(down || selected ? Color.argb(fade(230), 255, 255, 255) : Color.argb(fade(180), 255, 255, 255));
         canvas.drawText(label, rect.centerX(), rect.centerY() - (text.descent() + text.ascent()) / 2f, text);
         if (selected) {
             drawCursor(canvas, rect);
@@ -396,10 +409,10 @@ public class ControlsView extends View {
         boolean down = (pressed & bit) != 0;
         float radius = 8f * density;
         if (down) {
-            fill.setColor(Color.argb(90, 80, 210, 130));
+            fill.setColor(Color.argb(fade(90), 80, 210, 130));
             canvas.drawRoundRect(rect, radius, radius, fill);
         }
-        stroke.setColor(editing ? Color.argb(230, 255, 214, 64) : down ? Color.argb(220, 120, 230, 160) : Color.argb(170, 255, 255, 255));
+        stroke.setColor(editing ? Color.argb(fade(230), 255, 214, 64) : down ? Color.argb(fade(220), 120, 230, 160) : Color.argb(fade(170), 255, 255, 255));
         canvas.drawRoundRect(rect, radius, radius, stroke);
         drawArrow(canvas, rect, bit, down);
     }
@@ -427,7 +440,7 @@ public class ControlsView extends View {
             arrow.lineTo(cx - a * 0.7f, cy + a * 0.92f);
         }
         arrow.close();
-        fill.setColor(down ? Color.argb(245, 255, 255, 255) : Color.argb(210, 255, 255, 255));
+        fill.setColor(down ? Color.argb(fade(245), 255, 255, 255) : Color.argb(fade(210), 255, 255, 255));
         canvas.drawPath(arrow, fill);
     }
 

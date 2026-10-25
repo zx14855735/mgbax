@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">mGBA</string>
+    <string name="app_name">mGBAx</string>
     <string name="menu">☰ 菜单</string>
     <string name="open_rom">打开</string>
     <string name="pause">暂停</string>
@@ -26,12 +26,23 @@
     <string name="load_state">读档</string>
     <string name="bios">BIOS</string>
     <string name="video">画质</string>
+    <string name="video_filter">画面滤镜</string>
+    <string name="video_filter_value">滤镜：%1$s</string>
+    <string name="filter_none">关闭</string>
+    <string name="filter_gba_color">GBA 色彩</string>
+    <string name="filter_grayscale">灰度</string>
+    <string name="filter_motion_blur">残影</string>
+    <string name="filter_dot">点阵</string>
+    <string name="filter_scanlines">扫描线（平滑）</string>
+    <string name="filter_quilez">锐利插值</string>
     <string name="link">联机</string>
     <string name="layout">键位</string>
     <string name="settings">设置</string>
     <string name="orientation_title">屏幕方向</string>
     <string name="orientation_landscape">横屏</string>
+    <string name="orientation_landscape_rev">横屏（反向）</string>
     <string name="orientation_portrait">竖屏</string>
+    <string name="orientation_portrait_rev">竖屏（反向）</string>
     <string name="layout_hint">单指拖动移动按键，双指捏合缩放按键，也可用下方滑杆微调，松手即保存</string>
     <string name="layout_reset">重置</string>
     <string name="layout_done">完成</string>
@@ -54,6 +65,7 @@
     <string name="video_integer">整数缩放</string>
     <string name="video_scan">扫描线</string>
     <string name="video_skip">跳帧 %1$d</string>
+    <string name="video_skip_auto">自动跳帧（跟不上时自动跳帧保速度）</string>
     <string name="video_bright">亮度 %1$d%%</string>
     <string name="state_now">当前画面（存档前）</string>
     <string name="state_no_preview">无画面</string>
@@ -70,6 +82,11 @@
     <string name="link_ip_hint">对方 IP，例如 192.168.1.8</string>
     <string name="link_waiting">等待连接\n本机 %1$s:%2$d\n你是 1P</string>
     <string name="link_bad_port">端口无效</string>
+    <string name="link_gboy_help">联机大厅：和对方联机对战。两边打开同一个游戏，保持 1 倍速，不要暂停。创房一方是 1P，另一方填对方 IP 加入。端口默认 6374，与其他模拟器的 Wi-Fi 联机互通。</string>
+    <string name="link_gboy_host">大厅创建</string>
+    <string name="link_gboy_join">大厅加入</string>
+    <string name="link_gboy_ip_hint">对方（或本机）IP，例如 192.168.1.8</string>
+    <string name="link_gboy_no_rom">请先打开一个游戏再联机</string>
     <string name="loading">正在读取游戏…</string>
     <string name="load_failed">无法加载这个游戏</string>
     <string name="no_rom">请先打开一个游戏</string>
@@ -92,7 +109,7 @@
     <string name="settings_save">存档</string>
     <string name="settings_advanced">高级</string>
     <string name="settings_help">帮助</string>
-    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBA。</string>
+    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBAx。</string>
     <string name="settings_immersive">沉浸模式（隐藏状态栏/导航栏）</string>
 
     <!-- Sound -->
@@ -113,6 +130,7 @@
     <string name="turbo_off">关闭</string>
     <string name="input_turbo_rate">连击速度 %1$d 次/秒</string>
     <string name="input_no_diagonal">禁用方向键对角（一次只按一个方向）</string>
+    <string name="input_opacity">虚拟按键不透明度 %1$d%%</string>
     <string name="input_extras">虚拟按键开关（连发/快存/快读/倍速/截图）</string>
 
     <!-- Save settings -->
@@ -144,6 +162,24 @@
     <string name="adv_solar_level">阳光强度 %1$d</string>
     <string name="adv_solar_keys">用音量键调节阳光强度</string>
     <string name="adv_fast_hold">快进速度 %1$d倍</string>
+    <string name="adv_palette">GB 调色板：%1$s</string>
+    <string name="adv_palette_title">GB 调色板（单色 GB 游戏的配色）</string>
+    <string name="gbpal_default">默认</string>
+    <string name="gbpal_original">原版</string>
+    <string name="gbpal_gray">灰度</string>
+    <string name="gbpal_brown">棕色</string>
+    <string name="gbpal_dark_brown">深棕</string>
+    <string name="gbpal_red">红色</string>
+    <string name="gbpal_green">绿色</string>
+    <string name="gbpal_dark_green">深绿</string>
+    <string name="gbpal_blue">蓝色</string>
+    <string name="gbpal_dark_blue">深蓝</string>
+    <string name="gbpal_orange">橙色</string>
+    <string name="gbpal_yellow">黄色</string>
+    <string name="gbpal_pastel">粉彩</string>
+    <string name="gbpal_inverted">反转</string>
+    <string name="adv_sgb_border">SGB 边框（Super Game Boy 专用边框画面）</string>
+    <string name="adv_tilt">倾斜传感器卡带（扭转世界/科比摇摆，用手机姿态模拟）</string>
     <string name="confirm_reset_message">确定要重置这个游戏吗？未保存的进度会丢失。</string>
     <string name="confirm_exit_message">游戏还在运行。电池存档会自动保存。确定要退出吗？</string>
 
