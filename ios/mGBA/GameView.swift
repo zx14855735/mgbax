@@ -19,6 +19,9 @@ final class GameView: UIView {
     private let imageView = UIImageView()
     private let scanView = ScanlineOverlay()
     private var last: UIImage?
+    /// The frame behind `last`, packed RGBA8; screenshots and GIF captures
+    /// hand it to the Metal filter pass so they can match the display.
+    private var lastRaw: Data?
     /// Metal path for screen filters; the software path stays as the fallback.
     private var renderer: ShaderRenderer?
     private var filterView: FilterView?
@@ -45,6 +48,65 @@ final class GameView: UIView {
 
     func copyLast() -> UIImage? { last }
 
+    /// True when what is on screen differs from the raw core frame.
+    var showsFilteredOutput: Bool {
+        filter != 0 || scanlines
+    }
+
+    /// Captures what the display actually shows — filter and scanline overlay
+    /// included — as packed RGBA8 rows of `outWidth` × `outHeight`. Nil when
+    /// the Metal path cannot run (the caller keeps the raw frame). Main thread
+    /// only, right after a `present` so the uploaded texture is current.
+    func captureFilteredFrame(pixels: UnsafeRawPointer, width: Int, height: Int,
+                              outWidth: Int, outHeight: Int, brightness: Float) -> [UInt8]? {
+        guard let renderer else { return nil }
+        let filtered = filter != 0 && renderer.usable
+        if !filtered {
+            // The display ran on the CPU path; hand the filter pass the raw
+            // frame. Filter 0 keeps the history ring untouched.
+            renderer.uploadFrame(pixels: pixels, width: width, height: height)
+        }
+        return renderer.captureRGBA(
+            filter: filter,
+            linear: filtered ? filter == 11 : bilinear,
+            scanlines: scanlines,
+            // The CPU-path bytes are already brightness-scaled.
+            brightness: filtered ? brightness : 1,
+            outWidth: outWidth,
+            outHeight: outHeight)
+    }
+
+    /// Screenshot variant: renders at the display resolution so the saved PNG
+    /// matches the picture on screen, the way the Android PixelCopy does.
+    func captureFilteredScreenshot() -> UIImage? {
+        guard let renderer, let filterView, let raw = lastRaw,
+              filterView.frame.width > 0, filterView.frame.height > 0 else {
+            return nil
+        }
+        let scale = filterView.metalLayer.contentsScale
+        let outW = max(1, Int(filterView.frame.width * scale))
+        let outH = max(1, Int(filterView.frame.height * scale))
+        let bytes = raw.withUnsafeBytes { (rawPtr: UnsafeRawBufferPointer) -> [UInt8]? in
+            guard let base = rawPtr.baseAddress else { return nil }
+            return captureFilteredFrame(pixels: base, width: srcW, height: srcH,
+                                        outWidth: outW, outHeight: outH,
+                                        brightness: Float(min(150, max(50, brightness))) / 100)
+        }
+        guard let bytes else { return nil }
+        return Self.image(fromRGBA: bytes, width: outW, height: outH)
+    }
+
+    private static func image(fromRGBA bytes: [UInt8], width: Int, height: Int) -> UIImage? {
+        let data = Data(bytes)
+        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+        let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+        guard let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: info, provider: provider, decode: nil,
+                                  shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        return UIImage(cgImage: image)
+    }
+
     func present(pixels: UnsafePointer<UInt32>, width: Int, height: Int, stride: Int) {
         if width != srcW || height != srcH {
             srcW = max(1, width)
@@ -68,6 +130,7 @@ final class GameView: UIView {
             }
         }
         let data = Data(bytes)
+        lastRaw = data
         guard let provider = CGDataProvider(data: data as CFData) else { return }
         let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
         guard let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: info, provider: provider, decode: nil, shouldInterpolate: bilinear, intent: .defaultIntent) else { return }

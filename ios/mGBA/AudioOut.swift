@@ -61,6 +61,15 @@ final class AudioOut {
     private(set) var outputRate = 48000
     private var started = false
     private var soundEnabled = true
+    /// Software volume, 0-1.5, applied when samples reach the render callback.
+    var volume: Float = 1.0 {
+        didSet {
+            if oldValue != volume { clear() }
+        }
+    }
+    /// Low-latency mode: shortens the system's I/O buffer at the cost of
+    /// headroom; takes effect on the next `start()`.
+    var lowLatency = false
 
     init() {
         capacity = 8192
@@ -73,6 +82,9 @@ final class AudioOut {
     func start() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        if lowLatency {
+            try? session.setPreferredIOBufferDuration(0.005)
+        }
         try? session.setActive(true)
         var rate = Int(session.sampleRate.rounded())
         if rate <= 0 {
@@ -173,14 +185,15 @@ final class AudioOut {
         lock.lock()
         let available = (writePos - readPos + capacity * 2) % (capacity * 2)
         let frames = min(frameCount, available / 2)
+        let volume = self.volume
         for i in 0..<frameCount {
             if i < frames {
                 let l = storage[readPos]
                 readPos = (readPos + 1) % (capacity * 2)
                 let r = storage[readPos]
                 readPos = (readPos + 1) % (capacity * 2)
-                leftData[i] = Float(l) / 32768
-                rightData[i] = Float(r) / 32768
+                leftData[i] = Float(l) / 32768 * volume
+                rightData[i] = Float(r) / 32768 * volume
             } else {
                 leftData[i] = 0
                 rightData[i] = 0

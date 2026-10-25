@@ -1,6 +1,7 @@
 import CoreMotion
 import Darwin
 import GameController
+import Photos
 import UIKit
 import UniformTypeIdentifiers
 
@@ -22,7 +23,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let gate = NSCondition()
     private var running = false
     private var paused = false
-    private var speed = 1
+    /** Emulation speed in frames per paced frame; 0.05..16 with slow motion. */
+    private var speed: Double = 1
     private var fastHold = false
     private var orientationMode = UserDefaults.standard.string(forKey: "orientation") ?? "landscape"
     private var portrait: Bool { orientationMode == "portrait" || orientationMode == "portrait_rev" }
@@ -50,6 +52,23 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var linkStatusLabel: UILabel?
     private var linkRoomField: UITextField?
     private var lastLinkState = -1
+    /** Cartridge rumble pulses, drained once per emulation slice. */
+    private var lastRumbleAt: UInt64 = 0
+    private let hapticHeavy = UIImpactFeedbackGenerator(style: .heavy)
+    private let hapticMedium = UIImpactFeedbackGenerator(style: .medium)
+    private let hapticLight = UIImpactFeedbackGenerator(style: .light)
+    private let hapticRigid = UIImpactFeedbackGenerator(style: .rigid)
+    /** GIF recording state; the queue hands frames to the encoder thread. */
+    private var gifRecording = false
+    private var gifButton: UIButton?
+    private var gifQueue: GifFrameQueue?
+    private var lastGifAt: UInt64 = 0
+    private var gifFrames = 0
+    /** A filtered frame capture was requested; done in the main present block. */
+    private var gifWantCapture = false
+    /** Fractional speeds (slow motion) accumulate whole frames in this debt. */
+    private var frameDebt: Double = 0
+    private var lastAudioSpeed: Double = 0
     private var armWork: DispatchWorkItem?
     private var pulseWork: DispatchWorkItem?
     private var linkWatch: DispatchWorkItem?
@@ -57,6 +76,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdSave = 1
     private let cmdLoad = 2
     private let cmdReset = 3
+    private let cmdAutoSave = 4
     private let layoutBar = UIView()
     private let bar = UIScrollView()
     private let stage = UIView()
@@ -68,6 +88,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var menuButton: UIButton!
     private var menuVisible = true
     private var speedBarWanted = false
+    private var speedCustomButton: UIButton?
     private var savePathWanted = false
     private var menuHideWork: DispatchWorkItem?
     private var menuLeading: NSLayoutConstraint!
@@ -76,9 +97,23 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var menuLeft: CGFloat = -1
     private var menuTop: CGFloat = -1
     private var scopedURL: URL?
-    private var lastAudioSpeed = 0
     private static let menuHideSeconds: TimeInterval = 4
     private static let audioStepFrames = 4
+    private static let audioReadFrames: Int32 = 8192
+    /** Speed presets on the tier bar; anything else goes through 自定义. */
+    private static let speedTiers: [Double] = [0.25, 0.5, 1, 2, 4, 8, 16]
+    /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
+    private static let autoSlot = 0
+    /** GIF capture pacing and length cap (GIF_MAX_FRAMES at ~20 fps). */
+    private static let gifFrameMs = 50
+    private static let gifMaxFrames = 900
+    private static let turboArmSeconds: TimeInterval = 0.2
+    private static let turboPulseSeconds: TimeInterval = 0.04
+    /** Names of the optional on-screen keys, shown and stored in this order. */
+    private static let extraKeyChoices: [(String, String)] = [
+        ("ta", "A键（连发）"), ("tb", "B键（连发）"), ("lr", "L+R键"),
+        ("save", "快速存档"), ("load", "快速读档"), ("ff", "倍速（按住快进）"), ("shot", "截图"),
+    ]
     /** Filter ids, matching the order shown in the 画质 picker (Shaders.functionNames). */
     private static let filterNames = ["关闭", "GBA 色彩", "灰度", "HQ2x", "HQ4x", "2xBR", "4xBR", "残影", "点阵", "LCD3x", "扫描线（平滑）", "锐利插值"]
     /**
@@ -103,6 +138,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     ]
     private static let gbPaletteNames = ["默认", "原版", "灰度", "棕色", "深棕", "红色", "绿色", "深绿", "蓝色", "深蓝", "橙色", "黄色", "粉彩", "反转"]
     private var keyLayout = KeyLayout()
+    /** Multiple key layouts: each is stored under its own defaults key. */
+    private var layoutProfile = ""
     private var layoutEditing = false
     private var selectedKey: String?
     private var scaleSlider: UISlider?
@@ -119,14 +156,38 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         core = mgbaMobileCreate(saves, states, "ios")
+        applyCoreOptions()
+        audio.volume = Float(defaults.object(forKey: "volume") == nil ? 100 : defaults.integer(forKey: "volume")) / 100
+        audio.lowLatency = defaults.bool(forKey: "low_latency")
         controls.onKeysChanged = { [weak self] mask in
             guard let self else { return }
             let prev = self.touchKeys
             self.touchKeys = mask
             self.noteUserKeys(prevTouch: prev, prevHw: self.hwKeys, prevPad: self.padKeys)
-            if (mask & ~prev) != 0 { self.wakeInput() }
+            if (mask & ~prev) != 0 {
+                self.wakeInput()
+                self.vibrateOnKey(mask & ~prev)
+            }
         }
-        keyLayout = KeyLayout.decode(defaults.string(forKey: "key_layout") ?? "")
+        controls.onAction = { [weak self] action in
+            guard let self else { return }
+            if action == ControlsView.actionSave {
+                self.quickState(save: true)
+            } else if action == ControlsView.actionLoad {
+                self.quickState(save: false)
+            } else if action == ControlsView.actionShot {
+                self.takeScreenshot()
+            }
+        }
+        controls.onFastHold = { [weak self] down in
+            guard let self else { return }
+            self.fastHold = down
+            if down { self.wakeInput() }
+            self.refreshSpeedButtons()
+        }
+        applyInputSettings()
+        layoutProfile = activeProfile()
+        keyLayout = KeyLayout.decode(profileLayout(layoutProfile))
         controls.setCenters(keyLayout.resolved())
         controls.setScales(keyLayout.resolvedScales())
         controls.setOpacity(defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity"))
@@ -140,13 +201,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let self else { return }
             self.keyLayout.place(key, x, y)
             self.controls.setCenters(self.keyLayout.resolved())
-            self.defaults.set(self.keyLayout.encode(), forKey: "key_layout")
+            self.saveKeyLayout()
             self.selectKey(key)
         }
         controls.onScaleChanged = { [weak self] key, scale in
             guard let self else { return }
             self.keyLayout.setScale(key, scale)
-            self.defaults.set(self.keyLayout.encode(), forKey: "key_layout")
+            self.saveKeyLayout()
             self.selectKey(key)
         }
         controls.onSelected = { [weak self] key in
@@ -245,6 +306,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("画质", #selector(showVideo)),
             ("联机", #selector(showLink)),
             ("键位", #selector(toggleLayout)),
+            ("金手指", #selector(showCheats)),
+            ("截图", #selector(takeScreenshot)),
+            ("GIF", #selector(toggleGif)),
             ("设置", #selector(showSettings))
         ]
         for (index, item) in titles.enumerated() {
@@ -258,9 +322,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             if index == 1 { pauseButton = button }
             if index == 2 {
                 fastButton = button
-                button.setTitle("\(speed)倍", for: .normal)
+                button.setTitle("\(Self.speedLabel(speed))倍", for: .normal)
             }
             if index == 4 { slotButton = button }
+            if item.0 == "GIF" { gifButton = button }
         }
         fpsView.textColor = UIColor(red: 156 / 255, green: 204 / 255, blue: 156 / 255, alpha: 1)
         fpsView.font = .systemFont(ofSize: 12)
@@ -279,17 +344,24 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         speedLabel.textColor = .white
         speedLabel.font = .systemFont(ofSize: 13)
         speedStack.addArrangedSubview(speedLabel)
-        for value in 1...16 {
+        for tier in Self.speedTiers {
             let button = UIButton(type: .system)
-            button.setTitle("\(value)", for: .normal)
+            button.setTitle(Self.speedLabel(tier), for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
             button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
             button.layer.cornerRadius = 6
-            button.tag = value
-            button.addTarget(self, action: #selector(pickSpeed(_:)), for: .touchUpInside)
+            button.addTarget(self, action: #selector(pickTier(_:)), for: .touchUpInside)
             speedStack.addArrangedSubview(button)
             speedButtons.append(button)
         }
+        let custom = UIButton(type: .system)
+        custom.setTitle("自定义", for: .normal)
+        custom.titleLabel?.font = .systemFont(ofSize: 15, weight: .semibold)
+        custom.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        custom.layer.cornerRadius = 6
+        custom.addTarget(self, action: #selector(showCustomSpeed), for: .touchUpInside)
+        speedStack.addArrangedSubview(custom)
+        speedCustomButton = custom
         let soundToggle = UISwitch()
         soundToggle.isOn = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
         soundToggle.addAction(UIAction { [weak self] _ in
@@ -445,12 +517,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         reset.setTitleColor(.white, for: .normal)
         reset.titleLabel?.font = .systemFont(ofSize: 15)
         reset.addTarget(self, action: #selector(resetLayout), for: .touchUpInside)
+        let profiles = UIButton(type: .system)
+        profiles.setTitle("配置", for: .normal)
+        profiles.setTitleColor(.white, for: .normal)
+        profiles.titleLabel?.font = .systemFont(ofSize: 15)
+        profiles.addTarget(self, action: #selector(showLayoutProfiles), for: .touchUpInside)
         let done = UIButton(type: .system)
         done.setTitle("完成", for: .normal)
         done.setTitleColor(.white, for: .normal)
         done.titleLabel?.font = .systemFont(ofSize: 15)
         done.addTarget(self, action: #selector(finishLayout), for: .touchUpInside)
-        let row = UIStackView(arrangedSubviews: [hintLabel, reset, done])
+        let row = UIStackView(arrangedSubviews: [hintLabel, reset, profiles, done])
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
@@ -499,7 +576,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         keyLayout.setScale(key, CGFloat(sender.value))
         controls.setKeyScale(key, CGFloat(sender.value))
-        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        saveKeyLayout()
         refreshScaleUI()
     }
 
@@ -511,7 +588,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let next = keyLayout.scale(for: key) - 0.05
         keyLayout.setScale(key, next)
         controls.setKeyScale(key, keyLayout.scale(for: key))
-        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        saveKeyLayout()
         refreshScaleUI()
     }
 
@@ -523,7 +600,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let next = keyLayout.scale(for: key) + 0.05
         keyLayout.setScale(key, next)
         controls.setKeyScale(key, keyLayout.scale(for: key))
-        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        saveKeyLayout()
         refreshScaleUI()
     }
 
@@ -569,7 +646,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func resetLayout() {
         keyLayout.resetAll()
         selectedKey = nil
-        defaults.set(keyLayout.encode(), forKey: "key_layout")
+        saveKeyLayout()
         controls.setCenters([:])
         controls.setScales([:])
         refreshScaleUI()
@@ -602,7 +679,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let cmd = command
             command = 0
             let isPaused = paused
-            let mult = fastHold ? max(speed, 16) : speed
+            let mult: Double = fastHold ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
                 loadRom(path)
@@ -625,6 +702,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // window.
                 slices = 0
                 fpsStamp = DispatchTime.now().uptimeNanoseconds
+                frameDebt = 0
                 gate.lock()
                 let until = Date(timeIntervalSinceNow: 0.016)
                 gate.wait(until: until)
@@ -636,25 +714,39 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // Fast-forward keeps its sound unless it was switched off; the core's
             // resampler plays that stream faster (tape style), so a change only
             // needs the queues dropped.
-            let audioSpeed = wantSound ? mult : 1
+            let audioSpeed: Double = wantSound ? mult : 1
             if audioSpeed != lastAudioSpeed {
                 lastAudioSpeed = audioSpeed
                 audio.flush()
                 mgbaMobileClearAudio(core)
             }
-            // Run in a few steps, pumping audio in between: a fast-forward burst
-            // makes several frames of audio at once and the core's audio buffer
-            // only holds a little more, so leaving it undrained garbles the sound.
-            let steps = max(1, (mult + Self.audioStepFrames - 1) / Self.audioStepFrames)
-            let step = (mult + steps - 1) / steps
-            var done = 0
-            while done < mult {
-                let n = min(step, mult - done)
-                _ = mgbaMobileRunFrames(core, Int32(n))
-                pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
-                done += n
+            // Fractional speeds (slow motion) accumulate whole frames in a
+            // small debt; integer speeds drain it every slice.
+            frameDebt += mult
+            if frameDebt > 48 {
+                frameDebt = 48
             }
-            if mult == 1 {
+            let framesToRun = Int(frameDebt)
+            if framesToRun > 0 {
+                frameDebt -= Double(framesToRun)
+                // Run in a few steps, pumping audio in between: a fast-forward
+                // burst makes several frames of audio at once and the core's
+                // audio buffer only holds a little more, so leaving it
+                // undrained garbles the sound.
+                let steps = max(1, (framesToRun + Self.audioStepFrames - 1) / Self.audioStepFrames)
+                let step = (framesToRun + steps - 1) / steps
+                var done = 0
+                while done < framesToRun {
+                    let n = min(step, framesToRun - done)
+                    _ = mgbaMobileRunFrames(core, Int32(n))
+                    pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
+                    done += n
+                }
+                pollRumble(core: core)
+            } else {
+                pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: false)
+            }
+            if mult <= 1.5 {
                 present(core, &video, &videoCap)
             } else {
                 let now = DispatchTime.now().uptimeNanoseconds
@@ -663,7 +755,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     nextFastPresent = now + 80_000_000
                 }
             }
-            frames += Int64(mult)
+            frames += Int64(framesToRun)
             slices += 1
             // Pace at the console's own frame time (about 16.74 ms, 59.73 fps,
             // for GBA and GB): a rounded 60 fps would play games and their
@@ -717,8 +809,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // Rounded so the console's own 59.73 fps still shows as the 60
                 // the counter has always displayed.
                 let shownFps = elapsed > 0 ? Int((Double(shown) * 1_000_000_000 / Double(elapsed)).rounded()) : 0
+                let shownSpeedText = Self.speedLabel(shownSpeed)
                 DispatchQueue.main.async { [weak self] in
-                    self?.fpsView.text = "\(shownSpeed)倍 \(shownFps)fps"
+                    self?.fpsView.text = "\(shownSpeedText)倍 \(shownFps)fps"
                 }
             }
         }
@@ -727,7 +820,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     /// Hands the core's resampled output to the playback queue, telling it how
     /// full that queue is so the audio clock stays locked to the device.
-    private func pumpAudio(core: OpaquePointer, buffer: UnsafeMutablePointer<Int16>, speed: Int, drop: Bool) {
+    private func pumpAudio(core: OpaquePointer, buffer: UnsafeMutablePointer<Int16>, speed: Double, drop: Bool) {
         if drop {
             mgbaMobileClearAudio(core)
             return
@@ -735,11 +828,26 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let drift = audio.rateDrift()
         var rounds = 0
         while rounds < 8 {
-            let got = mgbaMobileReadAudioOut(core, buffer, 8192, Int32(speed), drift)
+            let got = mgbaMobileReadAudioOut(core, buffer, Self.audioReadFrames, speed, drift)
             if got <= 0 { break }
             audio.pump(samples: buffer, frames: Int(got))
             rounds += 1
-            if got < 8192 { break }
+            if got < Self.audioReadFrames { break }
+        }
+    }
+
+    /// Cartridge rumble pulses become a short haptic tap, throttled to one per
+    /// 200 ms so long shakes read as one event.
+    private func pollRumble(core: OpaquePointer) {
+        let hits = mgbaMobileTakeRumbles(core)
+        guard hits > 0 else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        if now &- lastRumbleAt < 200_000_000 {
+            return
+        }
+        lastRumbleAt = now
+        DispatchQueue.main.async { [weak self] in
+            self?.hapticHeavy.impactOccurred()
         }
     }
 
@@ -753,6 +861,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             cap = w * h
         }
         guard let video, mgbaMobileCopyVideo(core, video, Int32(w)) else { return }
+        captureGifFrame(pixels: video, width: w, height: h)
         if presentQueued { return }
         presentQueued = true
         let data = Data(bytes: video, count: w * h * 4)
@@ -763,8 +872,54 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     self.gameView.present(pixels: base, width: w, height: h, stride: w)
                 }
             }
+            if self.gifWantCapture {
+                self.gifWantCapture = false
+                data.withUnsafeBytes { raw in
+                    guard let base = raw.baseAddress else { return }
+                    if let frame = self.gameView.captureFilteredFrame(
+                        pixels: base, width: w, height: h,
+                        outWidth: w, outHeight: h,
+                        brightness: Float(min(150, max(50, self.gameView.brightness))) / 100) {
+                        self.gifQueue?.offer(frame)
+                    } else if self.gifQueue != nil {
+                        // Metal capture unavailable: keep the raw frame.
+                        var copy = [UInt8](repeating: 0, count: w * h * 4)
+                        copy.withUnsafeMutableBytes { dst in
+                            guard let dstBase = dst.baseAddress else { return }
+                            memcpy(dstBase, base, w * h * 4)
+                        }
+                        self.gifQueue?.offer(copy)
+                    }
+                }
+            }
             self.presentQueued = false
         }
+    }
+
+    /// Hands the presented frame to the encoder at the GIF capture rate. With
+    /// a filter or scanlines on screen the raw core frame would not match the
+    /// display, so the capture is taken on the main thread right after the
+    /// filtered present; the raw frame is otherwise the crisper source.
+    private func captureGifFrame(pixels: UnsafePointer<UInt32>, width: Int, height: Int) {
+        guard gifRecording, let queue = gifQueue else { return }
+        let now = DispatchTime.now().uptimeNanoseconds / 1_000_000
+        if now &- lastGifAt < Self.gifFrameMs {
+            return
+        }
+        lastGifAt = now
+        if gameView.showsFilteredOutput {
+            // The main-thread present block performs the filtered capture.
+            gifWantCapture = true
+            return
+        }
+        // Core frames are RGBA in memory (byte 0 = R); the encoder reads them
+        // back in that order.
+        var copy = [UInt8](repeating: 0, count: width * height * 4)
+        copy.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            memcpy(base, pixels, width * height * 4)
+        }
+        queue.offer(copy)
     }
 
     private func loadRom(_ path: String) {
@@ -788,9 +943,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         audio.start()
         _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
         applyCoreOptions()
+        frameDebt = 0
         gate.lock()
         paused = false
         gate.unlock()
+        // 进入游戏时自动读档：上次退出的进度。
+        if defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Self.autoSlot) {
+            mgbaMobileClearAudio(core)
+            _ = mgbaMobileRunFrames(core, 1)
+        }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.hint.isHidden = true
@@ -827,6 +988,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // The peer resets its own console to stay in sync.
             gboyLink?.sendReset()
             toast("已复位")
+        } else if cmd == cmdAutoSave {
+            // Silent save into the reserved slot on the way to the background.
+            if mgbaMobileSaveState(core, Self.autoSlot) {
+                writePreview(Self.autoSlot)
+            }
         }
     }
 
@@ -835,9 +1001,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let nowB = ((touchKeys | hwKeys | padKeys) & ControlsView.B) != 0
         if nowB && !wasB {
             armWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in self?.armTurbo() }
-            armWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+            // Holding B only auto-turboes in the classic mode; the dedicated
+            // 连发 keys have their own pulsing in ControlsView.
+            if turboModePref() == 0 {
+                let work = DispatchWorkItem { [weak self] in self?.armTurbo() }
+                armWork = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.turboArmSeconds, execute: work)
+            }
         } else if !nowB && wasB {
             armWork?.cancel()
             stopTurbo()
@@ -845,12 +1015,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         publishKeys()
     }
 
+    /** Keys applied this frame: local input plus the GBoy peer's mask. */
+    private func userKeys() -> Int {
+        touchKeys | hwKeys | padKeys | gboyRemoteKeys
+    }
+
     private func publishKeys() {
         guard let core else { return }
         // Keys applied now: local input plus the GBoy peer's mask.
-        var mask = touchKeys | hwKeys | padKeys | gboyRemoteKeys
+        var mask = userKeys()
         if turboB { mask &= ~ControlsView.B }
         mgbaMobileSetKeys(core, UInt32(mask))
+    }
+
+    /** Vibration strength for on-screen key presses, 0-3. */
+    private func vibrateOnKey(_ risingBits: Int) {
+        guard risingBits != 0 else { return }
+        let strength = defaults.integer(forKey: "touch_vibe")
+        guard strength > 0 else { return }
+        switch strength {
+        case 1: hapticLight.impactOccurred()
+        case 2: hapticMedium.impactOccurred()
+        default: hapticRigid.impactOccurred()
+        }
     }
 
     private func armTurbo() {
@@ -910,6 +1097,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let url = urls.first else { return }
         if pickerKind == 1 {
             openExternal(url)
+        } else if pickerKind == 3 {
+            importMyBoySaves(urls)
         } else {
             DispatchQueue.global().async { [weak self] in self?.importBios(url) }
         }
@@ -1040,12 +1229,37 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         armMenuAutoHide()
     }
 
-    @objc private func pickSpeed(_ sender: UIButton) {
-        setSpeed(sender.tag)
+    /** Speed used while the fast-forward key is held (TAB, controller, 倍速 key). */
+    private func fastHoldSpeed() -> Double {
+        Double(min(16, max(2, defaults.integer(forKey: "fast_hold") == 0 ? 16 : defaults.integer(forKey: "fast_hold"))))
     }
 
-    private func setSpeed(_ value: Int) {
-        speed = min(16, max(1, value))
+    @objc private func pickTier(_ sender: UIButton) {
+        guard let index = speedButtons.firstIndex(of: sender), index < Self.speedTiers.count else { return }
+        setSpeed(Self.speedTiers[index])
+    }
+
+    @objc private func showCustomSpeed() {
+        let alert = UIAlertController(title: "自定义", message: "0.05 ~ 16 之间，支持慢动作", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = Self.speedLabel(self.speed)
+            field.keyboardType = .decimalPad
+        }
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self] _ in
+            guard let self else { return }
+            var value = Double(alert.textFields?.first?.text?.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".") ?? "") ?? -1
+            if value < 0 {
+                self.toast("倍速范围仅限 0.05~16")
+                return
+            }
+            self.setSpeed(value)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func setSpeed(_ value: Double) {
+        speed = min(16, max(0.05, value))
         refreshSpeedButtons()
         audio.flush()
         if let core { mgbaMobileClearAudio(core) }
@@ -1137,15 +1351,41 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func refreshSpeedButtons() {
-        fastButton.setTitle("\(speed)倍", for: .normal)
-        for button in speedButtons {
-            let on = button.tag == speed
+        let shown = fastHold ? max(speed, fastHoldSpeed()) : speed
+        fastButton.setTitle("\(Self.speedLabel(shown))倍", for: .normal)
+        var tierMatched = false
+        for (index, button) in speedButtons.enumerated() {
+            let on = !tierMatched && index < Self.speedTiers.count && abs(Self.speedTiers[index] - speed) < 0.001
+            if on { tierMatched = true }
             button.setTitleColor(on ? UIColor(red: 0.06, green: 0.13, blue: 0.06, alpha: 1) : .white, for: .normal)
             button.backgroundColor = on ? UIColor(red: 61 / 255, green: 220 / 255, blue: 132 / 255, alpha: 1) : .clear
         }
+        speedCustomButton?.setTitleColor(!tierMatched ? UIColor(red: 0.06, green: 0.13, blue: 0.06, alpha: 1) : .white, for: .normal)
+        speedCustomButton?.backgroundColor = !tierMatched ? UIColor(red: 61 / 255, green: 220 / 255, blue: 132 / 255, alpha: 1) : .clear
     }
 
+    private static func speedLabel(_ value: Double) -> String {
+        value == value.rounded() && abs(value) < 1000 ? String(Int(value)) : String(format: "%.2f", value)
+    }
+
+    /** Settings hub: display, sound, input, saves and hardware extras. */
     @objc private func showSettings() {
+        let alert = UIAlertController(title: "设置", message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "屏幕方向", style: .default) { [weak self] _ in self?.showOrientationDialog() })
+        alert.addAction(UIAlertAction(title: "声音", style: .default) { [weak self] _ in self?.showSoundDialog() })
+        alert.addAction(UIAlertAction(title: "输入", style: .default) { [weak self] _ in self?.showInputDialog() })
+        alert.addAction(UIAlertAction(title: "存档", style: .default) { [weak self] _ in self?.showSaveSettingsDialog() })
+        alert.addAction(UIAlertAction(title: "高级", style: .default) { [weak self] _ in self?.showAdvanced() })
+        alert.addAction(UIAlertAction(title: "帮助", style: .default) { [weak self] _ in self?.showHelpDialog() })
+        alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        }
+        present(alert, animated: true)
+    }
+
+    private func showOrientationDialog() {
         let alert = UIAlertController(title: "屏幕方向", message: nil, preferredStyle: .alert)
         let modes: [(String, String)] = [
             ("landscape", "横屏"),
@@ -1159,11 +1399,204 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self?.chooseOrientation(mode)
             })
         }
-        alert.addAction(UIAlertAction(title: "高级…", style: .default) { [weak self] _ in
-            self?.showAdvanced()
-        })
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
         present(alert, animated: true)
+    }
+
+    private func showSoundDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let volumeNow = defaults.object(forKey: "volume") == nil ? 100 : defaults.integer(forKey: "volume")
+        let volumeLabel = UILabel()
+        volumeLabel.text = "音量 \(volumeNow)%"
+        let volume = UISlider()
+        volume.minimumValue = 0
+        volume.maximumValue = 150
+        volume.value = Float(volumeNow)
+        volume.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let percent = Int(volume.value)
+            volumeLabel.text = "音量 \(percent)%"
+            self.defaults.set(percent, forKey: "volume")
+            self.audio.volume = Float(percent) / 100
+        }, for: .valueChanged)
+        let lowLatency = labeledSwitch("低延迟音频（支持的设备上减少声音延迟）", defaults.bool(forKey: "low_latency"))
+        lowLatency.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(lowLatency.1.isOn, forKey: "low_latency")
+            self.audio.lowLatency = lowLatency.1.isOn
+        }, for: .valueChanged)
+        box.addArrangedSubview(volumeLabel)
+        box.addArrangedSubview(volume)
+        box.addArrangedSubview(lowLatency.0)
+        present(SheetController(title: "声音", content: box), animated: true)
+    }
+
+    private func showInputDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let vibe = UIButton(type: .system)
+        vibe.contentHorizontalAlignment = .left
+        vibe.setTitle("触屏振动：\(Self.vibeName(defaults.integer(forKey: "touch_vibe")))", for: .normal)
+        vibe.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "触屏振动", current: self.defaults.integer(forKey: "touch_vibe"),
+                            options: ["关", "轻", "中", "强"]) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index, forKey: "touch_vibe")
+                vibe.setTitle("触屏振动：\(Self.vibeName(index))", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let turboMode = UIButton(type: .system)
+        turboMode.contentHorizontalAlignment = .left
+        turboMode.setTitle("连击方式：\(Self.turboModeName(turboModePref()))", for: .normal)
+        turboMode.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "连击方式", current: self.turboModePref(),
+                            options: ["长按 B 键自动连击", "仅用连发键", "关闭"]) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index, forKey: "turbo_mode")
+                turboMode.setTitle("连击方式：\(Self.turboModeName(index))", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let rateNow = defaults.integer(forKey: "turbo_rate") == 0 ? 25 : defaults.integer(forKey: "turbo_rate")
+        let rateLabel = UILabel()
+        rateLabel.text = "连击速度 \(rateNow) 次/秒"
+        let rate = slider(max: 28, value: Float(max(2, min(30, rateNow)) - 2))
+        let diagonal = labeledSwitch("禁用方向键对角（一次只按一个方向）", defaults.bool(forKey: "no_diagonal"))
+        let opacityNow = defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity")
+        let opacityLabel = UILabel()
+        opacityLabel.text = "虚拟按键不透明度 \(opacityNow)%"
+        let opacity = UISlider()
+        opacity.minimumValue = 30
+        opacity.maximumValue = 150
+        opacity.value = Float(opacityNow)
+        let extras = UIButton(type: .system)
+        extras.contentHorizontalAlignment = .left
+        extras.setTitle("虚拟按键开关（连发/快存/快读/倍速/截图）", for: .normal)
+        extras.addAction(UIAction { [weak self] _ in self?.showExtraKeysDialog() }, for: .touchUpInside)
+        rate.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let value = Int(rate.value) + 2
+            rateLabel.text = "连击速度 \(value) 次/秒"
+            self.defaults.set(value, forKey: "turbo_rate")
+            self.applyInputSettings()
+        }, for: .valueChanged)
+        diagonal.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(diagonal.1.isOn, forKey: "no_diagonal")
+            self.applyInputSettings()
+        }, for: .valueChanged)
+        opacity.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let percent = Int(opacity.value)
+            opacityLabel.text = "虚拟按键不透明度 \(percent)%"
+            self.defaults.set(percent, forKey: "controls_opacity")
+            self.applyInputSettings()
+        }, for: .valueChanged)
+        box.addArrangedSubview(vibe)
+        box.addArrangedSubview(turboMode)
+        box.addArrangedSubview(rateLabel)
+        box.addArrangedSubview(rate)
+        box.addArrangedSubview(diagonal.0)
+        box.addArrangedSubview(opacityLabel)
+        box.addArrangedSubview(opacity)
+        box.addArrangedSubview(extras)
+        present(SheetController(title: "输入", content: box), animated: true)
+    }
+
+    private func showExtraKeysDialog() {
+        let enabled = extraKeys()
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 6
+        for (key, label) in Self.extraKeyChoices {
+            let row = labeledSwitch(label, enabled.contains(key))
+            row.1.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                var next = self.extraKeys()
+                if row.1.isOn {
+                    next.insert(key)
+                } else {
+                    next.remove(key)
+                }
+                self.defaults.set(next.joined(separator: ","), forKey: "extra_keys")
+                self.applyInputSettings()
+            }, for: .valueChanged)
+            box.addArrangedSubview(row.0)
+        }
+        present(SheetController(title: "虚拟按键开关（连发/快存/快读/倍速/截图）", content: box), animated: true)
+    }
+
+    private func extraKeys() -> Set<String> {
+        var out = Set<String>()
+        let csv = defaults.string(forKey: "extra_keys") ?? ""
+        if !csv.isEmpty {
+            for key in csv.split(separator: ",") {
+                let name = String(key)
+                if Self.extraKeyChoices.contains(where: { $0.0 == name }) {
+                    out.insert(name)
+                }
+            }
+        }
+        return out
+    }
+
+    private func showSaveSettingsDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let saveType = UIButton(type: .system)
+        saveType.contentHorizontalAlignment = .left
+        saveType.setTitle("存档类型：\(Self.saveTypeName(saveTypePref()))", for: .normal)
+        saveType.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            // Order mirrors the Android picker: the common flash sizes first.
+            let values: [Int] = [3, -1, 4, 5, 2, 1, 6, 0]
+            let labels = values.map { Self.saveTypeName($0) }
+            self.pickOption(title: "游戏保存类型", current: self.saveTypeChoiceIndex(), options: labels) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(values[index], forKey: "save_type")
+                self.applyCoreOptions()
+                saveType.setTitle("存档类型：\(Self.saveTypeName(self.saveTypePref()))", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let autoLoad = labeledSwitch("进入游戏时自动读档（上次退出的进度）", defaults.bool(forKey: "auto_load_state"))
+        autoLoad.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(autoLoad.1.isOn, forKey: "auto_load_state")
+        }, for: .valueChanged)
+        let autoSave = labeledSwitch("退出时自动存档", defaults.bool(forKey: "auto_save_state"))
+        autoSave.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(autoSave.1.isOn, forKey: "auto_save_state")
+        }, for: .valueChanged)
+        let confirmClose = labeledSwitch("关闭/重置时确认", defaults.bool(forKey: "confirm_close"))
+        confirmClose.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(confirmClose.1.isOn, forKey: "confirm_close")
+        }, for: .valueChanged)
+        let patches = labeledSwitch("自动使用 IPS/UPS/BPS 补丁（与 ROM 同名放同一文件夹）", defaults.object(forKey: "patches") == nil ? true : defaults.bool(forKey: "patches"))
+        patches.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(patches.1.isOn, forKey: "patches")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let deleteSav = UIButton(type: .system)
+        deleteSav.contentHorizontalAlignment = .left
+        deleteSav.setTitle("删除电池存档（.sav）", for: .normal)
+        deleteSav.addAction(UIAction { [weak self] _ in self?.confirmDeleteBattery() }, for: .touchUpInside)
+        let importSav = UIButton(type: .system)
+        importSav.contentHorizontalAlignment = .left
+        importSav.setTitle("导入 My Boy 存档（选择其 save 文件夹）", for: .normal)
+        importSav.addAction(UIAction { [weak self] _ in self?.pickMyBoySaves() }, for: .touchUpInside)
+        box.addArrangedSubview(saveType)
+        box.addArrangedSubview(autoLoad.0)
+        box.addArrangedSubview(autoSave.0)
+        box.addArrangedSubview(confirmClose.0)
+        box.addArrangedSubview(patches.0)
+        box.addArrangedSubview(deleteSav)
+        box.addArrangedSubview(importSav)
+        present(SheetController(title: "存档", content: box), animated: true)
     }
 
     private func chooseOrientation(_ mode: String) {
@@ -1198,8 +1631,24 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return id >= 0 && id < Self.gbPalettes.count ? id : 0
     }
 
+    /** Pushes the emulation-related preferences into the core. */
     private func applyCoreOptions() {
         guard let core else { return }
+        mgbaMobileSetSaveType(core, Int32(saveTypePref()))
+        mgbaMobileSetPatches(core, defaults.object(forKey: "patches") == nil ? true : defaults.bool(forKey: "patches"))
+        mgbaMobileSetBiosOptions(core,
+                                 defaults.object(forKey: "use_bios") == nil ? true : defaults.bool(forKey: "use_bios"),
+                                 defaults.object(forKey: "skip_bios") == nil ? true : defaults.bool(forKey: "skip_bios"))
+        let mode = rtcModePref()
+        let epoch = defaults.object(forKey: "rtc_epoch") == nil
+            ? Int64(Date().timeIntervalSince1970)
+            : defaults.integer(forKey: "rtc_epoch")
+        let offset = Int64(defaults.integer(forKey: "rtc_offset_min")) * 60
+        mgbaMobileSetRtc(core, Int32(mode), epoch, offset)
+        mgbaMobileSetSolar(core, Int32(defaults.bool(forKey: "solar_on")
+            ? (defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level"))
+            : -1))
+        mgbaMobileSetCartRumble(core, defaults.bool(forKey: "cart_rumble"))
         // Twelve gb.pal entries for the chosen palette. Index 0 is the core's
         // own stock colors, sent explicitly so a previous palette is cleared.
         let base = Self.gbPalettes[palettePref()]
@@ -1213,6 +1662,200 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
         mgbaMobileSetSgbBorders(core, defaults.bool(forKey: "sgb_borders"))
+        updateTiltSensor()
+        // Neutral until a reading arrives; keeps held cartridges from drifting.
+        mgbaMobileSetRotation(core, 0, 0, 0)
+    }
+
+    /** Pushes the input-related preferences into the on-screen controls. */
+    private func applyInputSettings() {
+        controls.setDiagonalLock(defaults.bool(forKey: "no_diagonal"))
+        controls.setTurboRate(defaults.integer(forKey: "turbo_rate") == 0 ? 25 : defaults.integer(forKey: "turbo_rate"))
+        controls.setVisibleExtras(extraKeys())
+        controls.setOpacity(defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity"))
+    }
+
+    // == Key layout profiles ==
+
+    private static let profilePrefix = "layout_p_"
+    private static let defaultProfile = "默认"
+
+    private func profileNames() -> [String] {
+        var names: [String] = []
+        if let csv = defaults.string(forKey: "layout_profiles") {
+            for name in csv.split(separator: "\n") {
+                let trim = name.trimmingCharacters(in: .whitespaces)
+                if !trim.isEmpty && !names.contains(trim) {
+                    names.append(trim)
+                }
+            }
+        }
+        if names.isEmpty {
+            // First run of the profile system: carry the single stored layout
+            // over as the default profile so nothing is lost.
+            names.append(Self.defaultProfile)
+            let legacy = defaults.string(forKey: "key_layout") ?? ""
+            defaults.set(legacy, forKey: Self.profilePrefix + Self.defaultProfile)
+            defaults.set(names.joined(separator: "\n"), forKey: "layout_profiles")
+        }
+        return names
+    }
+
+    private func activeProfile() -> String {
+        if let active = defaults.string(forKey: "layout_active"), !active.isEmpty, profileNames().contains(active) {
+            return active
+        }
+        return Self.defaultProfile
+    }
+
+    private func profileLayout(_ name: String) -> String {
+        if let data = defaults.string(forKey: Self.profilePrefix + name) {
+            return data
+        }
+        if name == Self.defaultProfile {
+            let legacy = defaults.string(forKey: "key_layout") ?? ""
+            defaults.set(legacy, forKey: Self.profilePrefix + name)
+            return legacy
+        }
+        return ""
+    }
+
+    /** Persists the current layout into its profile. */
+    private func saveKeyLayout() {
+        defaults.set(keyLayout.encode(), forKey: Self.profilePrefix + layoutProfile)
+    }
+
+    private func switchProfile(_ name: String) {
+        layoutProfile = name
+        defaults.set(name, forKey: "layout_active")
+        keyLayout = KeyLayout.decode(profileLayout(name))
+        selectedKey = nil
+        controls.setCenters(keyLayout.resolved())
+        controls.setScales(keyLayout.resolvedScales())
+        refreshScaleUI()
+    }
+
+    private func createProfile(_ name: String, copyCurrent: Bool) {
+        var names = profileNames()
+        if names.contains(name) {
+            toast("配置名称已存在")
+            return
+        }
+        names.append(name)
+        defaults.set(names.joined(separator: "\n"), forKey: "layout_profiles")
+        defaults.set(copyCurrent ? keyLayout.encode() : "", forKey: Self.profilePrefix + name)
+        switchProfile(name)
+        toast("已切换到 \(name)")
+    }
+
+    private func deleteProfile(_ name: String) {
+        var names = profileNames()
+        if names.count <= 1 {
+            toast("至少保留一个配置")
+            return
+        }
+        names.removeAll { $0 == name }
+        defaults.set(names.joined(separator: "\n"), forKey: "layout_profiles")
+        defaults.removeObject(forKey: Self.profilePrefix + name)
+        if name == layoutProfile {
+            switchProfile(names[0])
+        }
+    }
+
+    /** Profile picker from the layout editor: tap to switch, new/copy below. */
+    @objc private func showLayoutProfiles() {
+        let names = profileNames()
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 4
+        for name in names {
+            let row = UIButton(type: .system)
+            row.contentHorizontalAlignment = .left
+            let active = name == layoutProfile
+            row.setTitle((active ? "▸ " : "○ ") + name, for: .normal)
+            row.setTitleColor(active ? UIColor(red: 27 / 255, green: 94 / 255, blue: 32 / 255, alpha: 1) : .darkText, for: .normal)
+            row.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.dismiss(animated: true)
+                self.switchProfile(name)
+                self.toast("已切换到 \(name)")
+            }, for: .touchUpInside)
+            box.addArrangedSubview(row)
+        }
+        let actions = UIStackView()
+        actions.axis = .horizontal
+        actions.distribution = .fillEqually
+        let newProfile = UIButton(type: .system)
+        newProfile.setTitle("新配置", for: .normal)
+        newProfile.addAction(UIAction { [weak self] _ in
+            self?.dismiss(animated: true)
+            self?.promptProfileName(nil, copy: false)
+        }, for: .touchUpInside)
+        let copyProfile = UIButton(type: .system)
+        copyProfile.setTitle("复制当前", for: .normal)
+        copyProfile.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.dismiss(animated: true)
+            self.promptProfileName(self.layoutProfile + "-2", copy: true)
+        }, for: .touchUpInside)
+        actions.addArrangedSubview(newProfile)
+        actions.addArrangedSubview(copyProfile)
+        box.addArrangedSubview(actions)
+        // Per-row delete, only when there is something to fall back to.
+        if names.count > 1 {
+            let deleteRow = UIStackView()
+            deleteRow.axis = .horizontal
+            deleteRow.alignment = .center
+            deleteRow.spacing = 8
+            let deleteLabel = UILabel()
+            deleteLabel.text = "删除配置："
+            deleteLabel.font = .systemFont(ofSize: 12)
+            deleteRow.addArrangedSubview(deleteLabel)
+            for name in names {
+                let del = UIButton(type: .system)
+                del.setTitle(name, for: .normal)
+                del.titleLabel?.font = .systemFont(ofSize: 12)
+                del.setTitleColor(.systemRed, for: .normal)
+                del.addAction(UIAction { [weak self] _ in
+                    guard let self else { return }
+                    let confirm = UIAlertController(title: "删除配置", message: "删除配置「\(name)」？", preferredStyle: .alert)
+                    confirm.addAction(UIAlertAction(title: "确定", style: .destructive) { _ in
+                        self.deleteProfile(name)
+                        self.toast("已删除 \(name)")
+                    })
+                    confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
+                    self.present(confirm, animated: true)
+                }, for: .touchUpInside)
+                deleteRow.addArrangedSubview(del)
+            }
+            box.addArrangedSubview(deleteRow)
+        }
+        let hint = UILabel()
+        hint.text = "点名称切换配置；下方按钮新建空配置或复制当前配置"
+        hint.font = .systemFont(ofSize: 12)
+        hint.textColor = .secondaryLabel
+        box.addArrangedSubview(hint)
+        present(SheetController(title: "按键映射配置", content: box), animated: true)
+    }
+
+    private func promptProfileName(_ prefill: String?, copy: Bool) {
+        let alert = UIAlertController(title: copy ? "复制当前" : "新配置", message: nil, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "配置名称"
+            field.text = prefill
+        }
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let name = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            if name.isEmpty { return }
+            if self.profileNames().contains(name) {
+                self.toast("配置名称已存在")
+                return
+            }
+            self.createProfile(name, copyCurrent: copy)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
     }
 
     /** Starts or stops the device posture listener for tilt cartridges. */
@@ -1253,18 +1896,47 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let box = UIStackView()
         box.axis = .vertical
         box.spacing = 10
-        let palette = UIButton(type: .system)
-        palette.contentHorizontalAlignment = .left
-        palette.setTitle("GB 调色板：\(Self.gbPaletteNames[palettePref()])", for: .normal)
-        palette.addAction(UIAction { [weak self] _ in
+        let useBios = labeledSwitch("使用 BIOS（需先在菜单导入）", defaults.object(forKey: "use_bios") == nil ? true : defaults.bool(forKey: "use_bios"))
+        useBios.1.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            self.pickOption(title: "GB 调色板（单色 GB 游戏的配色）", current: self.palettePref(), options: Self.gbPaletteNames) { [weak self] index in
-                guard let self else { return }
-                self.defaults.set(index, forKey: "gb_palette")
-                palette.setTitle("GB 调色板：\(Self.gbPaletteNames[self.palettePref()])", for: .normal)
-                self.applyCoreOptions()
-            }
-        }, for: .touchUpInside)
+            self.defaults.set(useBios.1.isOn, forKey: "use_bios")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let skipBios = labeledSwitch("跳过 BIOS 启动画面", defaults.object(forKey: "skip_bios") == nil ? true : defaults.bool(forKey: "skip_bios"))
+        skipBios.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(skipBios.1.isOn, forKey: "skip_bios")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let clock = UIButton(type: .system)
+        clock.contentHorizontalAlignment = .left
+        clock.setTitle("游戏时钟：\(Self.clockName(rtcModePref()))", for: .normal)
+        clock.addAction(UIAction { [weak self] _ in self?.pickRtcMode(clock) }, for: .touchUpInside)
+        let rumble = labeledSwitch("卡带振动（轰隆声，需游戏支持）", defaults.bool(forKey: "cart_rumble"))
+        rumble.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(rumble.1.isOn, forKey: "cart_rumble")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let solar = labeledSwitch("太阳能仿真（我们的太阳 Boktai）", defaults.bool(forKey: "solar_on"))
+        solar.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(solar.1.isOn, forKey: "solar_on")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let solarNow = defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level")
+        let solarLabel = UILabel()
+        solarLabel.text = "阳光强度 \(solarNow)"
+        let solarBar = UISlider()
+        solarBar.minimumValue = 0
+        solarBar.maximumValue = 10
+        solarBar.value = Float(solarNow)
+        solarBar.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            solarLabel.text = "阳光强度 \(Int(solarBar.value))"
+            self.defaults.set(Int(solarBar.value), forKey: "solar_level")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
         let sgb = labeledSwitch("SGB 边框（Super Game Boy 专用边框画面）", defaults.bool(forKey: "sgb_borders"))
         sgb.1.addAction(UIAction { [weak self] _ in
             guard let self else { return }
@@ -1281,26 +1953,608 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 mgbaMobileSetRotation(core, 0, 0, 0)
             }
         }, for: .valueChanged)
-        let opacityNow = defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity")
-        let opacityLabel = UILabel()
-        opacityLabel.text = "虚拟按键不透明度 \(opacityNow)%"
-        let opacity = UISlider()
-        opacity.minimumValue = 30
-        opacity.maximumValue = 150
-        opacity.value = Float(opacityNow)
-        opacity.addAction(UIAction { [weak self] _ in
+        let palette = UIButton(type: .system)
+        palette.contentHorizontalAlignment = .left
+        palette.setTitle("GB 调色板：\(Self.gbPaletteNames[palettePref()])", for: .normal)
+        palette.addAction(UIAction { [weak self] _ in
             guard let self else { return }
-            let percent = Int(opacity.value)
-            opacityLabel.text = "虚拟按键不透明度 \(percent)%"
-            self.defaults.set(percent, forKey: "controls_opacity")
-            self.controls.setOpacity(percent)
+            self.pickOption(title: "GB 调色板（单色 GB 游戏的配色）", current: self.palettePref(), options: Self.gbPaletteNames) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index, forKey: "gb_palette")
+                palette.setTitle("GB 调色板：\(Self.gbPaletteNames[self.palettePref()])", for: .normal)
+                self.applyCoreOptions()
+            }
+        }, for: .touchUpInside)
+        let fastNow = Int(fastHoldSpeed())
+        let fastLabel = UILabel()
+        fastLabel.text = "快进速度 \(fastNow)倍"
+        let fastBar = UISlider()
+        fastBar.minimumValue = 0
+        fastBar.maximumValue = 14
+        fastBar.value = Float(max(0, min(14, fastNow - 2)))
+        fastBar.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let value = Int(fastBar.value) + 2
+            fastLabel.text = "快进速度 \(value)倍"
+            self.defaults.set(value, forKey: "fast_hold")
+            self.refreshSpeedButtons()
         }, for: .valueChanged)
-        box.addArrangedSubview(palette)
+        box.addArrangedSubview(useBios.0)
+        box.addArrangedSubview(skipBios.0)
+        box.addArrangedSubview(clock)
+        box.addArrangedSubview(rumble.0)
+        box.addArrangedSubview(solar.0)
+        box.addArrangedSubview(solarLabel)
+        box.addArrangedSubview(solarBar)
         box.addArrangedSubview(sgb.0)
         box.addArrangedSubview(tilt.0)
-        box.addArrangedSubview(opacityLabel)
-        box.addArrangedSubview(opacity)
+        box.addArrangedSubview(palette)
+        box.addArrangedSubview(fastLabel)
+        box.addArrangedSubview(fastBar)
         present(SheetController(title: "高级", content: box), animated: true)
+    }
+
+    /** Game clock: wall clock, a fixed moment, or wall clock shifted by minutes. */
+    private func pickRtcMode(_ label: UIButton) {
+        let alert = UIAlertController(title: "游戏时钟（RTC 卡带）", message: nil, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "实时时钟（跟随手机时间）", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(0, forKey: "rtc_mode")
+            self.applyCoreOptions()
+            label.setTitle("游戏时钟：\(Self.clockName(0))", for: .normal)
+        })
+        alert.addAction(UIAlertAction(title: "固定时间（口袋妖怪时间事件用）", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(1, forKey: "rtc_mode")
+            self.pickRtcDate(label)
+        })
+        alert.addAction(UIAlertAction(title: "偏移时间（手机时间加偏移分钟）", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(2, forKey: "rtc_mode")
+            self.pickRtcOffset(label)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func pickRtcDate(_ label: UIButton) {
+        let sheet = SheetController(title: "选择固定时间", content: makeRtcDatePicker(label))
+        present(sheet, animated: true)
+    }
+
+    private func makeRtcDatePicker(_ label: UIButton) -> UIView {
+        let picker = UIDatePicker()
+        if #available(iOS 13.4, *) {
+            picker.preferredDatePickerStyle = .wheels
+        }
+        picker.datePickerMode = .dateAndTime
+        let epoch = defaults.object(forKey: "rtc_epoch") == nil
+            ? Date().timeIntervalSince1970
+            : defaults.double(forKey: "rtc_epoch")
+        picker.date = Date(timeIntervalSince1970: epoch)
+        let done = UIButton(type: .system)
+        done.setTitle("确定", for: .normal)
+        done.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(picker.date.timeIntervalSince1970, forKey: "rtc_epoch")
+            self.applyCoreOptions()
+            label.setTitle("游戏时钟：\(Self.clockName(1))", for: .normal)
+            self.dismiss(animated: true)
+        }, for: .touchUpInside)
+        let box = UIStackView(arrangedSubviews: [picker, done])
+        box.axis = .vertical
+        box.spacing = 8
+        return box
+    }
+
+    private func pickRtcOffset(_ label: UIButton) {
+        let alert = UIAlertController(title: "偏移时间（手机时间加偏移分钟）", message: nil, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = String(self.defaults.integer(forKey: "rtc_offset_min"))
+            field.keyboardType = .numbersAndPunctuation
+        }
+        alert.addAction(UIAlertAction(title: "确定", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let minutes = Int(alert.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? "") ?? 0
+            self.defaults.set(minutes, forKey: "rtc_offset_min")
+            self.applyCoreOptions()
+            label.setTitle("游戏时钟：\(Self.clockName(2))", for: .normal)
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(alert, animated: true)
+    }
+
+    private func showHelpDialog() {
+        let text = UILabel()
+        text.numberOfLines = 0
+        text.font = .systemFont(ofSize: 14)
+        text.text = "游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」存进相册，「录像」录制 GIF。"
+        present(SheetController(title: "帮助", content: text), animated: true)
+    }
+
+    // == Settings plumbing ==
+
+    private func turboModePref() -> Int {
+        defaults.integer(forKey: "turbo_mode")
+    }
+
+    private static func turboModeName(_ mode: Int) -> String {
+        switch mode {
+        case 1: return "连发键"
+        case 2: return "关闭"
+        default: return "长按B键"
+        }
+    }
+
+    private static func vibeName(_ strength: Int) -> String {
+        switch strength {
+        case 1: return "轻"
+        case 2: return "中"
+        case 3: return "强"
+        default: return "关"
+        }
+    }
+
+    private func saveTypePref() -> Int {
+        defaults.object(forKey: "save_type") == nil ? 3 : defaults.integer(forKey: "save_type")
+    }
+
+    private func saveTypeChoiceIndex() -> Int {
+        switch saveTypePref() {
+        case -1: return 1
+        case 4: return 2
+        case 5: return 3
+        case 2: return 4
+        case 1: return 5
+        case 6: return 6
+        case 0: return 7
+        default: return 0
+        }
+    }
+
+    private static func saveTypeName(_ type: Int) -> String {
+        switch type {
+        case -1: return "自动检测"
+        case 0: return "不保存"
+        case 1: return "SRAM 32KB"
+        case 2: return "FLASH 64KB"
+        case 4: return "EEPROM 8KB"
+        case 5: return "EEPROM 512B"
+        case 6: return "SRAM 64KB"
+        default: return "FLASH 128KB"
+        }
+    }
+
+    private func rtcModePref() -> Int {
+        defaults.integer(forKey: "rtc_mode")
+    }
+
+    private static func clockName(_ mode: Int) -> String {
+        switch mode {
+        case 1: return "固定时间"
+        case 2: return "偏移时间"
+        default: return "实时时钟"
+        }
+    }
+
+    // == Cheats ==
+
+    /** Cheats list: toggle with the switch, 删除 button to remove, 新增 to add. */
+    @objc private func showCheats() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let count = Int(mgbaMobileCheatCount(core))
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 4
+        if count == 0 {
+            let empty = UILabel()
+            empty.numberOfLines = 0
+            empty.text = "还没有作弊码。\n点「新增」添加，格式选「自动识别」，每行一个代码。"
+            box.addArrangedSubview(empty)
+        }
+        var names: [String] = []
+        for i in 0..<count {
+            var name = [CChar](repeating: 0, count: 128)
+            mgbaMobileCheatName(core, Int32(i), &name, 128)
+            names.append(String(cString: name))
+        }
+        let sheet = SheetController(title: "金手指", content: box)
+        for i in 0..<count {
+            let index = i
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.alignment = .center
+            row.spacing = 8
+            let toggle = UISwitch()
+            toggle.isOn = mgbaMobileCheatEnabled(core, Int32(index))
+            toggle.addAction(UIAction { _ in
+                mgbaMobileCheatSetEnabled(core, Int32(index), toggle.isOn)
+            }, for: .valueChanged)
+            let label = UILabel()
+            label.text = names[index]
+            label.numberOfLines = 0
+            let delete = UIButton(type: .system)
+            delete.setTitle("删除", for: .normal)
+            delete.addAction(UIAction { [weak self, weak sheet] _ in
+                let confirm = UIAlertController(title: "删除作弊码", message: "删除「\(names[index])」？", preferredStyle: .alert)
+                confirm.addAction(UIAlertAction(title: "确定", style: .destructive) { _ in
+                    _ = mgbaMobileCheatRemove(core, Int32(index))
+                    sheet?.dismiss(animated: true)
+                    self?.showCheats()
+                })
+                confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
+                self?.present(confirm, animated: true)
+            }, for: .touchUpInside)
+            row.addArrangedSubview(toggle)
+            row.addArrangedSubview(label)
+            row.addArrangedSubview(delete)
+            box.addArrangedSubview(row)
+        }
+        let add = UIButton(type: .system)
+        add.setTitle("新增", for: .normal)
+        add.addAction(UIAction { [weak self] _ in self?.showCheatEdit() }, for: .touchUpInside)
+        box.addArrangedSubview(add)
+        present(sheet, animated: true)
+    }
+
+    private func showCheatEdit() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let name = UITextField()
+        name.placeholder = "名称（比如：无限金钱）"
+        name.borderStyle = .roundedRect
+        name.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        let formatNames = ["自动识别", "代码断路器 CodeBreaker", "金手指 v1/v2 GameShark", "动作回放 Action Replay", "VBA 码"]
+        let format = UIButton(type: .system)
+        format.contentHorizontalAlignment = .left
+        format.setTitle("格式：\(formatNames[0])", for: .normal)
+        var type = 0
+        format.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "作弊码格式", current: type, options: formatNames) { index in
+                type = index
+                format.setTitle("格式：\(formatNames[index])", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let lines = UITextView()
+        lines.font = .systemFont(ofSize: 14)
+        lines.layer.borderColor = UIColor.separator.cgColor
+        lines.layer.borderWidth = 1
+        lines.layer.cornerRadius = 6
+        lines.heightAnchor.constraint(equalToConstant: 120).isActive = true
+        let hint = UILabel()
+        hint.numberOfLines = 0
+        hint.font = .systemFont(ofSize: 12)
+        hint.textColor = .secondaryLabel
+        hint.text = "代码，每行一个\n例如 82025838 104E"
+        let ok = UIButton(type: .system)
+        ok.setTitle("确定", for: .normal)
+        ok.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            var codeName = name.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let codeLines = lines.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if codeName.isEmpty { codeName = "作弊码" }
+            if codeLines.isEmpty {
+                self.toast("作弊码无效，请检查格式")
+                return
+            }
+            let added = codeLines.withCString { linesPtr in
+                codeName.withCString { namePtr in
+                    mgbaMobileCheatAdd(core, namePtr, linesPtr, Int32(type))
+                }
+            }
+            if !added {
+                self.toast("作弊码无效，请检查格式")
+                return
+            }
+            self.toast("已添加：\(codeName)")
+            self.dismiss(animated: true)
+        }, for: .touchUpInside)
+        box.addArrangedSubview(name)
+        box.addArrangedSubview(format)
+        box.addArrangedSubview(hint)
+        box.addArrangedSubview(lines)
+        box.addArrangedSubview(ok)
+        present(SheetController(title: "新增", content: box), animated: true)
+    }
+
+    // == Screenshots & GIF ==
+
+    /** Saves the current frame as a PNG into the photo library. */
+    @objc private func takeScreenshot() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        // With a filter or scanlines on screen, capture the rendered output so
+        // the saved file matches the display; the raw frame is otherwise
+        // crisper.
+        if let shot = gameView.captureFilteredScreenshot() {
+            saveScreenshot(shot)
+            return
+        }
+        saveScreenshot(gameView.copyLast())
+    }
+
+    private func saveScreenshot(_ shot: UIImage?) {
+        guard let shot else {
+            toast("请先打开一个游戏")
+            return
+        }
+        guard let data = shot.pngData() else {
+            toast("截图失败")
+            return
+        }
+        let stamp = Self.fileStamp()
+        let name = "mGBAx-\(stamp).png"
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if status == .authorized || status == .limited {
+                    PHPhotoLibrary.shared().performChanges {
+                        let request = PHAssetCreationRequest.forAsset()
+                        request.creationDate = Date()
+                        let options = PHAssetResourceCreationOptions()
+                        options.originalFilename = name
+                        request.addResource(with: .photo, data: data, options: options)
+                    } completionHandler: { ok, _ in
+                        DispatchQueue.main.async {
+                            if ok {
+                                self.toast("已保存截图 相册/\(name)")
+                            } else {
+                                self.saveShotFallback(data: data, name: name)
+                            }
+                        }
+                    }
+                } else {
+                    self.saveShotFallback(data: data, name: name)
+                }
+            }
+        }
+    }
+
+    /// Photos was unavailable: keep the shot in the app's Documents/mGBAx,
+    /// which the Files app shows.
+    private func saveShotFallback(data: Data, name: String) {
+        let dir = docs.appendingPathComponent("mGBAx", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+            try data.write(to: dir.appendingPathComponent(name))
+            toast("已保存截图 文件/mGBAx/\(name)")
+        } catch {
+            toast("截图失败")
+        }
+    }
+
+    @objc private func toggleGif() {
+        if gifRecording {
+            stopGif()
+        } else {
+            startGif()
+        }
+    }
+
+    /** Starts recording the presented frames into a GIF. */
+    private func startGif() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        if gifRecording { return }
+        let w = Int(mgbaMobileWidth(core))
+        let h = Int(mgbaMobileHeight(core))
+        guard w > 0, h > 0 else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let name = "mGBAx-\(Self.fileStamp()).gif"
+        let queue = GifFrameQueue(limit: 24)
+        gifQueue = queue
+        lastGifAt = 0
+        gifFrames = 0
+        gifRecording = true
+        gifButton?.setTitle("停止GIF", for: .normal)
+        toast("开始GIF录制，再点一次菜单里的 GIF 停止")
+        let thread = Thread { [weak self] in
+            self?.runGifRecording(queue: queue, w: w, h: h, name: name)
+        }
+        thread.name = "gif-record"
+        thread.stackSize = 1 << 21
+        thread.start()
+    }
+
+    private func stopGif() {
+        gifRecording = false
+    }
+
+    /** Encoder loop: drains the queue into the GIF file, then publishes it. */
+    private func runGifRecording(queue: GifFrameQueue, w: Int, h: Int, name: String) {
+        let encoder = GifEncoder(width: w, height: h)
+        while true {
+            guard let frame = queue.poll(seconds: 1) else {
+                if !gifRecording { break }
+                continue
+            }
+            frame.withUnsafeBufferPointer { raw in
+                if let base = raw.baseAddress {
+                    encoder.addFrame(pixels: base, delayCs: Self.gifFrameMs / 10)
+                }
+            }
+            gifFrames += 1
+            if gifFrames >= Self.gifMaxFrames {
+                // Reached the length cap: stop as if the user had.
+                gifRecording = false
+            }
+        }
+        let file = encoder.finish()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.gifQueue = nil
+            self.gifButton?.setTitle("GIF", for: .normal)
+            if self.gifFrames > 0 {
+                self.publishGif(file: file, name: name)
+            } else {
+                self.toast("GIF录制失败")
+            }
+        }
+    }
+
+    /// Writes the finished recording to Photos (GIF stays animated); falls
+    /// back to Documents/mGBAx when Photos is unavailable.
+    private func publishGif(file: Data, name: String) {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("gif-publish.gif")
+        do {
+            try file.write(to: temp, options: .atomic)
+        } catch {
+            toast("GIF录制失败")
+            return
+        }
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if status == .authorized || status == .limited {
+                    PHPhotoLibrary.shared().performChanges {
+                        _ = PHAssetCreationRequest.creationRequestForAssetFromImage(atFileURL: temp)
+                    } completionHandler: { ok, _ in
+                        DispatchQueue.main.async {
+                            try? FileManager.default.removeItem(at: temp)
+                            if ok {
+                                self.toast("已保存GIF 相册/\(name)")
+                            } else {
+                                self.saveGifFallback(temp: temp, name: name)
+                            }
+                        }
+                    }
+                } else {
+                    self.saveGifFallback(temp: temp, name: name)
+                }
+            }
+        }
+    }
+
+    private func saveGifFallback(temp: URL, name: String) {
+        let dir = docs.appendingPathComponent("mGBAx", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.moveItem(at: temp, to: dir.appendingPathComponent(name))
+            toast("已保存GIF 文件/mGBAx/\(name)")
+        } catch {
+            try? FileManager.default.removeItem(at: temp)
+            toast("GIF录制失败")
+        }
+    }
+
+    private static func fileStamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+
+    // == Utility keys & confirmations ==
+
+    /** Quick save/load used by the optional on-screen utility keys. */
+    private func quickState(save: Bool) {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        if save {
+            postCommand(cmdSave)
+        } else {
+            postCommand(cmdLoad)
+        }
+    }
+
+    /** Copies My Boy .sav files from a picked folder into the saves folder. */
+    private func pickMyBoySaves() {
+        pickerKind = 3
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder], asCopy: false)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
+    /// Copies every .sav in the picked folder next to the matching ROM save
+    /// ("Rom.gba.sav" and "Rom.sav" both land as "Rom.sav").
+    private func importMyBoySaves(_ urls: [URL]) {
+        guard let url = urls.first else { return }
+        toast("正在读取存档…")
+        let saves = docs.appendingPathComponent("saves", isDirectory: true)
+        try? FileManager.default.createDirectory(at: saves, withIntermediateDirectories: true)
+        DispatchQueue.global().async { [weak self] in
+            var okCount = 0
+            var failCount = 0
+            let secured = url.startAccessingSecurityScopedResource()
+            defer { if secured { url.stopAccessingSecurityScopedResource() } }
+            let files = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []
+            for file in files where file.lastPathComponent.lowercased().hasSuffix(".sav") {
+                var base = file.lastPathComponent
+                if base.lowercased().hasSuffix(".sav") {
+                    base = String(base.dropLast(4))
+                }
+                let lower = base.lowercased()
+                if lower.hasSuffix(".gba") || lower.hasSuffix(".gbc") || lower.hasSuffix(".gb") || lower.hasSuffix(".sgb") {
+                    base = String(base[..<base.lastIndex(of: ".")!])
+                }
+                if base.isEmpty {
+                    failCount += 1
+                    continue
+                }
+                do {
+                    let data = try Data(contentsOf: file)
+                    try data.write(to: saves.appendingPathComponent(base + ".sav"), options: .atomic)
+                    okCount += 1
+                } catch {
+                    failCount += 1
+                }
+            }
+            let good = okCount
+            let bad = failCount
+            DispatchQueue.main.async {
+                self?.toast("导入完成：成功 \(good)，失败 \(bad)")
+            }
+        }
+    }
+
+    private func confirmDeleteBattery() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        var path = [CChar](repeating: 0, count: 1200)
+        mgbaMobileSaveFile(core, &path, 1200)
+        let savPath = String(cString: path)
+        guard !savPath.isEmpty, FileManager.default.fileExists(atPath: savPath) else {
+            toast("没有电池存档")
+            return
+        }
+        let name = URL(fileURLWithPath: savPath).lastPathComponent
+        let confirm = UIAlertController(title: "删除电池存档（.sav）", message: "将删除 \(name)（会备份为 .bak），并重新载入游戏。继续吗？", preferredStyle: .alert)
+        confirm.addAction(UIAlertAction(title: "确定", style: .destructive) { [weak self] _ in
+            let backup = savPath + ".bak"
+            try? FileManager.default.removeItem(atPath: backup)
+            do {
+                try FileManager.default.moveItem(atPath: savPath, toPath: backup)
+                self?.toast("已删除电池存档，正在重新载入")
+                if let last = self?.defaults.string(forKey: "lastRom") {
+                    self?.gate.lock()
+                    self?.pendingPath = last
+                    self?.gate.signal()
+                    self?.gate.unlock()
+                }
+            } catch {
+                self?.toast("删除失败")
+            }
+        })
+        confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(confirm, animated: true)
     }
 
     @objc private func cycleSlot() {
@@ -1308,7 +2562,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         refreshSlotButton()
     }
 
-    @objc private func resetGame() { postCommand(cmdReset) }
+    @objc private func resetGame() {
+        guard let core, mgbaMobileIsLoaded(core), defaults.bool(forKey: "confirm_close") else {
+            postCommand(cmdReset)
+            return
+        }
+        let confirm = UIAlertController(title: "复位", message: "确定要重置这个游戏吗？未保存的进度会丢失。", preferredStyle: .alert)
+        confirm.addAction(UIAlertAction(title: "确定", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.postCommand(self.cmdReset)
+        })
+        confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
+        present(confirm, animated: true)
+    }
+
     @objc private func saveState() { chooseSlot(save: true) }
     @objc private func loadState() { chooseSlot(save: false) }
 
@@ -1805,6 +3072,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let key = press.key else { continue }
             if key.keyCode == .keyboardTab || key.keyCode == .keyboardSpacebar {
                 fastHold = true
+                refreshSpeedButtons()
                 handled = true
                 continue
             }
@@ -1825,6 +3093,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let key = press.key else { continue }
             if key.keyCode == .keyboardTab || key.keyCode == .keyboardSpacebar {
                 fastHold = false
+                refreshSpeedButtons()
                 handled = true
                 continue
             }
@@ -1928,6 +3197,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         fastHold = false
         gate.unlock()
         audio.setPaused(true)
+        // 退出时自动存档 into the reserved slot.
+        if defaults.bool(forKey: "auto_save_state"), let core, mgbaMobileIsLoaded(core) {
+            if mgbaMobileSaveState(core, Self.autoSlot) {
+                writePreview(Self.autoSlot)
+            }
+        }
     }
 
     deinit {

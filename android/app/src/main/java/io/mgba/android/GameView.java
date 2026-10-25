@@ -73,12 +73,17 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
         scanlines = enabled;
     }
 
-    /** Selects a screen filter; {@link Shaders#FILTER_NONE} uses the Canvas path. */
+    /** Selects a screen filter; {@link Shaders#FILTER_NONE} uses the plain GL blit. */
     public void setFilter(int filterId) {
         if (filter != filterId) {
             filter = filterId;
             renderer.setFilter(filterId);
         }
+    }
+
+    /** True when what is on screen differs from the raw core frame. */
+    public boolean screenFiltered() {
+        return filter != Shaders.FILTER_NONE || scanlines;
     }
 
     public void setBrightness(int percent) {
@@ -157,18 +162,21 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
             post(this::requestLayout);
         }
         boolean drawn = false;
-        // Screen filters run through GL; everything else keeps the hardware
-        // Canvas blit. Locking a software canvas would run the upscale of the
-        // 240x160 frame on the UI thread every frame, which alone can blow the
-        // 60 Hz budget on high resolution screens.
-        if (renderer.usable() && getWidth() > 0 && getHeight() > 0) {
+        // Once the GL environment is up it owns the surface for good, from the
+        // first presented frame on, even without a filter. A hardware Canvas
+        // that ever touches the surface makes every later
+        // eglCreateWindowSurface fail with EGL_BAD_ALLOC, which used to kill
+        // all filters silently whenever a filter was picked mid-run. The
+        // Canvas path only runs while GL is (still considered) unavailable.
+        if (renderer.envAlive() && getWidth() > 0 && getHeight() > 0) {
             place(getWidth(), getHeight(), bitmap == null ? srcW : bitmap.getWidth(),
                     bitmap == null ? srcH : bitmap.getHeight(), dst);
             try {
                 drawn = renderer.present(getHolder().getSurface(), bitmap, dst,
-                        getWidth(), getHeight(), filter, brightness / 100f);
+                        getWidth(), getHeight(), filter, brightness / 100f, bilinear, scanlines);
             } catch (Exception e) {
-                drawn = false;
+                // GL owns the surface; a failed frame just keeps the last one.
+                drawn = true;
             }
         }
         if (drawn) {

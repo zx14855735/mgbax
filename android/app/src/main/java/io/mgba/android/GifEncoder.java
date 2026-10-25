@@ -74,6 +74,8 @@ final class GifEncoder {
         out.write(0);
         // Image Descriptor covering the whole canvas, global palette.
         out.write(0x2C);
+        writeLe(0);
+        writeLe(0);
         writeLe(width);
         writeLe(height);
         out.write(0);
@@ -161,14 +163,18 @@ final class GifEncoder {
                 continue;
             }
             sink.write(prefix, bits);
-            dict.put(key, next++);
-            if (next > (1 << bits)) {
-                if (next == 4096) {
-                    sink.write(clear, bits);
-                    dict.clear();
-                    next = 258;
-                    bits = 9;
-                } else {
+            if (next == 4096) {
+                // Table full: flush the pending code, emit CLEAR, start over.
+                // The entry for this iteration is skipped — the decoder does
+                // not add one for the first code after a CLEAR either, so
+                // both sides stay in lockstep.
+                sink.write(clear, bits);
+                dict.clear();
+                next = 258;
+                bits = 9;
+            } else {
+                dict.put(key, next++);
+                if (next > (1 << bits) && bits < 12) {
                     bits++;
                 }
             }

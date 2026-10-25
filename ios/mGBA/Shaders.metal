@@ -22,6 +22,8 @@ struct FilterUniforms {
     float2 texSize;
     float2 outSize;
     float brightness;
+    /* Passthrough only: the Canvas scanline overlay flag, 0 elsewhere. */
+    float scanlines;
 };
 
 struct FilterVaryings {
@@ -46,6 +48,20 @@ static inline float lumaOf(float3 c) {
 
 static inline float3 fetchTex(texture2d<float> tex, sampler s, float2 uv, float2 off, float2 texSize) {
     return tex.sample(s, uv + off / texSize).rgb;
+}
+
+/*
+ * Plain blit used when nothing (or a broken program) filters the frame and a
+ * capture must match what the player sees. uScanlines reproduces the software
+ * scanline overlay by darkening every second output row.
+ */
+fragment float4 filterPassthrough(FilterVaryings in [[stage_in]],
+                                  texture2d<float> uTex [[texture(0)]],
+                                  sampler s [[sampler(0)]],
+                                  constant FilterUniforms &u [[buffer(0)]]) {
+    float3 c = uTex.sample(s, in.texCoord).rgb;
+    float scan = 1.0 - 0.4 * u.scanlines * (1.0 - step(0.5, fmod(floor(in.position.y), 2.0)));
+    return float4(c * scan * u.brightness, 1.0);
 }
 
 // 1: GBA 色彩

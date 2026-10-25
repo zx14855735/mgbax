@@ -9,6 +9,7 @@ struct FilterUniforms {
     var texSize: SIMD2<Float>
     var outSize: SIMD2<Float>
     var brightness: Float
+    var scanlines: Float
 }
 
 /// Renders the emulator frame through a screen filter with Metal, mirroring
@@ -55,6 +56,7 @@ final class ShaderRenderer {
     private var historyIndex = 0
 
     private var filterId = 0
+    private var passthroughState: MTLRenderPipelineState?
 
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -144,7 +146,8 @@ final class ShaderRenderer {
         var uniforms = FilterUniforms(
             texSize: SIMD2(Float(width), Float(height)),
             outSize: SIMD2(Float(size.width), Float(size.height)),
-            brightness: brightness
+            brightness: brightness,
+            scanlines: 0
         )
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FilterUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
@@ -175,6 +178,112 @@ final class ShaderRenderer {
             broken.insert(filter)
             return nil
         }
+    }
+
+    /** The plain blit program for captures without (or with a broken) filter. */
+    private func passthroughPipeline() -> MTLRenderPipelineState? {
+        if let cached = passthroughState {
+            return cached
+        }
+        guard let vertex = vertexFunc, let fragment = library.makeFunction(name: "filterPassthrough") else {
+            return nil
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.fragmentFunction = fragment
+        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        do {
+            let state = try device.makeRenderPipelineState(descriptor: descriptor)
+            passthroughState = state
+            return state
+        } catch {
+            return nil
+        }
+    }
+
+    /** Uploads a packed RGBA8 frame; the capture path uses it for filter 0. */
+    func uploadFrame(pixels: UnsafeRawPointer, width: Int, height: Int) {
+        _ = upload(pixels, width: width, height: height, stride: width, filter: 0)
+    }
+
+    /**
+     * Renders the frame that is already uploaded (the display pass or
+     * `uploadFrame`) through the active filter — or a plain blit — into an
+     * offscreen texture of `outWidth` × `outHeight` and reads the pixels back.
+     * Returns packed RGBA8 rows; nil when Metal could not run. Must be called
+     * from the same thread as `present` (the main thread).
+     */
+    func captureRGBA(filter: Int, linear: Bool, scanlines: Bool, brightness: Float,
+                     outWidth: Int, outHeight: Int) -> [UInt8]? {
+        let filtered = filter != 0 && !broken.contains(filter)
+        guard outWidth > 0, outHeight > 0, let frameTex,
+              let pipeline = filtered ? pipeline(for: filter) : passthroughPipeline(),
+              let commandBuffer = queue.makeCommandBuffer() else {
+            return nil
+        }
+        let targetDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: outWidth, height: outHeight, mipmapped: false)
+        targetDesc.usage = [.renderTarget, .shaderRead]
+        guard let target = device.makeTexture(descriptor: targetDesc) else { return nil }
+        let readDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: outWidth, height: outHeight, mipmapped: false)
+        readDesc.storageMode = .shared
+        readDesc.usage = [.shaderRead]
+        guard let readback = device.makeTexture(descriptor: readDesc) else { return nil }
+
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+            return nil
+        }
+        encoder.setViewport(MTLViewport(originX: 0, originY: 0, width: Double(outWidth), height: Double(outHeight), znear: 0, zfar: 1))
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(frameTex, index: 0)
+        let available = min(historyCount, Self.maxHistory)
+        for i in 0..<Self.maxHistory {
+            let slot = (historyIndex + Self.historySlots - 2 - i) % Self.historySlots
+            if i < available, history.count == Self.historySlots {
+                encoder.setFragmentTexture(history[slot], index: i + 1)
+            } else {
+                encoder.setFragmentTexture(frameTex, index: i + 1)
+            }
+        }
+        encoder.setFragmentSamplerState(linear ? samplerLinear : samplerNearest, index: 0)
+        var uniforms = FilterUniforms(
+            texSize: SIMD2(Float(frameTex.width), Float(frameTex.height)),
+            outSize: SIMD2(Float(outWidth), Float(outHeight)),
+            brightness: brightness,
+            scanlines: scanlines ? 1 : 0
+        )
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FilterUniforms>.stride, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        if let blit = commandBuffer.makeBlitCommandEncoder() {
+            blit.copy(from: target, sourceSlice: 0, sourceLevel: 0, sourceOrigin: MTLOrigin(x: 0, y: 0, z: 0),
+                      sourceSize: MTLSize(width: outWidth, height: outHeight, depth: 1),
+                      to: readback, destinationSlice: 0, destinationLevel: 0,
+                      destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+            blit.endEncoding()
+        }
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+
+        var bytes = [UInt8](repeating: 0, count: outWidth * outHeight * 4)
+        let got = bytes.withUnsafeMutableBytes { raw -> Bool in
+            guard let base = raw.baseAddress else { return false }
+            readback.getBytes(base, bytesPerRow: outWidth * 4)
+            return true
+        }
+        guard got else { return nil }
+        // The pipelines draw in BGRA (the display format); hand back RGBA
+        // like the CPU path produces.
+        var i = 0
+        while i + 3 < bytes.count {
+            bytes.swapAt(i, i + 2)
+            i += 4
+        }
+        return bytes
     }
 
     private func upload(_ pixels: UnsafeRawPointer, width: Int, height: Int, stride: Int, filter: Int) -> Bool {

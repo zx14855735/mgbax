@@ -17,6 +17,7 @@
 		B1000000000000000000000A /* GBoyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000A /* GBoyLink.swift */; };
 		B1000000000000000000000B /* ShaderRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000B /* ShaderRenderer.swift */; };
 		B1000000000000000000000C /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000C /* Shaders.metal */; };
+		B1000000000000000000000D /* GifEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000D /* GifEncoder.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -30,6 +31,7 @@
 		E1000000000000000000000A /* GBoyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyLink.swift; sourceTree = "<group>"; };
 		E1000000000000000000000B /* ShaderRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShaderRenderer.swift; sourceTree = "<group>"; };
 		E1000000000000000000000C /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
+		E1000000000000000000000D /* GifEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifEncoder.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -66,6 +68,7 @@
 				E1000000000000000000000A /* GBoyLink.swift */,
 				E1000000000000000000000B /* ShaderRenderer.swift */,
 				E1000000000000000000000C /* Shaders.metal */,
+				E1000000000000000000000D /* GifEncoder.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -171,6 +174,7 @@
 				B1000000000000000000000A /* GBoyLink.swift in Sources */,
 				B1000000000000000000000B /* ShaderRenderer.swift in Sources */,
 				B1000000000000000000000C /* Shaders.metal in Sources */,
+				B1000000000000000000000D /* GifEncoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -233,7 +237,7 @@
 				MARKETING_VERSION = 0.11.0;
 				OTHER_LDFLAGS = "@$(BUILT_PRODUCTS_DIR)/mgba_ios.link";
 				PRODUCT_BUNDLE_IDENTIFIER = io.mgba.ios;
-				PRODUCT_NAME = mGBA;
+				PRODUCT_NAME = mGBAx;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -263,7 +267,7 @@
 				MARKETING_VERSION = 0.11.0;
 				OTHER_LDFLAGS = "@$(BUILT_PRODUCTS_DIR)/mgba_ios.link";
 				PRODUCT_BUNDLE_IDENTIFIER = io.mgba.ios;
-				PRODUCT_NAME = mGBA;
+				PRODUCT_NAME = mGBAx;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;

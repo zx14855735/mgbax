@@ -15,6 +15,8 @@ import android.opengl.GLUtils;
 import android.util.Log;
 import android.view.Surface;
 
+import androidx.annotation.Nullable;
+
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -29,9 +31,13 @@ import java.util.Set;
  * <p>All GL work happens on the thread that calls {@link #present} (the UI
  * thread, like the software path it replaces). A frame is uploaded as a
  * texture, the filter program draws it into the scaled destination rect and
- * the result is swapped to the window surface. When GL is unavailable or a
- * filter program fails to compile, the caller keeps its software Canvas
- * path, so every filter degrades gracefully.</p>
+ * the result is swapped to the window surface. The GL side owns the window
+ * surface from the first presented frame on — even without a filter —
+ * because a hardware Canvas that touched the surface in between makes every
+ * later eglCreateWindowSurface fail with EGL_BAD_ALLOC, which used to kill
+ * all filters silently. The Canvas path in the caller only runs when this
+ * class reports the GL environment as dead (no EGL / no window surface at
+ * all), in which case GL never comes back.</p>
  */
 final class ShaderRenderer {
     private static final String TAG = "mGBA-Shader";
@@ -50,6 +56,13 @@ final class ShaderRenderer {
     private int filterId = Shaders.FILTER_NONE;
     private final Set<Integer> broken = new HashSet<>();
     private final Map<Integer, Program> programs = new HashMap<>();
+    /** Plain blit used when no filter is active or the filter program failed. */
+    private Program passthrough;
+    /** The GL environment is unusable on this device; Canvas owns the surface. */
+    private boolean envDead;
+    /** Consecutive window-surface creation failures before giving up on GL. */
+    private int surfaceFails;
+    private boolean loggedOk;
 
     private int frameTex = 0;
     private int frameW;
@@ -83,9 +96,14 @@ final class ShaderRenderer {
         historyCount = 0;
     }
 
-    /** True when a filter is active and GL has not permanently failed for it. */
-    boolean usable() {
-        return filterId != Shaders.FILTER_NONE && !broken.contains(filterId);
+    /**
+     * True while GL may still come up or is already up. The caller must not
+     * draw with a Canvas on the same surface while this returns true, even
+     * before the first GL frame — once GL is alive, a Canvas takeover would
+     * break every later eglCreateWindowSurface.
+     */
+    boolean envAlive() {
+        return !envDead;
     }
 
     void release() {
@@ -99,9 +117,12 @@ final class ShaderRenderer {
             display = EGL14.EGL_NO_DISPLAY;
         }
         programs.clear();
+        passthrough = null;
         frameTex = 0;
         historyAlloc = false;
         historyCount = 0;
+        envDead = false;
+        surfaceFails = 0;
     }
 
     /** The window surface went away; everything on it must be rebuilt. */
@@ -162,86 +183,124 @@ final class ShaderRenderer {
     }
 
     /**
-     * Draws one frame with the selected filter. Returns false when GL could
-     * not run (the caller then falls back to its Canvas path for the frame).
+     * Draws one frame with the selected filter — or a plain blit when no
+     * filter is active. Returns false only when the GL environment is dead
+     * (the caller may then use its Canvas path). Once true has been returned,
+     * GL owns the window surface and the caller must never Canvas it again.
      *
      * @param dst destination rect of the picture inside the view, top-left origin
      */
     boolean present(Surface window, Bitmap bitmap, Rect dst, int viewW, int viewH,
-                    int filter, float brightness) {
-        if (filter == Shaders.FILTER_NONE || bitmap == null || dst.isEmpty()) {
-            return false;
-        }
-        if (broken.contains(filter)) {
+                    int filter, float brightness, boolean linear, boolean scanlines) {
+        if (envDead) {
             return false;
         }
         if (!ensureDisplay()) {
-            broken.add(filter);
+            Log.e(TAG, "EGL display/config/context init failed, egl error "
+                    + Integer.toHexString(EGL14.eglGetError()));
+            envDead = true;
             return false;
         }
         if (!ensureSurface(window, viewW, viewH)) {
-            broken.add(filter);
-            return false;
+            surfaceFails++;
+            Log.e(TAG, "eglCreateWindowSurface failed (" + viewW + "x" + viewH + "), egl error "
+                    + Integer.toHexString(EGL14.eglGetError())
+                    + (surfaceFails > 60 ? " — giving up, Canvas takes over" : " — retrying"));
+            if (surfaceFails > 60) {
+                envDead = true;
+                return false;
+            }
+            return true;
         }
+        surfaceFails = 0;
         if (!EGL14.eglMakeCurrent(display, surface, surface, context)) {
+            Log.e(TAG, "eglMakeCurrent failed, egl error "
+                    + Integer.toHexString(EGL14.eglGetError()));
             releaseSurface();
-            return false;
+            return true;
         }
-        Program program = ensureProgram(filter);
+        boolean filtered = filter != Shaders.FILTER_NONE && !broken.contains(filter);
+        Program program = filtered ? ensureProgram(filter) : passthrough();
         if (program == null) {
-            return false;
+            // A filter that cannot compile still shows the plain frame
+            // through GL: falling back to Canvas here would break the
+            // window surface for every other filter.
+            program = passthrough();
+            filtered = false;
+            if (program == null) {
+                envDead = true;
+                return false;
+            }
         }
-        if (!upload(bitmap, filter)) {
-            return false;
+        if (bitmap != null && !dst.isEmpty()
+                && !upload(bitmap, filtered ? filter : Shaders.FILTER_NONE, linear)) {
+            Log.e(TAG, "texture upload failed, gl error "
+                    + Integer.toHexString(GLES20.glGetError()));
+            return true;
         }
 
         GLES20.glClearColor(0f, 0f, 0f, 1f);
-        GLES20.glViewport(0, 0, viewW, viewH);
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        GLES20.glViewport(dst.left, Math.max(0, viewH - dst.bottom), dst.width(), dst.height());
+        if (bitmap == null || dst.isEmpty()) {
+            // Nothing to show this frame; keep the surface black and GL-owned.
+            GLES20.glViewport(0, 0, viewW, viewH);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+        } else {
+            GLES20.glViewport(0, 0, viewW, viewH);
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+            GLES20.glViewport(dst.left, Math.max(0, viewH - dst.bottom), dst.width(), dst.height());
 
-        GLES20.glUseProgram(program.id);
-        quad.position(0);
-        GLES20.glVertexAttribPointer(program.aPos, 2, GLES20.GL_FLOAT, false, 16, quad);
-        quad.position(2);
-        GLES20.glVertexAttribPointer(program.aTexCoord, 2, GLES20.GL_FLOAT, false, 16, quad);
-        GLES20.glEnableVertexAttribArray(program.aPos);
-        GLES20.glEnableVertexAttribArray(program.aTexCoord);
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTex);
-        GLES20.glUniform1i(program.uTex, 0);
-        GLES20.glUniform2f(program.uTexSize, (float) bitmap.getWidth(), (float) bitmap.getHeight());
-        GLES20.glUniform2f(program.uOutSize, (float) dst.width(), (float) dst.height());
-        GLES20.glUniform1f(program.uBrightness, brightness);
-        if (program.uHistory[0] >= 0) {
-            // history[0] is the newest previous frame. Slots beyond what has
-            // accumulated bind the current frame, whose EMA terms cancel out,
-            // so the smear warms up cleanly on the first frames.
-            int available = Math.min(historyCount, MAX_HISTORY);
-            for (int i = 0; i < MAX_HISTORY; i++) {
-                int slot = (historyIndex + HISTORY_SLOTS - 2 - i) % HISTORY_SLOTS;
-                GLES20.glActiveTexture(GLES20.GL_TEXTURE1 + i);
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,
-                        i < available ? historyTex[slot] : frameTex);
-                GLES20.glUniform1i(program.uHistory[i], i + 1);
-            }
+            GLES20.glUseProgram(program.id);
+            quad.position(0);
+            GLES20.glVertexAttribPointer(program.aPos, 2, GLES20.GL_FLOAT, false, 16, quad);
+            quad.position(2);
+            GLES20.glVertexAttribPointer(program.aTexCoord, 2, GLES20.GL_FLOAT, false, 16, quad);
+            GLES20.glEnableVertexAttribArray(program.aPos);
+            GLES20.glEnableVertexAttribArray(program.aTexCoord);
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTex);
+            GLES20.glUniform1i(program.uTex, 0);
+            GLES20.glUniform2f(program.uTexSize, (float) bitmap.getWidth(), (float) bitmap.getHeight());
+            GLES20.glUniform2f(program.uOutSize, (float) dst.width(), (float) dst.height());
+            GLES20.glUniform1f(program.uBrightness, brightness);
+            if (program.uScanlines >= 0) {
+                GLES20.glUniform1f(program.uScanlines, scanlines ? 1f : 0f);
+            }
+            if (filtered && program.uHistory[0] >= 0) {
+                // history[0] is the newest previous frame. Slots beyond what has
+                // accumulated bind the current frame, whose EMA terms cancel out,
+                // so the smear warms up cleanly on the first frames.
+                int available = Math.min(historyCount, MAX_HISTORY);
+                for (int i = 0; i < MAX_HISTORY; i++) {
+                    int slot = (historyIndex + HISTORY_SLOTS - 2 - i) % HISTORY_SLOTS;
+                    GLES20.glActiveTexture(GLES20.GL_TEXTURE1 + i);
+                    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D,
+                            i < available ? historyTex[slot] : frameTex);
+                    GLES20.glUniform1i(program.uHistory[i], i + 1);
+                }
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            }
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            GLES20.glDisableVertexAttribArray(program.aPos);
+            GLES20.glDisableVertexAttribArray(program.aTexCoord);
         }
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
-        GLES20.glDisableVertexAttribArray(program.aPos);
-        GLES20.glDisableVertexAttribArray(program.aTexCoord);
 
         if (!EGL14.eglSwapBuffers(display, surface)) {
+            Log.e(TAG, "eglSwapBuffers failed, egl error " + Integer.toHexString(EGL14.eglGetError()));
             releaseSurface();
-            return false;
+            return true;
+        }
+        if (!loggedOk) {
+            loggedOk = true;
+            Log.i(TAG, "GL present ok (" + dst.width() + "x" + dst.height()
+                    + ", filter " + filter + ")");
         }
         return true;
     }
 
-    private boolean upload(Bitmap bitmap, int filter) {
+    private boolean upload(Bitmap bitmap, int filter, boolean linear) {
         int w = bitmap.getWidth();
         int h = bitmap.getHeight();
-        boolean historyNeeded = Shaders.historyFrames(filter) > 0;
+        boolean historyNeeded = filter != Shaders.FILTER_NONE && Shaders.historyFrames(filter) > 0;
         if (frameTex == 0) {
             int[] tex = new int[1];
             GLES20.glGenTextures(1, tex, 0);
@@ -250,7 +309,6 @@ final class ShaderRenderer {
             frameH = 0;
         }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, frameTex);
-        boolean linear = Shaders.linearSampling(filter);
         int param = linear ? GLES20.GL_LINEAR : GLES20.GL_NEAREST;
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, param);
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, param);
@@ -296,10 +354,28 @@ final class ShaderRenderer {
         if (fragment == null) {
             return null;
         }
+        program = buildProgram(fragment);
+        if (program == null) {
+            broken.add(filter);
+            return null;
+        }
+        programs.put(filter, program);
+        return program;
+    }
+
+    /** The plain blit program for frames without (or with a broken) filter. */
+    private Program passthrough() {
+        if (passthrough == null) {
+            passthrough = buildProgram(Shaders.PASSTHROUGH);
+        }
+        return passthrough;
+    }
+
+    @Nullable
+    private Program buildProgram(String fragment) {
         int vs = compile(GLES20.GL_VERTEX_SHADER, Shaders.VERTEX);
         int fs = compile(GLES20.GL_FRAGMENT_SHADER, fragment);
         if (vs == 0 || fs == 0) {
-            broken.add(filter);
             return null;
         }
         int id = GLES20.glCreateProgram();
@@ -311,12 +387,11 @@ final class ShaderRenderer {
         GLES20.glDeleteShader(vs);
         GLES20.glDeleteShader(fs);
         if (status[0] == 0) {
-            Log.e(TAG, "filter " + filter + " link failed: " + GLES20.glGetProgramInfoLog(id));
+            Log.e(TAG, "program link failed: " + GLES20.glGetProgramInfoLog(id));
             GLES20.glDeleteProgram(id);
-            broken.add(filter);
             return null;
         }
-        program = new Program();
+        Program program = new Program();
         program.id = id;
         program.aPos = GLES20.glGetAttribLocation(id, "aPos");
         program.aTexCoord = GLES20.glGetAttribLocation(id, "aTexCoord");
@@ -324,10 +399,10 @@ final class ShaderRenderer {
         program.uTexSize = GLES20.glGetUniformLocation(id, "uTexSize");
         program.uOutSize = GLES20.glGetUniformLocation(id, "uOutSize");
         program.uBrightness = GLES20.glGetUniformLocation(id, "uBrightness");
+        program.uScanlines = GLES20.glGetUniformLocation(id, "uScanlines");
         for (int i = 0; i < MAX_HISTORY; i++) {
             program.uHistory[i] = GLES20.glGetUniformLocation(id, "uHistory" + i);
         }
-        programs.put(filter, program);
         return program;
     }
 
@@ -353,6 +428,8 @@ final class ShaderRenderer {
         int uTexSize;
         int uOutSize;
         int uBrightness;
+        /** Passthrough-only: the Canvas scanline overlay flag, -1 elsewhere. */
+        int uScanlines = -1;
         final int[] uHistory = new int[MAX_HISTORY];
     }
 }

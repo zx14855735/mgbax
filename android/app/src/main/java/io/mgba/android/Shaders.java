@@ -88,6 +88,21 @@ final class Shaders {
             + "uniform float uBrightness;\n"
             + "varying vec2 vTexCoord;\n";
 
+    /**
+     * Plain blit for frames without a filter, replacing the hardware Canvas
+     * path so the window surface never changes producer (a Canvas takeover
+     * breaks later eglCreateWindowSurface calls with EGL_BAD_ALLOC).
+     * uScanlines reproduces the old Canvas scanline overlay by darkening
+     * every second output row.
+     */
+    static final String PASSTHROUGH = PRELUDE
+            + "uniform float uScanlines;\n"
+            + "void main() {\n"
+            + "    vec3 c = texture2D(uTex, vTexCoord).rgb;\n"
+            + "    c *= 1.0 - 0.4 * uScanlines * (1.0 - step(0.5, mod(floor(gl_FragCoord.y), 2.0)));\n"
+            + "    gl_FragColor = vec4(c * uBrightness, 1.0);\n"
+            + "}\n";
+
     private static final String GBA_COLOR = PRELUDE
             + "void main() {\n"
             + "    vec3 c = texture2D(uTex, vTexCoord).rgb;\n"

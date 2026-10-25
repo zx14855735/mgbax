@@ -39,9 +39,11 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
 import android.text.format.DateFormat;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.PixelCopy;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
@@ -83,6 +85,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class EmulatorActivity extends AppCompatActivity {
+    private static final String TAG = "mGBA-App";
     private static final int REQ_ROM = 1;
     private static final int REQ_BIOS = 2;
     private static final int REQ_STORAGE = 3;
@@ -149,10 +152,14 @@ public class EmulatorActivity extends AppCompatActivity {
     /** GIF recording state; the queue hands frames to the encoder thread. */
     private volatile boolean gifRecording;
     private Button gifButton;
-    private java.util.concurrent.ArrayBlockingQueue<Bitmap> gifQueue;
+    private volatile java.util.concurrent.ArrayBlockingQueue<Bitmap> gifQueue;
     private Thread gifThread;
     private long lastGifAt;
     private int gifFrames;
+    private volatile int gifWidth;
+    private volatile int gifHeight;
+    /** Lets only one PixelCopy be in flight for the GIF capture. */
+    private final AtomicBoolean gifCopyBusy = new AtomicBoolean();
     /** GIF capture pacing and length cap (GIF_MAX_FRAMES at ~20 fps). */
     private static final int GIF_FRAME_MS = 50;
     private static final int GIF_MAX_FRAMES = 900;
@@ -3500,7 +3507,21 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.no_rom));
             return;
         }
-        Bitmap shot = gameView.copyLast();
+        // With a filter on screen, capture the rendered output so the saved
+        // file matches the display; the raw core frame is otherwise crisper.
+        if (gameView.screenFiltered() && Build.VERSION.SDK_INT >= 26) {
+            copyScreenAsBitmap(bitmap -> {
+                if (bitmap == null) {
+                    bitmap = gameView.copyLast();
+                }
+                saveScreenshot(bitmap);
+            });
+            return;
+        }
+        saveScreenshot(gameView.copyLast());
+    }
+
+    private void saveScreenshot(@Nullable Bitmap shot) {
         if (shot == null) {
             toast(getString(R.string.no_rom));
             return;
@@ -3534,6 +3555,34 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    private interface BitmapCallback {
+        void onBitmap(@Nullable Bitmap bitmap);
+    }
+
+    /** Captures what the game view actually renders, filters included. */
+    private void copyScreenAsBitmap(BitmapCallback done) {
+        int w = gameView.getWidth();
+        int h = gameView.getHeight();
+        if (w <= 0 || h <= 0) {
+            done.onBitmap(null);
+            return;
+        }
+        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        try {
+            PixelCopy.request(gameView, out, result -> {
+                if (result == PixelCopy.SUCCESS) {
+                    done.onBitmap(out);
+                } else {
+                    out.recycle();
+                    done.onBitmap(null);
+                }
+            }, new Handler(Looper.getMainLooper()));
+        } catch (Exception e) {
+            out.recycle();
+            done.onBitmap(null);
+        }
+    }
+
     /** Hands the presented frame to the encoder at the GIF capture rate. */
     private void captureGifFrame() {
         if (!gifRecording || gifQueue == null) {
@@ -3548,8 +3597,60 @@ public class EmulatorActivity extends AppCompatActivity {
         if (copy == null) {
             return;
         }
-        if (!gifQueue.offer(copy)) {
-            copy.recycle();
+        // With a filter on screen the raw core frame would not match the
+        // display; capture the rendered view instead, scaled back to the
+        // game's size. The raw frame is otherwise the crisper source.
+        if (gameView.screenFiltered() && Build.VERSION.SDK_INT >= 26) {
+            captureFilteredGifFrame(copy);
+            return;
+        }
+        offerGifFrame(copy);
+    }
+
+    /** Hops to the UI thread and PixelCopies the rendered game view. */
+    private void captureFilteredGifFrame(Bitmap raw) {
+        if (!gifCopyBusy.compareAndSet(false, true)) {
+            raw.recycle();
+            return;
+        }
+        gameView.post(() -> {
+            int w = gameView.getWidth();
+            int h = gameView.getHeight();
+            if (w <= 0 || h <= 0) {
+                gifCopyBusy.set(false);
+                offerGifFrame(raw);
+                return;
+            }
+            Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            try {
+                PixelCopy.request(gameView, out, result -> {
+                    gifCopyBusy.set(false);
+                    if (result == PixelCopy.SUCCESS) {
+                        Bitmap scaled = Bitmap.createScaledBitmap(out, gifWidth, gifHeight, true);
+                        out.recycle();
+                        raw.recycle();
+                        offerGifFrame(scaled);
+                    } else {
+                        out.recycle();
+                        offerGifFrame(raw);
+                    }
+                }, new Handler(Looper.getMainLooper()));
+            } catch (Exception e) {
+                gifCopyBusy.set(false);
+                out.recycle();
+                offerGifFrame(raw);
+            }
+        });
+    }
+
+    private void offerGifFrame(Bitmap bitmap) {
+        java.util.concurrent.ArrayBlockingQueue<Bitmap> queue = gifQueue;
+        if (queue == null) {
+            bitmap.recycle();
+            return;
+        }
+        if (!queue.offer(bitmap)) {
+            bitmap.recycle();
         }
     }
 
@@ -3573,6 +3674,8 @@ public class EmulatorActivity extends AppCompatActivity {
         File temp = new File(getCacheDir(), "gif-recording.gif");
         temp.delete();
         gifQueue = new java.util.concurrent.ArrayBlockingQueue<>(24);
+        gifWidth = w;
+        gifHeight = h;
         lastGifAt = 0;
         gifFrames = 0;
         gifRecording = true;
@@ -3590,13 +3693,14 @@ public class EmulatorActivity extends AppCompatActivity {
 
     /** Encoder loop: drains the queue into the GIF file, then publishes it. */
     private void runGifRecording(File temp, int w, int h, String name) {
+        java.util.concurrent.ArrayBlockingQueue<Bitmap> queue = gifQueue;
         boolean ok;
         try (FileOutputStream stream = new FileOutputStream(temp)) {
             GifEncoder encoder = new GifEncoder(stream, w, h);
             while (true) {
                 Bitmap bmp;
                 try {
-                    bmp = gifQueue.poll(1, java.util.concurrent.TimeUnit.SECONDS);
+                    bmp = queue.poll(1, java.util.concurrent.TimeUnit.SECONDS);
                 } catch (InterruptedException e) {
                     bmp = null;
                     gifRecording = false;
@@ -3616,8 +3720,10 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             encoder.finish();
             ok = true;
+            Log.i(TAG, "gif encoded " + gifFrames + " frames -> " + temp);
         } catch (Exception e) {
             ok = false;
+            Log.e(TAG, "gif encoding failed", e);
         }
         final boolean done = ok;
         runOnUiThread(() -> {

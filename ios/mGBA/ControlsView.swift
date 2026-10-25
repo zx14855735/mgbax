@@ -12,8 +12,20 @@ final class ControlsView: UIView {
     static let r = 1 << 8
     static let l = 1 << 9
     static let face = A | B | select | start | l | r
+    /** Utility-key actions reported through onAction; not part of the key mask. */
+    static let actionSave = 1
+    static let actionLoad = 2
+    static let actionShot = 3
+    static let actionFF = 4
+    /** Internal markers for the dedicated turbo/LR keys; not part of the mask. */
+    private static let flagTurboA = 1 << 20
+    private static let flagTurboB = 1 << 21
+    private static let flagLR = 1 << 22
 
     var onKeysChanged: ((Int) -> Void)?
+    var onAction: ((Int) -> Void)?
+    /// Fired while the on-screen 倍速 utility key is held (fast-forward).
+    var onFastHold: ((Bool) -> Void)?
     var onCursorMoved: ((String, CGFloat, CGFloat) -> Void)?
     var onCursorStopped: ((String, CGFloat, CGFloat) -> Void)?
     var onScaleChanged: ((String, CGFloat) -> Void)?
@@ -27,6 +39,11 @@ final class ControlsView: UIView {
             pinchTouch = nil
             pinchActive = false
             pointers.removeAll()
+            actionPointers.removeAll()
+            turboTimer?.invalidate()
+            turboTimer = nil
+            pulseMask = 0
+            pulseOn = false
             if pressed != 0 {
                 pressed = 0
                 onKeysChanged?(0)
@@ -39,6 +56,32 @@ final class ControlsView: UIView {
     private var turboLit = false
     /// Opacity of the drawn keys, 0.3-1.5 (1 = the stock translucency).
     private var opacity: CGFloat = 1
+    /* Optional utility keys: turbo A/B, L+R, quick save/load, fast-forward,
+     * screenshot. Hidden until the player turns them on in the settings. */
+    private var keyTurboA = CGRect.zero
+    private var keyTurboB = CGRect.zero
+    private var keyLR = CGRect.zero
+    private var keySave = CGRect.zero
+    private var keyLoad = CGRect.zero
+    private var keyFast = CGRect.zero
+    private var keyShot = CGRect.zero
+    private var keyTurboADefault = CGRect.zero
+    private var keyTurboBDefault = CGRect.zero
+    private var keyLRDefault = CGRect.zero
+    private var keySaveDefault = CGRect.zero
+    private var keyLoadDefault = CGRect.zero
+    private var keyFastDefault = CGRect.zero
+    private var keyShotDefault = CGRect.zero
+    private var visibleExtras: Set<String> = []
+    /** When true the d-pad reports only its dominant direction, no diagonals. */
+    private var diagonalLock = false
+    /* Dedicated turbo keys pulse their bit at this many repeats per second. */
+    private var turboRate = 25
+    private var pulseMask = 0
+    private var pulseOn = false
+    private var turboTimer: Timer?
+    /** Utility-key taps per touch, so the 倍速 key's release can be matched. */
+    private var actionPointers: [ObjectIdentifier: Int] = [:]
     private var pointers: [ObjectIdentifier: Int] = [:]
     private var centers: [String: CGPoint] = [:]
     private var scales: [String: CGFloat] = [:]
@@ -166,6 +209,23 @@ final class ControlsView: UIView {
         setNeedsDisplay()
     }
 
+    /** Shows the optional utility keys named like "ta", "tb", "lr", "save"... */
+    func setVisibleExtras(_ keys: Set<String>) {
+        visibleExtras = keys
+        applyCenters()
+        setNeedsDisplay()
+    }
+
+    /** One direction at a time on the d-pad. */
+    func setDiagonalLock(_ enabled: Bool) {
+        diagonalLock = enabled
+    }
+
+    /** Repeats per second for the dedicated A/B turbo keys. */
+    func setTurboRate(_ rate: Int) {
+        turboRate = max(2, min(30, rate))
+    }
+
     /** Base alpha scaled by the opacity setting. */
     private func fade(_ alpha: CGFloat) -> CGFloat {
         min(1, alpha * opacity)
@@ -196,6 +256,20 @@ final class ControlsView: UIView {
         let menuTop = h - pad - menuH
         buttonSelect = CGRect(x: center - menuW - 8, y: menuTop, width: menuW, height: menuH)
         buttonStart = CGRect(x: center + 8, y: menuTop, width: menuW, height: menuH)
+        // Optional utility keys: defaults sit clear of the stock clusters; the
+        // layout editor can drag each of them anywhere.
+        let utilW: CGFloat = 56
+        let utilH: CGFloat = 34
+        let utilTop = menuTop - utilH - 8
+        keySave = CGRect(x: buttonSelect.minX, y: utilTop, width: utilW, height: utilH)
+        keyLoad = CGRect(x: buttonStart.maxX - utilW, y: utilTop, width: utilW, height: utilH)
+        keyFast = CGRect(x: center - utilW / 2, y: utilTop, width: utilW, height: utilH)
+        let lrTop = pad + 40 + 36 + 8
+        keyLR = CGRect(x: center - utilW, y: lrTop, width: utilW * 2, height: utilH)
+        keyShot = CGRect(x: center - utilW / 2, y: lrTop + utilH + 8, width: utilW, height: utilH)
+        let turbo: CGFloat = 46
+        keyTurboA = CGRect(x: buttonA.minX - 4, y: buttonA.minY - turbo - 6, width: turbo, height: turbo)
+        keyTurboB = CGRect(x: keyTurboA.minX - turbo - 8, y: keyTurboA.minY + 10, width: turbo, height: turbo)
         slopA = 18
         slopFace = 10
         snapDefaults()
@@ -210,6 +284,27 @@ final class ControlsView: UIView {
         drawButton(buttonSelect, "SELECT", (pressed & Self.select) != 0, editing)
         drawButton(buttonStart, "START", (pressed & Self.start) != 0, editing)
         drawDpad()
+        if visibleExtras.contains("ta") {
+            drawButton(keyTurboA, "A连", (pressed & Self.A) != 0 && pulseOn, editing)
+        }
+        if visibleExtras.contains("tb") {
+            drawButton(keyTurboB, "B连", (pressed & Self.B) != 0 && pulseOn, editing)
+        }
+        if visibleExtras.contains("lr") {
+            drawButton(keyLR, "L+R", (pressed & (Self.l | Self.r)) == (Self.l | Self.r), editing)
+        }
+        if visibleExtras.contains("save") {
+            drawButton(keySave, "快存", actionPointers.values.contains(Self.actionSave), editing)
+        }
+        if visibleExtras.contains("load") {
+            drawButton(keyLoad, "快读", actionPointers.values.contains(Self.actionLoad), editing)
+        }
+        if visibleExtras.contains("ff") {
+            drawButton(keyFast, "倍速", actionPointers.values.contains(Self.actionFF), editing)
+        }
+        if visibleExtras.contains("shot") {
+            drawButton(keyShot, "截图", actionPointers.values.contains(Self.actionShot), editing)
+        }
     }
 
     private func drawButton(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool) {
@@ -307,7 +402,18 @@ final class ControlsView: UIView {
             return
         }
         for touch in touches {
-            pointers[ObjectIdentifier(touch)] = hitTest(touch.location(in: self))
+            let point = touch.location(in: self)
+            let utility = actionAt(point)
+            if utility != 0 {
+                actionPointers[ObjectIdentifier(touch)] = utility
+                if utility == Self.actionFF {
+                    onFastHold?(true)
+                } else {
+                    onAction?(utility)
+                }
+                continue
+            }
+            pointers[ObjectIdentifier(touch)] = hitTest(point)
         }
         publish()
     }
@@ -320,7 +426,9 @@ final class ControlsView: UIView {
         for touch in touches {
             let id = ObjectIdentifier(touch)
             guard let current = pointers[id] else { continue }
-            if (current & Self.face) != 0 { continue }
+            // Face buttons and the dedicated keys stick until release. A thumb
+            // sliding a few pixels used to drop A before the game sampled it.
+            if (current & (Self.face | Self.flagTurboA | Self.flagTurboB | Self.flagLR)) != 0 { continue }
             pointers[id] = hitTest(touch.location(in: self))
         }
         publish()
@@ -331,7 +439,15 @@ final class ControlsView: UIView {
             for touch in touches { endDrag(touch) }
             return
         }
-        for touch in touches { pointers.removeValue(forKey: ObjectIdentifier(touch)) }
+        for touch in touches {
+            let id = ObjectIdentifier(touch)
+            if let held = actionPointers[id] {
+                actionPointers.removeValue(forKey: id)
+                if held == Self.actionFF { onFastHold?(false) }
+                continue
+            }
+            pointers.removeValue(forKey: id)
+        }
         publish()
     }
 
@@ -350,17 +466,71 @@ final class ControlsView: UIView {
             }
             return
         }
-        for touch in touches { pointers.removeValue(forKey: ObjectIdentifier(touch)) }
+        pointers.removeAll()
+        actionPointers.removeAll()
+        onFastHold?(false)
         publish()
     }
 
     private func publish() {
-        let mask = pointers.values.reduce(0, |)
+        publish(computeMask())
+    }
+
+    private func publish(_ mask: Int) {
         if mask != pressed {
             pressed = mask
             onKeysChanged?(mask)
             setNeedsDisplay()
         }
+    }
+
+    /** Mask implied by the current pointers, including pulsing turbo keys. */
+    private func computeMask() -> Int {
+        var mask = 0
+        var turbo = 0
+        for value in pointers.values {
+            if (value & Self.flagTurboA) != 0 {
+                turbo |= Self.A
+            } else if (value & Self.flagTurboB) != 0 {
+                turbo |= Self.B
+            } else if (value & Self.flagLR) != 0 {
+                mask |= Self.l | Self.r
+            } else {
+                mask |= value
+            }
+        }
+        if turbo != pulseMask {
+            pulseMask = turbo
+            turboTimer?.invalidate()
+            turboTimer = nil
+            if pulseMask == 0 {
+                pulseOn = false
+            } else {
+                pulseOn = true
+                scheduleTurboTick()
+            }
+        }
+        return mask | (pulseOn ? pulseMask : 0)
+    }
+
+    private func scheduleTurboTick() {
+        let interval = TimeInterval(max(20, 1000 / max(1, turboRate))) / 1000
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            guard let self, self.pulseMask != 0 else { return }
+            self.pulseOn.toggle()
+            self.publish()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        turboTimer = timer
+    }
+
+    /** Optional utility key under the point, or 0 (action codes). */
+    private func actionAt(_ point: CGPoint) -> Int {
+        if visibleExtras.contains("save"), keySave.contains(point) { return Self.actionSave }
+        if visibleExtras.contains("load"), keyLoad.contains(point) { return Self.actionLoad }
+        if visibleExtras.contains("ff"), keyFast.contains(point) { return Self.actionFF }
+        if visibleExtras.contains("shot"), keyShot.contains(point) { return Self.actionShot }
+        return 0
     }
 
     private func beginDrag(_ touch: UITouch) {
@@ -399,6 +569,9 @@ final class ControlsView: UIView {
     }
 
     private func hitTest(_ point: CGPoint) -> Int {
+        if visibleExtras.contains("ta"), keyTurboA.contains(point) { return Self.flagTurboA }
+        if visibleExtras.contains("tb"), keyTurboB.contains(point) { return Self.flagTurboB }
+        if visibleExtras.contains("lr"), keyLR.contains(point) { return Self.flagLR }
         if let face = nearestFace(point) { return face }
         return hitDpad(point)
     }
@@ -410,6 +583,16 @@ final class ControlsView: UIView {
         if hitArm(dpadDown, point) { bits |= Self.down }
         if hitArm(dpadLeft, point) { bits |= Self.left }
         if hitArm(dpadRight, point) { bits |= Self.right }
+        if bits != 0 && diagonalLock {
+            // Keep only the dominant direction so a diagonal press reads as
+            // one clean input, the way some games expect.
+            let dx = point.x - dpad.midX
+            let dy = point.y - dpad.midY
+            if abs(dx) > abs(dy) {
+                return dx > 0 ? Self.right : Self.left
+            }
+            return dy > 0 ? Self.down : Self.up
+        }
         return bits
     }
 
@@ -464,7 +647,15 @@ final class ControlsView: UIView {
             if face == Self.select { return "select" }
             if face == Self.start { return "start" }
         }
-        return dpad.contains(point) ? "dpad" : nil
+        if dpad.contains(point) { return "dpad" }
+        if visibleExtras.contains("ta"), keyTurboA.contains(point) { return "ta" }
+        if visibleExtras.contains("tb"), keyTurboB.contains(point) { return "tb" }
+        if visibleExtras.contains("lr"), keyLR.contains(point) { return "lr" }
+        if visibleExtras.contains("save"), keySave.contains(point) { return "save" }
+        if visibleExtras.contains("load"), keyLoad.contains(point) { return "load" }
+        if visibleExtras.contains("ff"), keyFast.contains(point) { return "ff" }
+        if visibleExtras.contains("shot"), keyShot.contains(point) { return "shot" }
+        return nil
     }
 
     private func rectFor(_ key: String) -> CGRect {
@@ -475,6 +666,13 @@ final class ControlsView: UIView {
         case "l": return buttonL
         case "r": return buttonR
         case "select": return buttonSelect
+        case "ta": return keyTurboA
+        case "tb": return keyTurboB
+        case "lr": return keyLR
+        case "save": return keySave
+        case "load": return keyLoad
+        case "ff": return keyFast
+        case "shot": return keyShot
         default: return buttonStart
         }
     }
@@ -487,6 +685,13 @@ final class ControlsView: UIView {
         buttonBDefault = buttonB
         buttonSelectDefault = buttonSelect
         buttonStartDefault = buttonStart
+        keyTurboADefault = keyTurboA
+        keyTurboBDefault = keyTurboB
+        keyLRDefault = keyLR
+        keySaveDefault = keySave
+        keyLoadDefault = keyLoad
+        keyFastDefault = keyFast
+        keyShotDefault = keyShot
     }
 
     private func applyCenters() {
@@ -497,6 +702,13 @@ final class ControlsView: UIView {
         place(&buttonB, buttonBDefault, "b")
         place(&buttonSelect, buttonSelectDefault, "select")
         place(&buttonStart, buttonStartDefault, "start")
+        if visibleExtras.contains("ta") { place(&keyTurboA, keyTurboADefault, "ta") }
+        if visibleExtras.contains("tb") { place(&keyTurboB, keyTurboBDefault, "tb") }
+        if visibleExtras.contains("lr") { place(&keyLR, keyLRDefault, "lr") }
+        if visibleExtras.contains("save") { place(&keySave, keySaveDefault, "save") }
+        if visibleExtras.contains("load") { place(&keyLoad, keyLoadDefault, "load") }
+        if visibleExtras.contains("ff") { place(&keyFast, keyFastDefault, "ff") }
+        if visibleExtras.contains("shot") { place(&keyShot, keyShotDefault, "shot") }
         layoutDpadArms()
         onLayoutChanged?()
     }
