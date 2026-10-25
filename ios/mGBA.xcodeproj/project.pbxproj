@@ -14,6 +14,9 @@
 		B10000000000000000000005 /* AudioOut.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000005 /* AudioOut.swift */; };
 		B10000000000000000000006 /* RemoteLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000006 /* RemoteLink.swift */; };
 		B10000000000000000000009 /* KeyLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000009 /* KeyLayout.swift */; };
+		B1000000000000000000000A /* GBoyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000A /* GBoyLink.swift */; };
+		B1000000000000000000000B /* ShaderRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000B /* ShaderRenderer.swift */; };
+		B1000000000000000000000C /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000C /* Shaders.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +27,9 @@
 		E10000000000000000000005 /* AudioOut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOut.swift; sourceTree = "<group>"; };
 		E10000000000000000000006 /* RemoteLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLink.swift; sourceTree = "<group>"; };
 		E10000000000000000000009 /* KeyLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyLayout.swift; sourceTree = "<group>"; };
+		E1000000000000000000000A /* GBoyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyLink.swift; sourceTree = "<group>"; };
+		E1000000000000000000000B /* ShaderRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShaderRenderer.swift; sourceTree = "<group>"; };
+		E1000000000000000000000C /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -57,6 +63,9 @@
 				E10000000000000000000005 /* AudioOut.swift */,
 				E10000000000000000000006 /* RemoteLink.swift */,
 				E10000000000000000000009 /* KeyLayout.swift */,
+				E1000000000000000000000A /* GBoyLink.swift */,
+				E1000000000000000000000B /* ShaderRenderer.swift */,
+				E1000000000000000000000C /* Shaders.metal */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -159,6 +168,9 @@
 				B10000000000000000000005 /* AudioOut.swift in Sources */,
 				B10000000000000000000006 /* RemoteLink.swift in Sources */,
 				B10000000000000000000009 /* KeyLayout.swift in Sources */,
+				B1000000000000000000000A /* GBoyLink.swift in Sources */,
+				B1000000000000000000000B /* ShaderRenderer.swift in Sources */,
+				B1000000000000000000000C /* Shaders.metal in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

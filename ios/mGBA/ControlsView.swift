@@ -37,6 +37,8 @@ final class ControlsView: UIView {
     private var pressed = 0
     private var turboB = false
     private var turboLit = false
+    /// Opacity of the drawn keys, 0.3-1.5 (1 = the stock translucency).
+    private var opacity: CGFloat = 1
     private var pointers: [ObjectIdentifier: Int] = [:]
     private var centers: [String: CGPoint] = [:]
     private var scales: [String: CGFloat] = [:]
@@ -156,6 +158,19 @@ final class ControlsView: UIView {
         setNeedsDisplay()
     }
 
+    /** Overall opacity of the on-screen keys, 30-150 percent. */
+    func setOpacity(_ percent: Int) {
+        let clamped = CGFloat(min(150, max(30, percent))) / 100
+        if clamped == opacity { return }
+        opacity = clamped
+        setNeedsDisplay()
+    }
+
+    /** Base alpha scaled by the opacity setting. */
+    private func fade(_ alpha: CGFloat) -> CGFloat {
+        min(1, alpha * opacity)
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         let w = bounds.width
@@ -200,18 +215,18 @@ final class ControlsView: UIView {
     private func drawButton(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool) {
         let path = UIBezierPath(roundedRect: rect, cornerRadius: 12)
         if down {
-            UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: 70 / 255).setFill()
+            UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: fade(70 / 255)).setFill()
             path.fill()
         }
         let stroke = selected
-            ? UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: 230 / 255)
-            : (down ? UIColor(red: 120 / 255, green: 230 / 255, blue: 160 / 255, alpha: 210 / 255) : UIColor(white: 1, alpha: 140 / 255))
+            ? UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: fade(230 / 255))
+            : (down ? UIColor(red: 120 / 255, green: 230 / 255, blue: 160 / 255, alpha: fade(210 / 255)) : UIColor(white: 1, alpha: fade(140 / 255)))
         stroke.setStroke()
         path.lineWidth = 2
         path.stroke()
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.boldSystemFont(ofSize: 14),
-            .foregroundColor: UIColor(white: 1, alpha: down || selected ? 230 / 255 : 180 / 255)
+            .foregroundColor: UIColor(white: 1, alpha: fade(down || selected ? 230 / 255 : 180 / 255))
         ]
         let text = label as NSString
         let size = text.size(withAttributes: attrs)
@@ -232,12 +247,12 @@ final class ControlsView: UIView {
         let down = (pressed & bit) != 0
         let path = UIBezierPath(roundedRect: rect, cornerRadius: 8)
         if down {
-            UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: 90 / 255).setFill()
+            UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: fade(90 / 255)).setFill()
             path.fill()
         }
         let stroke = editing
-            ? UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: 230 / 255)
-            : (down ? UIColor(red: 120 / 255, green: 230 / 255, blue: 160 / 255, alpha: 220 / 255) : UIColor(white: 1, alpha: 170 / 255))
+            ? UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: fade(230 / 255))
+            : (down ? UIColor(red: 120 / 255, green: 230 / 255, blue: 160 / 255, alpha: fade(220 / 255)) : UIColor(white: 1, alpha: fade(170 / 255)))
         stroke.setStroke()
         path.lineWidth = 2
         path.stroke()
@@ -268,7 +283,7 @@ final class ControlsView: UIView {
             path.addLine(to: CGPoint(x: cx - a * 0.7, y: cy + a * 0.92))
         }
         path.close()
-        UIColor(white: 1, alpha: down ? 245 / 255 : 210 / 255).setFill()
+        UIColor(white: 1, alpha: fade(down ? 245 / 255 : 210 / 255)).setFill()
         path.fill()
     }
 

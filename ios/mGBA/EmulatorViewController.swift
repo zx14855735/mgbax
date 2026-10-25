@@ -1,3 +1,4 @@
+import CoreMotion
 import Darwin
 import GameController
 import UIKit
@@ -23,7 +24,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var paused = false
     private var speed = 1
     private var fastHold = false
-    private var portrait = false
+    private var orientationMode = UserDefaults.standard.string(forKey: "orientation") ?? "landscape"
+    private var portrait: Bool { orientationMode == "portrait" || orientationMode == "portrait_rev" }
     private var touchKeys = 0
     private var hwKeys = 0
     private var padKeys = 0
@@ -35,6 +37,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let audio = AudioOut()
     private var presentQueued = false
     private var remote: RemoteLink?
+    /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
+    private var gboyLink: GBoyLink?
+    private var gboyRemoteKeys = 0
+    /** Auto frameskip state on the emulation thread. */
+    private var skipAuto = false
+    private var autoSkipLevel = 0
+    private var lateStreak = 0
+    /** Tilt cartridge input: device posture fed to the core when enabled. */
+    private var motionManager: CMMotionManager?
+    private var tiltListening = false
     private var linkStatusLabel: UILabel?
     private var linkRoomField: UITextField?
     private var lastLinkState = -1
@@ -67,6 +79,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var lastAudioSpeed = 0
     private static let menuHideSeconds: TimeInterval = 4
     private static let audioStepFrames = 4
+    /** Filter ids, matching the order shown in the 画质 picker (Shaders.functionNames). */
+    private static let filterNames = ["关闭", "GBA 色彩", "灰度", "HQ2x", "HQ4x", "2xBR", "4xBR", "残影", "点阵", "LCD3x", "扫描线（平滑）", "锐利插值"]
+    /**
+     * GB DMG palettes, light to dark, expanded to the twelve gb.pal entries
+     * (the same four colors for BG, OBJ0 and OBJ1).
+     */
+    private static let gbPalettes: [[Int32]] = [
+        [0xFFFFFF, 0xA8B8A8, 0x285050, 0x000000],
+        [0xFFFFFF, 0xA9A9A9, 0x545454, 0x000000],
+        [0xFFFFFF, 0xAAAAAA, 0x555555, 0x000000],
+        [0xF8E0C0, 0xD89058, 0xA85038, 0x381808],
+        [0xF8F8D8, 0xD8B098, 0xA06848, 0x583020],
+        [0xFFF8FF, 0xF8B8B8, 0xC85050, 0x680808],
+        [0xFFFBE7, 0xC8D8A0, 0x789868, 0x183018],
+        [0xF8FFD8, 0xB8F8B8, 0x70C078, 0x184818],
+        [0xE0F8FF, 0xA0B8F8, 0x5078D8, 0x001888],
+        [0xF8E8F8, 0xB8A0F0, 0x7858E8, 0x180090],
+        [0xFFF0E0, 0xF8B888, 0xC07038, 0x602010],
+        [0xFFF8D8, 0xF8D888, 0xC0A040, 0x604000],
+        [0xFFF8F8, 0xE8C0C8, 0xC88898, 0x704858],
+        [0x000000, 0x285050, 0xA8B8A8, 0xFFFFFF],
+    ]
+    private static let gbPaletteNames = ["默认", "原版", "灰度", "棕色", "深棕", "红色", "绿色", "深绿", "蓝色", "深蓝", "橙色", "黄色", "粉彩", "反转"]
     private var keyLayout = KeyLayout()
     private var layoutEditing = false
     private var selectedKey: String?
@@ -79,7 +114,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // Every launch starts at 1x. Fast-forward is a temporary choice: a
         // remembered speed would auto-resume the game, and its tape-style
         // raised audio pitch, before the player asks for it.
-        portrait = defaults.string(forKey: "orientation") == "portrait"
         buildChrome()
         audio.setSoundEnabled(defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio"))
         let saves = docs.appendingPathComponent("saves").path
@@ -95,6 +129,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         keyLayout = KeyLayout.decode(defaults.string(forKey: "key_layout") ?? "")
         controls.setCenters(keyLayout.resolved())
         controls.setScales(keyLayout.resolvedScales())
+        controls.setOpacity(defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity"))
         controls.onCursorMoved = { [weak self] key, x, y in
             guard let self else { return }
             self.keyLayout.place(key, x, y)
@@ -147,8 +182,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var shouldAutorotate: Bool { true }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { portrait ? .portrait : .landscape }
-    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation { portrait ? .portrait : .landscapeRight }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        // Sensor-style masks: the chosen mode is requested on entry, the
+        // device may still flip within that group.
+        portrait ? [.portrait, .portraitUpsideDown] : [.landscapeLeft, .landscapeRight]
+    }
+    override var preferredInterfaceOrientationForPresentation: UIInterfaceOrientation {
+        switch orientationMode {
+        case "portrait": return .portrait
+        case "portrait_rev": return .portraitUpsideDown
+        case "landscape_rev": return .landscapeLeft
+        default: return .landscapeRight
+        }
+    }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
@@ -641,6 +687,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     gate.unlock()
                 }
             }
+            // 自动跳帧：the loop keeps score of how consistently it lands
+            // late, and eases one or two skip levels in or out so slow
+            // devices hold speed without stuttering every frame.
+            if skipAuto {
+                let late = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds) - nextSlice
+                lateStreak = late > 0 ? min(lateStreak + 1, 90) : max(lateStreak - 3, 0)
+                let want = lateStreak > 60 ? 2 : lateStreak > 30 ? 1 : 0
+                if want != autoSkipLevel {
+                    autoSkipLevel = want
+                    mgbaMobileSetFrameskip(core, Int32(want))
+                }
+            }
             let now = DispatchTime.now().uptimeNanoseconds
             if now &- fpsStamp >= 1_000_000_000 {
                 let shown = frames
@@ -729,6 +787,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // queue level then steers that resampler (see AudioOut.rateDrift).
         audio.start()
         _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
+        applyCoreOptions()
         gate.lock()
         paused = false
         gate.unlock()
@@ -765,6 +824,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         } else if cmd == cmdReset {
             mgbaMobileReset(core)
             mgbaMobileClearAudio(core)
+            // The peer resets its own console to stay in sync.
+            gboyLink?.sendReset()
             toast("已复位")
         }
     }
@@ -786,7 +847,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func publishKeys() {
         guard let core else { return }
-        var mask = touchKeys | hwKeys | padKeys
+        // Keys applied now: local input plus the GBoy peer's mask.
+        var mask = touchKeys | hwKeys | padKeys | gboyRemoteKeys
         if turboB { mask &= ~ControlsView.B }
         mgbaMobileSetKeys(core, UInt32(mask))
     }
@@ -1085,33 +1147,160 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func showSettings() {
         let alert = UIAlertController(title: "屏幕方向", message: nil, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: portrait ? "横屏" : "横屏 ✓", style: .default) { [weak self] _ in
-            self?.chooseOrientation(false)
-        })
-        alert.addAction(UIAlertAction(title: portrait ? "竖屏 ✓" : "竖屏", style: .default) { [weak self] _ in
-            self?.chooseOrientation(true)
+        let modes: [(String, String)] = [
+            ("landscape", "横屏"),
+            ("landscape_rev", "横屏（反向）"),
+            ("portrait", "竖屏"),
+            ("portrait_rev", "竖屏（反向）"),
+        ]
+        for (mode, label) in modes {
+            let mark = mode == orientationMode ? "✓ " : ""
+            alert.addAction(UIAlertAction(title: mark + label, style: .default) { [weak self] _ in
+                self?.chooseOrientation(mode)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "高级…", style: .default) { [weak self] _ in
+            self?.showAdvanced()
         })
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
         present(alert, animated: true)
     }
 
-    private func chooseOrientation(_ portrait: Bool) {
-        self.portrait = portrait
-        defaults.set(portrait ? "portrait" : "landscape", forKey: "orientation")
+    private func chooseOrientation(_ mode: String) {
+        orientationMode = mode
+        defaults.set(mode, forKey: "orientation")
         DispatchQueue.main.async { [weak self] in
             self?.applyOrientation()
         }
     }
 
     private func applyOrientation() {
-        let mask: UIInterfaceOrientationMask = portrait ? .portrait : .landscape
+        let mask: UIInterfaceOrientationMask
+        let target: UIInterfaceOrientation
+        switch orientationMode {
+        case "portrait": mask = .portrait; target = .portrait
+        case "portrait_rev": mask = .portraitUpsideDown; target = .portraitUpsideDown
+        case "landscape_rev": mask = .landscapeLeft; target = .landscapeLeft
+        default: mask = .landscapeRight; target = .landscapeRight
+        }
         if #available(iOS 16.0, *) {
             setNeedsUpdateOfSupportedInterfaceOrientations()
             view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
         }
-        let value = portrait ? UIInterfaceOrientation.portrait.rawValue : UIInterfaceOrientation.landscapeRight.rawValue
-        UIDevice.current.setValue(value, forKey: "orientation")
+        UIDevice.current.setValue(target.rawValue, forKey: "orientation")
         UIViewController.attemptRotationToDeviceOrientation()
+    }
+
+    // == 高级：GB 调色板 / SGB 边框 / 倾斜传感器卡带 / 按键不透明度 ==
+
+    private func palettePref() -> Int {
+        let id = defaults.integer(forKey: "gb_palette")
+        return id >= 0 && id < Self.gbPalettes.count ? id : 0
+    }
+
+    private func applyCoreOptions() {
+        guard let core else { return }
+        // Twelve gb.pal entries for the chosen palette. Index 0 is the core's
+        // own stock colors, sent explicitly so a previous palette is cleared.
+        let base = Self.gbPalettes[palettePref()]
+        var colors = [Int32](repeating: 0, count: 12)
+        for index in 0..<12 {
+            colors[index] = base[index % 4]
+        }
+        colors.withUnsafeBufferPointer { buffer in
+            if let address = buffer.baseAddress {
+                mgbaMobileSetGbPalette(core, address)
+            }
+        }
+        mgbaMobileSetSgbBorders(core, defaults.bool(forKey: "sgb_borders"))
+    }
+
+    /** Starts or stops the device posture listener for tilt cartridges. */
+    private func updateTiltSensor() {
+        let wanted = defaults.bool(forKey: "tilt_sensor")
+        if wanted && !tiltListening {
+            if motionManager == nil {
+                motionManager = CMMotionManager()
+            }
+            guard let motion = motionManager, motion.isDeviceMotionAvailable else { return }
+            motion.deviceMotionUpdateInterval = 1.0 / 30.0
+            tiltListening = true
+            motion.startDeviceMotionUpdates(to: .main) { [weak self] update, _ in
+                guard let self, self.tiltListening, let update, let core = self.core else { return }
+                // Gravity along the device's x/y axes, normalized to roughly
+                // one gravity at full deflection; re-axed for landscape so
+                // tilting the phone tilts the cartridge the way the screen moves.
+                var x = CGFloat(update.gravity.x)
+                var y = CGFloat(update.gravity.y)
+                if !self.portrait {
+                    let swap = x
+                    x = y
+                    y = -swap
+                }
+                mgbaMobileSetRotation(core, Float(Self.clampTilt(x)), Float(Self.clampTilt(y)), 0)
+            }
+        } else if !wanted && tiltListening {
+            motionManager?.stopDeviceMotionUpdates()
+            tiltListening = false
+        }
+    }
+
+    private static func clampTilt(_ value: CGFloat) -> CGFloat {
+        max(-1, min(1, value * 1.4))
+    }
+
+    @objc private func showAdvanced() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let palette = UIButton(type: .system)
+        palette.contentHorizontalAlignment = .left
+        palette.setTitle("GB 调色板：\(Self.gbPaletteNames[palettePref()])", for: .normal)
+        palette.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "GB 调色板（单色 GB 游戏的配色）", current: self.palettePref(), options: Self.gbPaletteNames) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index, forKey: "gb_palette")
+                palette.setTitle("GB 调色板：\(Self.gbPaletteNames[self.palettePref()])", for: .normal)
+                self.applyCoreOptions()
+            }
+        }, for: .touchUpInside)
+        let sgb = labeledSwitch("SGB 边框（Super Game Boy 专用边框画面）", defaults.bool(forKey: "sgb_borders"))
+        sgb.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(sgb.1.isOn, forKey: "sgb_borders")
+            self.applyCoreOptions()
+        }, for: .valueChanged)
+        let tilt = labeledSwitch("倾斜传感器卡带（扭转世界/科比摇摆，用手机姿态模拟）", defaults.bool(forKey: "tilt_sensor"))
+        tilt.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(tilt.1.isOn, forKey: "tilt_sensor")
+            self.updateTiltSensor()
+            if !tilt.1.isOn, let core = self.core {
+                // Neutral tilt so a held cartridge stops reacting.
+                mgbaMobileSetRotation(core, 0, 0, 0)
+            }
+        }, for: .valueChanged)
+        let opacityNow = defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity")
+        let opacityLabel = UILabel()
+        opacityLabel.text = "虚拟按键不透明度 \(opacityNow)%"
+        let opacity = UISlider()
+        opacity.minimumValue = 30
+        opacity.maximumValue = 150
+        opacity.value = Float(opacityNow)
+        opacity.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let percent = Int(opacity.value)
+            opacityLabel.text = "虚拟按键不透明度 \(percent)%"
+            self.defaults.set(percent, forKey: "controls_opacity")
+            self.controls.setOpacity(percent)
+        }, for: .valueChanged)
+        box.addArrangedSubview(palette)
+        box.addArrangedSubview(sgb.0)
+        box.addArrangedSubview(tilt.0)
+        box.addArrangedSubview(opacityLabel)
+        box.addArrangedSubview(opacity)
+        present(SheetController(title: "高级", content: box), animated: true)
     }
 
     @objc private func cycleSlot() {
@@ -1236,16 +1425,25 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let blend = defaults.bool(forKey: "vf_blend")
         let linear = defaults.object(forKey: "vf_linear") == nil ? true : defaults.bool(forKey: "vf_linear")
         let aspect = defaults.object(forKey: "vf_aspect") == nil ? true : defaults.bool(forKey: "vf_aspect")
+        skipAuto = defaults.bool(forKey: "vf_skip_auto")
+        autoSkipLevel = 0
+        lateStreak = 0
         if let core {
             mgbaMobileSetInterframe(core, blend)
-            mgbaMobileSetFrameskip(core, Int32(defaults.integer(forKey: "vf_skip")))
+            mgbaMobileSetFrameskip(core, Int32(skipAuto ? 0 : defaults.integer(forKey: "vf_skip")))
         }
         gameView.bilinear = linear
         gameView.lockAspect = aspect
         gameView.integerScale = defaults.bool(forKey: "vf_integer")
         gameView.scanlines = defaults.bool(forKey: "vf_scan")
+        gameView.filter = filterPref()
         let bright = defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")
         gameView.brightness = bright
+    }
+
+    private func filterPref() -> Int {
+        let id = defaults.integer(forKey: "vf_filter")
+        return id >= 0 && id < Self.filterNames.count ? id : 0
     }
 
     @objc private func showVideo() {
@@ -1257,6 +1455,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let aspect = labeledSwitch("锁定宽高比", defaults.object(forKey: "vf_aspect") == nil ? true : defaults.bool(forKey: "vf_aspect"))
         let integer = labeledSwitch("整数缩放", defaults.bool(forKey: "vf_integer"))
         let scan = labeledSwitch("扫描线", defaults.bool(forKey: "vf_scan"))
+        let filterRow = UIButton(type: .system)
+        filterRow.contentHorizontalAlignment = .left
+        filterRow.setTitle("滤镜：\(Self.filterNames[filterPref()])", for: .normal)
+        filterRow.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "画面滤镜", current: self.filterPref(), options: Self.filterNames) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index, forKey: "vf_filter")
+                filterRow.setTitle("滤镜：\(Self.filterNames[self.filterPref()])", for: .normal)
+                self.applyVideo()
+            }
+        }, for: .touchUpInside)
+        let autoSkip = labeledSwitch("自动跳帧（跟不上时自动跳帧保速度）", defaults.bool(forKey: "vf_skip_auto"))
         let skip = slider(max: 5, value: Float(defaults.integer(forKey: "vf_skip")))
         let bright = slider(max: 100, value: Float((defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")) - 50))
         let skipLabel = UILabel()
@@ -1277,14 +1488,44 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             item.1.addAction(UIAction { _ in refresh() }, for: .valueChanged)
             box.addArrangedSubview(item.0)
         }
+        box.addArrangedSubview(filterRow)
+        box.addArrangedSubview(autoSkip.0)
         box.addArrangedSubview(skipLabel)
         box.addArrangedSubview(skip)
         box.addArrangedSubview(brightLabel)
         box.addArrangedSubview(bright)
+        // The manual level is meaningless while auto frameskip owns it.
+        skip.isEnabled = !autoSkip.1.isOn
+        skipLabel.isEnabled = !autoSkip.1.isOn
+        autoSkip.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(autoSkip.1.isOn, forKey: "vf_skip_auto")
+            skip.isEnabled = !autoSkip.1.isOn
+            skipLabel.isEnabled = !autoSkip.1.isOn
+            self.applyVideo()
+        }, for: .valueChanged)
         skip.addAction(UIAction { _ in refresh() }, for: .valueChanged)
         bright.addAction(UIAction { _ in refresh() }, for: .valueChanged)
         refresh()
         present(SheetController(title: "画质", content: box), animated: true)
+    }
+
+    /** A single-choice picker sheet; the result lands through `handler`. */
+    private func pickOption(title: String, current: Int, options: [String], handler: @escaping (Int) -> Void) {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 4
+        for (index, name) in options.enumerated() {
+            let button = UIButton(type: .system)
+            button.contentHorizontalAlignment = .left
+            button.setTitle(index == current ? "✓ \(name)" : "    \(name)", for: .normal)
+            button.addAction(UIAction { [weak self] _ in
+                self?.dismiss(animated: true)
+                handler(index)
+            }, for: .touchUpInside)
+            box.addArrangedSubview(button)
+        }
+        present(SheetController(title: title, content: box), animated: true)
     }
 
     @objc private func showLink() {
@@ -1357,6 +1598,47 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.ensureRemote().join(relayField: text, code: code)
             self.startLinkWatch()
         }))
+        // ---- GBoy（My Boy）联机大厅 ----
+        let gboyHelp = UILabel()
+        gboyHelp.numberOfLines = 0
+        gboyHelp.font = .systemFont(ofSize: 12)
+        gboyHelp.textColor = UIColor(white: 0.25, alpha: 1)
+        gboyHelp.text = "联机大厅：和对方联机对战。两边打开同一个游戏，保持 1 倍速，不要暂停。创房一方是 1P，另一方填对方 IP 加入。端口默认 6374，与其他模拟器的 Wi-Fi 联机互通。"
+        let gboyIp = field(defaults.string(forKey: "gboy_ip") ?? "", "对方（或本机）IP，例如 192.168.1.8")
+        let gboyPort = field(String(defaults.object(forKey: "gboy_port") == nil ? GBoyLink.defaultPort : defaults.integer(forKey: "gboy_port")), nil)
+        gboyPort.keyboardType = .numberPad
+        box.addArrangedSubview(gboyHelp)
+        box.addArrangedSubview(gboyIp)
+        box.addArrangedSubview(gboyPort)
+        box.addArrangedSubview(row(linkButton("大厅创建") { [weak self] in
+            guard let self else { return }
+            let p = Int32(gboyPort.text ?? "") ?? -1
+            if p < 1 || p > 65535 {
+                status.text = "端口无效"
+                return
+            }
+            guard let core = self.core, mgbaMobileIsLoaded(core) else {
+                status.text = "请先打开一个游戏再联机"
+                return
+            }
+            self.defaults.set(Int(p), forKey: "gboy_port")
+            self.ensureGboy().host(Int(p))
+        }, linkButton("大厅加入") { [weak self] in
+            guard let self else { return }
+            let ip = gboyIp.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let p = Int32(gboyPort.text ?? "") ?? -1
+            if ip.isEmpty || p < 1 || p > 65535 {
+                status.text = "端口无效"
+                return
+            }
+            guard let core = self.core, mgbaMobileIsLoaded(core) else {
+                status.text = "请先打开一个游戏再联机"
+                return
+            }
+            self.defaults.set(ip, forKey: "gboy_ip")
+            self.defaults.set(Int(p), forKey: "gboy_port")
+            self.ensureGboy().join(ip, Int(p))
+        }))
         box.addArrangedSubview(linkButton("断开") { [weak self] in
             guard let self else { return }
             if let remote = self.remote {
@@ -1364,6 +1646,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             } else if let core = self.core {
                 mgbaMobileLinkClose(core)
             }
+            if let gboy = self.gboyLink {
+                gboy.close()
+            }
+            self.gboyRemoteKeys = 0
             self.linkWatch?.cancel()
             self.lastLinkState = 0
             status.text = "断开"
@@ -1395,6 +1681,38 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             if let core = self?.core { mgbaMobileLinkClose(core) }
         }
         remote = link
+        return link
+    }
+
+    private func ensureGboy() -> GBoyLink {
+        if let gboyLink { return gboyLink }
+        let link = GBoyLink()
+        link.romPath = { [weak self] in self?.defaults.string(forKey: "lastRom") }
+        link.localKeys = { [weak self] in
+            guard let self else { return 0 }
+            return Int32(self.touchKeys | self.hwKeys | self.padKeys)
+        }
+        link.onRemoteKeys = { [weak self] keys in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gboyRemoteKeys = Int(keys)
+                self.publishKeys()
+            }
+        }
+        link.onStatus = { [weak self] text in
+            DispatchQueue.main.async {
+                self?.linkStatusLabel?.text = text
+            }
+        }
+        link.onRemoteReset = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+                mgbaMobileReset(core)
+                mgbaMobileClearAudio(core)
+                self.toast("已复位")
+            }
+        }
+        gboyLink = link
         return link
     }
 
@@ -1617,6 +1935,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         wakeInput()
         stopped.wait()
         remote?.close()
+        gboyLink?.close()
         audio.stop()
         if let core { mgbaMobileDestroy(core) }
     }
