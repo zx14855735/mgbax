@@ -59,6 +59,10 @@ void GBAudioInit(struct GBAudio* audio, size_t samples, uint8_t* nr52, enum GBAu
 	audio->forceDisableCh[2] = false;
 	audio->forceDisableCh[3] = false;
 	audio->masterVolume = GB_AUDIO_VOLUME_MAX;
+	audio->chGain[0] = 256;
+	audio->chGain[1] = 256;
+	audio->chGain[2] = 256;
+	audio->chGain[3] = 256;
 	audio->nr52 = nr52;
 	audio->style = style;
 	if (style == GB_AUDIO_GBA) {
@@ -747,31 +751,31 @@ void GBAudioSamplePSG(struct GBAudio* audio, int16_t* left, int16_t* right) {
 
 	if (!audio->forceDisableCh[0]) {
 		if (audio->ch1Left) {
-			sampleLeft += audio->ch1.sample;
+			sampleLeft += (audio->ch1.sample * audio->chGain[0]) >> 8;
 		}
 
 		if (audio->ch1Right) {
-			sampleRight += audio->ch1.sample;
+			sampleRight += (audio->ch1.sample * audio->chGain[0]) >> 8;
 		}
 	}
 
 	if (!audio->forceDisableCh[1]) {
 		if (audio->ch2Left) {
-			sampleLeft +=  audio->ch2.sample;
+			sampleLeft += (audio->ch2.sample * audio->chGain[1]) >> 8;
 		}
 
 		if (audio->ch2Right) {
-			sampleRight += audio->ch2.sample;
+			sampleRight += (audio->ch2.sample * audio->chGain[1]) >> 8;
 		}
 	}
 
 	if (!audio->forceDisableCh[2]) {
 		if (audio->ch3Left) {
-			sampleLeft += audio->ch3.sample;
+			sampleLeft += (audio->ch3.sample * audio->chGain[2]) >> 8;
 		}
 
 		if (audio->ch3Right) {
-			sampleRight += audio->ch3.sample;
+			sampleRight += (audio->ch3.sample * audio->chGain[2]) >> 8;
 		}
 	}
 
@@ -780,6 +784,7 @@ void GBAudioSamplePSG(struct GBAudio* audio, int16_t* left, int16_t* right) {
 
 	if (!audio->forceDisableCh[3]) {
 		int16_t sample = audio->style == GB_AUDIO_GBA ? (audio->ch4.sample << 3) : _coalesceNoiseChannel(&audio->ch4);
+		sample = (sample * audio->chGain[3]) >> 8;
 		if (audio->ch4Left) {
 			sampleLeft += sample;
 		}

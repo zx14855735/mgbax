@@ -43,6 +43,8 @@ void GBAAudioInit(struct GBAAudio* audio, size_t samples) {
 	audio->forceDisableChA = false;
 	audio->forceDisableChB = false;
 	audio->masterVolume = GBA_AUDIO_VOLUME_MAX;
+	audio->chGainA = 256;
+	audio->chGainB = 256;
 	audio->sampleInterval = GBA_ARM7TDMI_FREQUENCY / 0x8000;
 }
 
@@ -375,21 +377,21 @@ void GBAAudioSample(struct GBAAudio* audio, int32_t timestamp) {
 
 		if (!audio->forceDisableChA) {
 			if (audio->chALeft) {
-				sampleLeft += (audio->chA.samples[sample] << 2) >> !audio->volumeChA;
+				sampleLeft += (((audio->chA.samples[sample] * audio->chGainA) >> 8) << 2) >> !audio->volumeChA;
 			}
 
 			if (audio->chARight) {
-				sampleRight += (audio->chA.samples[sample] << 2) >> !audio->volumeChA;
+				sampleRight += (((audio->chA.samples[sample] * audio->chGainA) >> 8) << 2) >> !audio->volumeChA;
 			}
 		}
 
 		if (!audio->forceDisableChB) {
 			if (audio->chBLeft) {
-				sampleLeft += (audio->chB.samples[sample] << 2) >> !audio->volumeChB;
+				sampleLeft += (((audio->chB.samples[sample] * audio->chGainB) >> 8) << 2) >> !audio->volumeChB;
 			}
 
 			if (audio->chBRight) {
-				sampleRight += (audio->chB.samples[sample] << 2) >> !audio->volumeChB;
+				sampleRight += (((audio->chB.samples[sample] * audio->chGainB) >> 8) << 2) >> !audio->volumeChB;
 			}
 		}
 

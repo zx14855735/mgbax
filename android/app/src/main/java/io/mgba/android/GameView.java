@@ -29,6 +29,7 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
     private boolean integerScale;
     private boolean scanlines;
     private int brightness = 100;
+    private int contrast = 100;
     private int filter = Shaders.FILTER_NONE;
     /** GL path for screen filters; the software path stays as the fallback. */
     private final ShaderRenderer renderer = new ShaderRenderer();
@@ -94,15 +95,33 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
             percent = 150;
         }
         brightness = percent;
-        if (percent == 100) {
+        updateColorFilter();
+    }
+
+    /** Contrast around the mid gray, 50-150 percent; 100 leaves colors as-is. */
+    public void setContrast(int percent) {
+        if (percent < 50) {
+            percent = 50;
+        }
+        if (percent > 150) {
+            percent = 150;
+        }
+        contrast = percent;
+        updateColorFilter();
+    }
+
+    private void updateColorFilter() {
+        if (brightness == 100 && contrast == 100) {
             paint.setColorFilter(null);
             return;
         }
-        float scale = percent / 100f;
+        float b = brightness / 100f;
+        float c = contrast / 100f;
+        float lift = 128 * (1 - c);
         paint.setColorFilter(new ColorMatrixColorFilter(new ColorMatrix(new float[]{
-                scale, 0, 0, 0, 0,
-                0, scale, 0, 0, 0,
-                0, 0, scale, 0, 0,
+                b * c, 0, 0, 0, lift,
+                0, b * c, 0, 0, lift,
+                0, 0, b * c, 0, lift,
                 0, 0, 0, 1, 0
         })));
     }
@@ -173,7 +192,8 @@ public class GameView extends SurfaceView implements SurfaceHolder.Callback {
                     bitmap == null ? srcH : bitmap.getHeight(), dst);
             try {
                 drawn = renderer.present(getHolder().getSurface(), bitmap, dst,
-                        getWidth(), getHeight(), filter, brightness / 100f, bilinear, scanlines);
+                        getWidth(), getHeight(), filter, brightness / 100f, contrast / 100f,
+                        bilinear, scanlines);
             } catch (Exception e) {
                 // GL owns the surface; a failed frame just keeps the last one.
                 drawn = true;

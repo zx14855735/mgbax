@@ -6,6 +6,7 @@
 #include <mgba/core/core.h>
 #include <mgba/core/cheats.h>
 #include <mgba/core/interface.h>
+#include <mgba/core/rewind.h>
 #include <mgba/core/serialize.h>
 #include <mgba/gb/interface.h>
 #include <mgba/gba/interface.h>
@@ -117,12 +118,27 @@ struct MgbaMobile {
 	volatile int32_t tiltX;
 	volatile int32_t tiltY;
 	volatile int32_t gyroZ;
+	/* Ring of differential savestates for rewinding. A state is appended
+	 * every REWIND_DIVIDER frames while enabled, so entries/2 spans seconds. */
+	struct mCoreRewindContext rewind;
+	bool rewindInited;
+	bool rewindEnabled;
+	unsigned rewindCounter;
+	/* Per-channel audio gains, replayed on every load (see SetChannelVolumes). */
+	int32_t channelGains[6];
 };
 
 enum {
 	MOBILE_RTC_WALL = 0,
 	MOBILE_RTC_FIXED = 1,
 	MOBILE_RTC_OFFSET = 2,
+};
+
+/* One rewind history entry every REWIND_DIVIDER frames; REWIND_ENTRIES of
+ * them span REWIND_ENTRIES / 2 seconds of gameplay (about 16 s). */
+enum {
+	REWIND_DIVIDER = 30,
+	REWIND_ENTRIES = 32,
 };
 
 /*
@@ -273,12 +289,19 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	emu->tiltX = 0;
 	emu->tiltY = 0;
 	emu->gyroZ = 0;
+	for (int gi = 0; gi < 6; ++gi) {
+		emu->channelGains[gi] = 256;
+	}
 	return emu;
 }
 
 void mgbaMobileDestroy(struct MgbaMobile* emu) {
 	if (!emu) {
 		return;
+	}
+	if (emu->rewindInited) {
+		mCoreRewindContextDeinit(&emu->rewind);
+		emu->rewindInited = false;
 	}
 	destroyCore(emu);
 	deinitAudioOutput(emu);
@@ -327,6 +350,22 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		destroyCore(emu);
 		return false;
 	}
+	// Per-channel gains are front-end state: re-apply them to the fresh core.
+	if (emu->core->platform(core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) core->board;
+		gba->audio.psg.chGain[0] = (int16_t) emu->channelGains[0];
+		gba->audio.psg.chGain[1] = (int16_t) emu->channelGains[1];
+		gba->audio.psg.chGain[2] = (int16_t) emu->channelGains[2];
+		gba->audio.psg.chGain[3] = (int16_t) emu->channelGains[3];
+		gba->audio.chGainA = (int16_t) emu->channelGains[4];
+		gba->audio.chGainB = (int16_t) emu->channelGains[5];
+	} else if (emu->core->platform(core) == mPLATFORM_GB) {
+		struct GB* gb = (struct GB*) core->board;
+		gb->audio.chGain[0] = (int16_t) emu->channelGains[0];
+		gb->audio.chGain[1] = (int16_t) emu->channelGains[1];
+		gb->audio.chGain[2] = (int16_t) emu->channelGains[2];
+		gb->audio.chGain[3] = (int16_t) emu->channelGains[3];
+	}
 	if (emu->patches && !mCoreAutoloadPatch(core)) {
 		// No patch next to the ROM is the normal case; a bad patch only warns.
 		MOBILE_LOGI("No patch applied for %s", filename);
@@ -367,6 +406,13 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	emu->core->setPeripheral(emu->core, mPERIPH_ROTATION, &emu->rotation);
 	loadCheats(emu);
 	pollLink(emu);
+	// Rewind history never crosses a ROM boundary: drop the old ring and
+	// build a fresh one for this game.
+	if (emu->rewindInited) {
+		mCoreRewindContextDeinit(&emu->rewind);
+		emu->rewindInited = false;
+	}
+	emu->rewindCounter = 0;
 	MOBILE_LOGI("Loaded %s (%ux%u, %u Hz)", filename, emu->width, emu->height, core->audioSampleRate(core));
 	return true;
 }
@@ -591,6 +637,38 @@ void mgbaMobileSetSgbBorders(struct MgbaMobile* emu, bool enabled) {
 	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GB) {
 		mCoreConfigSetOverrideIntValue(&emu->core->config, "sgb.borders", enabled ? 1 : 0);
 		emu->core->reloadConfigOption(emu->core, "sgb.borders", NULL);
+	}
+}
+
+/*
+ * Per-channel gains for the mobile mixer: gains[0..3] are PSG channels 1-4,
+ * gains[4..5] the GBA DMA A/B FIFOs. 0-256 fixed point, 256 = full volume.
+ * Applied live on the running core and replayed on every load.
+ */
+void mgbaMobileSetChannelVolumes(struct MgbaMobile* emu, const int32_t* gains) {
+	if (!emu || !gains) {
+		return;
+	}
+	int i;
+	for (i = 0; i < 6; ++i) {
+		emu->channelGains[i] = gains[i];
+	}
+	if (emu->core && emu->core->board) {
+		if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
+			struct GBA* gba = (struct GBA*) emu->core->board;
+			gba->audio.psg.chGain[0] = (int16_t) gains[0];
+			gba->audio.psg.chGain[1] = (int16_t) gains[1];
+			gba->audio.psg.chGain[2] = (int16_t) gains[2];
+			gba->audio.psg.chGain[3] = (int16_t) gains[3];
+			gba->audio.chGainA = (int16_t) gains[4];
+			gba->audio.chGainB = (int16_t) gains[5];
+		} else if (emu->core->platform(emu->core) == mPLATFORM_GB) {
+			struct GB* gb = (struct GB*) emu->core->board;
+			gb->audio.chGain[0] = (int16_t) gains[0];
+			gb->audio.chGain[1] = (int16_t) gains[1];
+			gb->audio.chGain[2] = (int16_t) gains[2];
+			gb->audio.chGain[3] = (int16_t) gains[3];
+		}
 	}
 }
 
@@ -1192,6 +1270,14 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		}
 		emu->core->setKeys(emu->core, nowKeys);
 		emu->core->runFrame(emu->core);
+		if (emu->rewindEnabled && ++emu->rewindCounter >= REWIND_DIVIDER) {
+			emu->rewindCounter = 0;
+			if (!emu->rewindInited) {
+				mCoreRewindContextInit(&emu->rewind, REWIND_ENTRIES, false);
+				emu->rewindInited = true;
+			}
+			mCoreRewindAppend(&emu->rewind, emu->core);
+		}
 	}
 	ensureVideo(emu);
 	return true;
@@ -1557,6 +1643,41 @@ bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot) {
 	return ok;
 }
 
+void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled) {
+	if (!emu) {
+		return;
+	}
+	emu->rewindEnabled = enabled;
+	if (!enabled) {
+		emu->rewindCounter = 0;
+	}
+}
+
+/*
+ * Rewinds by about the given number of seconds of gameplay. The history is a
+ * ring of differential states appended every REWIND_DIVIDER frames, so a
+ * request goes back that many entries (clamped to what has been recorded).
+ * Video buffers refresh on the next copyVideo call; the caller clears audio.
+ */
+bool mgbaMobileRewind(struct MgbaMobile* emu, int seconds) {
+	if (!emu || !emu->core || !emu->rewindInited || seconds < 1) {
+		return false;
+	}
+	unsigned count = (unsigned) seconds * 60 / REWIND_DIVIDER;
+	if (count < 1) {
+		count = 1;
+	}
+	bool ok = mCoreRewindRestore(&emu->rewind, emu->core, count);
+	if (ok) {
+		applyFrameskip(emu->core, 0);
+		ensureVideo(emu);
+		emu->fast = -1;
+		attachKeyCallback(emu);
+	}
+	MOBILE_LOGI("Rewind %ds %s", seconds, ok ? "ok" : "empty");
+	return ok;
+}
+
 void mgbaMobileReset(struct MgbaMobile* emu) {
 	if (!emu || !emu->core) {
 		return;
@@ -1565,6 +1686,7 @@ void mgbaMobileReset(struct MgbaMobile* emu) {
 	ensureVideo(emu);
 	attachKeyCallback(emu);
 	pollLink(emu);
+	MOBILE_LOGI("Core reset");
 }
 
 void mgbaMobileTitle(const struct MgbaMobile* emu, char* out, size_t outLen) {

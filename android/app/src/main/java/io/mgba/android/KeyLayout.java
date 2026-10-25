@@ -13,7 +13,7 @@ import java.util.Map;
 public final class KeyLayout {
     public static final String[] KEYS = {"dpad", "a", "b", "l", "r", "select", "start"};
     /** Optional utility keys the player can switch on in the settings. */
-    public static final String[] EXTRA_KEYS = {"ta", "tb", "lr", "save", "load", "ff", "shot"};
+    public static final String[] EXTRA_KEYS = {"ta", "tb", "lr", "c", "c2", "save", "load", "ff", "shot"};
     public static final float MIN_SCALE = 0.4f;
     public static final float MAX_SCALE = 3.0f;
 

@@ -55,6 +55,10 @@ int64_t mgbaMobileFrameNanos(const struct MgbaMobile* emu);
 bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride);
 bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot);
 bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot);
+/* Rewind history: append a differential state every ~half second while
+ * enabled; rewind by about the given number of seconds of gameplay. */
+void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled);
+bool mgbaMobileRewind(struct MgbaMobile* emu, int seconds);
 void mgbaMobileReset(struct MgbaMobile* emu);
 void mgbaMobileTitle(const struct MgbaMobile* emu, char* out, size_t outLen);
 void mgbaMobileSetInterframe(struct MgbaMobile* emu, bool enabled);
@@ -101,6 +105,12 @@ int mgbaMobileTakeRumbles(struct MgbaMobile* emu);
 void mgbaMobileSetGbPalette(struct MgbaMobile* emu, const int32_t* colors);
 /* Super Game Boy border art on SGB-capable games (sgb.borders); applied live. */
 void mgbaMobileSetSgbBorders(struct MgbaMobile* emu, bool enabled);
+/*
+ * Per-channel audio gains, 0-256 fixed point (256 = full volume): PSG
+ * channels 1-4 then the GBA DMA A/B FIFOs. Applied live on the running core
+ * and on every reload.
+ */
+void mgbaMobileSetChannelVolumes(struct MgbaMobile* emu, const int32_t* gains);
 /*
  * Tilt cartridge input (WarioWare Twisted, Kirby Tilt'n'Tumble). tiltX/tiltY
  * are normalized to -1..1; gyroZ follows the same scale.

@@ -191,7 +191,7 @@ final class ShaderRenderer {
      * @param dst destination rect of the picture inside the view, top-left origin
      */
     boolean present(Surface window, Bitmap bitmap, Rect dst, int viewW, int viewH,
-                    int filter, float brightness, boolean linear, boolean scanlines) {
+                    int filter, float brightness, float contrast, boolean linear, boolean scanlines) {
         if (envDead) {
             return false;
         }
@@ -262,6 +262,9 @@ final class ShaderRenderer {
             GLES20.glUniform2f(program.uTexSize, (float) bitmap.getWidth(), (float) bitmap.getHeight());
             GLES20.glUniform2f(program.uOutSize, (float) dst.width(), (float) dst.height());
             GLES20.glUniform1f(program.uBrightness, brightness);
+            if (program.uContrast >= 0) {
+                GLES20.glUniform1f(program.uContrast, contrast);
+            }
             if (program.uScanlines >= 0) {
                 GLES20.glUniform1f(program.uScanlines, scanlines ? 1f : 0f);
             }
@@ -399,6 +402,7 @@ final class ShaderRenderer {
         program.uTexSize = GLES20.glGetUniformLocation(id, "uTexSize");
         program.uOutSize = GLES20.glGetUniformLocation(id, "uOutSize");
         program.uBrightness = GLES20.glGetUniformLocation(id, "uBrightness");
+        program.uContrast = GLES20.glGetUniformLocation(id, "uContrast");
         program.uScanlines = GLES20.glGetUniformLocation(id, "uScanlines");
         for (int i = 0; i < MAX_HISTORY; i++) {
             program.uHistory[i] = GLES20.glGetUniformLocation(id, "uHistory" + i);
@@ -428,6 +432,7 @@ final class ShaderRenderer {
         int uTexSize;
         int uOutSize;
         int uBrightness;
+        int uContrast;
         /** Passthrough-only: the Canvas scanline overlay flag, -1 elsewhere. */
         int uScanlines = -1;
         final int[] uHistory = new int[MAX_HISTORY];

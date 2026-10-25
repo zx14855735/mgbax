@@ -205,6 +205,9 @@ struct GBAudio {
 	size_t samples;
 	bool forceDisableCh[4];
 	int masterVolume;
+	/* Front-end per-channel gains, 0-256 fixed point (256 = full volume).
+	 * Applied at mix time so the mobile front end can balance the PSG. */
+	int16_t chGain[4];
 };
 
 void GBAudioInit(struct GBAudio* audio, size_t samples, uint8_t* nr52, enum GBAudioStyle style);

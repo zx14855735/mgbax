@@ -86,6 +86,10 @@ struct GBAAudio {
 	bool forceDisableChA;
 	bool forceDisableChB;
 	int masterVolume;
+	/* Front-end per-channel gains, 0-256 fixed point (256 = full volume).
+	 * Applied at mix time so the mobile front end can balance DMA samples. */
+	int16_t chGainA;
+	int16_t chGainB;
 
 	struct mTimingEvent sampleEvent;
 };

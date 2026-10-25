@@ -228,4 +228,118 @@
     <string name="profile_deleted">已删除 %1$s</string>
     <string name="profile_delete_confirm">删除配置「%1$s」？</string>
     <string name="profile_last">至少保留一个配置</string>
+
+    <!-- ROM library -->
+    <string name="library">游戏库</string>
+    <string name="library_title">游戏库</string>
+    <string name="library_empty">没有找到 ROM。点「扫描」查找常见目录,或用「打开」选择文件。</string>
+    <string name="library_scan">扫描</string>
+    <string name="library_open">打开…</string>
+    <string name="library_last">上次游戏</string>
+    <string name="library_fav_on">已加入收藏</string>
+    <string name="library_fav_off">已取消收藏</string>
+    <string name="library_favorites">收藏</string>
+
+    <!-- Rewind -->
+    <string name="rewind">倒带</string>
+    <string name="rewind_pick">倒回</string>
+    <string name="rewind_seconds">%1$d 秒</string>
+    <string name="rewind_hold">持续倒带(按住)</string>
+    <string name="rewind_empty">还没有倒带记录</string>
+    <string name="rewind_disabled_hardcore">硬核模式下倒带不可用</string>
+
+    <!-- Skin -->
+    <string name="skin">皮肤</string>
+    <string name="skin_title">按钮皮肤</string>
+    <string name="skin_style">皮肤样式</string>
+    <string name="skin_style_classic">经典(半透明线条)</string>
+    <string name="skin_style_handheld">掌机(竖屏 Pizza Boy 风 / 横屏 GBA 风)</string>
+    <string name="skin_color">机身颜色</string>
+    <string name="skin_done">皮肤已应用:%1$s</string>
+
+    <!-- Per-ROM settings -->
+    <string name="per_rom">每游戏设置</string>
+    <string name="per_rom_title">每游戏设置</string>
+    <string name="per_rom_filter">滤镜</string>
+    <string name="per_rom_speed">倍速</string>
+    <string name="per_rom_save_type">存档类型</string>
+    <string name="per_rom_palette">GB 调色板</string>
+    <string name="per_rom_reset">恢复全局默认</string>
+    <string name="per_rom_saved">已保存本游戏设置</string>
+    <string name="per_rom_none">全局默认</string>
+    <string name="per_rom_applied">本游戏设置:%1$s</string>
+
+    <!-- Backup -->
+    <string name="backup">备份</string>
+    <string name="backup_title">备份与恢复</string>
+    <string name="backup_export">备份到文件(设置+存档+状态)</string>
+    <string name="backup_import">从备份文件恢复</string>
+    <string name="backup_done">备份完成:%1$s</string>
+    <string name="backup_restored">恢复完成:%1$s</string>
+    <string name="backup_failed">操作失败:%1$s</string>
+    <string name="backup_pick">选择 %1$s</string>
+
+    <!-- Extras ported from Pizza Boy -->
+    <string name="c_button">C 键(组合宏)</string>
+    <string name="c2_button">C2 键(组合宏)</string>
+    <string name="macro_hint">选择按住该键时模拟按下的按键组合</string>
+    <string name="timed_save">定时存档</string>
+    <string name="timed_save_off">关闭</string>
+    <string name="timed_save_min">每 %1$d 分钟</string>
+    <string name="quick_rotate">快存自动轮转槽位(1-9)</string>
+    <string name="confirm_quick">快速存/读档前确认</string>
+    <string name="double_click_shot">双击屏幕截图</string>
+    <string name="shot_format">截图格式</string>
+    <string name="contrast">对比度</string>
+    <string name="muted_on">已静音</string>
+    <string name="muted_off">已取消静音</string>
+    <string name="ff_on">快进开:%1$s×</string>
+    <string name="ff_off">快进关</string>
+
+    <!-- Stickers -->
+    <string name="sticker_add">添加贴纸</string>
+    <string name="sticker_edit">贴纸编辑模式(拖动/双指缩放)</string>
+    <string name="sticker_clear">清除全部贴纸</string>
+    <string name="sticker_cleared">贴纸已清空</string>
+    <string name="sticker_added">贴纸已添加,进入贴纸编辑模式可调整</string>
+    <string name="sticker_full">贴纸已达上限 10 张</string>
+    <string name="sticker_load_failed">贴纸图片读取失败</string>
+
+    <!-- Full skin (PNG pack) -->
+    <string name="full_skin">整包皮肤(PNG)</string>
+    <string name="full_skin_none">无(默认绘制)</string>
+    <string name="full_skin_import">导入皮肤包(zip)</string>
+    <string name="full_skin_delete">删除选中皮肤</string>
+    <string name="full_skin_help">zip 内放 PNG:dpad / a / b / l / r / select / start,可加 _p 后缀为按下贴图,加 bg_portrait.png、bg_landscape.png 为背景。</string>
+    <string name="full_skin_imported">皮肤包已导入:%1$s</string>
+    <string name="full_skin_bad">皮肤包无效:未找到任何按键 PNG</string>
+    <string name="full_skin_deleted">皮肤包已删除</string>
+
+    <!-- AI translate -->
+    <string name="translate">翻译</string>
+    <string name="ai_key">Gemini API Key</string>
+    <string name="ai_key_hint">粘贴 Gemini API Key(免费档可用)</string>
+    <string name="ai_lang">目标语言</string>
+    <string name="ai_ok">已翻译 %1$d 个文本块,点击画面关闭</string>
+    <string name="ai_no_text">画面上没有识别到文字</string>
+    <string name="ai_failed">翻译失败:%1$s</string>
+    <string name="ai_need_key">请先在设置里填写 Gemini API Key</string>
+    <string name="ai_working">正在翻译…</string>
+
+    <!-- Channel volume -->
+    <string name="channel_volume">通道音量</string>
+    <string name="channel_1">通道 1(方波)</string>
+    <string name="channel_2">通道 2(方波)</string>
+    <string name="channel_3">通道 3(波形)</string>
+    <string name="channel_4">通道 4(噪声)</string>
+    <string name="channel_a">DMA A(音乐采样)</string>
+    <string name="channel_b">DMA B(音效采样)</string>
+
+    <!-- Picker-free fallbacks -->
+    <string name="picker_missing">系统没有可用的文件选择器,请用目录方式导入</string>
+    <string name="sticker_from_folder">从贴纸目录选择(mGBAx/stickers)</string>
+    <string name="sticker_folder_empty">贴纸目录为空:把图片放进 Pictures 旁的 mGBAx/stickers 再试</string>
+    <string name="full_skin_scan">从 mGBAx/skins 目录导入</string>
+    <string name="full_skin_scan_done">已从目录导入 %1$d 个皮肤包</string>
+    <string name="full_skin_scan_empty">mGBAx/skins 目录没有新的皮肤包</string>
 </resources>

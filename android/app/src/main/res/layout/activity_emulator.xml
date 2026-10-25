@@ -135,6 +135,36 @@
                     android:text="@string/cheats_short" />
 
                 <Button
+                    android:id="@+id/btn_library"
+                    style="@style/MgbaButton"
+                    android:text="@string/library" />
+
+                <Button
+                    android:id="@+id/btn_rewind"
+                    style="@style/MgbaButton"
+                    android:text="@string/rewind" />
+
+                <Button
+                    android:id="@+id/btn_skin"
+                    style="@style/MgbaButton"
+                    android:text="@string/skin" />
+
+                <Button
+                    android:id="@+id/btn_perrom"
+                    style="@style/MgbaButton"
+                    android:text="@string/per_rom" />
+
+                <Button
+                    android:id="@+id/btn_backup"
+                    style="@style/MgbaButton"
+                    android:text="@string/backup" />
+
+                <Button
+                    android:id="@+id/btn_translate"
+                    style="@style/MgbaButton"
+                    android:text="@string/translate" />
+
+                <Button
                     android:id="@+id/btn_shot"
                     style="@style/MgbaButton"
                     android:text="@string/screenshot_short" />
@@ -181,6 +211,27 @@
                 android:paddingBottom="2dp" />
         </HorizontalScrollView>
 
+        <HorizontalScrollView
+            android:id="@+id/rewind_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#181020"
+            android:fillViewport="true"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/rewind_row"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="4dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="4dp"
+                android:paddingBottom="2dp" />
+        </HorizontalScrollView>
+
         <TextView
             android:id="@+id/save_path"
             android:layout_width="match_parent"
@@ -195,6 +246,19 @@
             android:textSize="12sp"
             android:visibility="gone" />
     </LinearLayout>
+
+    <!-- Picture stickers over the game; editable and persisted per orientation. -->
+    <io.mgba.android.StickerOverlay
+        android:id="@+id/sticker_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- AI translation overlay; hidden until a translation lands. -->
+    <io.mgba.android.AiOverlayView
+        android:id="@+id/ai_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
 
     <!-- The editor floats above the stage: opening it must not change the
          stage size, or the game would be rescaled while the keys are placed. -->

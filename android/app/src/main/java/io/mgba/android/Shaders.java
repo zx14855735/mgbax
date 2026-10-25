@@ -86,7 +86,9 @@ final class Shaders {
             + "uniform vec2 uTexSize;\n"
             + "uniform vec2 uOutSize;\n"
             + "uniform float uBrightness;\n"
-            + "varying vec2 vTexCoord;\n";
+            + "uniform float uContrast;\n"
+            + "varying vec2 vTexCoord;\n"
+            + "vec3 contrast(vec3 c) { return (c - 0.5) * uContrast + 0.5; }\n";
 
     /**
      * Plain blit for frames without a filter, replacing the hardware Canvas
@@ -100,7 +102,7 @@ final class Shaders {
             + "void main() {\n"
             + "    vec3 c = texture2D(uTex, vTexCoord).rgb;\n"
             + "    c *= 1.0 - 0.4 * uScanlines * (1.0 - step(0.5, mod(floor(gl_FragCoord.y), 2.0)));\n"
-            + "    gl_FragColor = vec4(c * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(c * uBrightness), 1.0);\n"
             + "}\n";
 
     private static final String GBA_COLOR = PRELUDE
@@ -113,14 +115,14 @@ final class Shaders {
             + "        0.125, 0.665, 0.21,\n"
             + "        0.195, 0.075, 0.73);\n"
             + "    c = clamp(tone * c, 0.0, 1.0) * 0.94;\n"
-            + "    gl_FragColor = vec4(pow(c, vec3(1.0 / 2.2)) * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(pow(c, vec3(1.0 / 2.2)) * uBrightness), 1.0);\n"
             + "}\n";
 
     private static final String GRAYSCALE = PRELUDE
             + "void main() {\n"
             + "    vec3 c = texture2D(uTex, vTexCoord).rgb;\n"
             + "    float g = dot(c, vec3(0.299, 0.587, 0.114));\n"
-            + "    gl_FragColor = vec4(vec3(g) * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(vec3(g) * uBrightness), 1.0);\n"
             + "}\n";
 
     /*
@@ -163,7 +165,7 @@ final class Shaders {
             + "    nw.w = clamp(0.4 - 0.45 * luma(abs(mixed - c01)), 0.0, 0.4);\n"
             + "    vec3 out1 = nw.x * c10 + nw.y * c21 + nw.z * c12 + nw.w * c01\n"
             + "            + (1.0 - dot(nw, vec4(1.0))) * mixed;\n"
-            + "    gl_FragColor = vec4(out1 * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(out1 * uBrightness), 1.0);\n"
             + "}\n";
 
     private static final String HQ4X = PRELUDE + HQ_COMMON
@@ -194,7 +196,7 @@ final class Shaders {
             + "    float m = max(abs(fp.x), abs(fp.y)) * 2.0;\n"
             + "    float n = min(abs(fp.x), abs(fp.y)) * 2.0;\n"
             + "    vec3 res = m > 0.5 ? (n > 0.5 ? e15 : e11) : c11;\n"
-            + "    gl_FragColor = vec4(res * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(res * uBrightness), 1.0);\n"
             + "}\n";
 
     /*
@@ -224,7 +226,7 @@ final class Shaders {
             + "    vec3 i = fetch(vec2(1.0, 1.0));\n"
             + "    float blend = (edge(e, h, g, f, i) || edge(e, h, c, f, b)) ? 0.5 : 0.0;\n"
             + "    vec3 res = mix(e, f, blend);\n"
-            + "    gl_FragColor = vec4(res * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(res * uBrightness), 1.0);\n"
             + "}\n";
 
     private static final String XBR4 = PRELUDE + XBR_COMMON
@@ -247,7 +249,7 @@ final class Shaders {
             + "    float outer = max(fp.x, fp.y);\n"
             + "    float inner = min(fp.x, fp.y);\n"
             + "    vec3 res = outer > 0.5 ? (inner > 0.5 ? e15 : e11) : e;\n"
-            + "    gl_FragColor = vec4(res * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(res * uBrightness), 1.0);\n"
             + "}\n";
 
     /*
@@ -273,7 +275,7 @@ final class Shaders {
             + "    color += (texture2D(uHistory4, vTexCoord) - color) * pow(RT, 5.0);\n"
             + "    color += (texture2D(uHistory5, vTexCoord) - color) * pow(RT, 6.0);\n"
             + "    color += (texture2D(uHistory6, vTexCoord) - color) * pow(RT, 7.0);\n"
-            + "    gl_FragColor = vec4(color.rgb * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(color.rgb * uBrightness), 1.0);\n"
             + "}\n";
 
     /* Dot matrix, adapted from Themaister's public domain libretro shader. */
@@ -303,7 +305,7 @@ final class Shaders {
             + "    color += tap(pixelNo, -1.0, 1.0, texture2D(uTex, vTexCoord + vec2(-d.x, d.y)).rgb);\n"
             + "    color += tap(pixelNo, 0.0, 1.0, texture2D(uTex, vTexCoord + vec2(0.0, d.y)).rgb);\n"
             + "    color += tap(pixelNo, 1.0, 1.0, texture2D(uTex, vTexCoord + vec2(d.x, d.y)).rgb);\n"
-            + "    gl_FragColor = vec4(mix(1.2 * mid, color, BLEND) * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(mix(1.2 * mid, color, BLEND) * uBrightness), 1.0);\n"
             + "}\n";
 
     /* LCD3x, adapted from Gigaherz's public domain libretro shader. */
@@ -315,7 +317,7 @@ final class Shaders {
             + "    vec3 offsets = 3.14159265 * vec3(0.5, 0.5 - 2.0 / 3.0, 0.5 - 4.0 / 3.0);\n"
             + "    float y = (BRIGHTEN_SCAN + sin(angle.y)) / (BRIGHTEN_SCAN + 1.0);\n"
             + "    vec3 x = (BRIGHTEN_LCD + sin(angle.x + offsets)) / (BRIGHTEN_LCD + 1.0);\n"
-            + "    gl_FragColor = vec4(y * x * texture2D(uTex, vTexCoord).rgb * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(y * x * texture2D(uTex, vTexCoord).rgb * uBrightness), 1.0);\n"
             + "}\n";
 
     /* Scanlines, adapted from Themaister's public domain libretro shader. */
@@ -328,7 +330,7 @@ final class Shaders {
             + "    // sine puts one dark band on every source row.\n"
             + "    vec2 omega = vec2(3.1415 * uOutSize.x, 2.0 * 3.1415 * uTexSize.y);\n"
             + "    vec3 scan = c.rgb * (BASE + dot(SINE * sin(vTexCoord * omega), vec2(1.0)));\n"
-            + "    gl_FragColor = vec4(clamp(scan, 0.0, 1.0) * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(clamp(scan, 0.0, 1.0) * uBrightness), 1.0);\n"
             + "}\n";
 
     /*
@@ -344,6 +346,6 @@ final class Shaders {
             + "    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);\n"
             + "    p = i + f;\n"
             + "    vec3 c = texture2D(uTex, (p - 0.5) / uTexSize).rgb;\n"
-            + "    gl_FragColor = vec4(c * uBrightness, 1.0);\n"
+            + "    gl_FragColor = vec4(contrast(c * uBrightness), 1.0);\n"
             + "}\n";
 }

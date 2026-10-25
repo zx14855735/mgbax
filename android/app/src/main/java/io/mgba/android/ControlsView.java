@@ -34,6 +34,11 @@ public class ControlsView extends View {
     public static final int ACTION_LOAD = 2;
     public static final int ACTION_SHOT = 3;
     public static final int ACTION_FF = 4;
+    /** Toggle fast-forward on/off (the shell switch). */
+    public static final int ACTION_FF_TOGGLE = 5;
+    public static final int ACTION_MENU = 6;
+    public static final int ACTION_MUTE = 7;
+    public static final int ACTION_REWIND = 8;
 
     public interface Listener {
         void onKeysChanged(int mask);
@@ -63,6 +68,10 @@ public class ControlsView extends View {
         }
     }
 
+    /** Button styles: the classic translucent outlines or the handheld shell. */
+    public static final int STYLE_CLASSIC = 0;
+    public static final int STYLE_HANDHELD = 1;
+
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -87,11 +96,13 @@ public class ControlsView extends View {
     private final RectF buttonBDefault = new RectF();
     private final RectF buttonSelectDefault = new RectF();
     private final RectF buttonStartDefault = new RectF();
-    /* Optional utility keys: turbo A/B, L+R, quick save/load, fast-forward,
-     * screenshot. Hidden until the player turns them on in the settings. */
+    /* Optional utility keys: turbo A/B, L+R, C/C2 macros, quick save/load,
+     * fast-forward, screenshot. Hidden until the player turns them on. */
     private final RectF keyTurboA = new RectF();
     private final RectF keyTurboB = new RectF();
     private final RectF keyLR = new RectF();
+    private final RectF keyC = new RectF();
+    private final RectF keyC2 = new RectF();
     private final RectF keySave = new RectF();
     private final RectF keyLoad = new RectF();
     private final RectF keyFast = new RectF();
@@ -99,6 +110,8 @@ public class ControlsView extends View {
     private final RectF keyTurboADefault = new RectF();
     private final RectF keyTurboBDefault = new RectF();
     private final RectF keyLRDefault = new RectF();
+    private final RectF keyCDefault = new RectF();
+    private final RectF keyC2Default = new RectF();
     private final RectF keySaveDefault = new RectF();
     private final RectF keyLoadDefault = new RectF();
     private final RectF keyFastDefault = new RectF();
@@ -106,6 +119,8 @@ public class ControlsView extends View {
     private final java.util.HashSet<String> visibleExtras = new java.util.HashSet<>();
     private final Map<String, float[]> centers = new HashMap<>();
     private final Map<String, Float> scales = new HashMap<>();
+    /** Full PNG skin overlays: button key → bitmap, "_p" suffix = pressed. */
+    private final Map<String, android.graphics.Bitmap> skinBitmaps = new HashMap<>();
     public static final float MIN_SCALE = 0.4f;
     public static final float MAX_SCALE = 3.0f;
     private final SparseIntArray pointers = new SparseIntArray();
@@ -139,6 +154,26 @@ public class ControlsView extends View {
     };
     /** Utility-key taps per pointer, so ACTION_FF release can be matched. */
     private final SparseIntArray actionPointers = new SparseIntArray();
+    /** Macro keys C and C2 press this combination of console keys while held. */
+    private int macroMaskC = A | B;
+    private int macroMaskC2 = L | R;
+
+    // == Handheld shell skin ==
+    private int skinStyle = STYLE_HANDHELD;
+    private SkinTheme skin = SkinTheme.PURPLE;
+    private boolean portrait;
+    private boolean ffOn;
+    private boolean muted;
+    /** Fixed chrome of the portrait shell: the icon toolbar and its buttons. */
+    private final RectF toolbar = new RectF();
+    private final RectF toolbarMenu = new RectF();
+    private final RectF toolbarSave = new RectF();
+    private final RectF toolbarLoad = new RectF();
+    private final RectF toolbarMute = new RectF();
+    private final RectF toolbarRewind = new RectF();
+    private final RectF toggle = new RectF();
+    /** Decorative speaker holes, recomputed per size. */
+    private final RectF[] speakerDots = new RectF[15];
 
     public ControlsView(Context context) {
         this(context, null);
@@ -162,6 +197,70 @@ public class ControlsView extends View {
 
     public void setEditListener(EditListener editListener) {
         this.editListener = editListener;
+    }
+
+    /** Selects the button drawing style and shell colors. */
+    public void setSkin(int style, SkinTheme theme) {
+        skinStyle = style;
+        skin = theme == null ? SkinTheme.PURPLE : theme;
+        computeDefaults();
+        applyCenters();
+        invalidate();
+    }
+
+    /** Replaces shell drawing with an imported PNG skin pack. */
+    public void setFullSkin(Map<String, android.graphics.Bitmap> bitmaps) {
+        skinBitmaps.clear();
+        if (bitmaps != null) {
+            for (Map.Entry<String, android.graphics.Bitmap> entry : bitmaps.entrySet()) {
+                if (entry.getValue() != null && !entry.getValue().isRecycled()) {
+                    skinBitmaps.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        invalidate();
+    }
+
+    /** Re-lays the stock keys for the current screen orientation. */
+    public void setPortrait(boolean on) {
+        if (portrait == on) {
+            return;
+        }
+        portrait = on;
+        computeDefaults();
+        applyCenters();
+        invalidate();
+    }
+
+    /** Shell switch state (fast-forward), drawn in the portrait shell. */
+    public void setFastForwardOn(boolean on) {
+        if (ffOn == on) {
+            return;
+        }
+        ffOn = on;
+        invalidate();
+    }
+
+    public void setMuted(boolean muted) {
+        if (this.muted == muted) {
+            return;
+        }
+        this.muted = muted;
+        invalidate();
+    }
+
+    /** Which console keys each macro key (0 = C, 1 = C2) holds down. */
+    public void setMacro(int index, int mask) {
+        if (index == 0) {
+            macroMaskC = mask;
+        } else {
+            macroMaskC2 = mask;
+        }
+        invalidate();
+    }
+
+    public int getMacro(int index) {
+        return index == 0 ? macroMaskC : macroMaskC2;
     }
 
     public void setCenters(Map<String, float[]> next) {
@@ -290,95 +389,350 @@ public class ControlsView extends View {
         return Math.min(255, alpha * opacity / 100);
     }
 
+    /** Alpha over a full color value, scaled by the opacity setting. */
+    private int fade(int alpha, int color) {
+        return (Math.min(255, alpha * opacity / 100) << 24) | (color & 0xFFFFFF);
+    }
+
+    private boolean handheld() {
+        return skinStyle == STYLE_HANDHELD;
+    }
+
     private boolean bDown() {
         return turboB ? turboLit : (pressed & B) != 0;
     }
 
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        float d = getResources().getDisplayMetrics().density;
+        density = getResources().getDisplayMetrics().density;
+        text.setTextSize(14 * density);
+        stroke.setStrokeWidth(Math.max(2f, 1.5f * density));
+        slopA = 18 * density;
+        slopFace = 10 * density;
+        computeDefaults();
+        applyCenters();
+    }
+
+    /**
+     * Rebuilds the stock key boxes for the current style and orientation. The
+     * stored (normalized) centers from the layout editor then move each key
+     * around its default.
+     */
+    private void computeDefaults() {
+        int w = getWidth();
+        int h = getHeight();
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        if (skinStyle == STYLE_CLASSIC) {
+            computeClassicDefaults(w, h);
+        } else if (portrait) {
+            computePortraitShellDefaults(w, h);
+        } else {
+            computeLandscapeShellDefaults(w, h);
+        }
+    }
+
+    /** The original outline-style layout, used by both orientations. */
+    private void computeClassicDefaults(int w, int h) {
+        float d = density;
         float pad = 10 * d;
         float menuW = 64 * d;
         float menuH = 32 * d;
         float center = w / 2f;
-        // Keep the d-pad clear of SELECT: on the narrow portrait screen a
-        // full sized d-pad would otherwise sit on top of it.
         float dpadRoom = center - menuW - 8 * d - pad - 6 * d;
         float dpadSize = Math.min(240 * d, Math.min(w, h) * 0.62f);
         dpadSize = Math.min(dpadSize, Math.max(48 * d, dpadRoom));
-        dpad.set(pad, h - pad - dpadSize, pad + dpadSize, h - pad);
+        dpadDefault.set(pad, h - pad - dpadSize, pad + dpadSize, h - pad);
 
         float shoulderW = 72 * d;
         float shoulderH = 36 * d;
         float shoulderTop = pad + 40 * d;
-        buttonL.set(pad, shoulderTop, pad + shoulderW, shoulderTop + shoulderH);
-        buttonR.set(w - pad - shoulderW, shoulderTop, w - pad, shoulderTop + shoulderH);
+        buttonLDefault.set(pad, shoulderTop, pad + shoulderW, shoulderTop + shoulderH);
+        buttonRDefault.set(w - pad - shoulderW, shoulderTop, w - pad, shoulderTop + shoulderH);
 
         float face = 58 * d;
         float faceA = 76 * d;
-        buttonA.set(w - pad - faceA, h - pad - faceA, w - pad, h - pad);
-        buttonB.set(buttonA.left - face - 14 * d, buttonA.top - 36 * d, buttonA.left - 14 * d, buttonA.top - 36 * d + face);
-        slopA = 18 * d;
-        slopFace = 10 * d;
+        buttonADefault.set(w - pad - faceA, h - pad - faceA, w - pad, h - pad);
+        buttonBDefault.set(buttonADefault.left - face - 14 * d, buttonADefault.top - 36 * d,
+                buttonADefault.left - 14 * d, buttonADefault.top - 36 * d + face);
 
         float menuTop = h - pad - menuH;
-        buttonSelect.set(center - menuW - 8 * d, menuTop, center - 8 * d, menuTop + menuH);
-        buttonStart.set(center + 8 * d, menuTop, center + 8 * d + menuW, menuTop + menuH);
+        buttonSelectDefault.set(center - menuW - 8 * d, menuTop, center - 8 * d, menuTop + menuH);
+        buttonStartDefault.set(center + 8 * d, menuTop, center + 8 * d + menuW, menuTop + menuH);
 
-        // Optional utility keys: defaults sit clear of the stock clusters; the
-        // layout editor can drag each of them anywhere.
         float utilW = 56 * d;
         float utilH = 34 * d;
         float utilTop = menuTop - utilH - 8 * d;
-        keySave.set(buttonSelect.left, utilTop, buttonSelect.left + utilW, utilTop + utilH);
-        keyLoad.set(buttonStart.right - utilW, utilTop, buttonStart.right, utilTop + utilH);
-        keyFast.set(center - utilW / 2f, utilTop, center + utilW / 2f, utilTop + utilH);
+        keySaveDefault.set(buttonSelectDefault.left, utilTop, buttonSelectDefault.left + utilW, utilTop + utilH);
+        keyLoadDefault.set(buttonStartDefault.right - utilW, utilTop, buttonStartDefault.right, utilTop + utilH);
+        keyFastDefault.set(center - utilW / 2f, utilTop, center + utilW / 2f, utilTop + utilH);
         float lrTop = shoulderTop + shoulderH + 8 * d;
-        keyLR.set(center - utilW, lrTop, center + utilW, lrTop + utilH);
-        keyShot.set(center - utilW / 2f, lrTop + utilH + 8 * d, center + utilW / 2f, lrTop + 2 * utilH + 8 * d);
+        keyLRDefault.set(center - utilW, lrTop, center + utilW, lrTop + utilH);
+        keyShotDefault.set(center - utilW / 2f, lrTop + utilH + 8 * d, center + utilW / 2f, lrTop + 2 * utilH + 8 * d);
         float turbo = 46 * d;
-        keyTurboA.set(buttonA.left - 4 * d, buttonA.top - turbo - 6 * d, buttonA.left - 4 * d + turbo, buttonA.top - 6 * d);
-        keyTurboB.set(keyTurboA.left - turbo - 8 * d, keyTurboA.top + 10 * d, keyTurboA.left - 8 * d, keyTurboA.top + 10 * d + turbo);
-        density = d;
-        text.setTextSize(14 * d);
-        stroke.setStrokeWidth(Math.max(2f, 1.5f * d));
-        snapDefaults();
-        applyCenters();
+        keyTurboADefault.set(buttonADefault.left - 4 * d, buttonADefault.top - turbo - 6 * d,
+                buttonADefault.left - 4 * d + turbo, buttonADefault.top - 6 * d);
+        keyTurboBDefault.set(keyTurboADefault.left - turbo - 8 * d, keyTurboADefault.top + 10 * d,
+                keyTurboADefault.left - 8 * d, keyTurboADefault.top + 10 * d + turbo);
+        float cSize = 44 * d;
+        keyCDefault.set(buttonBDefault.left - cSize - 10 * d, buttonBDefault.top, buttonBDefault.left - 10 * d, buttonBDefault.top + cSize);
+        keyC2Default.set(buttonADefault.left, buttonADefault.top - cSize - 10 * d,
+                buttonADefault.left + cSize, buttonADefault.top - 10 * d);
+    }
+
+    /**
+     * Portrait shell (Pizza Boy style): a black icon toolbar between the L/R
+     * pills, the fast-forward switch in the top right, a big white cross
+     * d-pad at the lower left, round A/B keys at the right and the pill
+     * SELECT/START pair at the bottom center.
+     */
+    private void computePortraitShellDefaults(int w, int h) {
+        float fw = w / 100f;
+        float fh = h / 100f;
+
+        // Toolbar row: L ... toolbar ... R all on one line.
+        float rowTop = 10.5f * fh;
+        float rowH = 13 * fh;
+        float pillW = 15 * fw;
+        buttonLDefault.set(3 * fw, rowTop, 3 * fw + pillW, rowTop + rowH);
+        buttonRDefault.set(w - 3 * fw - pillW, rowTop, w - 3 * fw, rowTop + rowH);
+        float barW = 40 * fw;
+        toolbar.set(50 * fw - barW / 2f, rowTop, 50 * fw + barW / 2f, rowTop + rowH);
+        layoutToolbar();
+
+        // Fast-forward switch, above the row at the right edge.
+        toggle.set(w - 22 * fw, 0.6f * fh, w - 3 * fw, 0.6f * fh + 7.5f * fh);
+
+        // D-pad: big cross at the lower left.
+        float dpadSize = 46 * fw;
+        float dLeft = 3 * fw;
+        float dTop = 62 * fh - dpadSize / 2f;
+        dpadDefault.set(dLeft, dTop, dLeft + dpadSize, dTop + dpadSize);
+
+        // A/B round keys: A upper right, B lower left of it.
+        float faceR = 13 * fw;
+        float ax = 82 * fw;
+        float ay = 47 * fh;
+        buttonADefault.set(ax - faceR, ay - faceR, ax + faceR, ay + faceR);
+        float bx = 66 * fw;
+        float by = 76 * fh;
+        buttonBDefault.set(bx - faceR, by - faceR, bx + faceR, by + faceR);
+
+        // SELECT / START pills at the bottom center.
+        float pillH = 7.5f * fh;
+        float pillW2 = 17 * fw;
+        float pillTop = 91.5f * fh - pillH / 2f;
+        buttonSelectDefault.set(28 * fw - pillW2 / 2f, pillTop, 28 * fw + pillW2 / 2f, pillTop + pillH);
+        buttonStartDefault.set(52 * fw - pillW2 / 2f, pillTop, 52 * fw + pillW2 / 2f, pillTop + pillH);
+
+        // Optional utility keys: a small row under the toolbar; turbo keys
+        // ride next to A/B; the C macro keys sit beside the face cluster.
+        float utilW = 11 * fw;
+        float utilH = 7 * fh;
+        float utilTop = rowTop + rowH + 3 * fh;
+        keySaveDefault.set(18 * fw, utilTop, 18 * fw + utilW, utilTop + utilH);
+        keyLoadDefault.set(31 * fw, utilTop, 31 * fw + utilW, utilTop + utilH);
+        keyFastDefault.set(44 * fw, utilTop, 44 * fw + utilW, utilTop + utilH);
+        keyShotDefault.set(57 * fw, utilTop, 57 * fw + utilW, utilTop + utilH);
+        keyLRDefault.set(70 * fw, utilTop, 70 * fw + utilW, utilTop + utilH);
+        float turbo = 9 * fw;
+        keyTurboADefault.set(buttonADefault.left - turbo - 2 * fw, buttonADefault.top + 2 * fh,
+                buttonADefault.left - 2 * fw, buttonADefault.top + 2 * fh + turbo);
+        keyTurboBDefault.set(buttonBDefault.left - turbo - 2 * fw, buttonBDefault.top - 2 * fh,
+                buttonBDefault.left - 2 * fw, buttonBDefault.top - 2 * fh + turbo);
+        float cSize = 9.5f * fw;
+        keyCDefault.set(buttonBDefault.left - cSize - 3 * fw, buttonBDefault.centerY() - cSize / 2f,
+                buttonBDefault.left - 3 * fw, buttonBDefault.centerY() + cSize / 2f);
+        keyC2Default.set(buttonADefault.centerX() - cSize / 2f, buttonADefault.top - cSize - 2 * fh,
+                buttonADefault.centerX() + cSize / 2f, buttonADefault.top - 2 * fh);
+        layoutSpeakerPortrait(w, h);
+        // The portrait shell starts smaller so thumbs wrap the keys without
+        // covering them; the layout editor can scale each one up again.
+        shrink(dpadDefault, 0.8f);
+        shrink(buttonLDefault, 0.85f);
+        shrink(buttonRDefault, 0.85f);
+        shrink(buttonADefault, 0.8f);
+        shrink(buttonBDefault, 0.8f);
+        shrink(buttonSelectDefault, 0.8f);
+        shrink(buttonStartDefault, 0.8f);
+        shrink(keyTurboADefault, 0.8f);
+        shrink(keyTurboBDefault, 0.8f);
+        shrink(keyLRDefault, 0.8f);
+        shrink(keyCDefault, 0.8f);
+        shrink(keyC2Default, 0.8f);
+        shrink(keySaveDefault, 0.8f);
+        shrink(keyLoadDefault, 0.8f);
+        shrink(keyFastDefault, 0.8f);
+        shrink(keyShotDefault, 0.8f);
+    }
+
+    /** Landscape shell (GBA hardware style): d-pad left, A/B right, slanted
+     * SELECT/START pills near the screen, speaker slots at the lower right. */
+    private void computeLandscapeShellDefaults(int w, int h) {
+        float fw = w / 100f;
+        float fh = h / 100f;
+
+        float dpadSize = 26 * fh;
+        float dLeft = 5 * fw;
+        float dTop = 56 * fh - dpadSize / 2f;
+        dpadDefault.set(dLeft, dTop, dLeft + dpadSize, dTop + dpadSize);
+
+        float faceR = 9.5f * fh;
+        float ax = 88 * fw;
+        float ay = 40 * fh;
+        buttonADefault.set(ax - faceR, ay - faceR, ax + faceR, ay + faceR);
+        float bx = 80 * fw;
+        float by = 72 * fh;
+        buttonBDefault.set(bx - faceR, by - faceR, bx + faceR, by + faceR);
+
+        // START/SELECT: small pills angled like the real console, below the
+        // screen between d-pad and A/B. The boxes stay axis-aligned; only
+        // the drawing is rotated.
+        float pillW = 11 * fw;
+        float pillH = 6.5f * fh;
+        buttonStartDefault.set(30 * fw - pillW / 2f, 76 * fh - pillH / 2f, 30 * fw + pillW / 2f, 76 * fh + pillH / 2f);
+        buttonSelectDefault.set(30 * fw - pillW / 2f - 1 * fw, 87 * fh - pillH / 2f,
+                30 * fw + pillW / 2f - 1 * fw, 87 * fh + pillH / 2f);
+
+        // Shoulders sit below the floating menu bar's two rows (button row
+        // plus the save-path strip), so opening the menu cannot cover them.
+        float shoulderW = 72 * density;
+        float shoulderH = 36 * density;
+        float shoulderTop = 78 * density;
+        buttonLDefault.set(2 * density, shoulderTop, 2 * density + shoulderW, shoulderTop + shoulderH);
+        buttonRDefault.set(w - 2 * density - shoulderW, shoulderTop, w - 2 * density, shoulderTop + shoulderH);
+
+        // Utility keys tuck into the free space below the shoulders.
+        float utilW = 9 * fw;
+        float utilH = 8.5f * fh;
+        float utilTop = 12 * fh;
+        keySaveDefault.set(40 * fw, utilTop, 40 * fw + utilW, utilTop + utilH);
+        keyLoadDefault.set(50 * fw, utilTop, 50 * fw + utilW, utilTop + utilH);
+        keyFastDefault.set(60 * fw, utilTop, 60 * fw + utilW, utilTop + utilH);
+        keyShotDefault.set(70 * fw, utilTop, 70 * fw + utilW, utilTop + utilH);
+        keyLRDefault.set(45 * fw, 82 * fh, 45 * fw + utilW + 6 * fw, 82 * fh + utilH);
+        keyTurboADefault.set(buttonADefault.left - utilW - 1.5f * fw, buttonADefault.top,
+                buttonADefault.left - 1.5f * fw, buttonADefault.top + utilH);
+        keyTurboBDefault.set(buttonBDefault.left - utilW - 1.5f * fw, buttonBDefault.top,
+                buttonBDefault.left - 1.5f * fw, buttonBDefault.top + utilH);
+        float cSize = 7 * fh;
+        keyCDefault.set(buttonBDefault.left - cSize - 2 * fw, buttonBDefault.centerY() - cSize / 2f,
+                buttonBDefault.left - 2 * fw, buttonBDefault.centerY() + cSize / 2f);
+        keyC2Default.set(buttonADefault.centerX() - cSize / 2f, buttonADefault.top - cSize - 2 * fh,
+                buttonADefault.centerX() + cSize / 2f, buttonADefault.top - 2 * fh);
+        layoutSpeakerLandscape(w, h);
+    }
+
+    /** Scales a default key box around its center. */
+    private static void shrink(RectF rect, float factor) {
+        float cx = rect.centerX();
+        float cy = rect.centerY();
+        rect.set(cx - rect.width() * factor / 2f, cy - rect.height() * factor / 2f,
+                cx + rect.width() * factor / 2f, cy + rect.height() * factor / 2f);
+    }
+
+    private void layoutToolbar() {
+        float pad = 2.5f * density;
+        float inner = toolbar.width() - pad * 2;
+        float cell = inner / 5f;
+        toolbarMenu.set(toolbar.left + pad, toolbar.top + pad, toolbar.left + pad + cell, toolbar.bottom - pad);
+        toolbarSave.set(toolbarMenu.right, toolbar.top + pad, toolbarMenu.right + cell, toolbar.bottom - pad);
+        toolbarLoad.set(toolbarSave.right, toolbar.top + pad, toolbarSave.right + cell, toolbar.bottom - pad);
+        toolbarMute.set(toolbarLoad.right, toolbar.top + pad, toolbarLoad.right + cell, toolbar.bottom - pad);
+        toolbarRewind.set(toolbarMute.right, toolbar.top + pad, toolbar.right - pad, toolbar.bottom - pad);
+    }
+
+    private void layoutSpeakerPortrait(int w, int h) {
+        int i = 0;
+        float cols = 5;
+        float rows = 3;
+        float cell = 2.6f * density;
+        float gap = 1.9f * density;
+        float gridW = cols * cell + (cols - 1) * gap;
+        float gridH = rows * cell + (rows - 1) * gap;
+        float x0 = w - gridW - 4.5f * density;
+        float y0 = h - gridH - 3.5f * density;
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                float x = x0 + c * (cell + gap);
+                float y = y0 + r * (cell + gap);
+                speakerDots[i++] = new RectF(x, y, x + cell, y + cell);
+            }
+        }
+    }
+
+    private void layoutSpeakerLandscape(int w, int h) {
+        int i = 0;
+        float slots = 6;
+        float len = 7 * density;
+        float thick = 1.6f * density;
+        float gap = 3.2f * density;
+        float x0 = w - 9 * density - len;
+        float y0 = h - (slots * gap + 4 * density);
+        for (int s = 0; s < slots; s++) {
+            float y = y0 + s * gap;
+            speakerDots[i++] = new RectF(x0, y, x0 + len, y + thick);
+        }
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
-        drawButton(canvas, buttonL, "L", (pressed & L) != 0, editing);
-        drawButton(canvas, buttonR, "R", (pressed & R) != 0, editing);
-        drawButton(canvas, buttonA, "A", (pressed & A) != 0, editing);
-        drawButton(canvas, buttonB, "B", bDown(), editing);
-        drawButton(canvas, buttonSelect, "SELECT", (pressed & SELECT) != 0, editing);
-        drawButton(canvas, buttonStart, "START", (pressed & START) != 0, editing);
+        boolean shell = handheld();
+        if (shell && portrait && !editing) {
+            drawToolbar(canvas);
+            drawToggle(canvas);
+        }
+        drawKey(canvas, buttonL, "L", (pressed & L) != 0, editing, false);
+        drawKey(canvas, buttonR, "R", (pressed & R) != 0, editing, false);
+        drawKey(canvas, buttonA, "A", (pressed & A) != 0, editing, true);
+        drawKey(canvas, buttonB, "B", bDown(), editing, true);
+        drawKey(canvas, buttonSelect, "SELECT", (pressed & SELECT) != 0, editing, false);
+        drawKey(canvas, buttonStart, "START", (pressed & START) != 0, editing, false);
         drawDpad(canvas);
+        if (shell && portrait) {
+            drawSpeaker(canvas);
+        } else if (shell) {
+            drawSpeakerSlots(canvas);
+        }
         if (visibleExtras.contains("ta")) {
-            drawButton(canvas, keyTurboA, "A连", (pressed & A) != 0 && pulseOn, editing);
+            drawKey(canvas, keyTurboA, "A连", (pressed & A) != 0 && pulseOn, editing, true);
         }
         if (visibleExtras.contains("tb")) {
-            drawButton(canvas, keyTurboB, "B连", (pressed & B) != 0 && pulseOn, editing);
+            drawKey(canvas, keyTurboB, "B连", (pressed & B) != 0 && pulseOn, editing, true);
         }
         if (visibleExtras.contains("lr")) {
-            drawButton(canvas, keyLR, "L+R", (pressed & (L | R)) == (L | R), editing);
+            drawKey(canvas, keyLR, "L+R", (pressed & (L | R)) == (L | R), editing, false);
+        }
+        if (visibleExtras.contains("c")) {
+            drawKey(canvas, keyC, "C", (pressed & macroMaskC) == macroMaskC && macroMaskC != 0, editing, true);
+        }
+        if (visibleExtras.contains("c2")) {
+            drawKey(canvas, keyC2, "C2", (pressed & macroMaskC2) == macroMaskC2 && macroMaskC2 != 0, editing, true);
         }
         if (visibleExtras.contains("save")) {
-            drawButton(canvas, keySave, "快存", actionPointers.indexOfValue(ACTION_SAVE) >= 0, editing);
+            drawKey(canvas, keySave, "快存", actionPointers.indexOfValue(ACTION_SAVE) >= 0, editing, false);
         }
         if (visibleExtras.contains("load")) {
-            drawButton(canvas, keyLoad, "快读", actionPointers.indexOfValue(ACTION_LOAD) >= 0, editing);
+            drawKey(canvas, keyLoad, "快读", actionPointers.indexOfValue(ACTION_LOAD) >= 0, editing, false);
         }
         if (visibleExtras.contains("ff")) {
-            drawButton(canvas, keyFast, "倍速", actionPointers.indexOfValue(ACTION_FF) >= 0, editing);
+            drawKey(canvas, keyFast, "倍速", actionPointers.indexOfValue(ACTION_FF) >= 0, editing, false);
         }
         if (visibleExtras.contains("shot")) {
-            drawButton(canvas, keyShot, "截图", actionPointers.indexOfValue(ACTION_SHOT) >= 0, editing);
+            drawKey(canvas, keyShot, "截图", actionPointers.indexOfValue(ACTION_SHOT) >= 0, editing, false);
         }
     }
 
-    private void drawButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected) {
+    private void drawKey(Canvas canvas, RectF rect, String label, boolean down, boolean selected, boolean round) {
+        if (handheld()) {
+            drawShellKey(canvas, rect, label, down, selected, round);
+            return;
+        }
+        drawClassicKey(canvas, rect, label, down, selected);
+    }
+
+    private void drawClassicKey(Canvas canvas, RectF rect, String label, boolean down, boolean selected) {
         if (down) {
             fill.setColor(Color.argb(fade(70), 80, 210, 130));
             canvas.drawRoundRect(rect, 12, 12, fill);
@@ -392,7 +746,91 @@ public class ControlsView extends View {
         }
     }
 
+    /** White shell button: pill or circle with an accent letter. The fill
+     * starts translucent; raising the opacity control brings it to white. */
+    private void drawShellKey(Canvas canvas, RectF rect, String label, boolean down, boolean selected, boolean round) {
+        String key = labelToKey(label);
+        if (key != null && skinBitmaps.containsKey(down ? key + "_p" : key)) {
+            drawBitmapKey(canvas, rect, skinBitmaps.get(down ? key + "_p" : key));
+        } else if (key != null && skinBitmaps.containsKey(key)) {
+            drawBitmapKey(canvas, rect, skinBitmaps.get(key));
+            if (down) {
+                fill.setColor(Color.argb(fade(110), skin.accentDeep >> 16 & 0xFF, skin.accentDeep >> 8 & 0xFF, skin.accentDeep & 0xFF));
+                if (round) {
+                    canvas.drawCircle(rect.centerX(), rect.centerY(), Math.min(rect.width(), rect.height()) / 2f, fill);
+                } else {
+                    canvas.drawRoundRect(rect, rect.height() / 2.4f, rect.height() / 2.4f, fill);
+                }
+            }
+        } else {
+            drawShellButton(canvas, rect, label, down, selected, round);
+        }
+        if (selected) {
+            drawCursor(canvas, rect);
+        }
+    }
+
+    private void drawShellButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected, boolean round) {
+        float r = round ? Math.min(rect.width(), rect.height()) / 2f : rect.height() / 2.4f;
+        fill.setColor(down ? Color.argb(fade(150), skin.accentDeep >> 16 & 0xFF, skin.accentDeep >> 8 & 0xFF, skin.accentDeep & 0xFF)
+                : Color.argb(fade(150), 255, 255, 255));
+        if (round) {
+            canvas.drawCircle(rect.centerX(), rect.centerY(), r, fill);
+        } else {
+            canvas.drawRoundRect(rect, r, r, fill);
+        }
+        if (selected) {
+            stroke.setColor(Color.argb(240, 255, 214, 64));
+            stroke.setStrokeWidth(Math.max(2.5f, 2f * density));
+            if (round) {
+                canvas.drawCircle(rect.centerX(), rect.centerY(), r - stroke.getStrokeWidth() / 2f, stroke);
+            } else {
+                canvas.drawRoundRect(rect, r, r, stroke);
+            }
+            stroke.setStrokeWidth(Math.max(2f, 1.5f * density));
+        }
+        float size = label.length() > 2 ? 11 * density : label.length() > 1 ? 13 * density : 17 * density;
+        text.setTextSize(size);
+        text.setColor(down ? Color.argb(fade(240), 255, 255, 255) : fade(255, skin.accent));
+        canvas.drawText(label, rect.centerX(), rect.centerY() - (text.descent() + text.ascent()) / 2f, text);
+    }
+
+    private void drawBitmapKey(Canvas canvas, RectF rect, android.graphics.Bitmap bitmap) {
+        fill.setAlpha(255);
+        canvas.drawBitmap(bitmap, null, rect, fill);
+    }
+
+    /** Maps a drawn label to its skin-pack key, or null for utility keys. */
+    private static String labelToKey(String label) {
+        if ("A".equals(label)) {
+            return "a";
+        }
+        if ("B".equals(label)) {
+            return "b";
+        }
+        if ("L".equals(label)) {
+            return "l";
+        }
+        if ("R".equals(label)) {
+            return "r";
+        }
+        if ("SELECT".equals(label)) {
+            return "select";
+        }
+        if ("START".equals(label)) {
+            return "start";
+        }
+        return null;
+    }
+
     private void drawDpad(Canvas canvas) {
+        if (dpad.width() <= 0f) {
+            return;
+        }
+        if (handheld()) {
+            drawShellDpad(canvas);
+            return;
+        }
         drawDirection(canvas, dpadUp, UP);
         drawDirection(canvas, dpadDown, DOWN);
         drawDirection(canvas, dpadLeft, LEFT);
@@ -400,6 +838,54 @@ public class ControlsView extends View {
         if (editing) {
             drawCursor(canvas, dpad);
         }
+    }
+
+    /** White cross with a center mark; a pressed arm glows in the accent. */
+    private void drawShellDpad(Canvas canvas) {
+        layoutDpadArms();
+        android.graphics.Bitmap dpadBitmap = skinBitmaps.containsKey("dpad") ? skinBitmaps.get("dpad") : null;
+        if (dpadBitmap != null && !dpadBitmap.isRecycled()) {
+            drawBitmapKey(canvas, dpad, dpadBitmap);
+            drawArmGlow(canvas, dpadUp, UP, 0);
+            drawArmGlow(canvas, dpadDown, DOWN, 0);
+            drawArmGlow(canvas, dpadLeft, LEFT, 0);
+            drawArmGlow(canvas, dpadRight, RIGHT, 0);
+            if (editing) {
+                drawCursor(canvas, dpad);
+            }
+            return;
+        }
+        float r = dpadUp.width() / 2.4f;
+        // The cross reads as two overlapping rounded bars.
+        RectF bar = new RectF(dpad.left, dpad.centerY() - dpadUp.width() / 2f,
+                dpad.right, dpad.centerY() + dpadUp.width() / 2f);
+        RectF barV = new RectF(dpad.centerX() - dpadLeft.height() / 2f, dpad.top,
+                dpad.centerX() + dpadLeft.height() / 2f, dpad.bottom);
+        fill.setColor(Color.argb(fade(150), 255, 255, 255));
+        canvas.drawRoundRect(bar, r, r, fill);
+        canvas.drawRoundRect(barV, r, r, fill);
+        // Pressed arms light up in the accent color.
+        drawArmGlow(canvas, dpadUp, UP, r);
+        drawArmGlow(canvas, dpadDown, DOWN, r);
+        drawArmGlow(canvas, dpadLeft, LEFT, r);
+        drawArmGlow(canvas, dpadRight, RIGHT, r);
+        // Center hub with a small accent mark.
+        float hub = dpadUp.width() * 0.92f;
+        fill.setColor(Color.argb(fade(170), 255, 255, 255));
+        canvas.drawCircle(dpad.centerX(), dpad.centerY(), hub / 2f, fill);
+        fill.setColor(fade(150, skin.dpadMark));
+        canvas.drawCircle(dpad.centerX(), dpad.centerY(), hub / 5f, fill);
+        if (editing) {
+            drawCursor(canvas, dpad);
+        }
+    }
+
+    private void drawArmGlow(Canvas canvas, RectF arm, int bit, float r) {
+        if ((pressed & bit) == 0) {
+            return;
+        }
+        fill.setColor(Color.argb(fade(120), skin.accentDeep >> 16 & 0xFF, skin.accentDeep >> 8 & 0xFF, skin.accentDeep & 0xFF));
+        canvas.drawRoundRect(arm, r * 0.8f, r * 0.8f, fill);
     }
 
     private void drawDirection(Canvas canvas, RectF rect, int bit) {
@@ -444,10 +930,66 @@ public class ControlsView extends View {
         canvas.drawPath(arrow, fill);
     }
 
+    private void drawToolbar(Canvas canvas) {
+        fill.setColor(Color.argb(fade(236), 12, 12, 14));
+        canvas.drawRoundRect(toolbar, toolbar.height() / 2f, toolbar.height() / 2f, fill);
+        drawToolbarButton(canvas, toolbarMenu, "☰", ACTION_MENU);
+        drawToolbarButton(canvas, toolbarSave, "存", ACTION_SAVE);
+        drawToolbarButton(canvas, toolbarLoad, "读", ACTION_LOAD);
+        drawToolbarButton(canvas, toolbarMute, muted ? "🔇" : "♪", ACTION_MUTE);
+        drawToolbarButton(canvas, toolbarRewind, "⏪", ACTION_REWIND);
+    }
+
+    private void drawToolbarButton(Canvas canvas, RectF cell, String icon, int action) {
+        if (actionPointers.indexOfValue(action) >= 0) {
+            fill.setColor(Color.argb(200, skin.accentDeep >> 16 & 0xFF, skin.accentDeep >> 8 & 0xFF, skin.accentDeep & 0xFF));
+            canvas.drawCircle(cell.centerX(), cell.centerY(), Math.min(cell.width(), cell.height()) * 0.42f, fill);
+        }
+        text.setTextSize(13 * density);
+        text.setColor(Color.argb(fade(235), 255, 255, 255));
+        canvas.drawText(icon, cell.centerX(), cell.centerY() - (text.descent() + text.ascent()) / 2f, text);
+    }
+
+    /** Fast-forward switch: green when held on, gray when off. */
+    private void drawToggle(Canvas canvas) {
+        float r = toggle.height() / 2f;
+        fill.setColor(ffOn ? Color.argb(fade(255), 61, 220, 132) : Color.argb(fade(210), 70, 70, 76));
+        canvas.drawRoundRect(toggle, r, r, fill);
+        float knob = toggle.height() * 0.86f;
+        float kx = ffOn ? toggle.right - knob / 2f - 2 * density : toggle.left + knob / 2f + 2 * density;
+        fill.setColor(Color.argb(250, 255, 255, 255));
+        canvas.drawCircle(kx, toggle.centerY(), knob / 2f, fill);
+        if (ffOn) {
+            text.setTextSize(9 * density);
+            text.setColor(Color.argb(230, 30, 90, 50));
+            canvas.drawText("FF", toggle.centerX() - toggle.width() * 0.12f, toggle.centerY() - (text.descent() + text.ascent()) / 2f, text);
+        }
+    }
+
+    private void drawSpeaker(Canvas canvas) {
+        fill.setColor(fade(255, skin.speaker));
+        for (RectF dot : speakerDots) {
+            if (dot != null) {
+                canvas.drawCircle(dot.centerX(), dot.centerY(), dot.width() / 2f, fill);
+            }
+        }
+    }
+
+    private void drawSpeakerSlots(Canvas canvas) {
+        fill.setColor(fade(255, skin.speaker));
+        for (RectF slot : speakerDots) {
+            if (slot != null) {
+                canvas.drawRoundRect(slot, slot.height() / 2f, slot.height() / 2f, fill);
+            }
+        }
+    }
+
     /** Internal markers for the extra keys; not part of the key mask. */
     private static final int FLAG_TURBO_A = 1 << 20;
     private static final int FLAG_TURBO_B = 1 << 21;
     private static final int FLAG_LR = 1 << 22;
+    private static final int FLAG_C = 1 << 23;
+    private static final int FLAG_C2 = 1 << 24;
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
@@ -473,6 +1015,7 @@ public class ControlsView extends View {
                     } else if (listener != null) {
                         listener.onAction(utility);
                     }
+                    invalidate();
                     break;
                 }
                 pointers.put(id, hitTest(x, y));
@@ -487,7 +1030,7 @@ public class ControlsView extends View {
                     int current = pointers.get(pointerId);
                     // Face buttons stick until release. A thumb sliding a few
                     // pixels used to drop A before the game ever sampled it.
-                    if ((current & (FACE | FLAG_TURBO_A | FLAG_TURBO_B | FLAG_LR)) != 0) {
+                    if ((current & (FACE | FLAG_TURBO_A | FLAG_TURBO_B | FLAG_LR | FLAG_C | FLAG_C2)) != 0) {
                         continue;
                     }
                     pointers.put(pointerId, hitTest(event.getX(i), event.getY(i)));
@@ -501,6 +1044,7 @@ public class ControlsView extends View {
                     if (held == ACTION_FF && listener != null) {
                         listener.onFastHold(false);
                     }
+                    invalidate();
                     break;
                 }
                 pointers.delete(id);
@@ -512,6 +1056,7 @@ public class ControlsView extends View {
                 if (listener != null) {
                     listener.onFastHold(false);
                 }
+                invalidate();
                 break;
             default:
                 return true;
@@ -542,6 +1087,10 @@ public class ControlsView extends View {
                 turbo |= B;
             } else if ((value & FLAG_LR) != 0) {
                 mask |= L | R;
+            } else if ((value & FLAG_C) != 0) {
+                mask |= macroMaskC;
+            } else if ((value & FLAG_C2) != 0) {
+                mask |= macroMaskC2;
             } else {
                 mask |= value;
             }
@@ -561,6 +1110,26 @@ public class ControlsView extends View {
 
     /** Optional utility key under the point, or 0 (ACTION_* codes). */
     private int actionAt(float x, float y) {
+        if (handheld() && portrait) {
+            if (toggle.contains(x, y)) {
+                return ACTION_FF_TOGGLE;
+            }
+            if (toolbarMenu.contains(x, y)) {
+                return ACTION_MENU;
+            }
+            if (toolbarSave.contains(x, y)) {
+                return ACTION_SAVE;
+            }
+            if (toolbarLoad.contains(x, y)) {
+                return ACTION_LOAD;
+            }
+            if (toolbarMute.contains(x, y)) {
+                return ACTION_MUTE;
+            }
+            if (toolbarRewind.contains(x, y)) {
+                return ACTION_REWIND;
+            }
+        }
         if (visibleExtras.contains("save") && keySave.contains(x, y)) {
             return ACTION_SAVE;
         }
@@ -585,6 +1154,12 @@ public class ControlsView extends View {
         }
         if (visibleExtras.contains("lr") && keyLR.contains(x, y)) {
             return FLAG_LR;
+        }
+        if (visibleExtras.contains("c") && keyC.contains(x, y)) {
+            return FLAG_C;
+        }
+        if (visibleExtras.contains("c2") && keyC2.contains(x, y)) {
+            return FLAG_C2;
         }
         int face = nearestFace(x, y);
         if (face != 0) {
@@ -688,6 +1263,8 @@ public class ControlsView extends View {
         keyTurboADefault.set(keyTurboA);
         keyTurboBDefault.set(keyTurboB);
         keyLRDefault.set(keyLR);
+        keyCDefault.set(keyC);
+        keyC2Default.set(keyC2);
         keySaveDefault.set(keySave);
         keyLoadDefault.set(keyLoad);
         keyFastDefault.set(keyFast);
@@ -710,6 +1287,12 @@ public class ControlsView extends View {
         }
         if (visibleExtras.contains("lr")) {
             place(keyLR, keyLRDefault, "lr");
+        }
+        if (visibleExtras.contains("c")) {
+            place(keyC, keyCDefault, "c");
+        }
+        if (visibleExtras.contains("c2")) {
+            place(keyC2, keyC2Default, "c2");
         }
         if (visibleExtras.contains("save")) {
             place(keySave, keySaveDefault, "save");
@@ -979,6 +1562,12 @@ public class ControlsView extends View {
         if (visibleExtras.contains("lr") && keyLR.contains(x, y)) {
             return "lr";
         }
+        if (visibleExtras.contains("c") && keyC.contains(x, y)) {
+            return "c";
+        }
+        if (visibleExtras.contains("c2") && keyC2.contains(x, y)) {
+            return "c2";
+        }
         if (visibleExtras.contains("save") && keySave.contains(x, y)) {
             return "save";
         }
@@ -1046,6 +1635,12 @@ public class ControlsView extends View {
         }
         if ("lr".equals(key)) {
             return keyLR;
+        }
+        if ("c".equals(key)) {
+            return keyC;
+        }
+        if ("c2".equals(key)) {
+            return keyC2;
         }
         if ("save".equals(key)) {
             return keySave;

@@ -53,6 +53,32 @@ Java_io_mgba_android_MgbaCore_nativeSetTurbo(JNIEnv*, jobject, jlong handle, jin
 	mgbaMobileSetTurbo((struct MgbaMobile*) handle, (uint32_t) mask);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetRewind(JNIEnv*, jobject, jlong handle, jboolean enabled) {
+	mgbaMobileSetRewind((struct MgbaMobile*) handle, enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetChannelVolumes(JNIEnv* env, jobject, jlong handle, jintArray gains) {
+	if (!gains) {
+		return;
+	}
+	jsize length = env->GetArrayLength(gains);
+	if (length < 6) {
+		return;
+	}
+	jint* values = env->GetIntArrayElements(gains, NULL);
+	if (values) {
+		mgbaMobileSetChannelVolumes((struct MgbaMobile*) handle, (const int32_t*) values);
+		env->ReleaseIntArrayElements(gains, values, 0);
+	}
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeRewind(JNIEnv*, jobject, jlong handle, jint seconds) {
+	return mgbaMobileRewind((struct MgbaMobile*) handle, seconds) ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeRunFrames(JNIEnv*, jobject, jlong handle, jint, jint count) {
 	return mgbaMobileRunFrames((struct MgbaMobile*) handle, count) ? JNI_TRUE : JNI_FALSE;

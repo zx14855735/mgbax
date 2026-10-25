@@ -37,10 +37,12 @@ import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.content.SharedPreferences;
 import android.text.InputType;
 import android.text.format.DateFormat;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.GestureDetector;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.PixelCopy;
@@ -54,6 +56,8 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -76,10 +80,15 @@ import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.GregorianCalendar;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -94,6 +103,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
     private static final int CMD_AUTOSAVE = 4;
+    private static final int CMD_REWIND = 5;
     private static final int TURBO_ARM_MS = 200;
     /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
     private static final int AUTO_SLOT = 0;
@@ -215,6 +225,31 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile boolean skipAuto;
     private int autoSkipLevel;
     private int lateStreak;
+    // == Features ported from Pizza Boy ==
+    private HorizontalScrollView rewindBar;
+    private volatile boolean rewindHold;
+    private volatile int rewindSeconds;
+    private long lastRewindAt;
+    private RomSettingsDb romDb;
+    /** CRC32 of the loaded ROM, the per-game settings key. */
+    private long romCrc = -1;
+    private final Map<String, Long> crcCache = new HashMap<>();
+    /** Per-game overrides; -1/null keeps the global preference. */
+    private int perRomFilter = -1;
+    private Float perRomSpeed;
+    private Integer perRomSaveType;
+    private Integer perRomPalette;
+    private boolean ffOn;
+    private boolean muted;
+    private GestureDetector doubleTapShot;
+    private java.util.concurrent.ScheduledExecutorService timedSavePool;
+    // == Stickers / full skin / AI translate ==
+    private StickerOverlay stickerOverlay;
+    private AiOverlayView aiOverlay;
+    private SkinStore skinStore;
+    private String activeSkinName;
+    private Bitmap aiFrame;
+    private String stickerPrefix;
 
     /**
      * GB DMG palettes, light to dark, expanded to the twelve gb.pal entries
@@ -277,6 +312,22 @@ public class EmulatorActivity extends AppCompatActivity {
                     quickState(false);
                 } else if (action == ControlsView.ACTION_SHOT) {
                     takeScreenshot();
+                } else if (action == ControlsView.ACTION_FF_TOGGLE) {
+                    toggleFastForward();
+                } else if (action == ControlsView.ACTION_MENU) {
+                    if (menuBar.getVisibility() == View.VISIBLE) {
+                        hideMenuNow();
+                    } else {
+                        showMenu();
+                    }
+                } else if (action == ControlsView.ACTION_MUTE) {
+                    toggleMute();
+                } else if (action == ControlsView.ACTION_REWIND) {
+                    if (rewindBar != null) {
+                        rewindBar.setVisibility(
+                                rewindBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                        showMenu();
+                    }
                 }
             }
 
@@ -340,6 +391,72 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
+
+        // == Pizza Boy feature wiring ==
+        romDb = new RomSettingsDb(this);
+        buildRewindBar();
+        View libButton = findViewById(R.id.btn_library);
+        if (libButton != null) {
+            libButton.setOnClickListener(v -> showRomLibrary());
+        }
+        View rewindButton = findViewById(R.id.btn_rewind);
+        if (rewindButton != null) {
+            rewindButton.setOnClickListener(v -> {
+                if (rewindBar != null) {
+                    rewindBar.setVisibility(
+                            rewindBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+                    showMenu();
+                }
+            });
+        }
+        View skinButton = findViewById(R.id.btn_skin);
+        if (skinButton != null) {
+            skinButton.setOnClickListener(v -> showSkinDialog());
+        }
+        View perRomButton = findViewById(R.id.btn_perrom);
+        if (perRomButton != null) {
+            perRomButton.setOnClickListener(v -> showPerRomDialog());
+        }
+        View backupButton = findViewById(R.id.btn_backup);
+        if (backupButton != null) {
+            backupButton.setOnClickListener(v -> showBackupDialog());
+        }
+        muted = getPreferences(MODE_PRIVATE).getBoolean("muted", false);
+        controls.setMuted(muted);
+        doubleTapShot = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDown(MotionEvent e) {
+                // Returning true keeps the stream alive; without it the
+                // double-tap detector never fires on some devices.
+                return true;
+            }
+
+            @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                if (getPreferences(MODE_PRIVATE).getBoolean("double_click_shot", false)) {
+                    takeScreenshot();
+                    return true;
+                }
+                return false;
+            }
+        });
+        // Consume the stream (return true) even though the detector itself
+        // reports false for plain taps: a false DOWN stops later events of
+        // the same gesture from reaching the detector, so the double tap
+        // would never complete.
+        gameView.setOnTouchListener((v, event) -> {
+            doubleTapShot.onTouchEvent(event);
+            return true;
+        });
+        stickerOverlay = findViewById(R.id.sticker_overlay);
+        aiOverlay = findViewById(R.id.ai_overlay);
+        skinStore = new SkinStore(this);
+        bindStickerOverlay();
+        View translateButton = findViewById(R.id.btn_translate);
+        if (translateButton != null) {
+            translateButton.setOnClickListener(v -> showTranslateDialog());
+        }
+        applySkin();
 
         menuBar = findViewById(R.id.menu_bar);
         menuButton = findViewById(R.id.btn_menu);
@@ -433,6 +550,7 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         File saves = SaveLocation.prepare(this);
         core = new MgbaCore(saves, new File(getFilesDir(), "states"));
+        core.setRewind(true);
         applyCoreOptions();
         applyVideo();
         if (pendingPath.get() == null && !importingRom) {
@@ -536,7 +654,102 @@ public class EmulatorActivity extends AppCompatActivity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        startActivityForResult(intent, request);
+        launchPicker(intent, request);
+    }
+
+    /**
+     * Launches the system picker only when one exists. On stripped devices
+     * with no documents UI, launching would strand the player away from the
+     * controls, so the folder-based import paths are the fallback.
+     */
+    private boolean launchPicker(Intent intent, int request) {
+        try {
+            if (intent.resolveActivity(getPackageManager()) == null) {
+                toast(getString(R.string.picker_missing));
+                return false;
+            }
+            startActivityForResult(intent, request);
+            return true;
+        } catch (Exception e) {
+            toast(getString(R.string.picker_missing));
+            return false;
+        }
+    }
+
+    /** Images the player dropped into /sdcard/mGBAx/stickers, no picker needed. */
+    private void showFolderStickerPicker() {
+        List<File> images = new ArrayList<>();
+        File[] roots = {
+                new File(Environment.getExternalStorageDirectory(), "mGBAx/stickers"),
+                getExternalFilesDir("stickers"),
+        };
+        for (File root : roots) {
+            File[] files = root == null ? null : root.listFiles();
+            if (files == null) {
+                continue;
+            }
+            for (File file : files) {
+                String lower = file.getName().toLowerCase(Locale.ROOT);
+                if (file.isFile() && (lower.endsWith(".png") || lower.endsWith(".jpg")
+                        || lower.endsWith(".jpeg") || lower.endsWith(".webp") || lower.endsWith(".gif"))) {
+                    images.add(file);
+                }
+            }
+        }
+        if (images.isEmpty()) {
+            toast(getString(R.string.sticker_folder_empty));
+            return;
+        }
+        String[] names = new String[images.size()];
+        for (int i = 0; i < images.size(); i++) {
+            names[i] = images.get(i).getName();
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sticker_from_folder)
+                .setItems(names, (dialog, which) -> {
+                    File source = images.get(which);
+                    File dir = new File(getFilesDir(), "stickers");
+                    dir.mkdirs();
+                    File dest = new File(dir, "sticker-" + System.currentTimeMillis() + "-"
+                            + source.getName());
+                    String copied = copyFile(source, dest);
+                    if (copied == null || !stickerOverlay.addSticker(copied)) {
+                        toast(getString(R.string.sticker_load_failed));
+                        return;
+                    }
+                    stickerOverlay.setEditing(true);
+                    toast(getString(R.string.sticker_added));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Imports every new folder under /sdcard/mGBAx/skins as a skin pack. */
+    private void scanSkinsFromFolder(AlertDialog[] holder) {
+        File root = new File(Environment.getExternalStorageDirectory(), "mGBAx/skins");
+        File[] dirs = root.isDirectory() ? root.listFiles() : null;
+        int imported = 0;
+        if (dirs != null) {
+            for (File dir : dirs) {
+                if (!dir.isDirectory() || skinStore.list().contains(dir.getName())) {
+                    continue;
+                }
+                if (skinStore.importDir(dir.getName(), dir) != null) {
+                    imported++;
+                }
+            }
+        }
+        if (imported == 0) {
+            toast(getString(R.string.full_skin_scan_empty));
+            return;
+        }
+        toast(getString(R.string.full_skin_scan_done, imported));
+        applyFullSkin();
+        // Rebuild the pack list: close the stale dialog and reopen it.
+        if (holder[0] != null) {
+            holder[0].dismiss();
+        }
+        showSkinDialog();
     }
 
     @Override
@@ -548,6 +761,79 @@ public class EmulatorActivity extends AppCompatActivity {
         if (requestCode == REQ_SAVDIR) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 importMyBoySaves(data.getData());
+            }
+            return;
+        }
+        if (requestCode == REQ_SKIN_IMPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri source = data.getData();
+                String name = displayName(source);
+                if (name != null && name.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                    name = name.substring(0, name.length() - 4);
+                }
+                final String skinName = name;
+                new Thread(() -> {
+                    final String imported = skinStore.importZip(this, source, skinName);
+                    runOnUiThread(() -> {
+                        if (imported == null) {
+                            toast(getString(R.string.full_skin_bad));
+                        } else {
+                            getPreferences(MODE_PRIVATE).edit().putString("full_skin", imported).apply();
+                            applyFullSkin();
+                            toast(getString(R.string.full_skin_imported, imported));
+                        }
+                    });
+                }, "skin-import").start();
+            }
+            return;
+        }
+        if (requestCode == REQ_STICKER) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                // Copy the picked image into the app's private storage so the
+                // sticker survives the source being moved or deleted.
+                Uri source = data.getData();
+                File dir = new File(getFilesDir(), "stickers");
+                String copied = copyTo(source, dir, "sticker-" + DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()) + ".png");
+                if (copied == null || !stickerOverlay.addSticker(copied)) {
+                    toast(getString(R.string.sticker_load_failed));
+                } else {
+                    stickerOverlay.setEditing(true);
+                    toast(getString(R.string.sticker_added));
+                }
+            }
+            return;
+        }
+        if (requestCode == REQ_BACKUP_EXPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri target = data.getData();
+                new Thread(() -> {
+                    try {
+                        String note = BackupTask.export(this, target);
+                        runOnUiThread(() -> toast(getString(R.string.backup_done, note == null ? "完成" : note)));
+                    } catch (Exception e) {
+                        runOnUiThread(() -> toast(getString(R.string.backup_failed, e.getMessage())));
+                    }
+                }, "backup-export").start();
+            }
+            return;
+        }
+        if (requestCode == REQ_BACKUP_IMPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                Uri source = data.getData();
+                new Thread(() -> {
+                    try {
+                        String note = BackupTask.restore(this, source);
+                        runOnUiThread(() -> {
+                            toast(getString(R.string.backup_restored, note));
+                            applyInputSettings();
+                            applyVideo();
+                            applyCoreOptions();
+                            applySkin();
+                        });
+                    } catch (Exception e) {
+                        runOnUiThread(() -> toast(getString(R.string.backup_failed, e.getMessage())));
+                    }
+                }, "backup-restore").start();
             }
             return;
         }
@@ -612,9 +898,18 @@ public class EmulatorActivity extends AppCompatActivity {
     private String resolveRom(Uri uri) {
         String local = localPath(uri);
         if (local != null && new File(local).canRead()) {
+            if (local.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+                String extracted = extractRomZip(new File(local));
+                return extracted != null ? extracted : local;
+            }
             return local;
         }
-        return copyTo(uri, new File(getFilesDir(), "roms"), null);
+        String copied = copyTo(uri, new File(getFilesDir(), "roms"), null);
+        if (copied != null && copied.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+            String extracted = extractRomZip(new File(copied));
+            return extracted != null ? extracted : copied;
+        }
+        return copied;
     }
 
     /** Maps a document Uri to a real file path when its provider exposes one. */
@@ -926,6 +1221,14 @@ public class EmulatorActivity extends AppCompatActivity {
         if (menuButton == null || controls == null) {
             return;
         }
+        // The portrait shell has its own toolbar with a menu icon; the loose
+        // handle would only overlap it.
+        if (skinStylePref() == ControlsView.STYLE_HANDHELD
+                && getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT) {
+            menuButton.setVisibility(View.GONE);
+            return;
+        }
+        menuButton.setVisibility(View.VISIBLE);
         ViewGroup.LayoutParams params = menuButton.getLayoutParams();
         if (!(params instanceof FrameLayout.LayoutParams)) {
             return;
@@ -999,7 +1302,26 @@ public class EmulatorActivity extends AppCompatActivity {
                     Thread.sleep(16);
                     continue;
                 }
-                float factor = fastHold ? Math.max(speed, fastHoldSpeed()) : speed;
+                // Continuous rewind: steps one second of history at a time
+                // while the button stays held.
+                if (rewindHold) {
+                    long nowRewind = System.nanoTime();
+                    if (nowRewind - lastRewindAt >= 400_000_000L) {
+                        lastRewindAt = nowRewind;
+                        if (core.rewind(1)) {
+                            core.clearAudio();
+                            presentFrame();
+                        } else {
+                            rewindHold = false;
+                            toast(getString(R.string.rewind_empty));
+                        }
+                    }
+                    slices = 0;
+                    fpsStamp = System.nanoTime();
+                    Thread.sleep(16);
+                    continue;
+                }
+                float factor = fastHold || ffOn ? Math.max(speed, fastHoldSpeed()) : speed;
                 syncFastAudio(factor);
                 // Fractional speeds (slow motion) accumulate whole frames in a
                 // small debt; integer speeds drain it every slice.
@@ -1073,7 +1395,6 @@ public class EmulatorActivity extends AppCompatActivity {
                     long shown = frames;
                     long cycles = slices;
                     long elapsed = now - fpsStamp;
-                    float shownSpeed = fastHold ? Math.max(speed, fastHoldSpeed()) : speed;
                     frames = 0;
                     slices = 0;
                     fpsStamp = now;
@@ -1085,9 +1406,10 @@ public class EmulatorActivity extends AppCompatActivity {
                     // Rounded so the console's own 59.73 fps still shows as the
                     // 60 the counter has always displayed.
                     long shownFps = elapsed > 0 ? Math.round(shown * 1_000_000_000.0 / elapsed) : 0;
-                    String speedText = shownSpeed == (long) shownSpeed
-                            ? String.valueOf((long) shownSpeed)
-                            : String.format(Locale.US, "%.2f", shownSpeed);
+                    float shownSpeedF = fastHold || ffOn ? Math.max(speed, fastHoldSpeed()) : speed;
+                    String speedText = shownSpeedF == (long) shownSpeedF
+                            ? String.valueOf((long) shownSpeedF)
+                            : String.format(Locale.US, "%.2f", shownSpeedF);
                     runOnUiThread(() -> fpsView.setText(speedText + "倍 " + shownFps + "fps"));
                 }
             } catch (InterruptedException e) {
@@ -1107,6 +1429,7 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private void loadRom(String path) {
         releaseAudio();
+        romCrc = romCrc32(path);
         boolean ok = core.load(path);
         if (!ok) {
             runOnUiThread(() -> {
@@ -1118,6 +1441,7 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.load_failed));
             return;
         }
+        applyPerRomSettings();
         long frameNanos = core.frameNanos();
         sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000L / 60L;
         frameDebt = 0f;
@@ -1137,6 +1461,113 @@ public class EmulatorActivity extends AppCompatActivity {
             setTitle(title == null || title.trim().isEmpty() ? getString(R.string.app_name) : title.trim());
             autoHideMenu();
         });
+        startTimedSave();
+    }
+
+    /** CRC32 of a ROM file, cached; the per-game settings key. */
+    private long romCrc32(String path) {
+        Long cached = crcCache.get(path);
+        if (cached != null) {
+            return cached;
+        }
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        try (InputStream in = new java.io.FileInputStream(path)) {
+            byte[] buffer = new byte[65536];
+            int n;
+            while ((n = in.read(buffer)) > 0) {
+                crc.update(buffer, 0, n);
+            }
+        } catch (Exception e) {
+            return -1;
+        }
+        long value = crc.getValue();
+        crcCache.put(path, value);
+        return value;
+    }
+
+    /** Re-reads the per-game overrides and pushes them on top of the globals. */
+    private void applyPerRomSettings() {
+        perRomFilter = -1;
+        perRomSpeed = null;
+        perRomSaveType = null;
+        perRomPalette = null;
+        if (romDb == null || romCrc < 0) {
+            return;
+        }
+        String filter = romDb.get(romCrc, "filter", RomSettingsDb.DEFAULT);
+        if (!RomSettingsDb.DEFAULT.equals(filter)) {
+            try {
+                perRomFilter = Integer.parseInt(filter);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        String speed = romDb.get(romCrc, "speed", RomSettingsDb.DEFAULT);
+        if (!RomSettingsDb.DEFAULT.equals(speed)) {
+            try {
+                perRomSpeed = Float.parseFloat(speed);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        String saveType = romDb.get(romCrc, "save_type", RomSettingsDb.DEFAULT);
+        if (!RomSettingsDb.DEFAULT.equals(saveType)) {
+            try {
+                perRomSaveType = Integer.parseInt(saveType);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        String paletteValue = romDb.get(romCrc, "gb_palette", RomSettingsDb.DEFAULT);
+        if (!RomSettingsDb.DEFAULT.equals(paletteValue)) {
+            try {
+                perRomPalette = Integer.parseInt(paletteValue);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        // Overlay the per-game values on the global settings, view first.
+        runOnUiThread(() -> {
+            if (perRomFilter >= 0 && perRomFilter < Shaders.FILTER_COUNT) {
+                gameView.setFilter(perRomFilter);
+            } else {
+                gameView.setFilter(getPreferences(MODE_PRIVATE).getInt("vf_filter", Shaders.FILTER_NONE));
+            }
+        });
+        if (perRomSaveType != null) {
+            core.setSaveType(perRomSaveType);
+        } else {
+            core.setSaveType(saveTypePref());
+        }
+        int[] palette = gbPaletteColors();
+        if (perRomPalette != null && perRomPalette >= 0 && perRomPalette < GB_PALETTES.length) {
+            palette = new int[12];
+            int[] base = GB_PALETTES[perRomPalette];
+            for (int i = 0; i < 12; i++) {
+                palette[i] = base[i % 4];
+            }
+        }
+        core.setGbPalette(palette);
+        if (perRomSpeed != null) {
+            setSpeed(perRomSpeed);
+        }
+        String summary = perRomSummary();
+        if (!summary.isEmpty()) {
+            toast(getString(R.string.per_rom_applied, summary));
+        }
+    }
+
+    private String perRomSummary() {
+        StringBuilder out = new StringBuilder();
+        if (perRomFilter >= 0) {
+            out.append(filterName(perRomFilter)).append(' ');
+        }
+        if (perRomSpeed != null) {
+            out.append(speedLabel(perRomSpeed)).append("× ");
+        }
+        if (perRomSaveType != null) {
+            out.append(saveTypeName(perRomSaveType)).append(' ');
+        }
+        if (perRomPalette != null) {
+            out.append(paletteName(perRomPalette));
+        }
+        return out.toString().trim();
     }
 
     private void runCommand(int cmd) {
@@ -1174,6 +1605,16 @@ public class EmulatorActivity extends AppCompatActivity {
             // Silent save into the reserved slot on the way to the background.
             if (core.saveState(AUTO_SLOT)) {
                 writeStatePreview(AUTO_SLOT);
+            }
+        } else if (cmd == CMD_REWIND) {
+            boolean ok = core.rewind(rewindSeconds);
+            core.clearAudio();
+            if (ok) {
+                core.runFrames(userKeys(), 1);
+                presentFrame();
+                toast(getString(R.string.rewind_seconds, rewindSeconds));
+            } else {
+                toast(getString(R.string.rewind_empty));
             }
         }
     }
@@ -1417,8 +1858,8 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private int writeAudio(short[] data, int frames) {
         try {
-            if (volumePercent != 100) {
-                float gain = volumePercent / 100f;
+            float gain = muted ? 0f : volumePercent / 100f;
+            if (gain != 1f) {
                 int count = frames * 2;
                 for (int i = 0; i < count; i++) {
                     int scaled = (int) (data[i] * gain);
@@ -1666,8 +2107,7 @@ public class EmulatorActivity extends AppCompatActivity {
         layoutProfile = activeProfile();
         keyLayout = KeyLayout.decode(profileLayout(layoutProfile));
         controls.setCenters(keyLayout.resolved());
-        controls.setScales(keyLayout.resolvedScales());
-        selectedKey = null;
+        controls.setScales(keyLayout.resolvedScales());        selectedKey = null;
         scaleLabel = findViewById(R.id.layout_selected);
         scaleBar = findViewById(R.id.layout_scale);
         TextView scaleValue = findViewById(R.id.layout_scale_value);
@@ -1781,8 +2221,11 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void persistLayout() {
+        boolean portrait = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_PORTRAIT;
         getPreferences(MODE_PRIVATE).edit()
-                .putString(PROFILE_PREFIX + layoutProfile, keyLayout.encode())
+                .putString(PROFILE_PREFIX + layoutProfile + (portrait ? "" : LAND_SUFFIX),
+                        keyLayout.encode())
                 .apply();
     }
 
@@ -1818,6 +2261,8 @@ public class EmulatorActivity extends AppCompatActivity {
      * be switched, duplicated and deleted from the layout editor. */
     private String layoutProfile;
     private static final String PROFILE_PREFIX = "layout_p_";
+    /** Landscape layouts carry this suffix; portrait keeps the unsuffixed key. */
+    private static final String LAND_SUFFIX = "#L";
     private static final String DEFAULT_PROFILE = "默认";
 
     private ArrayList<String> profileNames() {
@@ -1864,14 +2309,25 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private String profileLayout(String name) {
-        String data = getPreferences(MODE_PRIVATE).getString(PROFILE_PREFIX + name, null);
+        boolean portrait = getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_PORTRAIT;
+        String key = PROFILE_PREFIX + name + (portrait ? "" : LAND_SUFFIX);
+        String data = getPreferences(MODE_PRIVATE).getString(key, null);
         if (data != null) {
             return data;
+        }
+        if (!portrait) {
+            // No landscape layout yet: fall back to the shared one so an
+            // existing portrait arrangement is not thrown away.
+            String shared = getPreferences(MODE_PRIVATE).getString(PROFILE_PREFIX + name, null);
+            if (shared != null) {
+                return shared;
+            }
         }
         if (DEFAULT_PROFILE.equals(name)) {
             String legacy = getPreferences(MODE_PRIVATE).getString("key_layout", "");
             getPreferences(MODE_PRIVATE).edit()
-                    .putString(PROFILE_PREFIX + name, legacy == null ? "" : legacy)
+                    .putString(key, legacy == null ? "" : legacy)
                     .apply();
             return legacy == null ? "" : legacy;
         }
@@ -2044,6 +2500,7 @@ public class EmulatorActivity extends AppCompatActivity {
         gameView.setIntegerScale(integer);
         gameView.setScanlines(scan);
         gameView.setBrightness(bright);
+        gameView.setContrast(getPreferences(MODE_PRIVATE).getInt("vf_contrast", 100));
         gameView.setFilter(getPreferences(MODE_PRIVATE).getInt("vf_filter", Shaders.FILTER_NONE));
         if (core == null) {
             return;
@@ -2066,6 +2523,7 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox scan = check(R.string.video_scan, getPreferences(MODE_PRIVATE).getBoolean("vf_scan", false));
         int skipNow = getPreferences(MODE_PRIVATE).getInt("vf_skip", 0);
         int brightNow = getPreferences(MODE_PRIVATE).getInt("vf_bright", 100);
+        int contrastNow = getPreferences(MODE_PRIVATE).getInt("vf_contrast", 100);
         final Button filter = new Button(this);
         filter.setAllCaps(false);
         filter.setText(getString(R.string.video_filter_value, filterName(filterPref())));
@@ -2099,6 +2557,12 @@ public class EmulatorActivity extends AppCompatActivity {
         SeekBar brightBar = new SeekBar(this);
         brightBar.setMax(100);
         brightBar.setProgress(brightNow - 50);
+        TextView contrastLabel = new TextView(this);
+        contrastLabel.setText(getString(R.string.contrast, contrastNow));
+        contrastLabel.setTextColor(0xFF222222);
+        SeekBar contrastBar = new SeekBar(this);
+        contrastBar.setMax(100);
+        contrastBar.setProgress(contrastNow - 50);
         box.addView(blend);
         box.addView(linear);
         box.addView(aspect);
@@ -2110,6 +2574,8 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(skipBar);
         box.addView(brightLabel);
         box.addView(brightBar);
+        box.addView(contrastLabel);
+        box.addView(contrastBar);
         Runnable persist = () -> {
             getPreferences(MODE_PRIVATE).edit()
                     .putBoolean("vf_blend", blend.isChecked())
@@ -2119,6 +2585,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     .putBoolean("vf_scan", scan.isChecked())
                     .putInt("vf_skip", skipBar.getProgress())
                     .putInt("vf_bright", brightBar.getProgress() + 50)
+                    .putInt("vf_contrast", contrastBar.getProgress() + 50)
                     .apply();
             applyVideo();
         };
@@ -2149,6 +2616,23 @@ public class EmulatorActivity extends AppCompatActivity {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 brightLabel.setText(getString(R.string.video_bright, progress + 50));
+                if (fromUser) {
+                    persist.run();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        contrastBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                contrastLabel.setText(getString(R.string.contrast, progress + 50));
                 if (fromUser) {
                     persist.run();
                 }
@@ -2804,6 +3288,50 @@ public class EmulatorActivity extends AppCompatActivity {
                 hideSystemUi();
             }
         });
+        // Per-channel gains (Pizza Boy's 通道音量): 0-100 percent each.
+        String[] channelPrefs = {"vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"};
+        String[] channelLabels = {
+                getString(R.string.channel_1), getString(R.string.channel_2),
+                getString(R.string.channel_3), getString(R.string.channel_4),
+                getString(R.string.channel_a), getString(R.string.channel_b),
+        };
+        TextView[] channelViews = new TextView[channelPrefs.length];
+        for (int i = 0; i < channelPrefs.length; i++) {
+            int value = getPreferences(MODE_PRIVATE).getInt(channelPrefs[i], 100);
+            TextView label = new TextView(this);
+            label.setText(channelLabels[i] + " " + value + "%");
+            label.setTextColor(0xFF222222);
+            SeekBar bar = new SeekBar(this);
+            bar.setMax(150);
+            bar.setProgress(value);
+            final int index = i;
+            bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override
+                public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                    label.setText(channelLabels[index] + " " + progress + "%");
+                    if (fromUser) {
+                        getPreferences(MODE_PRIVATE).edit().putInt(channelPrefs[index], progress).apply();
+                        applyChannelVolumes();
+                    }
+                }
+
+                @Override
+                public void onStartTrackingTouch(SeekBar seekBar) {
+                }
+
+                @Override
+                public void onStopTrackingTouch(SeekBar seekBar) {
+                }
+            });
+            channelViews[i] = label;
+            box.addView(label);
+            box.addView(bar);
+        }
+        TextView channelHint = new TextView(this);
+        channelHint.setText(R.string.channel_volume);
+        channelHint.setTextColor(0xFF888888);
+        channelHint.setTextSize(11);
+        box.addView(channelHint);
         new AlertDialog.Builder(this)
                 .setTitle(R.string.settings_sound)
                 .setView(scroll)
@@ -2864,6 +3392,31 @@ public class EmulatorActivity extends AppCompatActivity {
         extras.setAllCaps(false);
         extras.setText(R.string.input_extras);
         extras.setOnClickListener(v -> showExtraKeysDialog());
+        final Button cKey = new Button(this);
+        cKey.setAllCaps(false);
+        cKey.setText(R.string.c_button);
+        cKey.setOnClickListener(v -> showMacroDialog(0));
+        final Button c2Key = new Button(this);
+        c2Key.setAllCaps(false);
+        c2Key.setText(R.string.c2_button);
+        c2Key.setOnClickListener(v -> showMacroDialog(1));
+        final Button shotFormat = new Button(this);
+        shotFormat.setAllCaps(false);
+        String fmt = getPreferences(MODE_PRIVATE).getString("shot_format", "png");
+        shotFormat.setText(getString(R.string.shot_format) + ": " + fmt.toUpperCase(Locale.US));
+        shotFormat.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.shot_format)
+                .setSingleChoiceItems(new CharSequence[]{"PNG", "JPG"},
+                        "jpg".equals(getPreferences(MODE_PRIVATE).getString("shot_format", "png")) ? 1 : 0,
+                        (dialog, which) -> {
+                            getPreferences(MODE_PRIVATE).edit().putString("shot_format", which == 1 ? "jpg" : "png").apply();
+                            shotFormat.setText(getString(R.string.shot_format) + ": " + (which == 1 ? "JPG" : "PNG"));
+                            dialog.dismiss();
+                        })
+                .show());
+        CheckBox doubleShot = check(R.string.double_click_shot, getPreferences(MODE_PRIVATE).getBoolean("double_click_shot", false));
+        doubleShot.setOnCheckedChangeListener((v, checked) ->
+                getPreferences(MODE_PRIVATE).edit().putBoolean("double_click_shot", checked).apply());
         box.addView(vibe);
         box.addView(turboMode);
         box.addView(rateLabel);
@@ -2872,6 +3425,10 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(opacityLabel);
         box.addView(opacityBar);
         box.addView(extras);
+        box.addView(cKey);
+        box.addView(c2Key);
+        box.addView(shotFormat);
+        box.addView(doubleShot);
         rateBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -2924,6 +3481,7 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Names of the optional on-screen keys, shown and stored in this order. */
     private static final String[][] EXTRA_KEY_CHOICES = {
             {"ta", "A键（连发）"}, {"tb", "B键（连发）"}, {"lr", "L+R键"},
+            {"c", "C键（组合宏）"}, {"c2", "C2键（组合宏）"},
             {"save", "快速存档"}, {"load", "快速读档"}, {"ff", "倍速（按住快进）"}, {"shot", "截图"},
     };
 
@@ -3000,6 +3558,37 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox autoSave = check(R.string.save_auto_write, getPreferences(MODE_PRIVATE).getBoolean("auto_save_state", false));
         CheckBox confirmClose = check(R.string.save_confirm, getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false));
         CheckBox patches = check(R.string.save_patches, getPreferences(MODE_PRIVATE).getBoolean("patches", true));
+        CheckBox quickRotate = check(R.string.quick_rotate, getPreferences(MODE_PRIVATE).getBoolean("quick_rotate", false));
+        CheckBox confirmQuick = check(R.string.confirm_quick, getPreferences(MODE_PRIVATE).getBoolean("confirm_quick", false));
+        final Button timedSave = new Button(this);
+        timedSave.setAllCaps(false);
+        int timedNow = 0;
+        try {
+            timedNow = getPreferences(MODE_PRIVATE).getInt("timed_save_min", 0);
+        } catch (ClassCastException ignored) {
+        }
+        timedSave.setText(getString(R.string.timed_save) + ": " +
+                (timedNow <= 0 ? getString(R.string.timed_save_off) : getString(R.string.timed_save_min, timedNow)));
+        timedSave.setOnClickListener(v -> {
+            CharSequence[] options = {
+                    getString(R.string.timed_save_off),
+                    getString(R.string.timed_save_min, 5),
+                    getString(R.string.timed_save_min, 10),
+                    getString(R.string.timed_save_min, 30),
+            };
+            int[] minutes = {0, 5, 10, 30};
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.timed_save)
+                    .setSingleChoiceItems(options, -1, (dialog, which) -> {
+                        getPreferences(MODE_PRIVATE).edit().putInt("timed_save_min", minutes[which]).apply();
+                        timedSave.setText(getString(R.string.timed_save) + ": " + options[which]);
+                        if (core != null && core.isLoaded()) {
+                            startTimedSave();
+                        }
+                        dialog.dismiss();
+                    })
+                    .show();
+        });
         Button deleteSav = new Button(this);
         deleteSav.setAllCaps(false);
         deleteSav.setText(R.string.save_delete_battery);
@@ -3020,11 +3609,16 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(autoSave);
         box.addView(confirmClose);
         box.addView(patches);
+        box.addView(quickRotate);
+        box.addView(confirmQuick);
+        box.addView(timedSave);
         box.addView(deleteSav);
         box.addView(importSav);
         autoLoad.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_load_state", checked).apply());
         autoSave.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_save_state", checked).apply());
         confirmClose.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_close", checked).apply());
+        quickRotate.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("quick_rotate", checked).apply());
+        confirmQuick.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_quick", checked).apply());
         patches.setOnCheckedChangeListener((v, checked) -> {
             getPreferences(MODE_PRIVATE).edit().putBoolean("patches", checked).apply();
             applyCoreOptions();
@@ -3344,6 +3938,20 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    /** Sends the six per-channel gains to the core; 100% = 256 fixed point. */
+    private void applyChannelVolumes() {
+        if (core == null) {
+            return;
+        }
+        int[] gains = new int[6];
+        String[] channelPrefs = {"vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"};
+        for (int i = 0; i < channelPrefs.length; i++) {
+            int percent = getPreferences(MODE_PRIVATE).getInt(channelPrefs[i], 100);
+            gains[i] = Math.max(0, Math.min(384, percent * 256 / 100));
+        }
+        core.setChannelVolumes(gains);
+    }
+
     /** Pushes the emulation-related preferences into the core. */
     private void applyCoreOptions() {
         if (core == null) {
@@ -3363,6 +3971,7 @@ public class EmulatorActivity extends AppCompatActivity {
         int[] palette = gbPaletteColors();
         core.setGbPalette(palette);
         core.setSgbBorders(getPreferences(MODE_PRIVATE).getBoolean("sgb_borders", false));
+        applyChannelVolumes();
         updateTiltSensor();
         // Neutral until a reading arrives; keeps held cartridges from drifting.
         core.setRotation(0f, 0f, 0f);
@@ -3429,6 +4038,8 @@ public class EmulatorActivity extends AppCompatActivity {
             controls.setTurboRate(getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25));
             controls.setVisibleExtras(extraKeys());
             controls.setOpacity(getPreferences(MODE_PRIVATE).getInt("controls_opacity", 100));
+            controls.setMacro(0, getPreferences(MODE_PRIVATE).getInt("c_macro", ControlsView.A | ControlsView.B));
+            controls.setMacro(1, getPreferences(MODE_PRIVATE).getInt("c2_macro", ControlsView.L | ControlsView.R));
         }
         volumePercent = getPreferences(MODE_PRIVATE).getInt("volume", 100);
     }
@@ -3492,12 +4103,29 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.no_rom));
             return;
         }
-        if (save) {
-            recyclePendingPreview();
-            pendingPreview.set(gameView.copyLast());
-            command.set(CMD_SAVE);
+        Runnable go = () -> {
+            if (save && getPreferences(MODE_PRIVATE).getBoolean("quick_rotate", false)) {
+                slot = slot % 9 + 1;
+                refreshSlotButton();
+            }
+            if (save) {
+                recyclePendingPreview();
+                pendingPreview.set(gameView.copyLast());
+                command.set(CMD_SAVE);
+            } else {
+                command.set(CMD_LOAD);
+            }
+        };
+        if (getPreferences(MODE_PRIVATE).getBoolean("confirm_quick", false)) {
+            new AlertDialog.Builder(this)
+                    .setTitle(save ? R.string.state_pick_save : R.string.state_pick_load)
+                    .setMessage(getString(save ? R.string.state_pick_save : R.string.state_pick_load)
+                            + (save ? " 槽位 " + slot : ""))
+                    .setPositiveButton(android.R.string.ok, (d, w) -> go.run())
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
         } else {
-            command.set(CMD_LOAD);
+            go.run();
         }
     }
 
@@ -3526,25 +4154,28 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.no_rom));
             return;
         }
+        boolean jpg = "jpg".equals(getPreferences(MODE_PRIVATE).getString("shot_format", "png"));
         String stamp = DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()).toString();
-        String title = "mGBAx-" + stamp + ".png";
+        String ext = jpg ? "jpg" : "png";
+        String title = "mGBAx-" + stamp + "." + ext;
+        Bitmap.CompressFormat format = jpg ? Bitmap.CompressFormat.JPEG : Bitmap.CompressFormat.PNG;
         try {
             if (Build.VERSION.SDK_INT >= 29) {
                 ContentValues values = new ContentValues();
                 values.put(MediaStore.Images.Media.DISPLAY_NAME, title);
-                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                values.put(MediaStore.Images.Media.MIME_TYPE, jpg ? "image/jpeg" : "image/png");
                 values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBAx");
                 Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
                 if (uri != null) {
                     try (OutputStream out = getContentResolver().openOutputStream(uri)) {
-                        shot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                        shot.compress(format, 95, out);
                     }
                 }
             } else {
                 File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBAx");
                 dir.mkdirs();
                 try (OutputStream out = new FileOutputStream(new File(dir, title))) {
-                    shot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    shot.compress(format, 95, out);
                 }
             }
             toast(getString(R.string.screenshot_saved, "Pictures/mGBAx/" + title));
@@ -4022,6 +4653,818 @@ public class EmulatorActivity extends AppCompatActivity {
         }, "sav-import").start();
     }
 
+    // == Features ported from Pizza Boy ==
+
+    private static final int REQ_BACKUP_EXPORT = 5;
+    private static final int REQ_BACKUP_IMPORT = 6;
+    private static final int REQ_SKIN_IMPORT = 7;
+    private static final int REQ_STICKER = 8;
+
+    private int skinStylePref() {
+        return getPreferences(MODE_PRIVATE).getInt("skin_style", ControlsView.STYLE_HANDHELD);
+    }
+
+    private int skinColorPref() {
+        return getPreferences(MODE_PRIVATE).getInt("skin_color", 0);
+    }
+
+    /** Pushes the skin prefs into the controls and the stage around the game. */
+    private void applySkin() {
+        int style = skinStylePref();
+        SkinTheme theme = SkinTheme.byIndex(skinColorPref());
+        if (controls != null) {
+            controls.setSkin(style, theme);
+        }
+        if (screenArea != null) {
+            screenArea.setSkin(style == ControlsView.STYLE_HANDHELD, theme);
+        }
+        positionMenuButton();
+        applyFullSkin();
+    }
+
+    /** Skin picker: shell style plus body color. */
+    private void showSkinDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        AlertDialog[] holder = new AlertDialog[1];
+        TextView styleLabel = new TextView(this);
+        styleLabel.setText(R.string.skin_style);
+        styleLabel.setTextColor(0xFF222222);
+        box.addView(styleLabel);
+        final int[] stylePick = {skinStylePref()};
+        RadioGroup styleGroup = new RadioGroup(this);
+        RadioButton classic = new RadioButton(this);
+        classic.setText(R.string.skin_style_classic);
+        RadioButton handheld = new RadioButton(this);
+        handheld.setText(R.string.skin_style_handheld);
+        (stylePick[0] == ControlsView.STYLE_CLASSIC ? classic : handheld).setChecked(true);
+        classic.setTag(ControlsView.STYLE_CLASSIC);
+        handheld.setTag(ControlsView.STYLE_HANDHELD);
+        styleGroup.addView(classic);
+        styleGroup.addView(handheld);
+        styleGroup.setOnCheckedChangeListener((group, id) -> {
+            RadioButton pick = group.findViewById(id);
+            if (pick != null && pick.getTag() instanceof Integer) {
+                stylePick[0] = (Integer) pick.getTag();
+            }
+        });
+        box.addView(styleGroup);
+        TextView colorLabel = new TextView(this);
+        colorLabel.setText(R.string.skin_color);
+        colorLabel.setTextColor(0xFF222222);
+        colorLabel.setPadding(0, dp(12), 0, 0);
+        box.addView(colorLabel);
+        final int[] colorPick = {skinColorPref()};
+        RadioGroup colorGroup = new RadioGroup(this);
+        for (int i = 0; i < SkinTheme.ALL.length; i++) {
+            RadioButton choice = new RadioButton(this);
+            choice.setText(SkinTheme.ALL[i].name);
+            choice.setTag(i);
+            if (i == colorPick[0]) {
+                choice.setChecked(true);
+            }
+            colorGroup.addView(choice);
+        }
+        colorGroup.setOnCheckedChangeListener((group, id) -> {
+            RadioButton pick = group.findViewById(id);
+            if (pick != null && pick.getTag() instanceof Integer) {
+                colorPick[0] = (Integer) pick.getTag();
+            }
+        });
+        box.addView(colorGroup);
+
+        // == Full PNG skin pack ==
+        TextView skinPackLabel = new TextView(this);
+        skinPackLabel.setText(R.string.full_skin);
+        skinPackLabel.setTextColor(0xFF222222);
+        skinPackLabel.setPadding(0, dp(12), 0, 0);
+        box.addView(skinPackLabel);
+        List<String> packs = skinStore.list();
+        String currentPack = getPreferences(MODE_PRIVATE).getString("full_skin", null);
+        RadioGroup packGroup = new RadioGroup(this);
+        final String[] packPick = {currentPack};
+        RadioButton none = new RadioButton(this);
+        none.setText(R.string.full_skin_none);
+        none.setTag(null);
+        if (currentPack == null) {
+            none.setChecked(true);
+        }
+        packGroup.addView(none);
+        for (String pack : packs) {
+            RadioButton choice = new RadioButton(this);
+            choice.setText(pack);
+            choice.setTag(pack);
+            if (pack.equals(currentPack)) {
+                choice.setChecked(true);
+            }
+            packGroup.addView(choice);
+        }
+        packGroup.setOnCheckedChangeListener((group, id) -> {
+            RadioButton pick = group.findViewById(id);
+            packPick[0] = pick == null ? null : (String) pick.getTag();
+        });
+        box.addView(packGroup);
+        Button importPack = new Button(this);
+        importPack.setAllCaps(false);
+        importPack.setText(R.string.full_skin_import);
+        importPack.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/zip");
+            launchPicker(intent, REQ_SKIN_IMPORT);
+        });
+        box.addView(importPack);
+        Button scanPack = new Button(this);
+        scanPack.setAllCaps(false);
+        scanPack.setText(R.string.full_skin_scan);
+        scanPack.setOnClickListener(v -> {
+            scanSkinsFromFolder(holder);
+        });
+        box.addView(scanPack);
+        Button deletePack = new Button(this);
+        deletePack.setAllCaps(false);
+        deletePack.setText(R.string.full_skin_delete);
+        deletePack.setOnClickListener(v -> {
+            if (packPick[0] == null) {
+                return;
+            }
+            skinStore.delete(packPick[0]);
+            if (packPick[0].equals(getPreferences(MODE_PRIVATE).getString("full_skin", null))) {
+                getPreferences(MODE_PRIVATE).edit().remove("full_skin").apply();
+                applyFullSkin();
+            }
+            toast(getString(R.string.full_skin_deleted));
+            packGroup.removeView(packGroup.findViewWithTag(packPick[0]));
+            packPick[0] = null;
+            none.setChecked(true);
+        });
+        box.addView(deletePack);
+        TextView packHelp = new TextView(this);
+        packHelp.setText(R.string.full_skin_help);
+        packHelp.setTextColor(0xFF888888);
+        packHelp.setTextSize(11);
+        box.addView(packHelp);
+
+        // == Stickers ==
+        TextView stickerLabel = new TextView(this);
+        stickerLabel.setText(R.string.sticker_add);
+        stickerLabel.setTextColor(0xFF222222);
+        stickerLabel.setPadding(0, dp(12), 0, 0);
+        box.addView(stickerLabel);
+        CheckBox stickerEdit = check(R.string.sticker_edit, stickerOverlay.isEditing());
+        stickerEdit.setOnCheckedChangeListener((v, checked) -> stickerOverlay.setEditing(checked));
+        Button addSticker = new Button(this);
+        addSticker.setAllCaps(false);
+        addSticker.setText(R.string.sticker_add);
+        addSticker.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("image/*");
+            launchPicker(intent, REQ_STICKER);
+        });
+        Button folderSticker = new Button(this);
+        folderSticker.setAllCaps(false);
+        folderSticker.setText(R.string.sticker_from_folder);
+        folderSticker.setOnClickListener(v -> showFolderStickerPicker());
+        Button clearStickers = new Button(this);
+        clearStickers.setAllCaps(false);
+        clearStickers.setText(R.string.sticker_clear);
+        clearStickers.setOnClickListener(v -> {
+            stickerOverlay.clear();
+            persistStickers();
+            toast(getString(R.string.sticker_cleared));
+        });
+        box.addView(stickerEdit);
+        box.addView(addSticker);
+        box.addView(folderSticker);
+        box.addView(clearStickers);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.skin_title)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putInt("skin_style", stylePick[0])
+                            .putInt("skin_color", colorPick[0])
+                            .putString("full_skin", packPick[0])
+                            .apply();
+                    applySkin();
+                    applyFullSkin();
+                    toast(getString(R.string.skin_done, SkinTheme.byIndex(colorPick[0]).name));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    /** Retro-style rewind bar: jump back 15/12/9/6/3 seconds, or hold to keep
+     * rewinding. Uses the differential-state history the core records. */
+    private void buildRewindBar() {
+        rewindBar = findViewById(R.id.rewind_bar);
+        if (rewindBar == null) {
+            return;
+        }
+        LinearLayout row = findViewById(R.id.rewind_row);
+        row.removeAllViews();
+        TextView label = new TextView(this);
+        label.setText(R.string.rewind_pick);
+        label.setTextColor(Color.WHITE);
+        label.setPadding(dp(8), 0, dp(4), 0);
+        row.addView(label);
+        int[] steps = {15, 12, 9, 6, 3};
+        for (int seconds : steps) {
+            Button button = new Button(this);
+            button.setAllCaps(false);
+            button.setMinWidth(dp(44));
+            button.setMinHeight(dp(36));
+            button.setMinimumWidth(dp(44));
+            button.setMinimumHeight(dp(36));
+            button.setTextSize(14);
+            button.setText(getString(R.string.rewind_seconds, seconds));
+            button.setOnClickListener(v -> {
+                rewindSeconds = seconds;
+                command.set(CMD_REWIND);
+                wakeInput();
+            });
+            row.addView(button);
+        }
+        Button hold = new Button(this);
+        hold.setAllCaps(false);
+        hold.setMinWidth(dp(64));
+        hold.setMinHeight(dp(36));
+        hold.setMinimumWidth(dp(64));
+        hold.setMinimumHeight(dp(36));
+        hold.setTextSize(14);
+        hold.setText(R.string.rewind_hold);
+        hold.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    rewindHold = true;
+                    wakeInput();
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    rewindHold = false;
+                    return true;
+                default:
+                    return false;
+            }
+        });
+        row.addView(hold);
+    }
+
+    /** The shell switch: fast-forward stays on until switched off. */
+    private void toggleFastForward() {
+        ffOn = !ffOn;
+        controls.setFastForwardOn(ffOn);
+        refreshSpeedButtons();
+        toast(ffOn ? getString(R.string.ff_on, speedLabel(fastHoldSpeed()))
+                : getString(R.string.ff_off));
+    }
+
+    private void toggleMute() {
+        muted = !muted;
+        getPreferences(MODE_PRIVATE).edit().putBoolean("muted", muted).apply();
+        controls.setMuted(muted);
+        toast(muted ? getString(R.string.muted_on) : getString(R.string.muted_off));
+    }
+
+    /** Rom library: scan results with favorites pinned on top. */
+    private void showRomLibrary() {
+        toast(getString(R.string.scan_scanning));
+        new Thread(() -> {
+            List<File> found = scanRoms();
+            runOnUiThread(() -> showRomLibraryList(found));
+        }, "rom-library").start();
+    }
+
+    private Set<String> favoriteRoms() {
+        Set<String> out = new HashSet<>();
+        String csv = getPreferences(MODE_PRIVATE).getString("rom_favs", "");
+        if (csv != null && !csv.isEmpty()) {
+            Collections.addAll(out, csv.split("\n"));
+        }
+        return out;
+    }
+
+    private void showRomLibraryList(List<File> found) {
+        if (isFinishing()) {
+            return;
+        }
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(8);
+        list.setPadding(pad, pad, pad, pad);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        AlertDialog[] holder = new AlertDialog[1];
+        if (found.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(R.string.library_empty);
+            empty.setPadding(0, pad, 0, pad);
+            list.addView(empty);
+        }
+        Set<String> favs = favoriteRoms();
+        String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        // Favorites first, then the rest; the last played game tops the list.
+        List<File> ordered = new ArrayList<>();
+        if (last != null && new File(last).isFile()) {
+            ordered.add(new File(last));
+        }
+        for (File file : found) {
+            if (favs.contains(file.getAbsolutePath())) {
+                ordered.add(file);
+            }
+        }
+        for (File file : found) {
+            if (!ordered.contains(file)) {
+                ordered.add(file);
+            }
+        }
+        for (File file : ordered) {
+            list.addView(libraryRow(holder, file, favs.contains(file.getAbsolutePath()),
+                    file.getAbsolutePath().equals(last)));
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.library_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.library_scan, (d, w) -> showRomScan())
+                .setNegativeButton(R.string.library_open, (d, w) -> openDocument(REQ_ROM))
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    private View libraryRow(AlertDialog[] holder, File file, boolean favorite, boolean isLast) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int pad = dp(6);
+        row.setPadding(pad, pad, pad, pad);
+        LinearLayout column = new LinearLayout(this);
+        column.setOrientation(LinearLayout.VERTICAL);
+        TextView name = new TextView(this);
+        String label = file.getName() + (isLast ? "　" + getString(R.string.library_last) : "");
+        name.setText((favorite ? "★ " : "○ ") + label);
+        name.setTextColor(0xFF222222);
+        name.setTextSize(15);
+        name.setSingleLine(true);
+        TextView path = new TextView(this);
+        path.setText(file.getParent());
+        path.setTextColor(0xFF888888);
+        path.setTextSize(11);
+        path.setSingleLine(true);
+        column.addView(name);
+        column.addView(path);
+        row.addView(column, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        row.setOnClickListener(v -> {
+            openFoundRom(file);
+            if (holder[0] != null) {
+                holder[0].dismiss();
+            }
+        });
+        row.setOnLongClickListener(v -> {
+            Set<String> favs = favoriteRoms();
+            String key = file.getAbsolutePath();
+            if (favs.contains(key)) {
+                favs.remove(key);
+                toast(getString(R.string.library_fav_off));
+            } else {
+                favs.add(key);
+                toast(getString(R.string.library_fav_on));
+            }
+            StringBuilder csv = new StringBuilder();
+            for (String fav : favs) {
+                if (csv.length() > 0) {
+                    csv.append('\n');
+                }
+                csv.append(fav);
+            }
+            getPreferences(MODE_PRIVATE).edit().putString("rom_favs", csv.toString()).apply();
+            return true;
+        });
+        return row;
+    }
+
+    /** Per-game overrides, keyed by the ROM's CRC32. */
+    private void showPerRomDialog() {
+        if (core == null || !core.isLoaded() || romCrc < 0) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        final long crc = romCrc;
+        final Button filter = new Button(this);
+        filter.setAllCaps(false);
+        String filterValue = romDb.get(crc, "filter", RomSettingsDb.DEFAULT);
+        filter.setText(getString(R.string.per_rom_filter) + ": " +
+                (RomSettingsDb.DEFAULT.equals(filterValue) ? getString(R.string.per_rom_none) : filterName(Integer.parseInt(filterValue))));
+        filter.setOnClickListener(v -> {
+            CharSequence[] names = filterNames();
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.per_rom_filter)
+                    .setSingleChoiceItems(names, -1, (dialog, which) -> {
+                        romDb.put(crc, "filter", String.valueOf(which));
+                        filter.setText(getString(R.string.per_rom_filter) + ": " + names[which]);
+                        applyPerRomSettings();
+                        dialog.dismiss();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        });
+        final Button speed = new Button(this);
+        speed.setAllCaps(false);
+        String speedValue = romDb.get(crc, "speed", RomSettingsDb.DEFAULT);
+        speed.setText(getString(R.string.per_rom_speed) + ": " +
+                (RomSettingsDb.DEFAULT.equals(speedValue) ? getString(R.string.per_rom_none) : speedValue + "×"));
+        speed.setOnClickListener(v -> {
+            EditText input = new EditText(this);
+            input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+            input.setHint(R.string.speed_custom_hint);
+            LinearLayout inner = new LinearLayout(this);
+            inner.setOrientation(LinearLayout.VERTICAL);
+            inner.setPadding(pad, pad, pad, 0);
+            inner.addView(input);
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.per_rom_speed)
+                    .setView(inner)
+                    .setPositiveButton(android.R.string.ok, (d, w) -> {
+                        try {
+                            float value = Float.parseFloat(input.getText().toString().trim());
+                            value = Math.max(0.05f, Math.min(16f, value));
+                            romDb.put(crc, "speed", String.valueOf(value));
+                            speed.setText(getString(R.string.per_rom_speed) + ": " + speedLabel(value) + "×");
+                            applyPerRomSettings();
+                        } catch (NumberFormatException ignored) {
+                            toast(getString(R.string.speed_bad_value));
+                        }
+                    })
+                    .setNeutralButton(R.string.per_rom_none, (d, w) -> {
+                        romDb.put(crc, "speed", RomSettingsDb.DEFAULT);
+                        speed.setText(getString(R.string.per_rom_speed) + ": " + getString(R.string.per_rom_none));
+                        applyPerRomSettings();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        });
+        final Button saveType = new Button(this);
+        saveType.setAllCaps(false);
+        String saveValue = romDb.get(crc, "save_type", RomSettingsDb.DEFAULT);
+        saveType.setText(getString(R.string.per_rom_save_type) + ": " +
+                (RomSettingsDb.DEFAULT.equals(saveValue) ? getString(R.string.per_rom_none) : saveTypeName(Integer.parseInt(saveValue))));
+        saveType.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.per_rom_save_type)
+                .setSingleChoiceItems(new CharSequence[] {
+                        saveTypeName(-1), saveTypeName(0), saveTypeName(1), saveTypeName(2),
+                        saveTypeName(3), saveTypeName(4), saveTypeName(5), saveTypeName(6)
+                }, -1, (dialog, which) -> {
+                    int[] values = {-1, 0, 1, 2, 3, 4, 5, 6};
+                    romDb.put(crc, "save_type", String.valueOf(values[which]));
+                    saveType.setText(getString(R.string.per_rom_save_type) + ": " + saveTypeName(values[which]));
+                    applyPerRomSettings();
+                    dialog.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show());
+        final Button palette = new Button(this);
+        palette.setAllCaps(false);
+        String palValue = romDb.get(crc, "gb_palette", RomSettingsDb.DEFAULT);
+        palette.setText(getString(R.string.per_rom_palette) + ": " +
+                (RomSettingsDb.DEFAULT.equals(palValue) ? getString(R.string.per_rom_none) : paletteName(Integer.parseInt(palValue))));
+        palette.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.per_rom_palette)
+                .setSingleChoiceItems(paletteNames(), -1, (dialog, which) -> {
+                    romDb.put(crc, "gb_palette", String.valueOf(which));
+                    palette.setText(getString(R.string.per_rom_palette) + ": " + paletteNames()[which]);
+                    applyPerRomSettings();
+                    dialog.dismiss();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show());
+        Button reset = new Button(this);
+        reset.setAllCaps(false);
+        reset.setText(R.string.per_rom_reset);
+        reset.setOnClickListener(v -> {
+            romDb.clear(crc);
+            applyPerRomSettings();
+            toast(getString(R.string.per_rom_saved));
+        });
+        box.addView(filter);
+        box.addView(speed);
+        box.addView(saveType);
+        box.addView(palette);
+        box.addView(reset);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.per_rom_title)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, (d, w) -> toast(getString(R.string.per_rom_saved)))
+                .show();
+    }
+
+    /** Backup hub: export everything to a zip, restore from one. */
+    private void showBackupDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.backup_title)
+                .setItems(new CharSequence[]{
+                        getString(R.string.backup_export),
+                        getString(R.string.backup_import),
+                }, (dialog, which) -> {
+                    if (which == 0) {
+                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("application/zip");
+                        intent.putExtra(Intent.EXTRA_TITLE, "mGBAx-backup-"
+                                + DateFormat.format("yyyyMMdd-HHmm", System.currentTimeMillis()) + ".zip");
+                        launchPicker(intent, REQ_BACKUP_EXPORT);
+                    } else {
+                        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("*/*");
+                        launchPicker(intent, REQ_BACKUP_IMPORT);
+                    }
+                })
+                .show();
+    }
+
+    /** Periodic silent save into the auto slot while a game runs. */
+    private void startTimedSave() {
+        stopTimedSave();
+        int minutes = 0;
+        try {
+            minutes = getPreferences(MODE_PRIVATE).getInt("timed_save_min", 0);
+        } catch (ClassCastException ignored) {
+        }
+        if (minutes <= 0) {
+            return;
+        }
+        timedSavePool = Executors.newSingleThreadScheduledExecutor();
+        timedSavePool.scheduleWithFixedDelay(() -> {
+            if (running && core != null && core.isLoaded() && !paused) {
+                recyclePendingPreview();
+                pendingPreview.set(gameView.copyLast());
+                command.set(CMD_AUTOSAVE);
+            }
+        }, minutes, minutes, TimeUnit.MINUTES);
+    }
+
+    private void stopTimedSave() {
+        if (timedSavePool != null) {
+            timedSavePool.shutdownNow();
+            timedSavePool = null;
+        }
+    }
+
+    /** C/C2 macro configuration: the combination held while the key is down. */
+    private void showMacroDialog(int which) {
+        Set<String> current = new HashSet<>();
+        int mask = controls.getMacro(which);
+        if ((mask & ControlsView.A) != 0) {
+            current.add("A");
+        }
+        if ((mask & ControlsView.B) != 0) {
+            current.add("B");
+        }
+        if ((mask & ControlsView.L) != 0) {
+            current.add("L");
+        }
+        if ((mask & ControlsView.R) != 0) {
+            current.add("R");
+        }
+        if ((mask & ControlsView.SELECT) != 0) {
+            current.add("SELECT");
+        }
+        if ((mask & ControlsView.START) != 0) {
+            current.add("START");
+        }
+        if ((mask & ControlsView.UP) != 0) {
+            current.add("UP");
+        }
+        if ((mask & ControlsView.DOWN) != 0) {
+            current.add("DOWN");
+        }
+        if ((mask & ControlsView.LEFT) != 0) {
+            current.add("LEFT");
+        }
+        if ((mask & ControlsView.RIGHT) != 0) {
+            current.add("RIGHT");
+        }
+        String[] names = {"A", "B", "L", "R", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT"};
+        int[] bits = {ControlsView.A, ControlsView.B, ControlsView.L, ControlsView.R,
+                ControlsView.SELECT, ControlsView.START, ControlsView.UP, ControlsView.DOWN,
+                ControlsView.LEFT, ControlsView.RIGHT};
+        boolean[] checked = new boolean[names.length];
+        for (int i = 0; i < names.length; i++) {
+            checked[i] = current.contains(names[i]);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(which == 0 ? R.string.c_button : R.string.c2_button)
+                .setMessage(R.string.macro_hint)
+                .setMultiChoiceItems(names, checked, (dialog, index, isChecked) -> {
+                    if (isChecked) {
+                        current.add(names[index]);
+                    } else {
+                        current.remove(names[index]);
+                    }
+                    int next = 0;
+                    for (int i = 0; i < names.length; i++) {
+                        if (current.contains(names[i])) {
+                            next |= bits[i];
+                        }
+                    }
+                    controls.setMacro(which, next);
+                })
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String key = which == 0 ? "c_macro" : "c2_macro";
+                    getPreferences(MODE_PRIVATE).edit().putInt(key, controls.getMacro(which)).apply();
+                })
+                .show();
+    }
+
+    /** A ROM inside a zip: extracts the first game entry to a temp file. */
+    @Nullable
+    private String extractRomZip(File zip) {        File destDir = new File(getFilesDir(), "roms/unpacked");
+        destDir.mkdirs();
+        try (java.util.zip.ZipInputStream stream = new java.util.zip.ZipInputStream(
+                new java.io.FileInputStream(zip))) {
+            java.util.zip.ZipEntry entry;
+            byte[] buffer = new byte[65536];
+            while ((entry = stream.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                String name = new File(entry.getName()).getName();
+                if (!isRomFile(name)) {
+                    continue;
+                }
+                File dest = new File(destDir, name);
+                try (OutputStream out = new FileOutputStream(dest)) {
+                    int n;
+                    while ((n = stream.read(buffer)) > 0) {
+                        out.write(buffer, 0, n);
+                    }
+                }
+                return dest.getAbsolutePath();
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "zip rom extract failed", e);
+        }
+        return null;
+    }
+
+    // == Stickers ==
+
+    private void bindStickerOverlay() {
+        stickerOverlay.setListener(new StickerOverlay.Listener() {
+            @Override
+            public void onStickersChanged(List<StickerOverlay.Sticker> stickers) {
+                persistStickers();
+            }
+        });
+        loadStickers();
+    }
+
+    private String orientationPrefix() {
+        return getResources().getConfiguration().orientation == Configuration.ORIENTATION_PORTRAIT
+                ? "ver_" : "hor_";
+    }
+
+    /** Loads this orientation's stickers from the preferences. */
+    private void loadStickers() {
+        stickerPrefix = orientationPrefix();
+        List<StickerOverlay.Sticker> list = new ArrayList<>();
+        for (int i = 0; i < StickerOverlay.MAX_STICKERS; i++) {
+            String path = getPreferences(MODE_PRIVATE).getString(stickerPrefix + "sticker" + i + "_path", null);
+            if (path == null || !new File(path).isFile()) {
+                continue;
+            }
+            StickerOverlay.Sticker sticker = new StickerOverlay.Sticker();
+            sticker.path = path;
+            sticker.x = getPreferences(MODE_PRIVATE).getFloat(stickerPrefix + "sticker" + i + "_x", 0.5f);
+            sticker.y = getPreferences(MODE_PRIVATE).getFloat(stickerPrefix + "sticker" + i + "_y", 0.4f);
+            sticker.w = getPreferences(MODE_PRIVATE).getFloat(stickerPrefix + "sticker" + i + "_w", 0.3f);
+            sticker.alpha = getPreferences(MODE_PRIVATE).getInt(stickerPrefix + "sticker" + i + "_alpha", 255);
+            list.add(sticker);
+        }
+        stickerOverlay.setStickers(list);
+    }
+
+    /** Writes this orientation's stickers back to the preferences. */
+    private void persistStickers() {
+        String prefix = orientationPrefix();
+        SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit();
+        for (int i = 0; i < StickerOverlay.MAX_STICKERS; i++) {
+            String base = prefix + "sticker" + i + "_";
+            editor.remove(base + "path");
+            editor.remove(base + "x");
+            editor.remove(base + "y");
+            editor.remove(base + "w");
+            editor.remove(base + "alpha");
+        }
+        for (int i = 0; i < stickerOverlay.stickers().size() && i < StickerOverlay.MAX_STICKERS; i++) {
+            StickerOverlay.Sticker sticker = stickerOverlay.stickers().get(i);
+            String base = prefix + "sticker" + i + "_";
+            editor.putString(base + "path", sticker.path);
+            editor.putFloat(base + "x", sticker.x);
+            editor.putFloat(base + "y", sticker.y);
+            editor.putFloat(base + "w", sticker.w);
+            editor.putInt(base + "alpha", sticker.alpha);
+        }
+        editor.apply();
+    }
+
+    // == Full PNG skin ==
+
+    /** Pushes the active full skin pack into the controls and the stage. */
+    private void applyFullSkin() {
+        activeSkinName = getPreferences(MODE_PRIVATE).getString("full_skin", null);
+        if (activeSkinName != null && !skinStore.list().contains(activeSkinName)) {
+            activeSkinName = null;
+            getPreferences(MODE_PRIVATE).edit().remove("full_skin").apply();
+        }
+        Map<String, Bitmap> bitmaps = activeSkinName == null ? null : skinStore.load(activeSkinName);
+        if (controls != null) {
+            controls.setFullSkin(bitmaps);
+        }
+        if (screenArea != null) {
+            Bitmap bg = null;
+            if (bitmaps != null) {
+                boolean portrait = getResources().getConfiguration().orientation
+                        == Configuration.ORIENTATION_PORTRAIT;
+                bg = bitmaps.get(portrait ? "bg_portrait" : "bg_landscape");
+            }
+            screenArea.setSkinBackground(bg);
+        }
+    }
+
+    // == AI translate ==
+
+    private void showTranslateDialog() {
+        String key = getPreferences(MODE_PRIVATE).getString("ai_key", "");
+        if (key == null || key.trim().isEmpty()) {
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            int pad = dp(16);
+            box.setPadding(pad, pad, pad, 0);
+            TextView hint = new TextView(this);
+            hint.setText(R.string.ai_key_hint);
+            hint.setTextColor(0xFF222222);
+            hint.setTextSize(12);
+            EditText input = new EditText(this);
+            input.setHint(R.string.ai_key);
+            input.setSingleLine(true);
+            box.addView(hint);
+            box.addView(input);
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.translate)
+                    .setView(box)
+                    .setPositiveButton(android.R.string.ok, (d, w) ->
+                            getPreferences(MODE_PRIVATE).edit()
+                                    .putString("ai_key", input.getText().toString().trim())
+                                    .apply())
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+            return;
+        }
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        toast(getString(R.string.ai_working));
+        Bitmap frame = gameView.copyLast();
+        if (frame == null) {
+            frame = aiFrame;
+        }
+        final Bitmap send = frame == null ? null : AiTranslate.snapshot(frame, 960);
+        if (send == null) {
+            toast(getString(R.string.ai_failed, "no frame"));
+            return;
+        }
+        aiFrame = send;
+        AiTranslate.translate(send, key, getPreferences(MODE_PRIVATE).getString("ai_lang", "简体中文"),
+                (blocks, error) -> runOnUiThread(() -> {
+                    if (error != null) {
+                        toast(getString(R.string.ai_failed, error));
+                        return;
+                    }
+                    if (blocks == null || blocks.isEmpty()) {
+                        toast(getString(R.string.ai_no_text));
+                        return;
+                    }
+                    aiOverlay.show(blocks, aiFrame);
+                    toast(getString(R.string.ai_ok, blocks.size()));
+                }));
+    }
+
     private void applyOrientation() {
         applyOrientation(getPreferences(MODE_PRIVATE).getString("orientation", "landscape"));
     }
@@ -4066,7 +5509,22 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         boolean portrait = getResources().getConfiguration().orientation
                 == Configuration.ORIENTATION_PORTRAIT;
+        boolean switched = screenArea.isPortraitMode() != portrait;
         screenArea.setPortraitMode(portrait);
+        if (controls != null) {
+            controls.setPortrait(portrait);
+        }
+        if (switched && keyLayout != null) {
+            // Each orientation keeps its own stored key layout.
+            keyLayout = KeyLayout.decode(profileLayout(layoutProfile));
+            controls.setCenters(keyLayout.resolved());
+            controls.setScales(keyLayout.resolvedScales());
+        }
+        if (switched) {
+            // Stickers and skin backgrounds are stored per orientation too.
+            loadStickers();
+            applyFullSkin();
+        }
         if (menuBar == null) {
             return;
         }
@@ -4311,6 +5769,7 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        stopTimedSave();
         if (remoteLink != null) {
             remoteLink.close();
         }

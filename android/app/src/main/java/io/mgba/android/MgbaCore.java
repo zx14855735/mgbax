@@ -52,6 +52,28 @@ public final class MgbaCore {
         }
     }
 
+    /** Enables recording the rewind history (differential states, ~0.5 s apart). */
+    public void setRewind(boolean enabled) {
+        if (handle != 0) {
+            nativeSetRewind(handle, enabled);
+        }
+    }
+
+    /** Rewinds by about the given number of seconds; false when history is empty. */
+    public boolean rewind(int seconds) {
+        return handle != 0 && nativeRewind(handle, seconds);
+    }
+
+    /**
+     * Per-channel audio gains, 0-256 each (256 = full volume): PSG channels
+     * 1-4 then the GBA DMA A/B FIFOs. Applies live and on every reload.
+     */
+    public void setChannelVolumes(int[] gains) {
+        if (handle != 0 && gains != null && gains.length >= 6) {
+            nativeSetChannelVolumes(handle, gains);
+        }
+    }
+
     /**
      * Configures the native audio resampler for the given output rate.
      * Returns false when the core cannot be converted to that rate.
@@ -289,6 +311,12 @@ public final class MgbaCore {
     private static native void nativeSetKeys(long handle, int keys);
 
     private static native void nativeSetTurbo(long handle, int mask);
+
+    private static native void nativeSetRewind(long handle, boolean enabled);
+
+    private static native boolean nativeRewind(long handle, int seconds);
+
+    private static native void nativeSetChannelVolumes(long handle, int[] gains);
 
     private static native boolean nativeRunFrames(long handle, int keys, int count);
 
