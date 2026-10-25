@@ -64,7 +64,7 @@ Java_io_mgba_android_MgbaCore_nativeSetAudioOutput(JNIEnv*, jobject, jlong handl
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_io_mgba_android_MgbaCore_nativeReadAudioOut(JNIEnv* env, jobject, jlong handle, jshortArray out, jint speed, jfloat drift) {
+Java_io_mgba_android_MgbaCore_nativeReadAudioOut(JNIEnv* env, jobject, jlong handle, jshortArray out, jdouble speed, jfloat drift) {
 	if (!out) {
 		return 0;
 	}
@@ -72,7 +72,7 @@ Java_io_mgba_android_MgbaCore_nativeReadAudioOut(JNIEnv* env, jobject, jlong han
 	jshort* samples = env->GetShortArrayElements(out, NULL);
 	int frames = 0;
 	if (samples) {
-		frames = mgbaMobileReadAudioOut((struct MgbaMobile*) handle, (int16_t*) samples, (int) (length / 2), (int) speed, (float) drift);
+		frames = mgbaMobileReadAudioOut((struct MgbaMobile*) handle, (int16_t*) samples, (int) (length / 2), (double) speed, (float) drift);
 		env->ReleaseShortArrayElements(out, samples, 0);
 	}
 	return frames;
@@ -208,4 +208,80 @@ Java_io_mgba_android_MgbaCore_nativeLinkStatus(JNIEnv* env, jobject, jlong handl
 	char text[128];
 	mgbaMobileLinkStatus((struct MgbaMobile*) handle, text, sizeof(text));
 	return fromUtf(env, text);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetSaveType(JNIEnv*, jobject, jlong handle, jint type) {
+	mgbaMobileSetSaveType((struct MgbaMobile*) handle, type);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetPatches(JNIEnv*, jobject, jlong handle, jboolean enabled) {
+	mgbaMobileSetPatches((struct MgbaMobile*) handle, enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetBiosOptions(JNIEnv*, jobject, jlong handle, jboolean useBios, jboolean skipIntro) {
+	mgbaMobileSetBiosOptions((struct MgbaMobile*) handle, useBios == JNI_TRUE, skipIntro == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetRtc(JNIEnv*, jobject, jlong handle, jint mode, jlong epoch, jlong offset) {
+	mgbaMobileSetRtc((struct MgbaMobile*) handle, mode, (int64_t) epoch, (int64_t) offset);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetSolar(JNIEnv*, jobject, jlong handle, jint level) {
+	mgbaMobileSetSolar((struct MgbaMobile*) handle, level);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetCartRumble(JNIEnv*, jobject, jlong handle, jboolean enabled) {
+	mgbaMobileSetCartRumble((struct MgbaMobile*) handle, enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_io_mgba_android_MgbaCore_nativeTakeRumbles(JNIEnv*, jobject, jlong handle) {
+	return mgbaMobileTakeRumbles((struct MgbaMobile*) handle);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatCount(JNIEnv*, jobject, jlong handle) {
+	return mgbaMobileCheatCount((struct MgbaMobile*) handle);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatName(JNIEnv* env, jobject, jlong handle, jint index) {
+	char text[256];
+	mgbaMobileCheatName((struct MgbaMobile*) handle, index, text, sizeof(text));
+	return fromUtf(env, text);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatEnabled(JNIEnv*, jobject, jlong handle, jint index) {
+	return mgbaMobileCheatEnabled((struct MgbaMobile*) handle, index) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatSetEnabled(JNIEnv*, jobject, jlong handle, jint index, jboolean enabled) {
+	mgbaMobileCheatSetEnabled((struct MgbaMobile*) handle, index, enabled == JNI_TRUE);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatAdd(JNIEnv* env, jobject, jlong handle, jstring name, jstring lines, jint type) {
+	const char* nameText = name ? env->GetStringUTFChars(name, NULL) : NULL;
+	const char* lineText = env->GetStringUTFChars(lines, NULL);
+	bool ok = lineText && mgbaMobileCheatAdd((struct MgbaMobile*) handle, nameText, lineText, type);
+	if (nameText) {
+		env->ReleaseStringUTFChars(name, nameText);
+	}
+	if (lineText) {
+		env->ReleaseStringUTFChars(lines, lineText);
+	}
+	return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeCheatRemove(JNIEnv*, jobject, jlong handle, jint index) {
+	return mgbaMobileCheatRemove((struct MgbaMobile*) handle, index) ? JNI_TRUE : JNI_FALSE;
 }

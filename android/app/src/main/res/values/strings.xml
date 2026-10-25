@@ -11,7 +11,7 @@
     <string name="speed_4">4倍</string>
     <string name="speed_8">8倍</string>
     <string name="speed_16">16倍</string>
-    <string name="speed_value">%1$d倍</string>
+    <string name="speed_value">%1$s倍</string>
     <string name="speed_pick">倍速</string>
     <string name="speed_sound">倍速声音</string>
     <string name="reset">复位</string>
@@ -85,4 +85,111 @@
     <string name="scan_title">找到的 ROM</string>
     <string name="scan_empty">没找到 ROM 文件。\n把 .gba/.gb/.gbc 放进 Download 目录（模拟器共享目录也可以），或者在文件管理器里用「打开方式」选择本应用。</string>
     <string name="scan_entry">%1$s\n%2$s  %3$s</string>
+
+    <!-- Settings hub -->
+    <string name="settings_sound">声音</string>
+    <string name="settings_input">输入</string>
+    <string name="settings_save">存档</string>
+    <string name="settings_advanced">高级</string>
+    <string name="settings_help">帮助</string>
+    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBA。</string>
+    <string name="settings_immersive">沉浸模式（隐藏状态栏/导航栏）</string>
+
+    <!-- Sound -->
+    <string name="sound_volume">音量 %1$d%%</string>
+    <string name="sound_low_latency">低延迟音频（支持的设备上减少声音延迟）</string>
+
+    <!-- Input -->
+    <string name="input_vibe_title">触屏振动</string>
+    <string name="input_vibe">触屏振动：%1$s</string>
+    <string name="vibe_off">关</string>
+    <string name="vibe_light">轻</string>
+    <string name="vibe_medium">中</string>
+    <string name="vibe_strong">强</string>
+    <string name="input_turbo_mode_title">连击方式</string>
+    <string name="input_turbo_mode">连击方式：%1$s</string>
+    <string name="turbo_hold_b">长按 B 键自动连击</string>
+    <string name="turbo_keys">仅用连发键</string>
+    <string name="turbo_off">关闭</string>
+    <string name="input_turbo_rate">连击速度 %1$d 次/秒</string>
+    <string name="input_no_diagonal">禁用方向键对角（一次只按一个方向）</string>
+    <string name="input_extras">虚拟按键开关（连发/快存/快读/倍速/截图）</string>
+
+    <!-- Save settings -->
+    <string name="save_type">存档类型：%1$s</string>
+    <string name="save_type_title">游戏保存类型</string>
+    <string name="save_auto_load">进入游戏时自动读档（上次退出的进度）</string>
+    <string name="save_auto_write">退出时自动存档</string>
+    <string name="save_confirm">关闭/重置时确认</string>
+    <string name="save_patches">自动使用 IPS/UPS/BPS 补丁（与 ROM 同名放同一文件夹）</string>
+    <string name="save_delete_battery">删除电池存档（.sav）</string>
+    <string name="delete_battery_message">将删除 %1$s（会备份为 .bak），并重新载入游戏。继续吗？</string>
+    <string name="battery_missing">没有电池存档</string>
+    <string name="battery_deleted">已删除电池存档，正在重新载入</string>
+    <string name="battery_delete_failed">删除失败</string>
+    <string name="save_import_myboy">导入 My Boy 存档（选择其 save 文件夹）</string>
+    <string name="myboy_scanning">正在读取存档…</string>
+    <string name="myboy_done">导入完成：成功 %1$d，失败 %2$d</string>
+
+    <!-- Advanced -->
+    <string name="adv_use_bios">使用 BIOS（需先在菜单导入）</string>
+    <string name="adv_skip_bios">跳过 BIOS 启动画面</string>
+    <string name="adv_clock">游戏时钟：%1$s</string>
+    <string name="adv_clock_title">游戏时钟（RTC 卡带）</string>
+    <string name="clock_real">实时时钟（跟随手机时间）</string>
+    <string name="clock_fixed">固定时间（口袋妖怪时间事件用）</string>
+    <string name="clock_offset">偏移时间（手机时间加偏移分钟）</string>
+    <string name="adv_rumble">卡带振动（轰隆声，需游戏支持）</string>
+    <string name="adv_solar">太阳能仿真（我们的太阳 Boktai）</string>
+    <string name="adv_solar_level">阳光强度 %1$d</string>
+    <string name="adv_solar_keys">用音量键调节阳光强度</string>
+    <string name="adv_fast_hold">快进速度 %1$d倍</string>
+    <string name="confirm_reset_message">确定要重置这个游戏吗？未保存的进度会丢失。</string>
+    <string name="confirm_exit_message">游戏还在运行。电池存档会自动保存。确定要退出吗？</string>
+
+    <!-- Screenshots -->
+    <string name="screenshot_saved">已保存截图 %1$s</string>
+    <string name="screenshot_failed">截图失败</string>
+
+    <!-- Cheats -->
+    <string name="cheats_title">金手指</string>
+    <string name="cheats_short">金手指</string>
+    <string name="screenshot_short">截图</string>
+    <string name="cheats_empty">还没有作弊码。\n点「新增」添加，格式选「自动识别」，每行一个代码。</string>
+    <string name="cheat_add">新增</string>
+    <string name="cheat_name_hint">名称（比如：无限金钱）</string>
+    <string name="cheat_format">格式：%1$s</string>
+    <string name="cheat_format_title">作弊码格式</string>
+    <string name="cheat_codes_hint">代码，每行一个\n例如 82025838 104E</string>
+    <string name="cheat_bad_code">作弊码无效，请检查格式</string>
+    <string name="cheat_added">已添加：%1$s</string>
+    <string name="cheat_default_name">作弊码</string>
+    <string name="cheat_delete">删除作弊码</string>
+    <string name="cheat_delete_message">删除「%1$s」？</string>
+
+    <!-- Speed -->
+    <string name="speed_custom">自定义</string>
+    <string name="speed_custom_hint">0.1 ~ 16 之间，支持慢动作</string>
+    <string name="speed_bad_value">倍速范围仅限 0.05~16</string>
+
+    <!-- GIF recording -->
+    <string name="gif_record">GIF</string>
+    <string name="gif_stop">停止GIF</string>
+    <string name="gif_started">开始GIF录制，再点一次菜单里的 GIF 停止</string>
+    <string name="gif_saved">已保存GIF %1$s</string>
+    <string name="gif_failed">GIF录制失败</string>
+
+    <!-- Key layout profiles -->
+    <string name="layout_profiles">配置</string>
+    <string name="profiles_title">按键映射配置</string>
+    <string name="profiles_hint">点名称切换配置；下方按钮新建空配置或复制当前配置</string>
+    <string name="profile_new">新配置</string>
+    <string name="profile_copy">复制当前</string>
+    <string name="profile_delete">删除</string>
+    <string name="profile_name_hint">配置名称</string>
+    <string name="profile_exists">配置名称已存在</string>
+    <string name="profile_switched">已切换到 %1$s</string>
+    <string name="profile_deleted">已删除 %1$s</string>
+    <string name="profile_delete_confirm">删除配置「%1$s」？</string>
+    <string name="profile_last">至少保留一个配置</string>
 </resources>

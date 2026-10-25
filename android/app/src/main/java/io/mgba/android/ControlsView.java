@@ -29,11 +29,25 @@ public class ControlsView extends View {
     public static final int R = 1 << 8;
     public static final int L = 1 << 9;
 
+    /** Optional utility keys handled through {@link Listener#onAction}. */
+    public static final int ACTION_SAVE = 1;
+    public static final int ACTION_LOAD = 2;
+    public static final int ACTION_SHOT = 3;
+    public static final int ACTION_FF = 4;
+
     public interface Listener {
         void onKeysChanged(int mask);
 
         /** Fired after the on-screen keys were placed again (size or layout change). */
         default void onControlsLayout() {
+        }
+
+        /** A tap on one of the optional utility keys. */
+        default void onAction(int action) {
+        }
+
+        /** The optional fast-forward key was pressed or released. */
+        default void onFastHold(boolean down) {
         }
     }
 
@@ -71,6 +85,23 @@ public class ControlsView extends View {
     private final RectF buttonBDefault = new RectF();
     private final RectF buttonSelectDefault = new RectF();
     private final RectF buttonStartDefault = new RectF();
+    /* Optional utility keys: turbo A/B, L+R, quick save/load, fast-forward,
+     * screenshot. Hidden until the player turns them on in the settings. */
+    private final RectF keyTurboA = new RectF();
+    private final RectF keyTurboB = new RectF();
+    private final RectF keyLR = new RectF();
+    private final RectF keySave = new RectF();
+    private final RectF keyLoad = new RectF();
+    private final RectF keyFast = new RectF();
+    private final RectF keyShot = new RectF();
+    private final RectF keyTurboADefault = new RectF();
+    private final RectF keyTurboBDefault = new RectF();
+    private final RectF keyLRDefault = new RectF();
+    private final RectF keySaveDefault = new RectF();
+    private final RectF keyLoadDefault = new RectF();
+    private final RectF keyFastDefault = new RectF();
+    private final RectF keyShotDefault = new RectF();
+    private final java.util.HashSet<String> visibleExtras = new java.util.HashSet<>();
     private final Map<String, float[]> centers = new HashMap<>();
     private final Map<String, Float> scales = new HashMap<>();
     public static final float MIN_SCALE = 0.4f;
@@ -86,6 +117,26 @@ public class ControlsView extends View {
     private float slopA;
     private float slopFace;
     private static final int FACE = A | B | SELECT | START | L | R;
+    /** When true the d-pad reports only its dominant direction, no diagonals. */
+    private boolean diagonalLock;
+    /* Dedicated turbo keys pulse their bit at this many repeats per second. */
+    private int turboRate = 25;
+    private int pulseMask;
+    private boolean pulseOn;
+    private final android.os.Handler turboHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable turboTick = new Runnable() {
+        @Override
+        public void run() {
+            if (pulseMask == 0) {
+                return;
+            }
+            pulseOn = !pulseOn;
+            publish(computeMask());
+            turboHandler.postDelayed(this, Math.max(20, 1000 / Math.max(1, turboRate)));
+        }
+    };
+    /** Utility-key taps per pointer, so ACTION_FF release can be matched. */
+    private final SparseIntArray actionPointers = new SparseIntArray();
 
     public ControlsView(Context context) {
         this(context, null);
@@ -180,6 +231,10 @@ public class ControlsView extends View {
         pinchPointer = -1;
         pinchActive = false;
         pointers.clear();
+        actionPointers.clear();
+        turboHandler.removeCallbacks(turboTick);
+        pulseMask = 0;
+        pulseOn = false;
         if (pressed != 0) {
             pressed = 0;
             if (listener != null) {
@@ -196,6 +251,30 @@ public class ControlsView extends View {
         turboB = active;
         turboLit = lit;
         invalidate();
+    }
+
+    /** Shows the optional utility keys named like "ta", "tb", "lr", "save"... */
+    public void setVisibleExtras(java.util.Collection<String> keys) {
+        visibleExtras.clear();
+        if (keys != null) {
+            visibleExtras.addAll(keys);
+        }
+        applyCenters();
+        invalidate();
+    }
+
+    public java.util.Set<String> visibleExtras() {
+        return visibleExtras;
+    }
+
+    /** One direction at a time on the d-pad. */
+    public void setDiagonalLock(boolean enabled) {
+        diagonalLock = enabled;
+    }
+
+    /** Repeats per second for the dedicated A/B turbo keys. */
+    public void setTurboRate(int rate) {
+        turboRate = Math.max(2, Math.min(30, rate));
     }
 
     private boolean bDown() {
@@ -232,6 +311,21 @@ public class ControlsView extends View {
         float menuTop = h - pad - menuH;
         buttonSelect.set(center - menuW - 8 * d, menuTop, center - 8 * d, menuTop + menuH);
         buttonStart.set(center + 8 * d, menuTop, center + 8 * d + menuW, menuTop + menuH);
+
+        // Optional utility keys: defaults sit clear of the stock clusters; the
+        // layout editor can drag each of them anywhere.
+        float utilW = 56 * d;
+        float utilH = 34 * d;
+        float utilTop = menuTop - utilH - 8 * d;
+        keySave.set(buttonSelect.left, utilTop, buttonSelect.left + utilW, utilTop + utilH);
+        keyLoad.set(buttonStart.right - utilW, utilTop, buttonStart.right, utilTop + utilH);
+        keyFast.set(center - utilW / 2f, utilTop, center + utilW / 2f, utilTop + utilH);
+        float lrTop = shoulderTop + shoulderH + 8 * d;
+        keyLR.set(center - utilW, lrTop, center + utilW, lrTop + utilH);
+        keyShot.set(center - utilW / 2f, lrTop + utilH + 8 * d, center + utilW / 2f, lrTop + 2 * utilH + 8 * d);
+        float turbo = 46 * d;
+        keyTurboA.set(buttonA.left - 4 * d, buttonA.top - turbo - 6 * d, buttonA.left - 4 * d + turbo, buttonA.top - 6 * d);
+        keyTurboB.set(keyTurboA.left - turbo - 8 * d, keyTurboA.top + 10 * d, keyTurboA.left - 8 * d, keyTurboA.top + 10 * d + turbo);
         density = d;
         text.setTextSize(14 * d);
         stroke.setStrokeWidth(Math.max(2f, 1.5f * d));
@@ -248,6 +342,27 @@ public class ControlsView extends View {
         drawButton(canvas, buttonSelect, "SELECT", (pressed & SELECT) != 0, editing);
         drawButton(canvas, buttonStart, "START", (pressed & START) != 0, editing);
         drawDpad(canvas);
+        if (visibleExtras.contains("ta")) {
+            drawButton(canvas, keyTurboA, "A连", (pressed & A) != 0 && pulseOn, editing);
+        }
+        if (visibleExtras.contains("tb")) {
+            drawButton(canvas, keyTurboB, "B连", (pressed & B) != 0 && pulseOn, editing);
+        }
+        if (visibleExtras.contains("lr")) {
+            drawButton(canvas, keyLR, "L+R", (pressed & (L | R)) == (L | R), editing);
+        }
+        if (visibleExtras.contains("save")) {
+            drawButton(canvas, keySave, "快存", actionPointers.indexOfValue(ACTION_SAVE) >= 0, editing);
+        }
+        if (visibleExtras.contains("load")) {
+            drawButton(canvas, keyLoad, "快读", actionPointers.indexOfValue(ACTION_LOAD) >= 0, editing);
+        }
+        if (visibleExtras.contains("ff")) {
+            drawButton(canvas, keyFast, "倍速", actionPointers.indexOfValue(ACTION_FF) >= 0, editing);
+        }
+        if (visibleExtras.contains("shot")) {
+            drawButton(canvas, keyShot, "截图", actionPointers.indexOfValue(ACTION_SHOT) >= 0, editing);
+        }
     }
 
     private void drawButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected) {
@@ -316,6 +431,11 @@ public class ControlsView extends View {
         canvas.drawPath(arrow, fill);
     }
 
+    /** Internal markers for the extra keys; not part of the key mask. */
+    private static final int FLAG_TURBO_A = 1 << 20;
+    private static final int FLAG_TURBO_B = 1 << 21;
+    private static final int FLAG_LR = 1 << 22;
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (editing) {
@@ -329,9 +449,22 @@ public class ControlsView extends View {
         int id = event.getPointerId(index);
         switch (action) {
             case MotionEvent.ACTION_DOWN:
-            case MotionEvent.ACTION_POINTER_DOWN:
-                pointers.put(id, hitTest(event.getX(index), event.getY(index)));
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                float x = event.getX(index);
+                float y = event.getY(index);
+                int utility = actionAt(x, y);
+                if (utility != 0) {
+                    actionPointers.put(id, utility);
+                    if (utility == ACTION_FF && listener != null) {
+                        listener.onFastHold(true);
+                    } else if (listener != null) {
+                        listener.onAction(utility);
+                    }
+                    break;
+                }
+                pointers.put(id, hitTest(x, y));
                 break;
+            }
             case MotionEvent.ACTION_MOVE:
                 for (int i = 0; i < event.getPointerCount(); i++) {
                     int pointerId = event.getPointerId(i);
@@ -341,26 +474,40 @@ public class ControlsView extends View {
                     int current = pointers.get(pointerId);
                     // Face buttons stick until release. A thumb sliding a few
                     // pixels used to drop A before the game ever sampled it.
-                    if ((current & FACE) != 0) {
+                    if ((current & (FACE | FLAG_TURBO_A | FLAG_TURBO_B | FLAG_LR)) != 0) {
                         continue;
                     }
                     pointers.put(pointerId, hitTest(event.getX(i), event.getY(i)));
                 }
                 break;
             case MotionEvent.ACTION_UP:
-            case MotionEvent.ACTION_POINTER_UP:
+            case MotionEvent.ACTION_POINTER_UP: {
+                int held = actionPointers.get(id, 0);
+                if (held != 0) {
+                    actionPointers.delete(id);
+                    if (held == ACTION_FF && listener != null) {
+                        listener.onFastHold(false);
+                    }
+                    break;
+                }
                 pointers.delete(id);
                 break;
+            }
             case MotionEvent.ACTION_CANCEL:
                 pointers.clear();
+                actionPointers.clear();
+                if (listener != null) {
+                    listener.onFastHold(false);
+                }
                 break;
             default:
                 return true;
         }
-        int mask = 0;
-        for (int i = 0; i < pointers.size(); i++) {
-            mask |= pointers.valueAt(i);
-        }
+        publish(computeMask());
+        return true;
+    }
+
+    private void publish(int mask) {
         if (mask != pressed) {
             pressed = mask;
             if (listener != null) {
@@ -368,10 +515,64 @@ public class ControlsView extends View {
             }
             invalidate();
         }
-        return true;
+    }
+
+    /** Mask implied by the current pointers, including pulsing turbo keys. */
+    private int computeMask() {
+        int mask = 0;
+        int turbo = 0;
+        for (int i = 0; i < pointers.size(); i++) {
+            int value = pointers.valueAt(i);
+            if ((value & FLAG_TURBO_A) != 0) {
+                turbo |= A;
+            } else if ((value & FLAG_TURBO_B) != 0) {
+                turbo |= B;
+            } else if ((value & FLAG_LR) != 0) {
+                mask |= L | R;
+            } else {
+                mask |= value;
+            }
+        }
+        if (turbo != pulseMask) {
+            pulseMask = turbo;
+            turboHandler.removeCallbacks(turboTick);
+            if (pulseMask == 0) {
+                pulseOn = false;
+            } else {
+                pulseOn = true;
+                turboHandler.postDelayed(turboTick, Math.max(20, 1000 / Math.max(1, turboRate)));
+            }
+        }
+        return mask | (pulseOn ? pulseMask : 0);
+    }
+
+    /** Optional utility key under the point, or 0 (ACTION_* codes). */
+    private int actionAt(float x, float y) {
+        if (visibleExtras.contains("save") && keySave.contains(x, y)) {
+            return ACTION_SAVE;
+        }
+        if (visibleExtras.contains("load") && keyLoad.contains(x, y)) {
+            return ACTION_LOAD;
+        }
+        if (visibleExtras.contains("ff") && keyFast.contains(x, y)) {
+            return ACTION_FF;
+        }
+        if (visibleExtras.contains("shot") && keyShot.contains(x, y)) {
+            return ACTION_SHOT;
+        }
+        return 0;
     }
 
     private int hitTest(float x, float y) {
+        if (visibleExtras.contains("ta") && keyTurboA.contains(x, y)) {
+            return FLAG_TURBO_A;
+        }
+        if (visibleExtras.contains("tb") && keyTurboB.contains(x, y)) {
+            return FLAG_TURBO_B;
+        }
+        if (visibleExtras.contains("lr") && keyLR.contains(x, y)) {
+            return FLAG_LR;
+        }
         int face = nearestFace(x, y);
         if (face != 0) {
             return face;
@@ -395,6 +596,16 @@ public class ControlsView extends View {
         }
         if (hitArm(dpadRight, x, y)) {
             bits |= RIGHT;
+        }
+        if (bits != 0 && diagonalLock) {
+            // Keep only the dominant direction so a diagonal press reads as
+            // one clean input, the way some games expect.
+            float dx = x - dpad.centerX();
+            float dy = y - dpad.centerY();
+            if (Math.abs(dx) > Math.abs(dy)) {
+                return dx > 0 ? RIGHT : LEFT;
+            }
+            return dy > 0 ? DOWN : UP;
         }
         return bits;
     }
@@ -461,6 +672,13 @@ public class ControlsView extends View {
         buttonBDefault.set(buttonB);
         buttonSelectDefault.set(buttonSelect);
         buttonStartDefault.set(buttonStart);
+        keyTurboADefault.set(keyTurboA);
+        keyTurboBDefault.set(keyTurboB);
+        keyLRDefault.set(keyLR);
+        keySaveDefault.set(keySave);
+        keyLoadDefault.set(keyLoad);
+        keyFastDefault.set(keyFast);
+        keyShotDefault.set(keyShot);
     }
 
     private void applyCenters() {
@@ -471,6 +689,27 @@ public class ControlsView extends View {
         place(buttonB, buttonBDefault, "b");
         place(buttonSelect, buttonSelectDefault, "select");
         place(buttonStart, buttonStartDefault, "start");
+        if (visibleExtras.contains("ta")) {
+            place(keyTurboA, keyTurboADefault, "ta");
+        }
+        if (visibleExtras.contains("tb")) {
+            place(keyTurboB, keyTurboBDefault, "tb");
+        }
+        if (visibleExtras.contains("lr")) {
+            place(keyLR, keyLRDefault, "lr");
+        }
+        if (visibleExtras.contains("save")) {
+            place(keySave, keySaveDefault, "save");
+        }
+        if (visibleExtras.contains("load")) {
+            place(keyLoad, keyLoadDefault, "load");
+        }
+        if (visibleExtras.contains("ff")) {
+            place(keyFast, keyFastDefault, "ff");
+        }
+        if (visibleExtras.contains("shot")) {
+            place(keyShot, keyShotDefault, "shot");
+        }
         layoutDpadArms();
         if (listener != null) {
             listener.onControlsLayout();
@@ -718,6 +957,27 @@ public class ControlsView extends View {
     }
 
     private String keyAt(float x, float y) {
+        if (visibleExtras.contains("ta") && keyTurboA.contains(x, y)) {
+            return "ta";
+        }
+        if (visibleExtras.contains("tb") && keyTurboB.contains(x, y)) {
+            return "tb";
+        }
+        if (visibleExtras.contains("lr") && keyLR.contains(x, y)) {
+            return "lr";
+        }
+        if (visibleExtras.contains("save") && keySave.contains(x, y)) {
+            return "save";
+        }
+        if (visibleExtras.contains("load") && keyLoad.contains(x, y)) {
+            return "load";
+        }
+        if (visibleExtras.contains("ff") && keyFast.contains(x, y)) {
+            return "ff";
+        }
+        if (visibleExtras.contains("shot") && keyShot.contains(x, y)) {
+            return "shot";
+        }
         int face = nearestFace(x, y);
         if (face == A) {
             return "a";
@@ -761,6 +1021,30 @@ public class ControlsView extends View {
         }
         if ("select".equals(key)) {
             return buttonSelect;
+        }
+        if ("start".equals(key)) {
+            return buttonStart;
+        }
+        if ("ta".equals(key)) {
+            return keyTurboA;
+        }
+        if ("tb".equals(key)) {
+            return keyTurboB;
+        }
+        if ("lr".equals(key)) {
+            return keyLR;
+        }
+        if ("save".equals(key)) {
+            return keySave;
+        }
+        if ("load".equals(key)) {
+            return keyLoad;
+        }
+        if ("ff".equals(key)) {
+            return keyFast;
+        }
+        if ("shot".equals(key)) {
+            return keyShot;
         }
         return buttonStart;
     }

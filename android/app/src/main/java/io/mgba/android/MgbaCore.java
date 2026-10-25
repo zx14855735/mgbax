@@ -63,11 +63,12 @@ public final class MgbaCore {
     /**
      * Reads audio already converted to the configured output rate.
      *
-     * @param speed emulated frames per paced frame, i.e. the fast-forward factor
+     * @param speed emulated frames per paced frame (0.05..64), i.e. the
+     *              fast-forward or slow-motion factor
      * @param drift small ratio adjustment (about +/-0.02) for playback buffer level control
      * @return number of stereo frames written into {@code out}
      */
-    public int readAudioOut(short[] out, int speed, float drift) {
+    public int readAudioOut(short[] out, double speed, float drift) {
         return handle == 0 ? 0 : nativeReadAudioOut(handle, out, speed, drift);
     }
 
@@ -172,6 +173,84 @@ public final class MgbaCore {
         return handle == 0 ? "" : nativeLinkStatus(handle);
     }
 
+    /** Forces the GBA battery save type; -1 lets the core autodetect. */
+    public void setSaveType(int type) {
+        if (handle != 0) {
+            nativeSetSaveType(handle, type);
+        }
+    }
+
+    /** Auto-applies IPS/UPS/BPS patches found next to the ROM on load. */
+    public void setPatches(boolean enabled) {
+        if (handle != 0) {
+            nativeSetPatches(handle, enabled);
+        }
+    }
+
+    /** BIOS options applied on the next ROM load. */
+    public void setBiosOptions(boolean useBios, boolean skipIntro) {
+        if (handle != 0) {
+            nativeSetBiosOptions(handle, useBios, skipIntro);
+        }
+    }
+
+    /** Game clock for RTC cartridges: 0 wall clock, 1 fixed epoch, 2 wall clock + offset. */
+    public void setRtc(int mode, long epoch, long offset) {
+        if (handle != 0) {
+            nativeSetRtc(handle, mode, epoch, offset);
+        }
+    }
+
+    /** Boktai solar level 0-10, or -1 to disable the sensor. */
+    public void setSolar(int level) {
+        if (handle != 0) {
+            nativeSetSolar(handle, level);
+        }
+    }
+
+    /** Enables rumble-pak simulation; poll {@link #takeRumbles()} for pulses. */
+    public void setCartRumble(boolean enabled) {
+        if (handle != 0) {
+            nativeSetCartRumble(handle, enabled);
+        }
+    }
+
+    /** Rumble pulses accumulated since the last call. */
+    public int takeRumbles() {
+        return handle == 0 ? 0 : nativeTakeRumbles(handle);
+    }
+
+    public int cheatCount() {
+        return handle == 0 ? 0 : nativeCheatCount(handle);
+    }
+
+    public String cheatName(int index) {
+        return handle == 0 ? "" : nativeCheatName(handle, index);
+    }
+
+    public boolean cheatEnabled(int index) {
+        return handle != 0 && nativeCheatEnabled(handle, index);
+    }
+
+    public void cheatSetEnabled(int index, boolean enabled) {
+        if (handle != 0) {
+            nativeCheatSetEnabled(handle, index, enabled);
+        }
+    }
+
+    /**
+     * Adds one named cheat set. {@code lines} holds one code per line;
+     * {@code type} is 0 autodetect, 1 CodeBreaker, 2 GameShark, 3 Pro Action
+     * Replay, 4 VBA.
+     */
+    public boolean cheatAdd(String name, String lines, int type) {
+        return handle != 0 && lines != null && nativeCheatAdd(handle, name, lines, type);
+    }
+
+    public boolean cheatRemove(int index) {
+        return handle != 0 && nativeCheatRemove(handle, index);
+    }
+
     private static native long nativeCreate(String saveDir, String stateDir);
 
     private static native void nativeDestroy(long handle);
@@ -186,7 +265,7 @@ public final class MgbaCore {
 
     private static native boolean nativeRunFrames(long handle, int keys, int count);
 
-    private static native int nativeReadAudioOut(long handle, short[] out, int speed, float drift);
+    private static native int nativeReadAudioOut(long handle, short[] out, double speed, float drift);
     private static native void nativeSetAudioPaceFps(long handle, float fps);
 
     private static native boolean nativeSetAudioOutput(long handle, int outRate);
@@ -226,4 +305,30 @@ public final class MgbaCore {
     private static native void nativeLinkClose(long handle);
 
     private static native String nativeLinkStatus(long handle);
+
+    private static native void nativeSetSaveType(long handle, int type);
+
+    private static native void nativeSetPatches(long handle, boolean enabled);
+
+    private static native void nativeSetBiosOptions(long handle, boolean useBios, boolean skipIntro);
+
+    private static native void nativeSetRtc(long handle, int mode, long epoch, long offset);
+
+    private static native void nativeSetSolar(long handle, int level);
+
+    private static native void nativeSetCartRumble(long handle, boolean enabled);
+
+    private static native int nativeTakeRumbles(long handle);
+
+    private static native int nativeCheatCount(long handle);
+
+    private static native String nativeCheatName(long handle, int index);
+
+    private static native boolean nativeCheatEnabled(long handle, int index);
+
+    private static native void nativeCheatSetEnabled(long handle, int index, boolean enabled);
+
+    private static native boolean nativeCheatAdd(long handle, String name, String lines, int type);
+
+    private static native boolean nativeCheatRemove(long handle, int index);
 }

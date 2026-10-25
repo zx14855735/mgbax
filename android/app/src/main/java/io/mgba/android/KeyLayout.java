@@ -12,6 +12,8 @@ import java.util.Map;
  */
 public final class KeyLayout {
     public static final String[] KEYS = {"dpad", "a", "b", "l", "r", "select", "start"};
+    /** Optional utility keys the player can switch on in the settings. */
+    public static final String[] EXTRA_KEYS = {"ta", "tb", "lr", "save", "load", "ff", "shot"};
     public static final float MIN_SCALE = 0.4f;
     public static final float MAX_SCALE = 3.0f;
 
@@ -65,25 +67,26 @@ public final class KeyLayout {
 
     public String encode() {
         StringBuilder out = new StringBuilder();
-        for (int i = 0; i < KEYS.length; i++) {
-            float[] point = saved.get(KEYS[i]);
+        String[] all = allKeys();
+        for (int i = 0; i < all.length; i++) {
+            float[] point = saved.get(all[i]);
             if (point != null) {
                 if (out.length() > 0) {
                     out.append(';');
                 }
-                out.append(KEYS[i]).append('=');
+                out.append(all[i]).append('=');
                 out.append(String.format(Locale.US, "%.4f,%.4f", point[0], point[1]));
             }
         }
-        for (int i = 0; i < KEYS.length; i++) {
-            Float scale = scales.get(KEYS[i]);
+        for (int i = 0; i < all.length; i++) {
+            Float scale = scales.get(all[i]);
             if (scale == null || Math.abs(scale - 1f) < 0.001f) {
                 continue;
             }
             if (out.length() > 0) {
                 out.append(';');
             }
-            out.append(KEYS[i]).append(".s=");
+            out.append(all[i]).append(".s=");
             out.append(String.format(Locale.US, "%.3f", scale));
         }
         return out.toString();
@@ -120,10 +123,11 @@ public final class KeyLayout {
 
     public Map<String, Float> resolvedScales() {
         Map<String, Float> out = new HashMap<>();
-        for (int i = 0; i < KEYS.length; i++) {
-            Float scale = scales.get(KEYS[i]);
+        String[] all = allKeys();
+        for (int i = 0; i < all.length; i++) {
+            Float scale = scales.get(all[i]);
             if (scale != null) {
-                out.put(KEYS[i], scale);
+                out.put(all[i], scale);
             }
         }
         return out;
@@ -135,13 +139,21 @@ public final class KeyLayout {
 
     public Map<String, float[]> resolved() {
         Map<String, float[]> out = new HashMap<>();
-        for (int i = 0; i < KEYS.length; i++) {
-            float[] point = saved.get(KEYS[i]);
+        String[] all = allKeys();
+        for (int i = 0; i < all.length; i++) {
+            float[] point = saved.get(all[i]);
             if (point != null) {
-                out.put(KEYS[i], copy(point));
+                out.put(all[i], copy(point));
             }
         }
         return out;
+    }
+
+    private static String[] allKeys() {
+        String[] all = new String[KEYS.length + EXTRA_KEYS.length];
+        System.arraycopy(KEYS, 0, all, 0, KEYS.length);
+        System.arraycopy(EXTRA_KEYS, 0, all, KEYS.length, EXTRA_KEYS.length);
+        return all;
     }
 
     public static float clamp01(float value) {
@@ -183,6 +195,11 @@ public final class KeyLayout {
     private static boolean known(String key) {
         for (int i = 0; i < KEYS.length; i++) {
             if (KEYS[i].equals(key)) {
+                return true;
+            }
+        }
+        for (int i = 0; i < EXTRA_KEYS.length; i++) {
+            if (EXTRA_KEYS[i].equals(key)) {
                 return true;
             }
         }

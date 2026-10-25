@@ -4,9 +4,11 @@
 #include "mgba_mobile.h"
 
 #include <mgba/core/core.h>
+#include <mgba/core/cheats.h>
 #include <mgba/core/interface.h>
 #include <mgba/core/serialize.h>
 #include <mgba/gb/interface.h>
+#include <mgba/gba/interface.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
 #include <mgba/internal/gba/savedata.h>
@@ -14,6 +16,7 @@
 #include <mgba/internal/gb/io.h>
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/audio-resampler.h>
+#include <mgba-util/vfs.h>
 
 #include "link_net.h"
 
@@ -87,6 +90,28 @@ struct MgbaMobile {
 	/* A reading that left the deadband, waiting for the next window to
 	 * confirm it before the resampler follows. 0 = nothing pending. */
 	double audioPacePending;
+	/* Front-end overrides applied on the next load. */
+	int saveType;
+	bool patches;
+	bool useBios;
+	bool skipBios;
+	int rtcMode;
+	int64_t rtcEpoch;
+	int64_t rtcOffset;
+	int solarLevel;
+	bool cartRumble;
+	volatile int rumbleHits;
+	/* Solar/RTC/rumble live in the GBA board; they survive resets, so these
+	 * sources can stay attached for the lifetime of the core. */
+	struct GBALuminanceSource luminance;
+	struct mRTCSource rtc;
+	struct mRumble rumble;
+};
+
+enum {
+	MOBILE_RTC_WALL = 0,
+	MOBILE_RTC_FIXED = 1,
+	MOBILE_RTC_OFFSET = 2,
 };
 
 /*
@@ -116,6 +141,9 @@ static void attachKeyCallback(struct MgbaMobile* emu);
 static void detachLink(struct MgbaMobile* emu);
 static void pollLink(struct MgbaMobile* emu);
 static double audioNativeFps(const struct MgbaMobile* emu);
+static void attachCartHw(struct MgbaMobile* emu);
+static void loadCheats(struct MgbaMobile* emu);
+static void saveCheats(struct MgbaMobile* emu);
 
 static void copyPath(char* dst, size_t dstLen, const char* src) {
 	if (!src) {
@@ -216,6 +244,15 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	emu->link = netLinkCreate();
 	emu->gbaLink.emu = emu;
 	emu->gbLink.emu = emu;
+	// Defaults keep this front end's shipped behaviour: save type forced to
+	// FLASH1M, BIOS used but skipped, patches on. The Java settings can change
+	// all of these between launches.
+	emu->saveType = GBA_SAVEDATA_FLASH1M;
+	emu->patches = true;
+	emu->useBios = true;
+	emu->skipBios = true;
+	emu->solarLevel = -1;
+	emu->cartRumble = false;
 	return emu;
 }
 
@@ -249,8 +286,8 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	mCoreConfigSetOverrideValue(&core->config, "savestatePath", emu->statePath);
 	mCoreConfigSetOverrideIntValue(&core->config, "volume", 0x100);
 	mCoreConfigSetOverrideIntValue(&core->config, "frameskip", 0);
-	mCoreConfigSetOverrideIntValue(&core->config, "useBios", 1);
-	mCoreConfigSetOverrideIntValue(&core->config, "skipBios", 1);
+	mCoreConfigSetOverrideIntValue(&core->config, "useBios", emu->useBios ? 1 : 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "skipBios", emu->skipBios ? 1 : 0);
 	mCoreConfigSetOverrideIntValue(&core->config, "audioSync", 0);
 	mCoreConfigSetOverrideIntValue(&core->config, "videoSync", 0);
 	mCoreConfigSetOverrideUIntValue(&core->config, "audioBuffers", 16384);
@@ -262,6 +299,10 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		destroyCore(emu);
 		return false;
 	}
+	if (emu->patches && !mCoreAutoloadPatch(core)) {
+		// No patch next to the ROM is the normal case; a bad patch only warns.
+		MOBILE_LOGI("No patch applied for %s", filename);
+	}
 	mCoreAutoloadSave(core);
 	core->setAudioBufferSize(core, 16384);
 	if (!ensureVideo(emu)) {
@@ -272,8 +313,14 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	core->reset(core);
 	if (core->platform(core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) core->board;
-		GBASavedataForceType(&gba->memory.savedata, GBA_SAVEDATA_FLASH1M);
-		MOBILE_LOGI("GBA save type forced to FLASH1M (128KB)");
+		int type = emu->saveType;
+		if (type < GBA_SAVEDATA_FORCE_NONE || type > GBA_SAVEDATA_SRAM512) {
+			type = GBA_SAVEDATA_AUTODETECT;
+		}
+		if (type != GBA_SAVEDATA_AUTODETECT) {
+			GBASavedataForceType(&gba->memory.savedata, type);
+			MOBILE_LOGI("GBA save type forced to %d", type);
+		}
 	}
 	if (!ensureVideo(emu)) {
 		MOBILE_LOGE("No video buffer for %s", filename);
@@ -282,6 +329,8 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	}
 
 	attachKeyCallback(emu);
+	attachCartHw(emu);
+	loadCheats(emu);
 	pollLink(emu);
 	MOBILE_LOGI("Loaded %s (%ux%u, %u Hz)", filename, emu->width, emu->height, core->audioSampleRate(core));
 	return true;
@@ -346,6 +395,291 @@ static void attachKeyCallback(struct MgbaMobile* emu) {
 	emu->keyCallback.requireOpposingDirections = false;
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	gba->keyCallback = &emu->keyCallback;
+}
+
+// == Cartridge hardware (solar sensor, RTC, rumble) ==
+
+static uint8_t solarReadLuminance(struct GBALuminanceSource* lux) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) lux - offsetof(struct MgbaMobile, luminance));
+	int level = emu->solarLevel;
+	if (level < 0) {
+		level = 0;
+	}
+	if (level > 9) {
+		level = 9;
+	}
+	return (uint8_t) GBA_LUX_LEVELS[level];
+}
+
+static time_t rtcUnixTime(struct mRTCSource* rtc) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) rtc - offsetof(struct MgbaMobile, rtc));
+	switch (emu->rtcMode) {
+	case MOBILE_RTC_FIXED:
+		return (time_t) emu->rtcEpoch;
+	case MOBILE_RTC_OFFSET:
+		return time(0) + (time_t) emu->rtcOffset;
+	default:
+		return time(0);
+	}
+}
+
+static void rumbleSet(struct mRumble* rumble, bool enable, uint32_t sinceLast) {
+	UNUSED(sinceLast);
+	if (!rumble || !enable) {
+		return;
+	}
+	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) rumble - offsetof(struct MgbaMobile, rumble));
+	__atomic_fetch_add(&emu->rumbleHits, 1, __ATOMIC_RELEASE);
+}
+
+/* Wires the front end's sensor sources into a loaded GBA board. GBA only. */
+static void attachCartHw(struct MgbaMobile* emu) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	emu->luminance.readLuminance = solarReadLuminance;
+	if (emu->solarLevel >= 0) {
+		gba->memory.hw.devices |= HW_LIGHT_SENSOR;
+		gba->luminanceSource = &emu->luminance;
+	}
+	emu->rtc.unixTime = rtcUnixTime;
+	gba->rtcSource = &emu->rtc;
+	emu->rumble.setRumble = rumbleSet;
+	if (emu->cartRumble) {
+		gba->memory.hw.devices |= HW_RUMBLE;
+		gba->rumble = &emu->rumble;
+	}
+}
+
+void mgbaMobileSetSaveType(struct MgbaMobile* emu, int type) {
+	if (!emu) {
+		return;
+	}
+	emu->saveType = type;
+	// Also re-force on the running core so a change takes effect on reset.
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA && type != GBA_SAVEDATA_AUTODETECT
+	    && type >= GBA_SAVEDATA_FORCE_NONE && type <= GBA_SAVEDATA_SRAM512) {
+		GBASavedataForceType(&((struct GBA*) emu->core->board)->memory.savedata, type);
+	}
+}
+
+void mgbaMobileSetPatches(struct MgbaMobile* emu, bool enabled) {
+	if (emu) {
+		emu->patches = enabled;
+	}
+}
+
+void mgbaMobileSetBiosOptions(struct MgbaMobile* emu, bool useBios, bool skipIntro) {
+	if (!emu) {
+		return;
+	}
+	emu->useBios = useBios;
+	emu->skipBios = skipIntro;
+}
+
+void mgbaMobileSetRtc(struct MgbaMobile* emu, int mode, int64_t epoch, int64_t offset) {
+	if (!emu) {
+		return;
+	}
+	if (mode < MOBILE_RTC_WALL || mode > MOBILE_RTC_OFFSET) {
+		mode = MOBILE_RTC_WALL;
+	}
+	emu->rtcMode = mode;
+	emu->rtcEpoch = epoch;
+	emu->rtcOffset = offset;
+}
+
+void mgbaMobileSetSolar(struct MgbaMobile* emu, int level) {
+	if (!emu) {
+		return;
+	}
+	// -1 disables the sensor (checked at the next load); 0-10 is a lux level.
+	if (level > 10) {
+		level = 10;
+	}
+	emu->solarLevel = level;
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) emu->core->board;
+		if (level >= 0) {
+			gba->memory.hw.devices |= HW_LIGHT_SENSOR;
+			gba->luminanceSource = &emu->luminance;
+		}
+	}
+}
+
+int mgbaMobileTakeRumbles(struct MgbaMobile* emu) {
+	if (!emu) {
+		return 0;
+	}
+	return __atomic_exchange_n(&emu->rumbleHits, 0, __ATOMIC_ACQ_REL);
+}
+
+void mgbaMobileSetCartRumble(struct MgbaMobile* emu, bool enabled) {
+	if (!emu) {
+		return;
+	}
+	emu->cartRumble = enabled;
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) emu->core->board;
+		if (enabled) {
+			gba->memory.hw.devices |= HW_RUMBLE;
+			gba->rumble = &emu->rumble;
+		}
+	}
+}
+
+// == Cheats ==
+
+static void cheatFilePath(const struct MgbaMobile* emu, char* out, size_t outLen) {
+	out[0] = '\0';
+	if (!emu || !emu->core || emu->savePath[0] == '\0' || emu->core->dirs.baseName[0] == '\0') {
+		return;
+	}
+	snprintf(out, outLen, "%s/%s.cht", emu->savePath, emu->core->dirs.baseName);
+}
+
+static struct mCheatDevice* cheatDevice(struct MgbaMobile* emu) {
+	if (!emu || !emu->core || !emu->core->cheatDevice) {
+		return NULL;
+	}
+	return emu->core->cheatDevice(emu->core);
+}
+
+static void loadCheats(struct MgbaMobile* emu) {
+	struct mCheatDevice* device = cheatDevice(emu);
+	char path[1200];
+	if (!device) {
+		return;
+	}
+	cheatFilePath(emu, path, sizeof(path));
+	struct VFile* vf = VFileOpen(path, O_RDONLY);
+	if (!vf) {
+		return;
+	}
+	if (!mCheatParseFile(device, vf)) {
+		MOBILE_LOGI("Cheat file present but unreadable: %s", path);
+	}
+	vf->close(vf);
+}
+
+static void saveCheats(struct MgbaMobile* emu) {
+	struct mCheatDevice* device = cheatDevice(emu);
+	char path[1200];
+	if (!device) {
+		return;
+	}
+	cheatFilePath(emu, path, sizeof(path));
+	struct VFile* vf = VFileOpen(path, O_WRONLY | O_CREAT | O_TRUNC);
+	if (!vf) {
+		return;
+	}
+	mCheatSaveFile(device, vf);
+	vf->close(vf);
+}
+
+int mgbaMobileCheatCount(const struct MgbaMobile* emu) {
+	struct MgbaMobile* mut = (struct MgbaMobile*) emu;
+	struct mCheatDevice* device = cheatDevice(mut);
+	if (!device) {
+		return 0;
+	}
+	return (int) mCheatSetsSize(&device->cheats);
+}
+
+void mgbaMobileCheatName(const struct MgbaMobile* emu, int index, char* out, size_t outLen) {
+	struct MgbaMobile* mut = (struct MgbaMobile*) emu;
+	struct mCheatDevice* device = cheatDevice(mut);
+	const char* name = "";
+	if (!out || outLen == 0) {
+		return;
+	}
+	out[0] = '\0';
+	if (!device || index < 0 || (size_t) index >= mCheatSetsSize(&device->cheats)) {
+		return;
+	}
+	struct mCheatSet* set = *mCheatSetsGetPointer(&device->cheats, index);
+	if (set && set->name) {
+		name = set->name;
+	}
+	snprintf(out, outLen, "%s", name);
+}
+
+bool mgbaMobileCheatEnabled(const struct MgbaMobile* emu, int index) {
+	struct MgbaMobile* mut = (struct MgbaMobile*) emu;
+	struct mCheatDevice* device = cheatDevice(mut);
+	if (!device || index < 0 || (size_t) index >= mCheatSetsSize(&device->cheats)) {
+		return false;
+	}
+	return (*mCheatSetsGetPointer(&device->cheats, index))->enabled;
+}
+
+void mgbaMobileCheatSetEnabled(struct MgbaMobile* emu, int index, bool enabled) {
+	struct mCheatDevice* device = cheatDevice(emu);
+	if (!device || index < 0 || (size_t) index >= mCheatSetsSize(&device->cheats)) {
+		return;
+	}
+	struct mCheatSet* set = *mCheatSetsGetPointer(&device->cheats, index);
+	set->enabled = enabled;
+	mCheatRefresh(device, set);
+	saveCheats(emu);
+}
+
+bool mgbaMobileCheatAdd(struct MgbaMobile* emu, const char* name, const char* lines, int type) {
+	struct mCheatDevice* device = cheatDevice(emu);
+	if (!device || !lines) {
+		return false;
+	}
+	struct mCheatSet* set = device->createSet(device, name ? name : "");
+	if (!set) {
+		return false;
+	}
+	bool any = false;
+	const char* cursor = lines;
+	char line[256];
+	while (cursor && *cursor) {
+		const char* end = strpbrk(cursor, "\r\n");
+		size_t len = end ? (size_t) (end - cursor) : strlen(cursor);
+		if (len >= sizeof(line)) {
+			len = sizeof(line) - 1;
+		}
+		memcpy(line, cursor, len);
+		line[len] = '\0';
+		char* trim = line;
+		while (*trim == ' ' || *trim == '\t') {
+			++trim;
+		}
+		char* last = trim + strlen(trim);
+		while (last > trim && (last[-1] == ' ' || last[-1] == '\t')) {
+			--last;
+		}
+		*last = '\0';
+		if (*trim && mCheatAddLine(set, trim, type)) {
+			any = true;
+		}
+		cursor = end ? end + 1 : NULL;
+	}
+	if (!any) {
+		mCheatSetDeinit(set);
+		return false;
+	}
+	set->enabled = true;
+	mCheatAddSet(device, set);
+	mCheatRefresh(device, set);
+	saveCheats(emu);
+	return true;
+}
+
+bool mgbaMobileCheatRemove(struct MgbaMobile* emu, int index) {
+	struct mCheatDevice* device = cheatDevice(emu);
+	if (!device || index < 0 || (size_t) index >= mCheatSetsSize(&device->cheats)) {
+		return false;
+	}
+	struct mCheatSet* set = *mCheatSetsGetPointer(&device->cheats, index);
+	mCheatRemoveSet(device, set);
+	mCheatSetDeinit(set);
+	saveCheats(emu);
+	return true;
 }
 
 static void applyFrameskip(struct mCore* core, int skip) {
@@ -970,7 +1304,7 @@ static double audioNativeFps(const struct MgbaMobile* emu) {
  *
  * Falls back to raw core-rate audio when no output rate was configured.
  */
-int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, int speed, float drift) {
+int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, double speed, float drift) {
 	if (!emu || !emu->core || !out || maxFrames <= 0) {
 		return 0;
 	}
@@ -982,8 +1316,8 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	if (!source || !coreRate) {
 		return 0;
 	}
-	if (speed < 1) {
-		speed = 1;
+	if (speed < 0.05) {
+		speed = 0.05;
 	} else if (speed > 64) {
 		speed = 64;
 	}
@@ -1084,7 +1418,8 @@ bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride) {
 }
 
 bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot) {
-	if (!emu || !emu->core || slot < 1 || slot > 9) {
+	// Slot 0 is reserved for the front end's automatic save-on-exit.
+	if (!emu || !emu->core || slot < 0 || slot > 9) {
 		return false;
 	}
 	if (emu->fast > 0) {
@@ -1098,7 +1433,7 @@ bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot) {
 }
 
 bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot) {
-	if (!emu || !emu->core || slot < 1 || slot > 9) {
+	if (!emu || !emu->core || slot < 0 || slot > 9) {
 		return false;
 	}
 	bool ok = mCoreLoadState(emu->core, slot, SAVESTATE_SCREENSHOT | SAVESTATE_SAVEDATA | SAVESTATE_RTC);

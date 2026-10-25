@@ -4,8 +4,11 @@
 package io.mgba.android;
 
 import android.Manifest;
+import android.app.DatePickerDialog;
+import android.app.TimePickerDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
@@ -24,7 +27,10 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.text.InputType;
@@ -60,8 +66,10 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.GregorianCalendar;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -74,10 +82,16 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_ROM = 1;
     private static final int REQ_BIOS = 2;
     private static final int REQ_STORAGE = 3;
+    private static final int REQ_SAVDIR = 4;
     private static final int CMD_SAVE = 1;
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
+    private static final int CMD_AUTOSAVE = 4;
     private static final int TURBO_ARM_MS = 200;
+    /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
+    private static final int AUTO_SLOT = 0;
+    /** Speed presets on the tier bar; anything else goes through 自定义. */
+    private static final float[] SPEED_TIERS = {0.25f, 0.5f, 1f, 2f, 4f, 8f, 16f};
     private static final int TURBO_PULSE_MS = 40;
     /** Frames requested from the resampler per read; also the size of the read buffer. */
     private static final int AUDIO_READ_FRAMES = 8192;
@@ -105,7 +119,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private ScreenArea screenArea;
     private final Runnable hideMenu = this::hideMenuNow;
     private HorizontalScrollView speedBar;
-    private final Button[] speedButtons = new Button[17];
+    private final Button[] speedButtons = new Button[SPEED_TIERS.length];
+    private Button speedCustom;
 
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
     /** True while a picked/opened ROM is being imported, so startEmulator() does not arm the old one. */
@@ -116,7 +131,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile boolean running;
     private volatile boolean paused;
     private volatile boolean surfaceReady;
-    private volatile int speed = 1;
+    private volatile float speed = 1f;
     private volatile boolean fastHold;
     private volatile int touchKeys;
     private volatile int hwKeys;
@@ -125,14 +140,30 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean turboDown;
     private volatile int slot = 1;
     private Thread emuThread;
+    private Vibrator vibrator;
+    private long lastRumbleAt;
+    /** GIF recording state; the queue hands frames to the encoder thread. */
+    private volatile boolean gifRecording;
+    private Button gifButton;
+    private java.util.concurrent.ArrayBlockingQueue<Bitmap> gifQueue;
+    private Thread gifThread;
+    private long lastGifAt;
+    private int gifFrames;
+    /** GIF capture pacing and length cap (GIF_MAX_FRAMES at ~20 fps). */
+    private static final int GIF_FRAME_MS = 50;
+    private static final int GIF_MAX_FRAMES = 900;
 
     private AudioTrack audio;
     private boolean audioMuted;
     private volatile boolean audioStarted;
-    private int appliedSpeed = -1;
+    private double appliedSpeed = -1;
+    /** Software volume, 0-150 percent, applied when frames reach the track. */
+    private int volumePercent = 100;
     private long nextFastPresent;
     private int outputRate;
     private int sourceRate;
+    /** Fractional speeds (slow motion) accumulate whole frames in this debt. */
+    private float frameDebt;
     /**
      * Wall-clock target for one emulation slice. This is one frame of the
      * emulated console (about 16.74 ms, i.e. 59.73 fps, for GBA and GB), not a
@@ -186,6 +217,26 @@ public class EmulatorActivity extends AppCompatActivity {
                 noteUserKeys(prev, hwKeys);
                 if ((mask & ~prev) != 0) {
                     wakeInput();
+                    vibrateOnKey((mask & ~prev));
+                }
+            }
+
+            @Override
+            public void onAction(int action) {
+                if (action == ControlsView.ACTION_SAVE) {
+                    quickState(true);
+                } else if (action == ControlsView.ACTION_LOAD) {
+                    quickState(false);
+                } else if (action == ControlsView.ACTION_SHOT) {
+                    takeScreenshot();
+                }
+            }
+
+            @Override
+            public void onFastHold(boolean down) {
+                fastHold = down;
+                if (down) {
+                    wakeInput();
                 }
             }
 
@@ -194,6 +245,8 @@ public class EmulatorActivity extends AppCompatActivity {
                 positionMenuButton();
             }
         });
+        vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        applyInputSettings();
         bindLayoutEditor();
 
         findViewById(R.id.btn_open).setOnClickListener(v -> openDocument(REQ_ROM));
@@ -214,11 +267,29 @@ public class EmulatorActivity extends AppCompatActivity {
         });
         findViewById(R.id.btn_save).setOnClickListener(v -> chooseSlot(true));
         findViewById(R.id.btn_load).setOnClickListener(v -> chooseSlot(false));
-        findViewById(R.id.btn_reset).setOnClickListener(v -> command.set(CMD_RESET));
+        findViewById(R.id.btn_reset).setOnClickListener(v -> confirmReset());
         findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
         findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
         findViewById(R.id.btn_layout).setOnClickListener(v -> setLayoutEditing(!layoutEditing));
         findViewById(R.id.btn_settings).setOnClickListener(v -> showSettingsDialog());
+        View cheatsButton = findViewById(R.id.btn_cheats);
+        if (cheatsButton != null) {
+            cheatsButton.setOnClickListener(v -> showCheatsDialog());
+        }
+        View shotButton = findViewById(R.id.btn_shot);
+        if (shotButton != null) {
+            shotButton.setOnClickListener(v -> takeScreenshot());
+        }
+        gifButton = findViewById(R.id.btn_gif);
+        if (gifButton != null) {
+            gifButton.setOnClickListener(v -> {
+                if (gifRecording) {
+                    stopGif();
+                } else {
+                    startGif();
+                }
+            });
+        }
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
 
@@ -314,6 +385,7 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         File saves = SaveLocation.prepare(this);
         core = new MgbaCore(saves, new File(getFilesDir(), "states"));
+        applyCoreOptions();
         applyVideo();
         if (pendingPath.get() == null && !importingRom) {
             String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
@@ -342,7 +414,11 @@ public class EmulatorActivity extends AppCompatActivity {
         boolean nowB = ((touchKeys | hwKeys) & ControlsView.B) != 0;
         if (nowB && !wasB) {
             inputHandler.removeCallbacks(armTurbo);
-            inputHandler.postDelayed(armTurbo, TURBO_ARM_MS);
+            // Holding B only auto-turboes in the classic mode; the dedicated
+            // 连发 keys have their own pulsing in ControlsView.
+            if (turboModePref() == 0) {
+                inputHandler.postDelayed(armTurbo, TURBO_ARM_MS);
+            }
         } else if (!nowB && wasB) {
             inputHandler.removeCallbacks(armTurbo);
             stopTurbo();
@@ -414,6 +490,12 @@ public class EmulatorActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         if (requestCode == REQ_STORAGE) {
             startEmulator();
+            return;
+        }
+        if (requestCode == REQ_SAVDIR) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                importMyBoySaves(data.getData());
+            }
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
@@ -864,24 +946,39 @@ public class EmulatorActivity extends AppCompatActivity {
                     Thread.sleep(16);
                     continue;
                 }
-                int mult = fastHold ? Math.max(speed, 16) : speed;
-                syncFastAudio(mult);
-                // Run in a few steps, pumping audio in between: a fast-forward
-                // burst produces several frames of audio at once and the core's
-                // audio buffer only holds a little more than that, so leaving it
-                // undrained drops samples and makes fast-forward sound garbled.
-                int steps = (mult + AUDIO_STEP_FRAMES - 1) / AUDIO_STEP_FRAMES;
-                int step = (mult + steps - 1) / steps;
-                for (int done = 0; done < mult; ) {
-                    int n = Math.min(step, mult - done);
-                    core.runFrames(touchKeys | hwKeys, n);
-                    // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
-                    // The resampler follows the console's true frame time; the
-                    // measured pace is reported to the core once a second.
-                    pumpAudio();
-                    done += n;
+                float factor = fastHold ? Math.max(speed, fastHoldSpeed()) : speed;
+                syncFastAudio(factor);
+                // Fractional speeds (slow motion) accumulate whole frames in a
+                // small debt; integer speeds drain it every slice.
+                frameDebt += factor;
+                if (frameDebt > 48f) {
+                    frameDebt = 48f;
                 }
-                if (mult == 1) {
+                int framesToRun = (int) frameDebt;
+                if (framesToRun > 0) {
+                    frameDebt -= framesToRun;
+                    // Run in a few steps, pumping audio in between: a
+                    // fast-forward burst produces several frames of audio at
+                    // once and the core's audio buffer only holds a little
+                    // more than that, so leaving it undrained drops samples
+                    // and makes fast-forward sound garbled.
+                    int steps = (framesToRun + AUDIO_STEP_FRAMES - 1) / AUDIO_STEP_FRAMES;
+                    int step = (framesToRun + steps - 1) / steps;
+                    for (int done = 0; done < framesToRun; ) {
+                        int n = Math.min(step, framesToRun - done);
+                        core.runFrames(touchKeys | hwKeys, n);
+                        // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
+                        // The resampler follows the console's true frame time;
+                        // the measured pace is reported to the core once a
+                        // second.
+                        pumpAudio();
+                        done += n;
+                    }
+                    pollRumble();
+                } else {
+                    pumpAudio();
+                }
+                if (factor <= 1.5f) {
                     presentFrame();
                 } else {
                     long now = System.nanoTime();
@@ -890,7 +987,7 @@ public class EmulatorActivity extends AppCompatActivity {
                         nextFastPresent = now + 80_000_000L;
                     }
                 }
-                frames += mult;
+                frames += framesToRun;
                 slices++;
                 // Schedule slices against an absolute next start. A sleep that
                 // oversleeps then cannot accumulate into a loop that runs (and
@@ -911,7 +1008,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     long shown = frames;
                     long cycles = slices;
                     long elapsed = now - fpsStamp;
-                    int shownSpeed = fastHold ? Math.max(speed, 16) : speed;
+                    float shownSpeed = fastHold ? Math.max(speed, fastHoldSpeed()) : speed;
                     frames = 0;
                     slices = 0;
                     fpsStamp = now;
@@ -923,7 +1020,10 @@ public class EmulatorActivity extends AppCompatActivity {
                     // Rounded so the console's own 59.73 fps still shows as the
                     // 60 the counter has always displayed.
                     long shownFps = elapsed > 0 ? Math.round(shown * 1_000_000_000.0 / elapsed) : 0;
-                    runOnUiThread(() -> fpsView.setText(shownSpeed + "倍 " + shownFps + "fps"));
+                    String speedText = shownSpeed == (long) shownSpeed
+                            ? String.valueOf((long) shownSpeed)
+                            : String.format(Locale.US, "%.2f", shownSpeed);
+                    runOnUiThread(() -> fpsView.setText(speedText + "倍 " + shownFps + "fps"));
                 }
             } catch (InterruptedException e) {
                 if (!running) {
@@ -955,8 +1055,15 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         long frameNanos = core.frameNanos();
         sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000L / 60L;
+        frameDebt = 0f;
+        nextFastPresent = 0L;
         setupAudio();
         paused = false;
+        if (getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+                && core.loadState(AUTO_SLOT)) {
+            core.clearAudio();
+            core.runFrames(touchKeys | hwKeys, 1);
+        }
         String title = core.title();
         runOnUiThread(() -> {
             hint.setVisibility(View.GONE);
@@ -995,6 +1102,11 @@ public class EmulatorActivity extends AppCompatActivity {
             core.reset();
             core.clearAudio();
             toast(getString(R.string.reset_done));
+        } else if (cmd == CMD_AUTOSAVE) {
+            // Silent save into the reserved slot on the way to the background.
+            if (core.saveState(AUTO_SLOT)) {
+                writeStatePreview(AUTO_SLOT);
+            }
         }
     }
 
@@ -1013,6 +1125,7 @@ public class EmulatorActivity extends AppCompatActivity {
         if (!core.copyVideo(frame)) {
             return;
         }
+        captureGifFrame();
         if (!presentQueued.compareAndSet(false, true)) {
             return;
         }
@@ -1073,7 +1186,7 @@ public class EmulatorActivity extends AppCompatActivity {
         try {
             int minFrames = minBytes / 4;
             int wantFrames = Math.min(Math.max(minFrames * 2, 3072), 6144);
-            track = new AudioTrack.Builder()
+            AudioTrack.Builder builder = new AudioTrack.Builder()
                     .setAudioAttributes(new AudioAttributes.Builder()
                             .setUsage(AudioAttributes.USAGE_GAME)
                             .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -1084,8 +1197,11 @@ public class EmulatorActivity extends AppCompatActivity {
                             .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)
                             .build())
                     .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(wantFrames * 4)
-                    .build();
+                    .setBufferSizeInBytes(wantFrames * 4);
+            if (Build.VERSION.SDK_INT >= 26 && getPreferences(MODE_PRIVATE).getBoolean("low_latency", false)) {
+                builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY);
+            }
+            track = builder.build();
             if (track.getState() != AudioTrack.STATE_INITIALIZED) {
                 track.release();
                 return false;
@@ -1122,8 +1238,8 @@ public class EmulatorActivity extends AppCompatActivity {
      * resampling at that speed (tape style, matching the iOS varispeed unit), so
      * a change only needs the audio pipeline restarted.
      */
-    private void syncFastAudio(int mult) {
-        boolean mute = mult > 1 && !getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
+    private void syncFastAudio(double mult) {
+        boolean mute = mult > 1.01 && !getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
         if (mute != audioMuted) {
             audioMuted = mute;
             resetAudio();
@@ -1163,10 +1279,11 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         boolean playing = audioStarted;
         float drift = rateControl.drift(bufferedFrames() + carryFrames, playing);
+        double rate = appliedSpeed > 0.05 ? appliedSpeed : 1.0;
         // Fast-forward produces several frames worth of audio per pump; keep
         // draining so the core's buffer never backs up.
         for (int round = 0; round < 8; round++) {
-            int frames = core.readAudioOut(audioRead, Math.max(appliedSpeed, 1), drift);
+            int frames = core.readAudioOut(audioRead, rate, drift);
             if (frames <= 0) {
                 break;
             }
@@ -1232,6 +1349,14 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private int writeAudio(short[] data, int frames) {
         try {
+            if (volumePercent != 100) {
+                float gain = volumePercent / 100f;
+                int count = frames * 2;
+                for (int i = 0; i < count; i++) {
+                    int scaled = (int) (data[i] * gain);
+                    data[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, scaled));
+                }
+            }
             int written = audio.write(data, 0, frames * 2, AudioTrack.WRITE_NON_BLOCKING);
             if (written <= 0) {
                 return 0;
@@ -1470,7 +1595,8 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void bindLayoutEditor() {
-        keyLayout = KeyLayout.decode(getPreferences(MODE_PRIVATE).getString("key_layout", ""));
+        layoutProfile = activeProfile();
+        keyLayout = KeyLayout.decode(profileLayout(layoutProfile));
         controls.setCenters(keyLayout.resolved());
         controls.setScales(keyLayout.resolvedScales());
         selectedKey = null;
@@ -1536,6 +1662,10 @@ public class EmulatorActivity extends AppCompatActivity {
         });
         findViewById(R.id.layout_reset).setOnClickListener(v -> resetLayout());
         findViewById(R.id.layout_done).setOnClickListener(v -> setLayoutEditing(false));
+        View profilesButton = findViewById(R.id.layout_profiles);
+        if (profilesButton != null) {
+            profilesButton.setOnClickListener(v -> showLayoutProfiles());
+        }
         View minus = findViewById(R.id.layout_minus);
         if (minus != null) {
             minus.setOnClickListener(v -> nudgeScale(-0.05f));
@@ -1583,7 +1713,9 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void persistLayout() {
-        getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
+        getPreferences(MODE_PRIVATE).edit()
+                .putString(PROFILE_PREFIX + layoutProfile, keyLayout.encode())
+                .apply();
     }
 
     private void setLayoutEditing(boolean on) {
@@ -1605,11 +1737,226 @@ public class EmulatorActivity extends AppCompatActivity {
     private void resetLayout() {
         keyLayout.resetAll();
         selectedKey = null;
-        getPreferences(MODE_PRIVATE).edit().putString("key_layout", keyLayout.encode()).apply();
+        persistLayout();
         controls.setCenters(keyLayout.resolved());
         controls.setScales(keyLayout.resolvedScales());
         refreshScaleBar();
         toast(getString(R.string.layout_reset_done));
+    }
+
+    // == Key layout profiles ==
+
+    /** Multiple key layouts: each is stored under its own prefs key and can
+     * be switched, duplicated and deleted from the layout editor. */
+    private String layoutProfile;
+    private static final String PROFILE_PREFIX = "layout_p_";
+    private static final String DEFAULT_PROFILE = "默认";
+
+    private ArrayList<String> profileNames() {
+        ArrayList<String> names = new ArrayList<>();
+        String csv = getPreferences(MODE_PRIVATE).getString("layout_profiles", null);
+        if (csv != null) {
+            for (String name : csv.split("\n")) {
+                String trim = name.trim();
+                if (!trim.isEmpty() && !names.contains(trim)) {
+                    names.add(trim);
+                }
+            }
+        }
+        if (names.isEmpty()) {
+            // First run of the profile system: carry the single stored layout
+            // over as the default profile so nothing is lost.
+            names.add(DEFAULT_PROFILE);
+            String legacy = getPreferences(MODE_PRIVATE).getString("key_layout", "");
+            getPreferences(MODE_PRIVATE).edit()
+                    .putString(PROFILE_PREFIX + DEFAULT_PROFILE, legacy == null ? "" : legacy)
+                    .apply();
+            saveProfileNames(names);
+        }
+        return names;
+    }
+
+    private void saveProfileNames(List<String> names) {
+        StringBuilder csv = new StringBuilder();
+        for (String name : names) {
+            if (csv.length() > 0) {
+                csv.append('\n');
+            }
+            csv.append(name);
+        }
+        getPreferences(MODE_PRIVATE).edit().putString("layout_profiles", csv.toString()).apply();
+    }
+
+    private String activeProfile() {
+        String active = getPreferences(MODE_PRIVATE).getString("layout_active", null);
+        if (active != null && !active.isEmpty() && profileNames().contains(active)) {
+            return active;
+        }
+        return DEFAULT_PROFILE;
+    }
+
+    private String profileLayout(String name) {
+        String data = getPreferences(MODE_PRIVATE).getString(PROFILE_PREFIX + name, null);
+        if (data != null) {
+            return data;
+        }
+        if (DEFAULT_PROFILE.equals(name)) {
+            String legacy = getPreferences(MODE_PRIVATE).getString("key_layout", "");
+            getPreferences(MODE_PRIVATE).edit()
+                    .putString(PROFILE_PREFIX + name, legacy == null ? "" : legacy)
+                    .apply();
+            return legacy == null ? "" : legacy;
+        }
+        return "";
+    }
+
+    private void switchProfile(String name) {
+        layoutProfile = name;
+        getPreferences(MODE_PRIVATE).edit().putString("layout_active", name).apply();
+        keyLayout = KeyLayout.decode(profileLayout(name));
+        selectedKey = null;
+        controls.setCenters(keyLayout.resolved());
+        controls.setScales(keyLayout.resolvedScales());
+        refreshScaleBar();
+    }
+
+    private void createProfile(String name, boolean copyCurrent) {
+        ArrayList<String> names = profileNames();
+        if (names.contains(name)) {
+            toast(getString(R.string.profile_exists));
+            return;
+        }
+        names.add(name);
+        saveProfileNames(names);
+        getPreferences(MODE_PRIVATE).edit()
+                .putString(PROFILE_PREFIX + name, copyCurrent ? keyLayout.encode() : "")
+                .apply();
+        switchProfile(name);
+        toast(getString(R.string.profile_switched, name));
+    }
+
+    private void deleteProfile(String name) {
+        ArrayList<String> names = profileNames();
+        if (names.size() <= 1) {
+            toast(getString(R.string.profile_last));
+            return;
+        }
+        names.remove(name);
+        saveProfileNames(names);
+        getPreferences(MODE_PRIVATE).edit().remove(PROFILE_PREFIX + name).apply();
+        if (name.equals(layoutProfile)) {
+            switchProfile(names.get(0));
+        }
+    }
+
+    private interface NameCallback {
+        void onName(String name);
+    }
+
+    private void promptProfileName(@Nullable String prefill, int title, NameCallback onOk) {
+        EditText input = new EditText(this);
+        input.setHint(R.string.profile_name_hint);
+        input.setSingleLine(true);
+        if (prefill != null) {
+            input.setText(prefill);
+            input.setSelection(prefill.length());
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        box.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String name = input.getText().toString().trim();
+                    if (name.isEmpty()) {
+                        return;
+                    }
+                    if (profileNames().contains(name)) {
+                        toast(getString(R.string.profile_exists));
+                        return;
+                    }
+                    onOk.onName(name);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Profile picker shown from the layout editor: tap to switch, buttons to
+     * create a blank or a copy of the current one, per-row delete. */
+    private void showLayoutProfiles() {
+        ArrayList<String> names = profileNames();
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(8);
+        list.setPadding(pad, pad, pad, pad);
+        AlertDialog[] holder = new AlertDialog[1];
+        for (String name : names) {
+            list.addView(profileRow(holder, names, name));
+        }
+        TextView hint = new TextView(this);
+        hint.setText(R.string.profiles_hint);
+        hint.setTextColor(0xFF888888);
+        hint.setTextSize(12);
+        list.addView(hint);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.profiles_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.profile_new, (d, w) -> promptProfileName(null, R.string.profile_new, name -> {
+                    createProfile(name, false);
+                    showLayoutProfiles();
+                }))
+                .setNegativeButton(R.string.profile_copy, (d, w) -> promptProfileName(layoutProfile + "-2", R.string.profile_copy, name -> {
+                    createProfile(name, true);
+                    showLayoutProfiles();
+                }))
+                .setNeutralButton(android.R.string.cancel, null)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    private View profileRow(AlertDialog[] holder, List<String> names, String name) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        int pad = dp(6);
+        row.setPadding(pad, pad, pad, pad);
+        TextView label = new TextView(this);
+        boolean active = name.equals(layoutProfile);
+        label.setText((active ? "▸ " : "○ ") + name);
+        label.setTextColor(active ? 0xFF1B5E20 : 0xFF222222);
+        label.setTextSize(15);
+        label.setOnClickListener(v -> {
+            holder[0].dismiss();
+            switchProfile(name);
+            toast(getString(R.string.profile_switched, name));
+        });
+        row.addView(label, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        if (names.size() > 1) {
+            Button del = new Button(this);
+            del.setText(R.string.profile_delete);
+            del.setAllCaps(false);
+            del.setTextSize(12);
+            del.setMinHeight(dp(36));
+            del.setMinimumHeight(dp(36));
+            del.setOnClickListener(v -> new AlertDialog.Builder(this)
+                    .setMessage(getString(R.string.profile_delete_confirm, name))
+                    .setPositiveButton(android.R.string.ok, (d, w) -> {
+                        holder[0].dismiss();
+                        deleteProfile(name);
+                        toast(getString(R.string.profile_deleted, name));
+                        showLayoutProfiles();
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show());
+            row.addView(del);
+        }
+        return row;
     }
 
     private void applyVideo() {
@@ -1994,9 +2341,10 @@ public class EmulatorActivity extends AppCompatActivity {
         label.setTextColor(Color.WHITE);
         label.setPadding(dp(8), 0, dp(4), 0);
         row.addView(label);
-        for (int i = 1; i <= 16; i++) {
+        for (int i = 0; i < SPEED_TIERS.length; i++) {
             Button button = new Button(this);
-            button.setText(String.valueOf(i));
+            float value = SPEED_TIERS[i];
+            button.setText(value == (long) value ? String.valueOf((long) value) : String.format(Locale.US, "%.2g", value));
             button.setAllCaps(false);
             button.setMinWidth(dp(44));
             button.setMinHeight(dp(36));
@@ -2004,11 +2352,21 @@ public class EmulatorActivity extends AppCompatActivity {
             button.setMinimumHeight(dp(36));
             button.setTextSize(14);
             button.setPadding(dp(8), 0, dp(8), 0);
-            int value = i;
             button.setOnClickListener(v -> setSpeed(value));
             speedButtons[i] = button;
             row.addView(button);
         }
+        speedCustom = new Button(this);
+        speedCustom.setText(R.string.speed_custom);
+        speedCustom.setAllCaps(false);
+        speedCustom.setMinWidth(dp(52));
+        speedCustom.setMinHeight(dp(36));
+        speedCustom.setMinimumWidth(dp(52));
+        speedCustom.setMinimumHeight(dp(36));
+        speedCustom.setTextSize(14);
+        speedCustom.setPadding(dp(8), 0, dp(8), 0);
+        speedCustom.setOnClickListener(v -> showCustomSpeedDialog());
+        row.addView(speedCustom);
         CheckBox sound = new CheckBox(this);
         sound.setText(R.string.speed_sound);
         sound.setTextColor(Color.WHITE);
@@ -2018,21 +2376,119 @@ public class EmulatorActivity extends AppCompatActivity {
         refreshSpeedButtons();
     }
 
-    private void setSpeed(int value) {
-        speed = Math.max(1, Math.min(16, value));
+    /** Speed used while the fast-forward key is held (TAB, controller, on-screen 倍速 key). */
+    private float fastHoldSpeed() {
+        try {
+            return Math.max(2f, Math.min(16f, getPreferences(MODE_PRIVATE).getInt("fast_hold", 16)));
+        } catch (ClassCastException e) {
+            return 16f;
+        }
+    }
+
+    private void showCustomSpeedDialog() {
+        EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
+        input.setHint(R.string.speed_custom_hint);
+        float current = speed;
+        input.setText(current == (long) current ? String.valueOf((long) current) : String.format(Locale.US, "%.2f", current));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        box.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.speed_custom)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    try {
+                        float value = Float.parseFloat(input.getText().toString().trim().replace(',', '.'));
+                        if (value < 0.05f) {
+                            value = 0.05f;
+                        }
+                        if (value > 16f) {
+                            value = 16f;
+                        }
+                        setSpeed(value);
+                    } catch (NumberFormatException ignored) {
+                        toast(getString(R.string.speed_bad_value));
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void setSpeed(float value) {
+        if (value < 0.05f) {
+            value = 0.05f;
+        }
+        if (value > 16f) {
+            value = 16f;
+        }
+        speed = value;
         refreshSpeedButtons();
     }
 
     private void refreshSpeedButtons() {
-        fastButton.setText(getString(R.string.speed_value, speed));
-        for (int i = 1; i <= 16; i++) {
-            boolean on = i == speed;
+        float shown = fastHold ? Math.max(speed, fastHoldSpeed()) : speed;
+        fastButton.setText(getString(R.string.speed_value, speedLabel(shown)));
+        boolean tierMatched = false;
+        for (int i = 0; i < SPEED_TIERS.length; i++) {
+            boolean on = !tierMatched && Math.abs(SPEED_TIERS[i] - speed) < 0.001f;
+            if (on) {
+                tierMatched = true;
+            }
             speedButtons[i].setTextColor(on ? 0xFF102010 : Color.WHITE);
             speedButtons[i].setBackgroundColor(on ? 0xFF3DDC84 : Color.TRANSPARENT);
         }
+        speedCustom.setTextColor(!tierMatched ? 0xFF102010 : Color.WHITE);
+        speedCustom.setBackgroundColor(!tierMatched ? 0xFF3DDC84 : Color.TRANSPARENT);
     }
 
+    private static String speedLabel(float value) {
+        return value == (long) value ? String.valueOf((long) value) : String.format(Locale.US, "%.2f", value);
+    }
+
+    /** Settings hub: emulation, input, saves and hardware extras live in sub-dialogs. */
     private void showSettingsDialog() {
+        final int IDX_ORIENTATION = 0;
+        final int IDX_SOUND = 1;
+        final int IDX_INPUT = 2;
+        final int IDX_SAVE = 3;
+        final int IDX_ADVANCED = 4;
+        final int IDX_SCAN = 5;
+        final int IDX_HELP = 6;
+        String[] items = {
+                getString(R.string.orientation_title),
+                getString(R.string.settings_sound),
+                getString(R.string.settings_input),
+                getString(R.string.settings_save),
+                getString(R.string.settings_advanced),
+                getString(R.string.scan_button),
+                getString(R.string.settings_help),
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings)
+                .setItems(items, (dialog, which) -> {
+                    if (which == IDX_ORIENTATION) {
+                        showOrientationDialog();
+                    } else if (which == IDX_SOUND) {
+                        showSoundDialog();
+                    } else if (which == IDX_INPUT) {
+                        showInputDialog();
+                    } else if (which == IDX_SAVE) {
+                        showSaveSettingsDialog();
+                    } else if (which == IDX_ADVANCED) {
+                        showAdvancedDialog();
+                    } else if (which == IDX_SCAN) {
+                        showRomScan();
+                    } else if (which == IDX_HELP) {
+                        showHelpDialog();
+                    }
+                })
+                .show();
+    }
+
+    private void showOrientationDialog() {
         boolean portrait = prefersPortrait();
         new AlertDialog.Builder(this)
                 .setTitle(R.string.orientation_title)
@@ -2047,8 +2503,1056 @@ public class EmulatorActivity extends AppCompatActivity {
                     applyOrientation(nextPortrait);
                     dialog.dismiss();
                 })
-                .setNeutralButton(R.string.scan_button, (dialog, which) -> showRomScan())
                 .show();
+    }
+
+    private void showSoundDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        int volumeNow = getPreferences(MODE_PRIVATE).getInt("volume", 100);
+        TextView volumeLabel = new TextView(this);
+        volumeLabel.setText(getString(R.string.sound_volume, volumeNow));
+        volumeLabel.setTextColor(0xFF222222);
+        SeekBar volumeBar = new SeekBar(this);
+        volumeBar.setMax(150);
+        volumeBar.setProgress(volumeNow);
+        CheckBox lowLatency = check(R.string.sound_low_latency, getPreferences(MODE_PRIVATE).getBoolean("low_latency", false));
+        CheckBox immersive = check(R.string.settings_immersive, getPreferences(MODE_PRIVATE).getBoolean("immersive", true));
+        box.addView(volumeLabel);
+        box.addView(volumeBar);
+        box.addView(lowLatency);
+        box.addView(immersive);
+        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                volumeLabel.setText(getString(R.string.sound_volume, progress));
+                volumePercent = progress;
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit().putInt("volume", progress).apply();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        lowLatency.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("low_latency", checked).apply();
+            setupAudio();
+        });
+        immersive.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("immersive", checked).apply();
+            if (checked) {
+                hideSystemUi();
+            }
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_sound)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showInputDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        final Button vibe = new Button(this);
+        vibe.setAllCaps(false);
+        vibe.setText(getString(R.string.input_vibe, vibeName(getPreferences(MODE_PRIVATE).getInt("touch_vibe", 0))));
+        vibe.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.input_vibe_title)
+                .setSingleChoiceItems(new CharSequence[] {
+                        getString(R.string.vibe_off), getString(R.string.vibe_light),
+                        getString(R.string.vibe_medium), getString(R.string.vibe_strong)
+                }, getPreferences(MODE_PRIVATE).getInt("touch_vibe", 0), (dialog, which) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("touch_vibe", which).apply();
+                    vibe.setText(getString(R.string.input_vibe, vibeName(which)));
+                    dialog.dismiss();
+                })
+                .show());
+        final Button turboMode = new Button(this);
+        turboMode.setAllCaps(false);
+        turboMode.setText(getString(R.string.input_turbo_mode, turboModeName(turboModePref())));
+        turboMode.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.input_turbo_mode_title)
+                .setSingleChoiceItems(new CharSequence[] {
+                        getString(R.string.turbo_hold_b), getString(R.string.turbo_keys), getString(R.string.turbo_off)
+                }, turboModePref(), (dialog, which) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("turbo_mode", which).apply();
+                    turboMode.setText(getString(R.string.input_turbo_mode, turboModeName(which)));
+                    dialog.dismiss();
+                })
+                .show());
+        int rateNow = getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25);
+        TextView rateLabel = new TextView(this);
+        rateLabel.setText(getString(R.string.input_turbo_rate, rateNow));
+        rateLabel.setTextColor(0xFF222222);
+        SeekBar rateBar = new SeekBar(this);
+        rateBar.setMax(28);
+        rateBar.setProgress(Math.max(0, Math.min(28, rateNow - 2)));
+        CheckBox diagonal = check(R.string.input_no_diagonal, getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
+        final Button extras = new Button(this);
+        extras.setAllCaps(false);
+        extras.setText(R.string.input_extras);
+        extras.setOnClickListener(v -> showExtraKeysDialog());
+        box.addView(vibe);
+        box.addView(turboMode);
+        box.addView(rateLabel);
+        box.addView(rateBar);
+        box.addView(diagonal);
+        box.addView(extras);
+        rateBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int rate = progress + 2;
+                rateLabel.setText(getString(R.string.input_turbo_rate, rate));
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit().putInt("turbo_rate", rate).apply();
+                    applyInputSettings();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        diagonal.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("no_diagonal", checked).apply();
+            applyInputSettings();
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_input)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    /** Names of the optional on-screen keys, shown and stored in this order. */
+    private static final String[][] EXTRA_KEY_CHOICES = {
+            {"ta", "A键（连发）"}, {"tb", "B键（连发）"}, {"lr", "L+R键"},
+            {"save", "快速存档"}, {"load", "快速读档"}, {"ff", "倍速（按住快进）"}, {"shot", "截图"},
+    };
+
+    private void showExtraKeysDialog() {
+        Set<String> enabled = extraKeys();
+        boolean[] checked = new boolean[EXTRA_KEY_CHOICES.length];
+        CharSequence[] labels = new CharSequence[EXTRA_KEY_CHOICES.length];
+        for (int i = 0; i < EXTRA_KEY_CHOICES.length; i++) {
+            labels[i] = EXTRA_KEY_CHOICES[i][1];
+            checked[i] = enabled.contains(EXTRA_KEY_CHOICES[i][0]);
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.input_extras)
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) -> {
+                    Set<String> next = extraKeys();
+                    if (isChecked) {
+                        next.add(EXTRA_KEY_CHOICES[which][0]);
+                    } else {
+                        next.remove(EXTRA_KEY_CHOICES[which][0]);
+                    }
+                    StringBuilder csv = new StringBuilder();
+                    for (String key : next) {
+                        if (csv.length() > 0) {
+                            csv.append(',');
+                        }
+                        csv.append(key);
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putString("extra_keys", csv.toString()).apply();
+                    applyInputSettings();
+                })
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private Set<String> extraKeys() {
+        Set<String> out = new HashSet<>();
+        String csv = getPreferences(MODE_PRIVATE).getString("extra_keys", "");
+        if (csv != null && !csv.isEmpty()) {
+            for (String key : csv.split(",")) {
+                for (String[] choice : EXTRA_KEY_CHOICES) {
+                    if (choice[0].equals(key)) {
+                        out.add(key);
+                    }
+                }
+            }
+        }
+        return out;
+    }
+
+    private void showSaveSettingsDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        final Button saveType = new Button(this);
+        saveType.setAllCaps(false);
+        saveType.setText(getString(R.string.save_type, saveTypeName(saveTypePref())));
+        saveType.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.save_type_title)
+                .setSingleChoiceItems(new CharSequence[] {
+                        saveTypeName(3), saveTypeName(-1), saveTypeName(4), saveTypeName(5),
+                        saveTypeName(2), saveTypeName(1), saveTypeName(6), saveTypeName(0)
+                }, saveTypeChoiceIndex(), (dialog, which) -> {
+                    int[] values = {3, -1, 4, 5, 2, 1, 6, 0};
+                    getPreferences(MODE_PRIVATE).edit().putInt("save_type", values[which]).apply();
+                    applyCoreOptions();
+                    saveType.setText(getString(R.string.save_type, saveTypeName(values[which])));
+                    dialog.dismiss();
+                })
+                .show());
+        CheckBox autoLoad = check(R.string.save_auto_load, getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false));
+        CheckBox autoSave = check(R.string.save_auto_write, getPreferences(MODE_PRIVATE).getBoolean("auto_save_state", false));
+        CheckBox confirmClose = check(R.string.save_confirm, getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false));
+        CheckBox patches = check(R.string.save_patches, getPreferences(MODE_PRIVATE).getBoolean("patches", true));
+        Button deleteSav = new Button(this);
+        deleteSav.setAllCaps(false);
+        deleteSav.setText(R.string.save_delete_battery);
+        deleteSav.setOnClickListener(v -> confirmDeleteBattery());
+        Button importSav = new Button(this);
+        importSav.setAllCaps(false);
+        importSav.setText(R.string.save_import_myboy);
+        importSav.setOnClickListener(v -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                startActivityForResult(intent, REQ_SAVDIR);
+            } catch (Exception e) {
+                toast(getString(R.string.load_failed));
+            }
+        });
+        box.addView(saveType);
+        box.addView(autoLoad);
+        box.addView(autoSave);
+        box.addView(confirmClose);
+        box.addView(patches);
+        box.addView(deleteSav);
+        box.addView(importSav);
+        autoLoad.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_load_state", checked).apply());
+        autoSave.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_save_state", checked).apply());
+        confirmClose.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_close", checked).apply());
+        patches.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("patches", checked).apply();
+            applyCoreOptions();
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_save)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private void showAdvancedDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        CheckBox useBios = check(R.string.adv_use_bios, getPreferences(MODE_PRIVATE).getBoolean("use_bios", true));
+        CheckBox skipBios = check(R.string.adv_skip_bios, getPreferences(MODE_PRIVATE).getBoolean("skip_bios", true));
+        final Button clock = new Button(this);
+        clock.setAllCaps(false);
+        clock.setText(getString(R.string.adv_clock, clockName(rtcModePref())));
+        clock.setOnClickListener(v -> pickRtcMode(clock));
+        CheckBox rumblePak = check(R.string.adv_rumble, getPreferences(MODE_PRIVATE).getBoolean("cart_rumble", false));
+        CheckBox solar = check(R.string.adv_solar, getPreferences(MODE_PRIVATE).getBoolean("solar_on", false));
+        int solarNow = getPreferences(MODE_PRIVATE).getInt("solar_level", 5);
+        TextView solarLabel = new TextView(this);
+        solarLabel.setText(getString(R.string.adv_solar_level, solarNow));
+        solarLabel.setTextColor(0xFF222222);
+        SeekBar solarBar = new SeekBar(this);
+        solarBar.setMax(10);
+        solarBar.setProgress(solarNow);
+        CheckBox solarKeys = check(R.string.adv_solar_keys, getPreferences(MODE_PRIVATE).getBoolean("solar_volkeys", false));
+        TextView fastLabel = new TextView(this);
+        int fastNow = (int) fastHoldSpeed();
+        fastLabel.setText(getString(R.string.adv_fast_hold, fastNow));
+        fastLabel.setTextColor(0xFF222222);
+        SeekBar fastBar = new SeekBar(this);
+        fastBar.setMax(14);
+        fastBar.setProgress(Math.max(0, Math.min(14, fastNow - 2)));
+        box.addView(useBios);
+        box.addView(skipBios);
+        box.addView(clock);
+        box.addView(rumblePak);
+        box.addView(solar);
+        box.addView(solarLabel);
+        box.addView(solarBar);
+        box.addView(solarKeys);
+        box.addView(fastLabel);
+        box.addView(fastBar);
+        useBios.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("use_bios", checked).apply();
+            applyCoreOptions();
+        });
+        skipBios.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("skip_bios", checked).apply();
+            applyCoreOptions();
+        });
+        rumblePak.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("cart_rumble", checked).apply();
+            applyCoreOptions();
+        });
+        solar.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("solar_on", checked).apply();
+            applyCoreOptions();
+        });
+        solarBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                solarLabel.setText(getString(R.string.adv_solar_level, progress));
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit().putInt("solar_level", progress).apply();
+                    applyCoreOptions();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        solarKeys.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("solar_volkeys", checked).apply());
+        fastBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                fastLabel.setText(getString(R.string.adv_fast_hold, progress + 2));
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit().putInt("fast_hold", progress + 2).apply();
+                    refreshSpeedButtons();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        });
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_advanced)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    /** Game clock: wall clock, a fixed moment, or wall clock shifted by minutes. */
+    private void pickRtcMode(Button label) {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.adv_clock_title)
+                .setItems(new CharSequence[] {
+                        getString(R.string.clock_real), getString(R.string.clock_fixed), getString(R.string.clock_offset)
+                }, (dialog, which) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("rtc_mode", which).apply();
+                    if (which == 1) {
+                        pickRtcDate(label);
+                    } else if (which == 2) {
+                        pickRtcOffset(label);
+                    } else {
+                        applyCoreOptions();
+                        label.setText(getString(R.string.adv_clock, clockName(which)));
+                    }
+                })
+                .show();
+    }
+
+    private void pickRtcDate(Button label) {
+        Calendar base = Calendar.getInstance();
+        long epoch = getPreferences(MODE_PRIVATE).getLong("rtc_epoch", base.getTimeInMillis() / 1000L);
+        Calendar current = Calendar.getInstance();
+        current.setTimeInMillis(epoch * 1000L);
+        new DatePickerDialog(this, (view, year, month, day) -> {
+            Calendar picked = Calendar.getInstance();
+            picked.set(year, month, day, current.get(Calendar.HOUR_OF_DAY), current.get(Calendar.MINUTE));
+            pickRtcTime(label, picked);
+        }, current.get(Calendar.YEAR), current.get(Calendar.MONTH), current.get(Calendar.DAY_OF_MONTH)).show();
+    }
+
+    private void pickRtcTime(Button label, Calendar picked) {
+        new TimePickerDialog(this, (view, hour, minute) -> {
+            Calendar done = Calendar.getInstance();
+            done.set(picked.get(Calendar.YEAR), picked.get(Calendar.MONTH), picked.get(Calendar.DAY_OF_MONTH), hour, minute, 0);
+            getPreferences(MODE_PRIVATE).edit()
+                    .putLong("rtc_epoch", done.getTimeInMillis() / 1000L)
+                    .apply();
+            applyCoreOptions();
+            label.setText(getString(R.string.adv_clock, clockName(1)));
+        }, picked.get(Calendar.HOUR_OF_DAY), picked.get(Calendar.MINUTE), true).show();
+    }
+
+    private void pickRtcOffset(Button label) {
+        EditText input = new EditText(this);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        input.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("rtc_offset_min", 0)));
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        box.addView(input);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.clock_offset)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    int minutes = 0;
+                    try {
+                        minutes = Integer.parseInt(input.getText().toString().trim());
+                    } catch (NumberFormatException ignored) {
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putInt("rtc_offset_min", minutes).apply();
+                    applyCoreOptions();
+                    label.setText(getString(R.string.adv_clock, clockName(2)));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void showHelpDialog() {
+        TextView text = new TextView(this);
+        int pad = dp(20);
+        text.setPadding(pad, pad, pad, pad);
+        text.setText(R.string.settings_help_text);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_help)
+                .setView(new ScrollView(this) {{
+                    addView(text);
+                }})
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    // == Settings plumbing ==
+
+    private int turboModePref() {
+        return getPreferences(MODE_PRIVATE).getInt("turbo_mode", 0);
+    }
+
+    private static String turboModeName(int mode) {
+        switch (mode) {
+            case 1:
+                return "连发键";
+            case 2:
+                return "关闭";
+            default:
+                return "长按B键";
+        }
+    }
+
+    private static String vibeName(int strength) {
+        switch (strength) {
+            case 1:
+                return "轻";
+            case 2:
+                return "中";
+            case 3:
+                return "强";
+            default:
+                return "关";
+        }
+    }
+
+    private int saveTypePref() {
+        try {
+            return getPreferences(MODE_PRIVATE).getInt("save_type", 3);
+        } catch (ClassCastException e) {
+            return 3;
+        }
+    }
+
+    private int saveTypeChoiceIndex() {
+        switch (saveTypePref()) {
+            case -1:
+                return 1;
+            case 4:
+                return 2;
+            case 5:
+                return 3;
+            case 2:
+                return 4;
+            case 1:
+                return 5;
+            case 6:
+                return 6;
+            case 0:
+                return 7;
+            default:
+                return 0;
+        }
+    }
+
+    private static String saveTypeName(int type) {
+        switch (type) {
+            case -1:
+                return "自动检测";
+            case 0:
+                return "不保存";
+            case 1:
+                return "SRAM 32KB";
+            case 2:
+                return "FLASH 64KB";
+            case 4:
+                return "EEPROM 8KB";
+            case 5:
+                return "EEPROM 512B";
+            case 6:
+                return "SRAM 64KB";
+            default:
+                return "FLASH 128KB";
+        }
+    }
+
+    private int rtcModePref() {
+        return getPreferences(MODE_PRIVATE).getInt("rtc_mode", 0);
+    }
+
+    private static String clockName(int mode) {
+        switch (mode) {
+            case 1:
+                return "固定时间";
+            case 2:
+                return "偏移时间";
+            default:
+                return "实时时钟";
+        }
+    }
+
+    /** Pushes the emulation-related preferences into the core. */
+    private void applyCoreOptions() {
+        if (core == null) {
+            return;
+        }
+        core.setSaveType(saveTypePref());
+        core.setPatches(getPreferences(MODE_PRIVATE).getBoolean("patches", true));
+        core.setBiosOptions(getPreferences(MODE_PRIVATE).getBoolean("use_bios", true),
+                getPreferences(MODE_PRIVATE).getBoolean("skip_bios", true));
+        int mode = rtcModePref();
+        long epoch = getPreferences(MODE_PRIVATE).getLong("rtc_epoch", System.currentTimeMillis() / 1000L);
+        long offset = getPreferences(MODE_PRIVATE).getInt("rtc_offset_min", 0) * 60L;
+        core.setRtc(mode, epoch, offset);
+        core.setSolar(getPreferences(MODE_PRIVATE).getBoolean("solar_on", false)
+                ? getPreferences(MODE_PRIVATE).getInt("solar_level", 5) : -1);
+        core.setCartRumble(getPreferences(MODE_PRIVATE).getBoolean("cart_rumble", false));
+    }
+
+    /** Pushes the input-related preferences into the on-screen controls. */
+    private void applyInputSettings() {
+        if (controls != null) {
+            controls.setDiagonalLock(getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
+            controls.setTurboRate(getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25));
+            controls.setVisibleExtras(extraKeys());
+        }
+        volumePercent = getPreferences(MODE_PRIVATE).getInt("volume", 100);
+    }
+
+    /** Vibration strength for on-screen key presses, 0-3. */
+    private void vibrateOnKey(int risingBits) {
+        if (vibrator == null || risingBits == 0) {
+            return;
+        }
+        int strength = getPreferences(MODE_PRIVATE).getInt("touch_vibe", 0);
+        if (strength <= 0 || !vibrator.hasVibrator()) {
+            return;
+        }
+        int amplitude = strength == 1 ? 60 : strength == 2 ? 140 : 255;
+        if (Build.VERSION.SDK_INT >= 26) {
+            vibrator.vibrate(VibrationEffect.createOneShot(20, amplitude));
+        } else {
+            vibrator.vibrate(20);
+        }
+    }
+
+    /** Cartridge rumble pulses, drained once per emulation slice. */
+    private void pollRumble() {
+        if (core == null) {
+            return;
+        }
+        int hits = core.takeRumbles();
+        if (hits <= 0) {
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - lastRumbleAt < 200_000_000L) {
+            return;
+        }
+        lastRumbleAt = now;
+        if (vibrator != null && vibrator.hasVibrator()) {
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createOneShot(40, 180));
+            } else {
+                vibrator.vibrate(40);
+            }
+        }
+    }
+
+    private void confirmReset() {
+        if (core == null || !core.isLoaded() || !getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false)) {
+            command.set(CMD_RESET);
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.reset)
+                .setMessage(R.string.confirm_reset_message)
+                .setPositiveButton(android.R.string.ok, (d, w) -> command.set(CMD_RESET))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Quick save/load used by the optional on-screen utility keys. */
+    private void quickState(boolean save) {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        if (save) {
+            recyclePendingPreview();
+            pendingPreview.set(gameView.copyLast());
+            command.set(CMD_SAVE);
+        } else {
+            command.set(CMD_LOAD);
+        }
+    }
+
+    /** Saves the current frame as a PNG into the system Pictures folder. */
+    private void takeScreenshot() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        Bitmap shot = gameView.copyLast();
+        if (shot == null) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        String stamp = DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()).toString();
+        String title = "mGBA-" + stamp + ".png";
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, title);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBA");
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri != null) {
+                    try (OutputStream out = getContentResolver().openOutputStream(uri)) {
+                        shot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                    }
+                }
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBA");
+                dir.mkdirs();
+                try (OutputStream out = new FileOutputStream(new File(dir, title))) {
+                    shot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                }
+            }
+            toast(getString(R.string.screenshot_saved, "Pictures/mGBA/" + title));
+        } catch (Exception e) {
+            toast(getString(R.string.screenshot_failed));
+        } finally {
+            shot.recycle();
+        }
+    }
+
+    /** Hands the presented frame to the encoder at the GIF capture rate. */
+    private void captureGifFrame() {
+        if (!gifRecording || gifQueue == null) {
+            return;
+        }
+        long now = System.nanoTime() / 1_000_000L;
+        if (now - lastGifAt < GIF_FRAME_MS) {
+            return;
+        }
+        lastGifAt = now;
+        Bitmap copy = frame.copy(Bitmap.Config.ARGB_8888, false);
+        if (copy == null) {
+            return;
+        }
+        if (!gifQueue.offer(copy)) {
+            copy.recycle();
+        }
+    }
+
+    /** Starts recording the presented frames into a GIF in Pictures/mGBA. */
+    private void startGif() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        if (gifRecording || (gifThread != null && gifThread.isAlive())) {
+            return;
+        }
+        int w = core.width();
+        int h = core.height();
+        if (w <= 0 || h <= 0) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        String stamp = DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()).toString();
+        String name = "mGBA-" + stamp + ".gif";
+        File temp = new File(getCacheDir(), "gif-recording.gif");
+        temp.delete();
+        gifQueue = new java.util.concurrent.ArrayBlockingQueue<>(24);
+        lastGifAt = 0;
+        gifFrames = 0;
+        gifRecording = true;
+        gifThread = new Thread(() -> runGifRecording(temp, w, h, name), "gif-record");
+        gifThread.start();
+        if (gifButton != null) {
+            gifButton.setText(R.string.gif_stop);
+        }
+        toast(getString(R.string.gif_started));
+    }
+
+    private void stopGif() {
+        gifRecording = false;
+    }
+
+    /** Encoder loop: drains the queue into the GIF file, then publishes it. */
+    private void runGifRecording(File temp, int w, int h, String name) {
+        boolean ok;
+        try (FileOutputStream stream = new FileOutputStream(temp)) {
+            GifEncoder encoder = new GifEncoder(stream, w, h);
+            while (true) {
+                Bitmap bmp;
+                try {
+                    bmp = gifQueue.poll(1, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    bmp = null;
+                    gifRecording = false;
+                }
+                if (bmp == null) {
+                    if (!gifRecording) {
+                        break;
+                    }
+                    continue;
+                }
+                encoder.addFrame(bmp, GIF_FRAME_MS / 10);
+                bmp.recycle();
+                if (++gifFrames >= GIF_MAX_FRAMES) {
+                    // Reached the length cap: stop as if the user had.
+                    gifRecording = false;
+                }
+            }
+            encoder.finish();
+            ok = true;
+        } catch (Exception e) {
+            ok = false;
+        }
+        final boolean done = ok;
+        runOnUiThread(() -> {
+            gifQueue = null;
+            gifThread = null;
+            if (gifButton != null) {
+                gifButton.setText(R.string.gif_record);
+            }
+            if (isFinishing() || isDestroyed()) {
+                return;
+            }
+            String path = done && gifFrames > 0 ? publishGif(temp, name) : null;
+            if (path != null) {
+                toast(getString(R.string.gif_saved, path));
+            } else {
+                temp.delete();
+                toast(getString(R.string.gif_failed));
+            }
+        });
+    }
+
+    /** Moves the finished recording into Pictures/mGBA; returns the shown path. */
+    @Nullable
+    private String publishGif(File temp, String name) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                values.put(MediaStore.Images.Media.MIME_TYPE, "image/gif");
+                values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/mGBA");
+                Uri uri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) {
+                    return null;
+                }
+                try (InputStream in = new java.io.FileInputStream(temp);
+                     OutputStream out = getContentResolver().openOutputStream(uri)) {
+                    copyStreams(in, out);
+                }
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "mGBA");
+                if (!dir.isDirectory() && !dir.mkdirs()) {
+                    throw new java.io.IOException("mkdirs failed");
+                }
+                try (InputStream in = new java.io.FileInputStream(temp);
+                     OutputStream out = new FileOutputStream(new File(dir, name))) {
+                    copyStreams(in, out);
+                }
+            }
+            temp.delete();
+            return "Pictures/mGBA/" + name;
+        } catch (Exception e) {
+            try {
+                File dir = new File(getExternalFilesDir(null), "Pictures");
+                dir.mkdirs();
+                File dest = new File(dir, name);
+                try (InputStream in = new java.io.FileInputStream(temp);
+                     OutputStream out = new FileOutputStream(dest)) {
+                    copyStreams(in, out);
+                }
+                temp.delete();
+                return dest.getAbsolutePath();
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+    }
+
+    private static void copyStreams(@Nullable InputStream in, @Nullable OutputStream out) throws java.io.IOException {
+        if (in == null || out == null) {
+            throw new java.io.IOException("stream unavailable");
+        }
+        byte[] buffer = new byte[65536];
+        int n;
+        while ((n = in.read(buffer)) > 0) {
+            out.write(buffer, 0, n);
+        }
+    }
+
+    private void confirmDeleteBattery() {        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        String path = core.saveFile();
+        if (path == null || path.isEmpty() || !new File(path).isFile()) {
+            toast(getString(R.string.battery_missing));
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.save_delete_battery)
+                .setMessage(getString(R.string.delete_battery_message, new File(path).getName()))
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    File backup = new File(path + ".bak");
+                    backup.delete();
+                    if (new File(path).renameTo(backup)) {
+                        toast(getString(R.string.battery_deleted));
+                        String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+                        if (last != null) {
+                            pendingPath.set(last);
+                        }
+                    } else {
+                        toast(getString(R.string.battery_delete_failed));
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Cheats list: toggle with the checkbox, long-press to delete, 新增 to add. */
+    private void showCheatsDialog() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        int count = core.cheatCount();
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(8);
+        list.setPadding(pad, pad, pad, pad);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        if (count == 0) {
+            TextView empty = new TextView(this);
+            empty.setText(R.string.cheats_empty);
+            empty.setPadding(0, pad, 0, pad);
+            list.addView(empty);
+        }
+        AlertDialog[] holder = new AlertDialog[1];
+        for (int i = 0; i < count; i++) {
+            final int index = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            CheckBox box = new CheckBox(this);
+            box.setText(core.cheatName(index));
+            box.setTextColor(0xFF222222);
+            box.setTextSize(15);
+            box.setChecked(core.cheatEnabled(index));
+            box.setOnCheckedChangeListener((v, checked) -> core.cheatSetEnabled(index, checked));
+            row.addView(box, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            row.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(EmulatorActivity.this)
+                        .setTitle(R.string.cheat_delete)
+                        .setMessage(getString(R.string.cheat_delete_message, core.cheatName(index)))
+                        .setPositiveButton(android.R.string.ok, (d, w) -> {
+                            core.cheatRemove(index);
+                            if (holder[0] != null) {
+                                holder[0].dismiss();
+                            }
+                            showCheatsDialog();
+                        })
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .show();
+                return true;
+            });
+            list.addView(row);
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.cheats_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.cheat_add, (d, w) -> showCheatEditDialog())
+                .setNegativeButton(android.R.string.cancel, null)
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
+    private void showCheatEditDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        final EditText name = new EditText(this);
+        name.setHint(R.string.cheat_name_hint);
+        name.setSingleLine(true);
+        final Button format = new Button(this);
+        format.setAllCaps(false);
+        final int[] type = {0};
+        format.setText(getString(R.string.cheat_format, cheatFormatName(0)));
+        format.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.cheat_format_title)
+                .setSingleChoiceItems(new CharSequence[] {
+                        cheatFormatName(0), cheatFormatName(1), cheatFormatName(2),
+                        cheatFormatName(3), cheatFormatName(4)
+                }, type[0], (dialog, which) -> {
+                    type[0] = which;
+                    format.setText(getString(R.string.cheat_format, cheatFormatName(which)));
+                    dialog.dismiss();
+                })
+                .show());
+        final EditText lines = new EditText(this);
+        lines.setHint(R.string.cheat_codes_hint);
+        lines.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        lines.setMinLines(4);
+        lines.setGravity(Gravity.TOP | Gravity.START);
+        box.addView(name);
+        box.addView(format);
+        box.addView(lines);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.cheat_add)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String codeName = name.getText().toString().trim();
+                    String codeLines = lines.getText().toString().trim();
+                    if (codeName.isEmpty()) {
+                        codeName = getString(R.string.cheat_default_name);
+                    }
+                    if (codeLines.isEmpty() || !core.cheatAdd(codeName, codeLines, type[0])) {
+                        toast(getString(R.string.cheat_bad_code));
+                        return;
+                    }
+                    toast(getString(R.string.cheat_added, codeName));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private static String cheatFormatName(int type) {
+        switch (type) {
+            case 1:
+                return "代码断路器 CodeBreaker";
+            case 2:
+                return "金手指 v1/v2 GameShark";
+            case 3:
+                return "动作回放 Action Replay";
+            case 4:
+                return "VBA 码";
+            default:
+                return "自动识别";
+        }
+    }
+
+    /** Copies My Boy .sav files from a picked folder next to the matching ROM saves. */
+    private void importMyBoySaves(Uri tree) {
+        File destDir = SaveLocation.prepare(this);
+        toast(getString(R.string.myboy_scanning));
+        new Thread(() -> {
+            int ok = 0;
+            int fail = 0;
+            try {
+                Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree,
+                        DocumentsContract.getTreeDocumentId(tree));
+                List<String[]> found = new ArrayList<>();
+                Cursor cursor = getContentResolver().query(children,
+                        new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                                DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null);
+                if (cursor != null) {
+                    while (cursor.moveToNext()) {
+                        String id = cursor.getString(0);
+                        String display = cursor.getString(1);
+                        if (id != null && display != null && display.toLowerCase(Locale.ROOT).endsWith(".sav")) {
+                            found.add(new String[]{id, display});
+                        }
+                    }
+                    cursor.close();
+                }
+                for (String[] entry : found) {
+                    Uri file = DocumentsContract.buildDocumentUriUsingTree(tree, entry[0]);
+                    String base = entry[1];
+                    // "Rom.gba.sav" -> "Rom", plain "Rom.sav" -> "Rom"
+                    if (base.toLowerCase(Locale.ROOT).endsWith(".sav")) {
+                        base = base.substring(0, base.length() - 4);
+                    }
+                    String lower = base.toLowerCase(Locale.ROOT);
+                    if (lower.endsWith(".gba") || lower.endsWith(".gbc") || lower.endsWith(".gb") || lower.endsWith(".sgb")) {
+                        base = base.substring(0, base.lastIndexOf('.'));
+                    }
+                    if (base.isEmpty()) {
+                        fail++;
+                        continue;
+                    }
+                    File target = new File(destDir, base + ".sav");
+                    try (InputStream in = getContentResolver().openInputStream(file);
+                         OutputStream out = new FileOutputStream(target)) {
+                        if (in == null) {
+                            fail++;
+                            continue;
+                        }
+                        byte[] buffer = new byte[65536];
+                        int n;
+                        while ((n = in.read(buffer)) > 0) {
+                            out.write(buffer, 0, n);
+                        }
+                        ok++;
+                    } catch (Exception e) {
+                        fail++;
+                    }
+                }
+            } catch (Exception e) {
+                fail++;
+            }
+            final int good = ok;
+            final int bad = fail;
+            runOnUiThread(() -> toast(getString(R.string.myboy_done, good, bad)));
+        }, "sav-import").start();
     }
 
     private boolean prefersPortrait() {
@@ -2136,6 +3640,12 @@ public class EmulatorActivity extends AppCompatActivity {
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        // While the solar sensor is on, the volume keys become sunlight
+        // controls (Boktai), the way cartridge sensors were adjusted on real
+        // hardware accessories.
+        if (event.getRepeatCount() == 0 && nudgeSolar(keyCode == KeyEvent.KEYCODE_VOLUME_UP ? 1 : keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ? -1 : 0)) {
+            return true;
+        }
         if (keyCode == KeyEvent.KEYCODE_TAB || keyCode == KeyEvent.KEYCODE_SPACE || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR) {
             fastHold = true;
             return true;
@@ -2155,6 +3665,12 @@ public class EmulatorActivity extends AppCompatActivity {
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            if (solarEnabled()) {
+                return true;
+            }
+            return super.onKeyUp(keyCode, event);
+        }
         if (keyCode == KeyEvent.KEYCODE_TAB || keyCode == KeyEvent.KEYCODE_SPACE || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR) {
             fastHold = false;
             return true;
@@ -2221,6 +3737,11 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void hideSystemUi() {
+        if (!getPreferences(MODE_PRIVATE).getBoolean("immersive", true)) {
+            View decor = getWindow().getDecorView();
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            return;
+        }
         View decor = getWindow().getDecorView();
         decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                 | View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -2228,6 +3749,37 @@ public class EmulatorActivity extends AppCompatActivity {
                 | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+
+    private boolean solarEnabled() {
+        return core != null && core.isLoaded()
+                && getPreferences(MODE_PRIVATE).getBoolean("solar_on", false);
+    }
+
+    /** Adjusts the Boktai sun level with the volume keys; false if not active. */
+    private boolean nudgeSolar(int delta) {
+        if (delta == 0 || !solarEnabled() || !getPreferences(MODE_PRIVATE).getBoolean("solar_volkeys", false)) {
+            return false;
+        }
+        int level = Math.max(0, Math.min(10, getPreferences(MODE_PRIVATE).getInt("solar_level", 5) + delta));
+        getPreferences(MODE_PRIVATE).edit().putInt("solar_level", level).apply();
+        core.setSolar(level);
+        toast(getString(R.string.adv_solar_level, level));
+        return true;
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (core != null && core.isLoaded() && getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false)) {
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.app_name)
+                    .setMessage(R.string.confirm_exit_message)
+                    .setPositiveButton(android.R.string.ok, (d, w) -> super.onBackPressed())
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -2245,6 +3797,14 @@ public class EmulatorActivity extends AppCompatActivity {
         if (audio != null) {
             audio.pause();
             audioStarted = false;
+        }
+        if (core != null && core.isLoaded()
+                && getPreferences(MODE_PRIVATE).getBoolean("auto_save_state", false)) {
+            // The emulator loop still drains commands while paused, so the
+            // save happens on the emulation thread a moment later.
+            recyclePendingPreview();
+            pendingPreview.set(gameView.copyLast());
+            command.set(CMD_AUTOSAVE);
         }
     }
 
@@ -2277,6 +3837,15 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         inputHandler.removeCallbacksAndMessages(null);
         releaseAudio();
+        // Let the GIF encoder drain its queue and publish before the core and
+        // the activity go away; the file is already on disk, so this is quick.
+        gifRecording = false;
+        if (gifThread != null) {
+            try {
+                gifThread.join(2500);
+            } catch (InterruptedException ignored) {
+            }
+        }
         if (emuThread != null) {
             emuThread.interrupt();
             try {

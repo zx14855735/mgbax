@@ -130,6 +130,21 @@
                     android:text="@string/layout" />
 
                 <Button
+                    android:id="@+id/btn_cheats"
+                    style="@style/MgbaButton"
+                    android:text="@string/cheats_short" />
+
+                <Button
+                    android:id="@+id/btn_shot"
+                    style="@style/MgbaButton"
+                    android:text="@string/screenshot_short" />
+
+                <Button
+                    android:id="@+id/btn_gif"
+                    style="@style/MgbaButton"
+                    android:text="@string/gif_record" />
+
+                <Button
                     android:id="@+id/btn_settings"
                     style="@style/MgbaButton"
                     android:text="@string/settings" />
@@ -214,6 +229,11 @@
                 android:text="@string/layout_hint"
                 android:textColor="#F6E7A8"
                 android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_profiles"
+                style="@style/MgbaButton"
+                android:text="@string/layout_profiles" />
 
             <Button
                 android:id="@+id/layout_reset"
