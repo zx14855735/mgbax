@@ -17,8 +17,10 @@ final class AudioOut {
     /// target, avoiding both gaps and dropped samples.
     private struct RateControl {
         /// Largest ratio adjustment; also covers a front end that cannot pace
-        /// at full speed.
-        static let maxDrift: Float = 0.02
+        /// at full speed. Needs headroom over the pace estimate's residual
+        /// error (the two loops only partly overlap): too small a cap lets the
+        /// queue swing to its edges - gaps below, dropped samples above.
+        static let maxDrift: Float = 0.035
         /// Ratio adjustment per unit of normalized queue error.
         static let gain: Float = 0.08
         /// Smoothing of the queue measurement, which the device reports in
@@ -44,6 +46,12 @@ final class AudioOut {
                 smoothedError = error
             }
             return min(Self.maxDrift, max(-Self.maxDrift, smoothedError * Self.gain))
+        }
+
+        /// Forgets the smoothed queue measurement so a fresh speed change
+        /// re-locks without being pulled by the previous steady-state estimate.
+        mutating func reset() {
+            smoothedError = 0
         }
     }
 
@@ -146,6 +154,13 @@ final class AudioOut {
         let level = ((writePos - readPos + capacity * 2) % (capacity * 2)) / 2
         lock.unlock()
         return control.drift(levelFrames: level, steady: started && !paused && soundEnabled)
+    }
+
+    /// Clears the smoothed rate estimate; called with the speed change that
+    /// also drops the queues, so the control re-locks from the raw level
+    /// instead of chasing the previous steady state (stuttering window).
+    func resetRateControl() {
+        control.reset()
     }
 
     /// Queues frames the core already converted to `outputRate`.

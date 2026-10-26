@@ -14,6 +14,7 @@ public final class AudioRateControlTest {
         clamped();
         smoothingConverges();
         fillingSkipsSmoothing();
+        resetForgetsHistory();
         System.out.println("AudioRateControlTest ok");
     }
 
@@ -61,6 +62,22 @@ public final class AudioRateControlTest {
         AudioRateControl control = new AudioRateControl(TRACK, TARGET);
         float drift = control.drift(0, false);
         check(drift == -AudioRateControl.MAX_DRIFT, "fill-up uses the full correction");
+    }
+
+    private static void resetForgetsHistory() {
+        // Task 3 fix: reset() must clear the smoothed estimate so a fresh speed
+        // change re-locks without being pulled by the previous steady state.
+        AudioRateControl control = new AudioRateControl(TRACK, TARGET);
+        int level = TARGET + TRACK / 4;
+        float converged = 0f;
+        for (int i = 0; i < 200; i++) {
+            converged = control.drift(level, true);
+        }
+        check(converged > 0f, "steady state corrected the queue");
+        control.reset();
+        float firstAfter = control.drift(level, true);
+        check(firstAfter < converged, "reset drops the smoothed estimate back to the raw error");
+        check(firstAfter > 0f, "reset still corrects in the same direction");
     }
 
     private static void check(boolean condition, String label) {

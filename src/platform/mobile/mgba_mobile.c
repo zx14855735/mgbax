@@ -86,11 +86,27 @@ struct MgbaMobile {
 	int16_t* audioWindow;
 	size_t audioWindowFrames;
 	/* Frames per second the front end actually paces at; 0 = not measured
-	 * yet, use the console's own frame rate. */
+	 * yet, use the console's own frame rate. This is an eased estimate, not
+	 * the raw window reading: raw readings scatter by a few percent per
+	 * window (sleep quantization, GC) and stepping on them walks the pitch
+	 * audibly, worst during fast-forward where the throughput wobbles most. */
 	double audioPaceFps;
-	/* A reading that left the deadband, waiting for the next window to
-	 * confirm it before the resampler follows. 0 = nothing pending. */
-	double audioPacePending;
+	/* Consecutive readings far enough from the estimate to be outliers. A
+	 * single window can be a stall; the estimate only jumps when two in a
+	 * row agree. */
+	int audioPaceOutliers;
+	/* Throughput the device last demonstrated, in console frames per second
+	 * (pace x speed). Lets a speed change re-lock the resampler from the
+	 * measured capability instead of guessing the console's nominal rate. */
+	double audioPaceThroughput;
+	/* Speed the current pace was measured at; set alongside every read. */
+	double audioPaceSpeed;
+	/* Last three raw window readings; the middle one feeds the estimator. A
+	 * free-running front end's window readings scatter with a heavy tail
+	 * (scheduler jitter shows up as one window running several percent off),
+	 * and a median strips those single-window spikes without adding lag. */
+	double audioPaceHist[3];
+	int audioPaceHistLen;
 	/* Front-end overrides applied on the next load. */
 	int saveType;
 	bool patches;
@@ -135,10 +151,10 @@ enum {
 };
 
 /* One rewind history entry every REWIND_DIVIDER frames; REWIND_ENTRIES of
- * them span REWIND_ENTRIES / 2 seconds of gameplay (about 16 s). */
+ * them span REWIND_ENTRIES / 2 seconds of gameplay (about 60 s). */
 enum {
 	REWIND_DIVIDER = 30,
-	REWIND_ENTRIES = 32,
+	REWIND_ENTRIES = 120,
 };
 
 /*
@@ -156,11 +172,17 @@ enum {
 /* Range of front end paces the feedback is trusted for. */
 #define MOBILE_AUDIO_PACE_FPS_MIN 15.0
 #define MOBILE_AUDIO_PACE_FPS_MAX 240.0
-/* Readings this close to the current pace are measurement noise; following
- * them would modulate the pitch once per window. */
-#define MOBILE_AUDIO_PACE_DEADBAND 0.005
-/* Two window readings this close to each other are the same change. */
-#define MOBILE_AUDIO_PACE_AGREE 0.03
+/* Share of a window reading the applied pace absorbs at once. Falling
+ * throughput is absorbed faster than rising: surplus production only fills
+ * the buffers, while a shortfall drains them into underruns. */
+#define MOBILE_AUDIO_PACE_EMA_UP 0.2
+#define MOBILE_AUDIO_PACE_EMA_DOWN 0.4
+/* A window reading this far from the applied pace is a stall or a spike (a
+ * GC pause, a ROM load), not the pacing rate; two in a row are followed. */
+#define MOBILE_AUDIO_PACE_OUTLIER 0.35
+/* Per-window decay of the remembered device throughput, so a device that
+ * slows down (thermals) is re-learned instead of being remembered forever. */
+#define MOBILE_AUDIO_PACE_THROUGHPUT_DECAY 0.9995
 /* How much already-resampled audio the reader may hold back between pumps. */
 #define MOBILE_AUDIO_OUT_FRAMES 16384
 
@@ -224,10 +246,13 @@ static void destroyCore(struct MgbaMobile* emu) {
 	emu->width = 0;
 	emu->height = 0;
 	// A freshly loaded game is assumed to be paced at its own frame rate;
-	// front-end readings accumulate from there. This also drops a reading a
-	// stall may have left pending across the load.
+	// front-end readings accumulate from there. This also drops an estimate a
+	// stall may have dragged across the load. The throughput memory survives:
+	// it describes the device, not the game state.
 	emu->audioPaceFps = 0.0;
-	emu->audioPacePending = 0.0;
+	emu->audioPaceOutliers = 0;
+	emu->audioPaceHistLen = 0;
+	emu->audioPaceSpeed = 0.0;
 }
 
 static bool ensureVideo(struct MgbaMobile* emu) {
@@ -1348,13 +1373,36 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate) {
  * underruns. Call about once a second with a measured value.
  *
  * A single measured window is not trustworthy material for the pitch: it can
- * be dragged down by a ROM load, a system pause or a GC run inside the window.
- * Readings within MOBILE_AUDIO_PACE_DEADBAND of the current pace are treated
- * as noise and left to the playback buffer's drift control; anything larger
- * only moves the stream once the next window agrees within
- * MOBILE_AUDIO_PACE_AGREE, so single stalls cannot detune the music while a
- * device that is consistently slow is still followed.
+ * be dragged down by a ROM load, a system pause or a GC run inside the window,
+ * and even an ordinary window scatters by a few percent from sleep
+ * quantization alone. The applied pace is therefore an eased estimate: it
+ * absorbs a share of each reading instead of stepping to it, so the pitch
+ * glides instead of jumping once per window (which during fast-forward, where
+ * the throughput wobbles hardest, was heard as the music randomly detuning).
+ * Readings far outside the estimate are treated as stalls and need a
+ * confirming window before the estimate follows them at all.
  */
+/* Middle value of three readings. */
+static double median3(double x, double y, double z) {
+	double t;
+	if (x > y) {
+		t = x;
+		x = y;
+		y = t;
+	}
+	if (y > z) {
+		t = y;
+		y = z;
+		z = t;
+	}
+	if (x > y) {
+		t = x;
+		x = y;
+		y = t;
+	}
+	return y;
+}
+
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	if (!emu || !(fps > 0.0)) {
 		return;
@@ -1364,29 +1412,69 @@ void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	} else if (fps > MOBILE_AUDIO_PACE_FPS_MAX) {
 		fps = MOBILE_AUDIO_PACE_FPS_MAX;
 	}
-	double old = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : audioNativeFps(emu);
-	double delta = fps > old ? fps - old : old - fps;
-	if (delta <= old * MOBILE_AUDIO_PACE_DEADBAND) {
-		// Close enough that the queue's drift control covers it; following
-		// every reading would wobble the pitch once a window.
-		emu->audioPacePending = 0.0;
+	if (emu->audioPaceHistLen < 3) {
+		emu->audioPaceHist[emu->audioPaceHistLen++] = fps;
+	} else {
+		emu->audioPaceHist[0] = emu->audioPaceHist[1];
+		emu->audioPaceHist[1] = emu->audioPaceHist[2];
+		emu->audioPaceHist[2] = fps;
+	}
+	double reading = emu->audioPaceHistLen < 3
+			? fps
+			: median3(emu->audioPaceHist[0], emu->audioPaceHist[1], emu->audioPaceHist[2]);
+	if (emu->audioPaceFps <= 0.0) {
+		// First reading after a reset: lock at once so the resampler stops
+		// running at the seeded rate.
+		emu->audioPaceFps = reading;
+		emu->audioPaceOutliers = 0;
+		emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
+				emu->audioPaceFps * emu->audioPaceSpeed);
 		return;
 	}
-	if (emu->audioPacePending > 0.0) {
-		double gap = fps > emu->audioPacePending ? fps - emu->audioPacePending : emu->audioPacePending - fps;
-		if (gap <= emu->audioPacePending * MOBILE_AUDIO_PACE_AGREE) {
-			// Two consistent readings in a row: this is a real change.
-			if (fps != emu->audioPaceFps) {
-				MOBILE_LOGI("Audio pace %.2f fps", fps);
-			}
-			emu->audioPaceFps = fps;
-			emu->audioPacePending = 0.0;
-			return;
+	double delta = reading > emu->audioPaceFps ? reading - emu->audioPaceFps : emu->audioPaceFps - reading;
+	if (delta > emu->audioPaceFps * MOBILE_AUDIO_PACE_OUTLIER) {
+		// One window can be a stall, not the pacing rate: wait for the next
+		// window to agree before moving the stream.
+		if (++emu->audioPaceOutliers >= 2) {
+			emu->audioPaceFps = reading;
+			emu->audioPaceOutliers = 0;
+			emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
+					emu->audioPaceFps * emu->audioPaceSpeed);
 		}
+		return;
 	}
-	// One window can be a stall, not the pacing rate: wait for the next
-	// window to agree before moving the stream.
-	emu->audioPacePending = fps;
+	emu->audioPaceOutliers = 0;
+	double share = reading < emu->audioPaceFps ? MOBILE_AUDIO_PACE_EMA_DOWN : MOBILE_AUDIO_PACE_EMA_UP;
+	emu->audioPaceFps += (reading - emu->audioPaceFps) * share;
+	emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
+			emu->audioPaceFps * emu->audioPaceSpeed);
+}
+
+/*
+ * Clears the pace estimate so the resampler re-locks after a deliberate speed
+ * change. The device-throughput memory survives the reset: readAudioOut seeds
+ * from it until the first fresh reading locks the estimate again.
+ */
+void mgbaMobileResetAudioPace(struct MgbaMobile* emu) {
+	if (!emu) {
+		return;
+	}
+	emu->audioPaceFps = 0.0;
+	emu->audioPaceOutliers = 0;
+	emu->audioPaceHistLen = 0;
+}
+
+/*
+ * Whether the resampler's input rate can be trusted for the speed currently
+ * being read: either a locked estimate or a remembered device throughput to
+ * seed from. Front ends defer starting playback while this is false - the
+ * first fast-forward on a device has no measurement to go on, and filling the
+ * playback queue at the console's nominal rate would drain it into gaps and
+ * play wrong-pitch audio; waiting out the first feedback window and then
+ * starting at the locked rate turns that into a beat of silence instead.
+ */
+bool mgbaMobileAudioPaceSeeded(const struct MgbaMobile* emu) {
+	return emu && (emu->audioPaceFps > 0.0 || emu->audioPaceThroughput > 0.0);
 }
 
 struct MgbaMobileAudioWindow {
@@ -1522,7 +1610,26 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	} else if (drift < -0.05f) {
 		drift = -0.05f;
 	}
-	double pace = emu->audioPaceFps > 0.0 ? emu->audioPaceFps : audioNativeFps(emu);
+	double pace;
+	if (emu->audioPaceFps > 0.0) {
+		pace = emu->audioPaceFps;
+	} else if (emu->audioPaceThroughput > 0.0) {
+		// A speed change just cleared the estimate: seed from the throughput
+		// the device last demonstrated (measured at the previous speed), not
+		// from the console's nominal rate. Overestimating starves the stream
+		// into gaps; underestimating only sheds samples at the core's ring.
+		pace = emu->audioPaceThroughput / speed;
+		double nominal = audioNativeFps(emu);
+		if (pace > nominal) {
+			pace = nominal;
+		}
+		if (pace < MOBILE_AUDIO_PACE_FPS_MIN) {
+			pace = MOBILE_AUDIO_PACE_FPS_MIN;
+		}
+	} else {
+		pace = audioNativeFps(emu);
+	}
+	emu->audioPaceSpeed = speed;
 	double fpsRatio = mCoreCalculateFramerateRatio(emu->core, pace);
 	if (fpsRatio <= 0.1 || fpsRatio > 20.0) {
 		// Unknown frame timing (should not happen): assume the front end paces

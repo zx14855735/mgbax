@@ -15,8 +15,11 @@ package io.mgba.android;
  * most a fraction of a percent.
  */
 final class AudioRateControl {
-    /** Largest ratio adjustment; also covers a front end that cannot pace at full speed. */
-    static final float MAX_DRIFT = 0.02f;
+    /** Largest ratio adjustment; also covers a front end that cannot pace at full speed.
+     * The fast loops (queue drift and pace estimate) only partly overlap, so the cap
+     * needs headroom over the pace estimate's residual error: too small a cap lets
+     * the queue swing to its edges (gaps below, shed samples above). */
+    static final float MAX_DRIFT = 0.035f;
     /** Ratio adjustment per unit of normalized queue error. */
     private static final float GAIN = 0.08f;
     /** Smoothing of the queue measurement, which the device reports in coarse steps. */
@@ -49,5 +52,11 @@ final class AudioRateControl {
 
     private static float clamp(float value, float min, float max) {
         return value < min ? min : (value > max ? max : value);
+    }
+
+    /** Forgets the smoothed queue measurement so a fresh speed change re-locks
+     * without being pulled by the previous steady-state estimate. */
+    void reset() {
+        smoothedError = 0f;
     }
 }

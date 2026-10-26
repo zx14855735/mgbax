@@ -100,7 +100,7 @@ final class ShellStageView: UIView {
             let size = strip * 0.42
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.boldSystemFont(ofSize: size),
-                .foregroundColor: theme.titleText
+                .foregroundColor: UIColor(red: 231 / 255, green: 178 / 255, blue: 58 / 255, alpha: 1)
             ]
             let textSize = title.size(withAttributes: attrs)
             title.draw(at: CGPoint(x: gameFrame.midX - textSize.width / 2,

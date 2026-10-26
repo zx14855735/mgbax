@@ -42,6 +42,14 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
  * frame rate is assumed until readings accumulate again.
  */
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps);
+void mgbaMobileResetAudioPace(struct MgbaMobile* emu);
+/*
+ * Whether the resampler's input rate can be trusted at the speed being read:
+ * a locked estimate or a remembered device throughput to seed from. Front
+ * ends defer starting playback while this is false (the first fast-forward on
+ * a device) and wait out the first feedback window instead.
+ */
+bool mgbaMobileAudioPaceSeeded(const struct MgbaMobile* emu);
 void mgbaMobileClearAudio(struct MgbaMobile* emu);
 int mgbaMobileWidth(const struct MgbaMobile* emu);
 int mgbaMobileHeight(const struct MgbaMobile* emu);

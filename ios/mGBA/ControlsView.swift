@@ -527,6 +527,14 @@ final class ControlsView: UIView {
         let cSize = 7 * fh
         keyCDefault = CGRect(x: buttonBDefault.minX - cSize - 2 * fw, y: buttonBDefault.midY - cSize / 2, width: cSize, height: cSize)
         keyC2Default = CGRect(x: buttonADefault.midX - cSize / 2, y: buttonADefault.minY - cSize - 2 * fh, width: cSize, height: cSize)
+        // On-screen toolbar (menu/save/load/mute/rewind) is shell chrome in both
+        // orientations; lay it out along the top center so rewind is reachable
+        // without opening the menu.
+        let tBarW = 52 * fw
+        let tRowTop = 1.5 * fh
+        let tRowH = 6 * fh
+        toolbar = CGRect(x: 50 * fw - tBarW / 2, y: tRowTop, width: tBarW, height: tRowH)
+        layoutToolbar()
         layoutSpeakerLandscape(w, h)
     }
 
@@ -586,8 +594,10 @@ final class ControlsView: UIView {
 
     override func draw(_ rect: CGRect) {
         let shell = handheld()
-        if shell && portrait && !editing {
+        if shell && !editing && toolbar.width > 0 {
             drawToolbar()
+        }
+        if shell && portrait && !editing && !toggle.isEmpty {
             drawToggle()
         }
         drawKey(buttonL, "L", (pressed & Self.l) != 0, editing, false)
@@ -977,6 +987,24 @@ final class ControlsView: UIView {
         publish()
     }
 
+    /// Drops every tracked touch and reports all keys up. A focus change or a
+    /// system takeover can lose the matching UP/CANCEL for a touch, which
+    /// would leave a key such as A logically held: later taps then changed
+    /// nothing and looked like the button had stopped working.
+    func releaseAllKeys() {
+        let fastHeld = actionPointers.values.contains(Self.actionFF)
+        pointers.removeAll()
+        actionPointers.removeAll()
+        turboTimer?.invalidate()
+        turboTimer = nil
+        pulseMask = 0
+        pulseOn = false
+        if fastHeld {
+            onFastHold?(false)
+        }
+        publish(0)
+    }
+
     private func publish() {
         publish(computeMask())
     }
@@ -1035,13 +1063,15 @@ final class ControlsView: UIView {
 
     /** Optional utility key under the point, or 0 (action codes). */
     private func actionAt(_ point: CGPoint) -> Int {
-        if handheld() && portrait {
-            if toggle.contains(point) { return Self.actionFFToggle }
-            if toolbarMenu.contains(point) { return Self.actionMenu }
-            if toolbarSave.contains(point) { return Self.actionSave }
-            if toolbarLoad.contains(point) { return Self.actionLoad }
-            if toolbarMute.contains(point) { return Self.actionMute }
-            if toolbarRewind.contains(point) { return Self.actionRewind }
+        if handheld() {
+            if !toggle.isEmpty && toggle.contains(point) { return Self.actionFFToggle }
+            if toolbar.width > 0 {
+                if toolbarMenu.contains(point) { return Self.actionMenu }
+                if toolbarSave.contains(point) { return Self.actionSave }
+                if toolbarLoad.contains(point) { return Self.actionLoad }
+                if toolbarMute.contains(point) { return Self.actionMute }
+                if toolbarRewind.contains(point) { return Self.actionRewind }
+            }
         }
         if visibleExtras.contains("save"), keySave.contains(point) { return Self.actionSave }
         if visibleExtras.contains("load"), keyLoad.contains(point) { return Self.actionLoad }

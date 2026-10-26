@@ -72,6 +72,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /** Fractional speeds (slow motion) accumulate whole frames in this debt. */
     private var frameDebt: Double = 0
     private var lastAudioSpeed: Double = 0
+    /** Slice rate the device last sustained while fast-forwarding (slices per
+     * second; eased toward the measured capability once per feedback window)
+     * and the slice schedule derived from it; re-measured per speed. 0 =
+     * free-run while measuring. */
+    private var fastPace: Double = 0
+    private var fastSliceNanos: Int64 = 0
+    /** Schedule resyncs since the last feedback window. */
+    private var fastResyncs = 0
+    /** Whether the core's resampler rate can be trusted at the applied speed;
+     * the pump holds playback back until the first feedback window lands. */
+    private var paceSeeded = true
     private var armWork: DispatchWorkItem?
     private var pulseWork: DispatchWorkItem?
     private var linkWatch: DispatchWorkItem?
@@ -287,6 +298,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         thread.qualityOfService = .userInteractive
         thread.start()
         NotificationCenter.default.addObserver(self, selector: #selector(bindControllers), name: .GCControllerDidConnect, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(controllerDisconnected), name: .GCControllerDidDisconnect, object: nil)
+        // Losing the focus or the touch stream can take the matching key-ups
+        // with it; drop every held key so the game cannot come back stuck
+        // with A down or at 16x speed.
+        NotificationCenter.default.addObserver(self, selector: #selector(appResignedActive), name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appResignedActive), name: UIApplication.didEnterBackgroundNotification, object: nil)
         bindControllers()
         applyVideo()
     }
@@ -491,9 +508,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         rewindLabel.textColor = .white
         rewindLabel.font = .systemFont(ofSize: 13)
         rewindStack.addArrangedSubview(rewindLabel)
-        for seconds in [15, 12, 9, 6, 3] {
+        for seconds in [60, 45, 30, 15, 12, 9, 6, 3] {
             let button = UIButton(type: .system)
-            button.setTitle("\(seconds)秒", for: .normal)
+            button.setTitle(seconds == 60 ? "1分钟" : "\(seconds)秒", for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: 14)
             button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
             button.tag = seconds
@@ -924,7 +941,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             if audioSpeed != lastAudioSpeed {
                 lastAudioSpeed = audioSpeed
                 audio.flush()
+                audio.resetRateControl()
                 mgbaMobileClearAudio(core)
+                // Drop the pace estimate too, so the core's resampler re-locks
+                // from the throughput memory - or, on the first fast-forward on
+                // this device, from the first fresh reading - after the speed
+                // change instead of chasing a stale reading.
+                mgbaMobileResetAudioPace(core)
+                // The sustainable slice rate differs per speed: re-learn it.
+                fastPace = 0
+                fastSliceNanos = 0
+                fastResyncs = 0
+                // A pace window straddling the change blends the two rates
+                // (half a second of 1x plus half of 16x reports a meaningless
+                // middle value) and the resampler would lock onto it; start the
+                // measurement window fresh, same as after a stall.
+                slices = 0
+                frames = 0
+                fpsStamp = DispatchTime.now().uptimeNanoseconds
+                // Playback holds back until the rate is trustworthy: with a
+                // throughput memory this is instant, and on the first
+                // fast-forward it waits out one window - a beat of silence
+                // instead of wrong-pitch audio draining into gaps.
+                paceSeeded = mgbaMobileAudioPaceSeeded(core)
             }
             // Fractional speeds (slow motion) accumulate whole frames in a
             // small debt; integer speeds drain it every slice.
@@ -973,10 +1012,31 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // pitches the music) slightly slow; a stall that leaves the loop
             // more than two slices behind starts a fresh schedule instead of
             // replaying a catching-up burst.
-            nextSlice += sliceNanos
+            //
+            // While fast-forwarding the device usually cannot hold the
+            // requested speed, and pure free-running (rescheduling from "now"
+            // every slice) lets every scheduling hiccup straight into the game
+            // speed - and with tape-style audio, into the pitch. The schedule
+            // therefore eases toward the rate the device actually sustains,
+            // measured once per feedback window: the first window free-runs
+            // and locks that rate; while the schedule holds with slack it
+            // climbs gently (additive), and whenever slices had to resync it
+            // follows the delivered rate back down (multiplicative). A
+            // delivered-rate schedule alone would ratchet - one noisy low
+            // window would slow the pace for good, since a paced loop can
+            // never deliver more than its own schedule - and a work-time
+            // measure is polluted by the every-80ms presentation cost, which
+            // made the schedule thrash. Additive-increase/
+            // multiplicative-decrease avoids both.
+            let fastPacing = mult > 1.5 && fastSliceNanos > 0
+            let paceNanos = fastPacing ? fastSliceNanos : sliceNanos
+            nextSlice += paceNanos
             let sliceNow = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)
-            if sliceNow - nextSlice > 2 * sliceNanos {
+            if sliceNow - nextSlice > 2 * paceNanos {
                 nextSlice = sliceNow
+                if mult > 1.5 {
+                    fastResyncs += 1
+                }
             } else {
                 let remain = nextSlice - sliceNow
                 if remain > 1_000_000 {
@@ -1010,8 +1070,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // window: the audio resampler follows this rate so heavy games
                 // that cannot hold the console's frame time do not starve it.
                 if elapsed > 0 {
-                    mgbaMobileSetAudioPaceFps(core, Double(cycles) * 1_000_000_000 / Double(elapsed))
+                    let achieved = Double(cycles) * 1_000_000_000 / Double(elapsed)
+                    mgbaMobileSetAudioPaceFps(core, achieved)
+                    // The window's reading locked the pace (or refreshed the
+                    // seed): playback may start.
+                    paceSeeded = true
+                    if mult > 1.5 {
+                        // Ease the fast-forward schedule toward the rate the
+                        // device actually sustains: lock on the first window
+                        // (it free-ran, so the reading is raw capability),
+                        // follow the delivered rate down after any resync, and
+                        // climb gently while the schedule held with slack -
+                        // capped at the requested pacing rate.
+                        if fastPace <= 0 {
+                            fastPace = achieved
+                        } else if fastResyncs > 0 {
+                            fastPace += (achieved - fastPace) * 0.4
+                        } else {
+                            fastPace = min(fastPace * 1.03, 1_000_000_000 / Double(sliceNanos))
+                        }
+                        fastSliceNanos = Int64(1_000_000_000 / fastPace)
+                    }
                 }
+                fastResyncs = 0
                 // Rounded so the console's own 59.73 fps still shows as the 60
                 // the counter has always displayed.
                 let shownFps = elapsed > 0 ? Int((Double(shown) * 1_000_000_000 / Double(elapsed)).rounded()) : 0
@@ -1028,6 +1109,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// full that queue is so the audio clock stays locked to the device.
     private func pumpAudio(core: OpaquePointer, buffer: UnsafeMutablePointer<Int16>, speed: Double, drop: Bool) {
         if drop {
+            mgbaMobileClearAudio(core)
+            return
+        }
+        if !paceSeeded {
+            // First fast-forward on this device: no locked pace and no
+            // throughput memory to seed from. Converting now would queue
+            // wrong-pitch audio; hold silent until the first feedback window
+            // lands, then fill at the locked rate.
             mgbaMobileClearAudio(core)
             return
         }
@@ -1236,6 +1325,32 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             } else {
                 toast("没有可倒带的历史")
             }
+        }
+    }
+
+    /// Drops every locally held key after the touch stream or focus was lost.
+    /// Without this the matching UP/CANCEL can go to another window, and a
+    /// latched A (or fast-forward hold) makes the next press look dead.
+    private func releaseInput() {
+        let held = touchKeys | hwKeys | padKeys
+        let wasFastHold = fastHold
+        touchKeys = 0
+        hwKeys = 0
+        padKeys = 0
+        fastHold = false
+        gate.lock()
+        let wasHoldRewind = rewindHold
+        rewindHold = false
+        gate.unlock()
+        controls.releaseAllKeys()
+        armWork?.cancel()
+        stopTurbo()
+        if wasFastHold {
+            refreshSpeedButtons()
+        }
+        if held != 0 || wasHoldRewind {
+            publishKeys()
+            wakeInput()
         }
     }
 
@@ -3752,6 +3867,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         rewindHold = true
         lastRewindAt = 0
         gate.unlock()
+        // A long hold outlives the menu auto-hide; keep the bar up while the
+        // finger stays down.
+        menuHideWork?.cancel()
         wakeInput()
     }
 
@@ -3759,6 +3877,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.lock()
         rewindHold = false
         gate.unlock()
+        armMenuAutoHide()
     }
 
     @objc private func toggleFastForward() {
@@ -4698,7 +4817,27 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
-    private func updatePad(_ pad: GCExtendedGamepad) {
+    @objc private func controllerDisconnected() {
+        // A controller can walk away with a button held; recompute the pad
+        // mask from the controllers that remain so the game does not stay
+        // latched on the lost one.
+        var mask = 0
+        for controller in GCController.controllers() {
+            if let pad = controller.extendedGamepad {
+                mask |= padMask(pad)
+            }
+        }
+        let prev = padKeys
+        padKeys = mask
+        noteUserKeys(prevTouch: touchKeys, prevHw: hwKeys, prevPad: prev)
+        if (mask & ~prev) != 0 { wakeInput() }
+    }
+
+    @objc private func appResignedActive() {
+        releaseInput()
+    }
+
+    private func padMask(_ pad: GCExtendedGamepad) -> Int {
         var mask = 0
         if pad.buttonA.isPressed { mask |= ControlsView.A }
         if pad.buttonB.isPressed { mask |= ControlsView.B }
@@ -4710,6 +4849,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if pad.dpad.down.isPressed { mask |= ControlsView.down }
         if pad.dpad.left.isPressed { mask |= ControlsView.left }
         if pad.dpad.right.isPressed { mask |= ControlsView.right }
+        return mask
+    }
+
+    private func updatePad(_ pad: GCExtendedGamepad) {
+        let mask = padMask(pad)
         let prev = padKeys
         padKeys = mask
         noteUserKeys(prevTouch: touchKeys, prevHw: hwKeys, prevPad: prev)
@@ -4758,16 +4902,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        // A held fast-forward key can be cut off by a system overlay before its
-        // key-up arrives; drop the hold so the game cannot come back stuck at
-        // 16x speed with raised audio.
+        // A held key can be cut off by a system overlay before its key-up
+        // arrives; drop everything so the game cannot come back stuck with A
+        // down or at 16x speed with raised audio.
+        var handled = false
         for press in presses {
-            guard let key = press.key else { continue }
-            if key.keyCode == .keyboardTab || key.keyCode == .keyboardSpacebar {
-                fastHold = false
-            }
+            if press.key != nil { handled = true }
         }
-        super.pressesCancelled(presses, with: event)
+        if handled {
+            releaseInput()
+        } else {
+            super.pressesCancelled(presses, with: event)
+        }
     }
 
     private func mapKey(_ code: UIKeyboardHIDUsage) -> Int {
@@ -4876,10 +5022,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         super.viewWillDisappear(animated)
         gate.lock()
         paused = true
-        // Do not stay held at 16x (raised pitch) when the key-up never arrives
-        // because the screen went away under a held key.
-        fastHold = false
         gate.unlock()
+        // Do not stay held at 16x (raised pitch) or with A/B latched when the
+        // key-up never arrives because the screen went away under a held key.
+        releaseInput()
         audio.setPaused(true)
         // 退出时自动存档 into the reserved slot.
         if defaults.bool(forKey: "auto_save_state"), let core, mgbaMobileIsLoaded(core) {

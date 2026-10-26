@@ -8,13 +8,17 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
+import android.os.Build;
 import android.util.AttributeSet;
 import android.util.SparseIntArray;
 import android.view.MotionEvent;
 import android.view.View;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 public class ControlsView extends View {
@@ -331,11 +335,27 @@ public class ControlsView extends View {
         dragPointer = -1;
         pinchPointer = -1;
         pinchActive = false;
+        releaseAllKeys();
+        invalidate();
+    }
+
+    /**
+     * Drops every tracked pointer and reports all keys up. A new gesture, a
+     * focus change or a pause can lose the matching UP/CANCEL (a system edge
+     * swipe, a notification shade or a dialog taking the touch stream), which
+     * used to leave a key such as A logically held: later taps then changed
+     * nothing and looked like the button had stopped working.
+     */
+    public void releaseAllKeys() {
+        boolean fastHeld = actionPointers.indexOfValue(ACTION_FF) >= 0;
         pointers.clear();
         actionPointers.clear();
         turboHandler.removeCallbacks(turboTick);
         pulseMask = 0;
         pulseOn = false;
+        if (fastHeld && listener != null) {
+            listener.onFastHold(false);
+        }
         if (pressed != 0) {
             pressed = 0;
             if (listener != null) {
@@ -621,6 +641,14 @@ public class ControlsView extends View {
                 buttonBDefault.left - 2 * fw, buttonBDefault.centerY() + cSize / 2f);
         keyC2Default.set(buttonADefault.centerX() - cSize / 2f, buttonADefault.top - cSize - 2 * fh,
                 buttonADefault.centerX() + cSize / 2f, buttonADefault.top - 2 * fh);
+        // On-screen toolbar (menu/save/load/mute/rewind) is shell chrome in both
+        // orientations; lay it out along the top center so the rewind (and the
+        // other chrome buttons) are reachable without opening the menu.
+        float tBarW = 52 * fw;
+        float tRowTop = 1.5f * fh;
+        float tRowH = 6 * fh;
+        toolbar.set(50 * fw - tBarW / 2f, tRowTop, 50 * fw + tBarW / 2f, tRowTop + tRowH);
+        layoutToolbar();
         layoutSpeakerLandscape(w, h);
     }
 
@@ -679,8 +707,10 @@ public class ControlsView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         boolean shell = handheld();
-        if (shell && portrait && !editing) {
+        if (shell && !editing && toolbar.width() > 0) {
             drawToolbar(canvas);
+        }
+        if (shell && portrait && !editing && toggle.width() > 0) {
             drawToggle(canvas);
         }
         drawKey(canvas, buttonL, "L", (pressed & L) != 0, editing, false);
@@ -997,13 +1027,44 @@ public class ControlsView extends View {
             return editTouch(event);
         }
         int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) {
+        // Ask for unbuffered dispatch on EVERY finger that lands, not just the
+        // first. Without this, a second finger (e.g. the A button pressed while
+        // the d-pad is already held) gets its down event batched/coalesced by
+        // the system and is delayed or dropped - the key then feels like it
+        // "sometimes doesn't respond".
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             requestUnbufferedDispatch(event);
+            // Keep a parent (menu hover, future overlay) from stealing the rest
+            // of this gesture after the first key went down.
+            if (getParent() != null) {
+                getParent().requestDisallowInterceptTouchEvent(true);
+            }
         }
         int index = event.getActionIndex();
         int id = event.getPointerId(index);
         switch (action) {
-            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_DOWN: {
+                // ACTION_DOWN always starts a new gesture. Any pointer still
+                // tracked here is left over from an UP/CANCEL that never
+                // arrived; drop it first so a stuck A (or any other key) cannot
+                // swallow the new press.
+                releaseAllKeys();
+                float x = event.getX(index);
+                float y = event.getY(index);
+                int utility = actionAt(x, y);
+                if (utility != 0) {
+                    actionPointers.put(id, utility);
+                    if (utility == ACTION_FF && listener != null) {
+                        listener.onFastHold(true);
+                    } else if (listener != null) {
+                        listener.onAction(utility);
+                    }
+                    invalidate();
+                    break;
+                }
+                pointers.put(id, hitTest(x, y));
+                break;
+            }
             case MotionEvent.ACTION_POINTER_DOWN: {
                 float x = event.getX(index);
                 float y = event.getY(index);
@@ -1024,6 +1085,15 @@ public class ControlsView extends View {
             case MotionEvent.ACTION_MOVE:
                 for (int i = 0; i < event.getPointerCount(); i++) {
                     int pointerId = event.getPointerId(i);
+                    if (pointers.indexOfKey(pointerId) < 0
+                            && actionPointers.indexOfKey(pointerId) < 0) {
+                        // A POINTER_DOWN can be batched away by the system. If
+                        // the pointer shows up in MOVE instead, adopt it now so
+                        // a second finger (typically A while the d-pad is held)
+                        // does not have to be lifted and pressed again.
+                        pointers.put(pointerId, hitTest(event.getX(i), event.getY(i)));
+                        continue;
+                    }
                     if (pointers.indexOfKey(pointerId) < 0) {
                         continue;
                     }
@@ -1051,12 +1121,10 @@ public class ControlsView extends View {
                 break;
             }
             case MotionEvent.ACTION_CANCEL:
-                pointers.clear();
-                actionPointers.clear();
-                if (listener != null) {
-                    listener.onFastHold(false);
-                }
-                invalidate();
+                // The touch stream was taken away (edge swipe, notification
+                // shade, dialog). Release everything, including a pulsing
+                // turbo key, or it would stay stuck on.
+                releaseAllKeys();
                 break;
             default:
                 return true;
@@ -1110,24 +1178,26 @@ public class ControlsView extends View {
 
     /** Optional utility key under the point, or 0 (ACTION_* codes). */
     private int actionAt(float x, float y) {
-        if (handheld() && portrait) {
-            if (toggle.contains(x, y)) {
+        if (handheld()) {
+            if (toggle.width() > 0 && toggle.contains(x, y)) {
                 return ACTION_FF_TOGGLE;
             }
-            if (toolbarMenu.contains(x, y)) {
-                return ACTION_MENU;
-            }
-            if (toolbarSave.contains(x, y)) {
-                return ACTION_SAVE;
-            }
-            if (toolbarLoad.contains(x, y)) {
-                return ACTION_LOAD;
-            }
-            if (toolbarMute.contains(x, y)) {
-                return ACTION_MUTE;
-            }
-            if (toolbarRewind.contains(x, y)) {
-                return ACTION_REWIND;
+            if (toolbar.width() > 0) {
+                if (toolbarMenu.contains(x, y)) {
+                    return ACTION_MENU;
+                }
+                if (toolbarSave.contains(x, y)) {
+                    return ACTION_SAVE;
+                }
+                if (toolbarLoad.contains(x, y)) {
+                    return ACTION_LOAD;
+                }
+                if (toolbarMute.contains(x, y)) {
+                    return ACTION_MUTE;
+                }
+                if (toolbarRewind.contains(x, y)) {
+                    return ACTION_REWIND;
+                }
             }
         }
         if (visibleExtras.contains("save") && keySave.contains(x, y)) {
@@ -1307,9 +1377,68 @@ public class ControlsView extends View {
             place(keyShot, keyShotDefault, "shot");
         }
         layoutDpadArms();
+        updateGestureExclusion();
         if (listener != null) {
             listener.onControlsLayout();
         }
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        // Exclusion rects are cleared when a view is detached; restore them
+        // without waiting for the next resize.
+        updateGestureExclusion();
+    }
+
+    /**
+     * Android 10's gesture navigation owns the left/right screen edges. The
+     * classic skin parks A (and B) a few dp from the bottom-right corner, so a
+     * thumb landing there made the system start a back gesture and cancel the
+     * press - the key looked like it "sometimes does not respond". Excluding
+     * the boxes of the edge-hugging keys keeps those touches inside the app.
+     * The system allows at most 200dp per edge and silently trims the rest.
+     */
+    private void updateGestureExclusion() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || getWidth() <= 0 || getHeight() <= 0) {
+            return;
+        }
+        List<Rect> rects = new ArrayList<>();
+        addGestureExclusion(rects, buttonA);
+        addGestureExclusion(rects, buttonB);
+        addGestureExclusion(rects, buttonL);
+        addGestureExclusion(rects, buttonR);
+        addGestureExclusion(rects, dpad);
+        setSystemGestureExclusionRects(rects);
+    }
+
+    private void addGestureExclusion(List<Rect> rects, RectF box) {
+        if (box.width() <= 0f || box.height() <= 0f) {
+            return;
+        }
+        // Only keys that reach into the edge band can fight a back gesture.
+        float edge = 32 * density;
+        if (box.left > edge && getWidth() - box.right > edge) {
+            return;
+        }
+        int left = Math.max(0, (int) Math.floor(box.left));
+        int top = Math.max(0, (int) Math.floor(box.top));
+        int right = Math.min(getWidth(), (int) Math.ceil(box.right));
+        int bottom = Math.min(getHeight(), (int) Math.ceil(box.bottom));
+        if (right <= left || bottom <= top) {
+            return;
+        }
+        // Keep each rect inside the system's per-edge budget so a huge d-pad
+        // cannot push the A exclusion past the limit.
+        int budget = (int) (200 * density);
+        if (right - left > budget) {
+            if (box.left <= edge) {
+                right = left + budget;
+            } else {
+                left = right - budget;
+            }
+        }
+        rects.add(new Rect(left, top, right, bottom));
     }
 
     /** Current bounds of the START key, in this view's coordinates. */

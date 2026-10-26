@@ -192,6 +192,14 @@ public class EmulatorActivity extends AppCompatActivity {
      * fast, which sounds slightly sharp.
      */
     private long sliceNanos = 1_000_000_000L / 60L;
+    /** Slice rate the device last sustained while fast-forwarding (slices per
+     * second; eased toward the measured capability once per feedback window)
+     * and the slice schedule derived from it; re-measured per speed. 0 =
+     * free-run while measuring. */
+    private float fastPace;
+    private long fastSliceNanos;
+    /** Schedule resyncs since the last feedback window. */
+    private int fastResyncs;
     private final short[] audioRead = new short[AUDIO_READ_FRAMES * 2];
     private final short[] audioCarry = new short[AUDIO_CARRY_FRAMES * 2];
     private int carryFrames;
@@ -199,6 +207,14 @@ public class EmulatorActivity extends AppCompatActivity {
     private int trackFrames;
     private int targetFrames;
     private AudioRateControl rateControl;
+    /**
+     * Whether the core's resampler rate can be trusted at the applied speed.
+     * True until a speed change finds no locked estimate and no throughput
+     * memory (the first fast-forward on a device); the pump then holds
+     * playback until the first feedback window lands, so the queue fills at
+     * the right rate instead of draining into gaps at the nominal one.
+     */
+    private boolean paceSeeded = true;
     private Bitmap frame;
     private final AtomicBoolean presentQueued = new AtomicBoolean();
     private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
@@ -573,6 +589,27 @@ public class EmulatorActivity extends AppCompatActivity {
             mask &= ~ControlsView.B;
         }
         core.setKeys(mask);
+    }
+
+    /**
+     * Drops every locally held key after the touch stream or window focus was
+     * lost. Without this the matching UP/CANCEL can go to another window, and
+     * a latched A (or fast-forward hold) makes the next press look dead.
+     */
+    private void releaseInput() {
+        int held = touchKeys | hwKeys;
+        touchKeys = 0;
+        hwKeys = 0;
+        fastHold = false;
+        if (controls != null) {
+            controls.releaseAllKeys();
+        }
+        inputHandler.removeCallbacks(armTurbo);
+        stopTurbo();
+        if (held != 0) {
+            publishKeys();
+            wakeInput();
+        }
     }
 
     /** Keys applied this frame: local input plus the GBoy peer's mask. */
@@ -1322,7 +1359,18 @@ public class EmulatorActivity extends AppCompatActivity {
                     continue;
                 }
                 float factor = fastHold || ffOn ? Math.max(speed, fastHoldSpeed()) : speed;
-                syncFastAudio(factor);
+                if (syncFastAudio(factor)) {
+                    // Fresh feedback windows for the new speed, same as after a
+                    // stall: the stall of switching must not be measured as
+                    // this front end's pacing rate. The sustainable rate also
+                    // differs per speed, so re-learn it.
+                    slices = 0;
+                    frames = 0;
+                    fpsStamp = System.nanoTime();
+                    fastPace = 0f;
+                    fastSliceNanos = 0L;
+                    fastResyncs = 0;
+                }
                 // Fractional speeds (slow motion) accumulate whole frames in a
                 // small debt; integer speeds drain it every slice.
                 frameDebt += factor;
@@ -1369,9 +1417,31 @@ public class EmulatorActivity extends AppCompatActivity {
                 // pitches the music) slightly slow; a stall that leaves the
                 // loop more than two slices behind starts a fresh schedule
                 // instead of replaying a catching-up burst.
-                nextSlice += sliceNanos;
-                if (System.nanoTime() - nextSlice > 2 * sliceNanos) {
+                //
+                // While fast-forwarding the device usually cannot hold the
+                // requested speed, and pure free-running (rescheduling from
+                // "now" every slice) lets every scheduling hiccup straight
+                // into the game speed - and with tape-style audio, into the
+                // pitch. The schedule therefore eases toward the rate the
+                // device actually sustains, measured once per feedback window:
+                // the first window free-runs and locks that rate; while the
+                // schedule holds with slack it climbs gently (additive), and
+                // whenever slices had to resync it follows the delivered rate
+                // back down (multiplicative). A delivered-rate schedule alone
+                // would ratchet - one noisy low window would slow the pace for
+                // good, since a paced loop can never deliver more than its own
+                // schedule - and a work-time measure is polluted by the
+                // every-80ms presentation cost, which made the schedule
+                // thrash. Additive-increase/multiplicative-decrease avoids
+                // both.
+                boolean fastPacing = factor > 1.5f && fastSliceNanos > 0;
+                long paceNanos = fastPacing ? fastSliceNanos : sliceNanos;
+                nextSlice += paceNanos;
+                if (System.nanoTime() - nextSlice > 2 * paceNanos) {
                     nextSlice = System.nanoTime();
+                    if (factor > 1.5f) {
+                        fastResyncs++;
+                    }
                 } else {
                     long remain = nextSlice - System.nanoTime();
                     if (remain > 1_000_000L) {
@@ -1402,7 +1472,32 @@ public class EmulatorActivity extends AppCompatActivity {
                     // window: the audio resampler follows this rate so heavy
                     // games that cannot hold the console's frame time do not
                     // starve it.
-                    core.setAudioPaceFps(elapsed > 0 ? cycles * 1_000_000_000f / elapsed : 0f);
+                    if (elapsed > 0) {
+                        float achieved = cycles * 1_000_000_000f / elapsed;
+                        core.setAudioPaceFps(achieved);
+                        // The window's reading locked the pace (or refreshed the
+                        // seed): playback may start.
+                        paceSeeded = true;
+                        if (factor > 1.5f) {
+                            // Ease the fast-forward schedule toward the rate the
+                            // device actually sustains: lock on the first window
+                            // (it free-ran, so the reading is raw capability),
+                            // follow the delivered rate down after any resync,
+                            // and climb gently while the schedule held with
+                            // slack - capped at the requested pacing rate.
+                            if (fastPace <= 0f) {
+                                fastPace = achieved;
+                            } else if (fastResyncs > 0) {
+                                fastPace += (achieved - fastPace) * 0.4f;
+                            } else {
+                                fastPace = Math.min(fastPace * 1.03f, 1_000_000_000f / sliceNanos);
+                            }
+                            fastSliceNanos = (long) (1_000_000_000f / fastPace);
+                        }
+                    } else {
+                        core.setAudioPaceFps(0f);
+                    }
+                    fastResyncs = 0;
                     // Rounded so the console's own 59.73 fps still shows as the
                     // 60 the counter has always displayed.
                     long shownFps = elapsed > 0 ? Math.round(shown * 1_000_000_000.0 / elapsed) : 0;
@@ -1421,7 +1516,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 try {
                     Thread.sleep(200);
                 } catch (InterruptedException ignored) {
-                    break;
+                    // wakeInput() interrupts this thread on every key press, so
+                    // rapid tapping lands interrupts almost anywhere. Losing the
+                    // throttle sleep must never end emulation - that silently
+                    // froze the game until restart. Only running == false exits.
                 }
             }
         }
@@ -1612,7 +1710,7 @@ public class EmulatorActivity extends AppCompatActivity {
             if (ok) {
                 core.runFrames(userKeys(), 1);
                 presentFrame();
-                toast(getString(R.string.rewind_seconds, rewindSeconds));
+                toast(rewindLabel(rewindSeconds));
             } else {
                 toast(getString(R.string.rewind_empty));
             }
@@ -1745,23 +1843,31 @@ public class EmulatorActivity extends AppCompatActivity {
     /**
      * Applies a speed or sound setting change. Fast-forward sound is produced by
      * resampling at that speed (tape style, matching the iOS varispeed unit), so
-     * a change only needs the audio pipeline restarted.
+     * a change only needs the audio pipeline restarted. Returns true when the
+     * audio pipeline was reset, so the caller restarts its measurement windows:
+     * a pace window straddling the change blends the two rates (half a second of
+     * 1x plus half of 16x reports a meaningless middle value) and the resampler
+     * would lock onto it.
      */
-    private void syncFastAudio(double mult) {
+    private boolean syncFastAudio(double mult) {
+        boolean changed = false;
         boolean mute = mult > 1.01 && !getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
         if (mute != audioMuted) {
             audioMuted = mute;
             resetAudio();
+            changed = true;
         }
         if (audioMuted) {
             core.clearAudio();
-            return;
+            return changed;
         }
         if (mult != appliedSpeed) {
             appliedSpeed = mult;
             core.clearAudio();
             resetAudio();
+            changed = true;
         }
+        return changed;
     }
 
     /** Discards queued audio and pauses the track; the pump refills and resumes it. */
@@ -1776,6 +1882,18 @@ public class EmulatorActivity extends AppCompatActivity {
         audioStarted = false;
         framesWritten = 0;
         carryFrames = 0;
+        // Drop the rate-control and pace estimates so the resampler re-locks from a
+        // clean state after a speed change instead of chasing a stale reading, which
+        // made fast-forward audio stutter for a window.
+        if (rateControl != null) {
+            rateControl.reset();
+        }
+        if (core != null) {
+            core.resetAudioPace();
+            // The device-throughput memory survives the reset; only when there
+            // is nothing to seed from must playback wait for the first window.
+            paceSeeded = core.isAudioPaceSeeded();
+        }
     }
 
     private void pumpAudio() {
@@ -1783,6 +1901,15 @@ public class EmulatorActivity extends AppCompatActivity {
             return;
         }
         if (audio == null || audioMuted || paused || audio.getState() != AudioTrack.STATE_INITIALIZED) {
+            core.clearAudio();
+            return;
+        }
+        if (!paceSeeded) {
+            // First fast-forward on this device: no locked pace and no
+            // throughput memory to seed from. Converting now would fill the
+            // track with wrong-pitch audio that then drains into gaps; hold
+            // silent until the first feedback window lands, then fill and
+            // start at the locked rate.
             core.clearAudio();
             return;
         }
@@ -1795,6 +1922,19 @@ public class EmulatorActivity extends AppCompatActivity {
             int frames = core.readAudioOut(audioRead, rate, drift);
             if (frames <= 0) {
                 break;
+            }
+            if (!audioStarted) {
+                // Before playback starts, stop filling exactly at the target:
+                // writing until the track overflows pins the queue above it and
+                // the drift control then holds a corrective offset (audible as
+                // a sharp pitch) for seconds while it drains back down.
+                int room = targetFrames - bufferedFrames() - carryFrames;
+                if (room <= 0) {
+                    break;
+                }
+                if (frames > room) {
+                    frames = room;
+                }
             }
             pushAudio(frames);
             if (frames < AUDIO_READ_FRAMES) {
@@ -4698,10 +4838,11 @@ public class EmulatorActivity extends AppCompatActivity {
         final int[] stylePick = {skinStylePref()};
         RadioGroup styleGroup = new RadioGroup(this);
         RadioButton classic = new RadioButton(this);
+        classic.setId(View.generateViewId());
         classic.setText(R.string.skin_style_classic);
         RadioButton handheld = new RadioButton(this);
+        handheld.setId(View.generateViewId());
         handheld.setText(R.string.skin_style_handheld);
-        (stylePick[0] == ControlsView.STYLE_CLASSIC ? classic : handheld).setChecked(true);
         classic.setTag(ControlsView.STYLE_CLASSIC);
         handheld.setTag(ControlsView.STYLE_HANDHELD);
         styleGroup.addView(classic);
@@ -4712,6 +4853,9 @@ public class EmulatorActivity extends AppCompatActivity {
                 stylePick[0] = (Integer) pick.getTag();
             }
         });
+        // Select through the group so it owns the exclusive state and clears the
+        // previously checked dot, instead of leaving two dots lit at once.
+        styleGroup.check(stylePick[0] == ControlsView.STYLE_CLASSIC ? classic.getId() : handheld.getId());
         box.addView(styleGroup);
         TextView colorLabel = new TextView(this);
         colorLabel.setText(R.string.skin_color);
@@ -4720,14 +4864,16 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(colorLabel);
         final int[] colorPick = {skinColorPref()};
         RadioGroup colorGroup = new RadioGroup(this);
+        int defaultColorId = View.NO_ID;
         for (int i = 0; i < SkinTheme.ALL.length; i++) {
             RadioButton choice = new RadioButton(this);
+            choice.setId(View.generateViewId());
             choice.setText(SkinTheme.ALL[i].name);
             choice.setTag(i);
-            if (i == colorPick[0]) {
-                choice.setChecked(true);
-            }
             colorGroup.addView(choice);
+            if (i == colorPick[0]) {
+                defaultColorId = choice.getId();
+            }
         }
         colorGroup.setOnCheckedChangeListener((group, id) -> {
             RadioButton pick = group.findViewById(id);
@@ -4735,6 +4881,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 colorPick[0] = (Integer) pick.getTag();
             }
         });
+        // Select through the group so the old selection dot is cleared.
+        if (defaultColorId != View.NO_ID) {
+            colorGroup.check(defaultColorId);
+        }
         box.addView(colorGroup);
 
         // == Full PNG skin pack ==
@@ -4747,26 +4897,33 @@ public class EmulatorActivity extends AppCompatActivity {
         String currentPack = getPreferences(MODE_PRIVATE).getString("full_skin", null);
         RadioGroup packGroup = new RadioGroup(this);
         final String[] packPick = {currentPack};
+        int defaultPackId = View.NO_ID;
         RadioButton none = new RadioButton(this);
+        none.setId(View.generateViewId());
         none.setText(R.string.full_skin_none);
         none.setTag(null);
-        if (currentPack == null) {
-            none.setChecked(true);
-        }
         packGroup.addView(none);
+        if (currentPack == null) {
+            defaultPackId = none.getId();
+        }
         for (String pack : packs) {
             RadioButton choice = new RadioButton(this);
+            choice.setId(View.generateViewId());
             choice.setText(pack);
             choice.setTag(pack);
-            if (pack.equals(currentPack)) {
-                choice.setChecked(true);
-            }
             packGroup.addView(choice);
+            if (pack.equals(currentPack)) {
+                defaultPackId = choice.getId();
+            }
         }
         packGroup.setOnCheckedChangeListener((group, id) -> {
             RadioButton pick = group.findViewById(id);
             packPick[0] = pick == null ? null : (String) pick.getTag();
         });
+        // Select through the group so the old selection dot is cleared.
+        if (defaultPackId != View.NO_ID) {
+            packGroup.check(defaultPackId);
+        }
         box.addView(packGroup);
         Button importPack = new Button(this);
         importPack.setAllCaps(false);
@@ -4862,8 +5019,17 @@ public class EmulatorActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    /** Retro-style rewind bar: jump back 15/12/9/6/3 seconds, or hold to keep
-     * rewinding. Uses the differential-state history the core records. */
+    /** "1 分钟" for the 60-second step, "N 秒" otherwise. */
+    private String rewindLabel(int seconds) {
+        if (seconds == 60) {
+            return getString(R.string.rewind_minute);
+        }
+        return getString(R.string.rewind_seconds, seconds);
+    }
+
+    /** Retro-style rewind bar: jump back 1min/45/30/15/12/9/6/3 seconds, or
+     * hold to keep rewinding. Uses the differential-state history the core
+     * records. */
     private void buildRewindBar() {
         rewindBar = findViewById(R.id.rewind_bar);
         if (rewindBar == null) {
@@ -4876,7 +5042,7 @@ public class EmulatorActivity extends AppCompatActivity {
         label.setTextColor(Color.WHITE);
         label.setPadding(dp(8), 0, dp(4), 0);
         row.addView(label);
-        int[] steps = {15, 12, 9, 6, 3};
+        int[] steps = {60, 45, 30, 15, 12, 9, 6, 3};
         for (int seconds : steps) {
             Button button = new Button(this);
             button.setAllCaps(false);
@@ -4885,7 +5051,7 @@ public class EmulatorActivity extends AppCompatActivity {
             button.setMinimumWidth(dp(44));
             button.setMinimumHeight(dp(36));
             button.setTextSize(14);
-            button.setText(getString(R.string.rewind_seconds, seconds));
+            button.setText(rewindLabel(seconds));
             button.setOnClickListener(v -> {
                 rewindSeconds = seconds;
                 command.set(CMD_REWIND);
@@ -4893,29 +5059,47 @@ public class EmulatorActivity extends AppCompatActivity {
             });
             row.addView(button);
         }
-        Button hold = new Button(this);
-        hold.setAllCaps(false);
+        HoldRewindButton hold = new HoldRewindButton(this);
         hold.setMinWidth(dp(64));
         hold.setMinHeight(dp(36));
         hold.setMinimumWidth(dp(64));
         hold.setMinimumHeight(dp(36));
         hold.setTextSize(14);
         hold.setText(R.string.rewind_hold);
-        hold.setOnTouchListener((v, event) -> {
+        row.addView(hold);
+    }
+
+    /** 持续倒带(按住) button: sets rewindHold for as long as the touch is
+     * down. Touch handling lives in onTouchEvent because watchMenuTouches()
+     * overwrites OnTouchListeners under menu_bar after the bar is built. */
+    private final class HoldRewindButton extends android.widget.Button {
+        HoldRewindButton(android.content.Context context) {
+            super(context);
+            setAllCaps(false);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
                     rewindHold = true;
                     wakeInput();
+                    setPressed(true);
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    // A long hold outlives MENU_HIDE_MS; keep the bar up while
+                    // the finger stays down.
+                    autoHideMenu();
                     return true;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
                     rewindHold = false;
+                    setPressed(false);
                     return true;
                 default:
-                    return false;
+                    return super.onTouchEvent(event);
             }
-        });
-        row.addView(hold);
+        }
     }
 
     /** The shell switch: fast-forward stays on until switched off. */
@@ -5661,10 +5845,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (hasFocus) {
             hideSystemUi();
         } else {
-            // A key-up for the fast-forward hold can get lost (window switched,
-            // gamepad disconnected); drop the hold so the game cannot come back
-            // stuck at 16x speed with raised audio.
-            fastHold = false;
+            // A key-up for a held touch or the fast-forward hold can get lost
+            // (window switched, gamepad disconnected); drop the holds so the
+            // game cannot come back stuck with A down or at 16x speed.
+            releaseInput();
         }
     }
 
@@ -5725,11 +5909,10 @@ public class EmulatorActivity extends AppCompatActivity {
             sensorManager.unregisterListener(tiltListener);
             tiltListening = false;
         }
-        // Do not stay held at 16x (raised pitch) when the key-up never arrives
-        // because the app went to the background under a held key.
-        fastHold = false;
-        inputHandler.removeCallbacks(armTurbo);
-        stopTurbo();
+        // Do not stay held at 16x (raised pitch) or with A/B latched when the
+        // key-up never arrives because the app went to the background under
+        // a held key.
+        releaseInput();
         if (audio != null) {
             audio.pause();
             audioStarted = false;

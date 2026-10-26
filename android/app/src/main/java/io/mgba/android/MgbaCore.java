@@ -105,6 +105,30 @@ public final class MgbaCore {
         }
     }
 
+    /**
+     * Drops the pace estimate so the resampler re-locks from the console's own
+     * frame rate after a speed change, instead of carrying a stale reading that
+     * detunes or starves audio for a window. Called whenever the playback
+     * pipeline is reset.
+     */
+    public void resetAudioPace() {
+        if (handle != 0) {
+            nativeResetAudioPace(handle);
+        }
+    }
+
+    /**
+     * Whether the resampler's input rate can be trusted at the current speed:
+     * a locked estimate, or a remembered device throughput to seed from. While
+     * this is false (the first fast-forward on a device) the front end should
+     * hold playback back until the first feedback window lands, since filling
+     * the queue at the console's nominal rate would play wrong-pitch audio and
+     * drain it into gaps.
+     */
+    public boolean isAudioPaceSeeded() {
+        return handle != 0 && nativeIsAudioPaceSeeded(handle);
+    }
+
     public void clearAudio() {
         if (handle != 0) {
             nativeClearAudio(handle);
@@ -322,6 +346,8 @@ public final class MgbaCore {
 
     private static native int nativeReadAudioOut(long handle, short[] out, double speed, float drift);
     private static native void nativeSetAudioPaceFps(long handle, float fps);
+    private static native void nativeResetAudioPace(long handle);
+    private static native boolean nativeIsAudioPaceSeeded(long handle);
 
     private static native boolean nativeSetAudioOutput(long handle, int outRate);
 

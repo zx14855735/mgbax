@@ -278,7 +278,9 @@ public class ScreenArea extends FrameLayout {
             float ty = game.bottom + strip * 0.72f;
             titlePaint.setTextSize(strip * 0.42f);
             titlePaint.setTextAlign(Paint.Align.CENTER);
+            titlePaint.setColor(0xFFE7B23A);
             canvas.drawText("mGBAx", game.centerX(), ty, titlePaint);
+            titlePaint.setColor(skin.titleText);
         } else {
             float ty = game.bottom + strip * 0.78f;
             titlePaint.setTextSize(strip * 0.40f);

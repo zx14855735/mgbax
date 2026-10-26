@@ -244,6 +244,7 @@
     <string name="rewind">倒带</string>
     <string name="rewind_pick">倒回</string>
     <string name="rewind_seconds">%1$d 秒</string>
+    <string name="rewind_minute">1 分钟</string>
     <string name="rewind_hold">持续倒带(按住)</string>
     <string name="rewind_empty">还没有倒带记录</string>
     <string name="rewind_disabled_hardcore">硬核模式下倒带不可用</string>
