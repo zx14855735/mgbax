@@ -6,6 +6,15 @@ final class GameView: UIView {
     var integerScale = false { didSet { setNeedsLayout() } }
     var scanlines = false { didSet { scanView.isHidden = !scanlines; scanView.setNeedsDisplay() } }
     var brightness = 100
+    /// Contrast around mid gray, 50-150; 100 leaves colors as-is.
+    var contrast = 100 {
+        didSet {
+            let clamped = min(150, max(50, contrast))
+            if clamped != contrast {
+                contrast = clamped
+            }
+        }
+    }
     /// Screen filter id (Shaders.functionNames); 0 keeps the software blit.
     var filter = 0 {
         didSet {
@@ -48,6 +57,13 @@ final class GameView: UIView {
 
     func copyLast() -> UIImage? { last }
 
+    /// Rect of the game picture inside the view, letterbox excluded, in view
+    /// coordinates. Overlays that align to the picture use this rather than
+    /// the full bounds (which may include black bars or the shell's bezel).
+    var pictureRect: CGRect {
+        placed(bounds.size, src: CGSize(width: srcW, height: srcH))
+    }
+
     /// True when what is on screen differs from the raw core frame.
     var showsFilteredOutput: Bool {
         filter != 0 || scanlines
@@ -58,7 +74,8 @@ final class GameView: UIView {
     /// the Metal path cannot run (the caller keeps the raw frame). Main thread
     /// only, right after a `present` so the uploaded texture is current.
     func captureFilteredFrame(pixels: UnsafeRawPointer, width: Int, height: Int,
-                              outWidth: Int, outHeight: Int, brightness: Float) -> [UInt8]? {
+                              outWidth: Int, outHeight: Int, brightness: Float,
+                              contrast: Float) -> [UInt8]? {
         guard let renderer else { return nil }
         let filtered = filter != 0 && renderer.usable
         if !filtered {
@@ -70,8 +87,9 @@ final class GameView: UIView {
             filter: filter,
             linear: filtered ? filter == 11 : bilinear,
             scanlines: scanlines,
-            // The CPU-path bytes are already brightness-scaled.
+            // The CPU-path bytes already carry brightness and contrast.
             brightness: filtered ? brightness : 1,
+            contrast: filtered ? contrast : 1,
             outWidth: outWidth,
             outHeight: outHeight)
     }
@@ -90,7 +108,8 @@ final class GameView: UIView {
             guard let base = rawPtr.baseAddress else { return nil }
             return captureFilteredFrame(pixels: base, width: srcW, height: srcH,
                                         outWidth: outW, outHeight: outH,
-                                        brightness: Float(min(150, max(50, brightness))) / 100)
+                                        brightness: Float(min(150, max(50, brightness))) / 100,
+                                        contrast: Float(min(150, max(50, contrast))) / 100)
         }
         guard let bytes else { return nil }
         return Self.image(fromRGBA: bytes, width: outW, height: outH)
@@ -114,18 +133,21 @@ final class GameView: UIView {
             setNeedsLayout()
         }
         let filtering = filter != 0 && renderer?.usable == true && filterView != nil
-        // With a filter active the shader applies brightness itself; the CPU
-        // copy stays unscaled so both paths agree.
-        let scale: Float = filtering ? 1 : Float(min(150, max(50, brightness))) / 100
+        // With a filter active the shader applies brightness and contrast
+        // itself; the CPU copy stays unscaled so both paths agree.
+        let bright = Float(min(150, max(50, brightness))) / 100
+        let contrastValue = Float(min(150, max(50, contrast))) / 100
+        let scale = filtering ? 1 : bright * contrastValue
+        let lift = filtering ? 0 : Float(128) * (1 - contrastValue)
         let count = width * height * 4
         var bytes = [UInt8](repeating: 0, count: count)
         for y in 0..<height {
             for x in 0..<width {
                 let pix = pixels[y * stride + x]
                 let base = (y * width + x) * 4
-                bytes[base] = UInt8(min(255, Int(Float(pix & 0xFF) * scale)))
-                bytes[base + 1] = UInt8(min(255, Int(Float((pix >> 8) & 0xFF) * scale)))
-                bytes[base + 2] = UInt8(min(255, Int(Float((pix >> 16) & 0xFF) * scale)))
+                bytes[base] = UInt8(max(0, min(255, Int(Float(pix & 0xFF) * scale + lift))))
+                bytes[base + 1] = UInt8(max(0, min(255, Int(Float((pix >> 8) & 0xFF) * scale + lift))))
+                bytes[base + 2] = UInt8(max(0, min(255, Int(Float((pix >> 16) & 0xFF) * scale + lift))))
                 bytes[base + 3] = 255
             }
         }
@@ -144,7 +166,8 @@ final class GameView: UIView {
             bytes.withUnsafeBytes { raw in
                 guard let base = raw.baseAddress else { return }
                 _ = renderer.present(layer: filterView.metalLayer, pixels: base, width: width, height: height,
-                                     stride: stride, brightness: Float(min(150, max(50, brightness))) / 100)
+                                     stride: stride, brightness: Float(min(150, max(50, brightness))) / 100,
+                                     contrast: Float(min(150, max(50, contrast))) / 100)
             }
         } else if let filterView {
             filterView.isHidden = true

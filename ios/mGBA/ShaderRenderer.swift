@@ -9,6 +9,7 @@ struct FilterUniforms {
     var texSize: SIMD2<Float>
     var outSize: SIMD2<Float>
     var brightness: Float
+    var contrast: Float
     var scanlines: Float
 }
 
@@ -104,7 +105,7 @@ final class ShaderRenderer {
      * source row); the picture fills the layer, letterboxing is the view's job.
      */
     func present(layer: CAMetalLayer, pixels: UnsafeRawPointer, width: Int, height: Int,
-                 stride: Int, brightness: Float) -> Bool {
+                 stride: Int, brightness: Float, contrast: Float) -> Bool {
         let filter = filterId
         if filter == 0 || broken.contains(filter) {
             return false
@@ -147,6 +148,7 @@ final class ShaderRenderer {
             texSize: SIMD2(Float(width), Float(height)),
             outSize: SIMD2(Float(size.width), Float(size.height)),
             brightness: brightness,
+            contrast: contrast,
             scanlines: 0
         )
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FilterUniforms>.stride, index: 0)
@@ -214,7 +216,7 @@ final class ShaderRenderer {
      * from the same thread as `present` (the main thread).
      */
     func captureRGBA(filter: Int, linear: Bool, scanlines: Bool, brightness: Float,
-                     outWidth: Int, outHeight: Int) -> [UInt8]? {
+                     contrast: Float, outWidth: Int, outHeight: Int) -> [UInt8]? {
         let filtered = filter != 0 && !broken.contains(filter)
         guard outWidth > 0, outHeight > 0, let frameTex,
               let pipeline = filtered ? pipeline(for: filter) : passthroughPipeline(),
@@ -254,6 +256,7 @@ final class ShaderRenderer {
             texSize: SIMD2(Float(frameTex.width), Float(frameTex.height)),
             outSize: SIMD2(Float(outWidth), Float(outHeight)),
             brightness: brightness,
+            contrast: contrast,
             scanlines: scanlines ? 1 : 0
         )
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<FilterUniforms>.stride, index: 0)

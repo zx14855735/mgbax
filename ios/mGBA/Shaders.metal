@@ -22,6 +22,8 @@ struct FilterUniforms {
     float2 texSize;
     float2 outSize;
     float brightness;
+    /* Contrast around mid gray; 1 leaves the colors alone. */
+    float contrast;
     /* Passthrough only: the Canvas scanline overlay flag, 0 elsewhere. */
     float scanlines;
 };
@@ -46,6 +48,11 @@ static inline float lumaOf(float3 c) {
     return dot(c, float3(0.299, 0.587, 0.114));
 }
 
+/* Scales around mid gray, the same matrix the Android ColorMatrix uses. */
+static inline float3 applyContrast(float3 c, float amount) {
+    return saturate((c - 0.5) * amount + 0.5);
+}
+
 static inline float3 fetchTex(texture2d<float> tex, sampler s, float2 uv, float2 off, float2 texSize) {
     return tex.sample(s, uv + off / texSize).rgb;
 }
@@ -61,7 +68,7 @@ fragment float4 filterPassthrough(FilterVaryings in [[stage_in]],
                                   constant FilterUniforms &u [[buffer(0)]]) {
     float3 c = uTex.sample(s, in.texCoord).rgb;
     float scan = 1.0 - 0.4 * u.scanlines * (1.0 - step(0.5, fmod(floor(in.position.y), 2.0)));
-    return float4(c * scan * u.brightness, 1.0);
+    return float4(applyContrast(c * scan * u.brightness, u.contrast), 1.0);
 }
 
 // 1: GBA 色彩
@@ -76,7 +83,7 @@ fragment float4 filterGbaColor(FilterVaryings in [[stage_in]],
                              float3(0.125, 0.665, 0.21),
                              float3(0.195, 0.075, 0.73));
     c = saturate(tone * c) * 0.94;
-    return float4(pow(c, float3(1.0 / 2.2)) * u.brightness, 1.0);
+    return float4(applyContrast(pow(c, float3(1.0 / 2.2)) * u.brightness, u.contrast), 1.0);
 }
 
 // 2: 灰度
@@ -86,7 +93,7 @@ fragment float4 filterGrayscale(FilterVaryings in [[stage_in]],
                                 constant FilterUniforms &u [[buffer(0)]]) {
     float3 c = uTex.sample(s, in.texCoord).rgb;
     float g = dot(c, float3(0.299, 0.587, 0.114));
-    return float4(float3(g) * u.brightness, 1.0);
+    return float4(applyContrast(float3(g) * u.brightness, u.contrast), 1.0);
 }
 
 /*
@@ -128,7 +135,7 @@ fragment float4 filterHq2x(FilterVaryings in [[stage_in]],
     nw.w = clamp(0.4 - 0.45 * lumaOf(abs(mixed - c01)), 0.0, 0.4);
     float3 result = nw.x * c10 + nw.y * c21 + nw.z * c12 + nw.w * c01
             + (1.0 - dot(nw, float4(1.0))) * mixed;
-    return float4(result * u.brightness, 1.0);
+    return float4(applyContrast(result * u.brightness, u.contrast), 1.0);
 }
 
 // 4: HQ4x
@@ -160,7 +167,7 @@ fragment float4 filterHq4x(FilterVaryings in [[stage_in]],
     float m = max(abs(fp.x), abs(fp.y)) * 2.0;
     float n = min(abs(fp.x), abs(fp.y)) * 2.0;
     float3 result = m > 0.5 ? (n > 0.5 ? e15 : e11) : c11;
-    return float4(result * u.brightness, 1.0);
+    return float4(applyContrast(result * u.brightness, u.contrast), 1.0);
 }
 
 /*
@@ -190,7 +197,7 @@ fragment float4 filterXbr2(FilterVaryings in [[stage_in]],
     float3 i = fetchTex(uTex, s, in.texCoord, float2(1.0, 1.0), u.texSize);
     float blend = (xbrEdge(e, h, g, f, i) || xbrEdge(e, h, c, f, b)) ? 0.5 : 0.0;
     float3 result = mix(e, f, blend);
-    return float4(result * u.brightness, 1.0);
+    return float4(applyContrast(result * u.brightness, u.contrast), 1.0);
 }
 
 // 6: 4xBR
@@ -216,7 +223,7 @@ fragment float4 filterXbr4(FilterVaryings in [[stage_in]],
     float outer = max(fp.x, fp.y);
     float inner = min(fp.x, fp.y);
     float3 result = outer > 0.5 ? (inner > 0.5 ? e15 : e11) : e;
-    return float4(result * u.brightness, 1.0);
+    return float4(applyContrast(result * u.brightness, u.contrast), 1.0);
 }
 
 /*
@@ -246,7 +253,7 @@ fragment float4 filterMotionBlur(FilterVaryings in [[stage_in]],
     color += (uHistory4.sample(s, in.texCoord) - color) * pow(RT, 5.0);
     color += (uHistory5.sample(s, in.texCoord) - color) * pow(RT, 6.0);
     color += (uHistory6.sample(s, in.texCoord) - color) * pow(RT, 7.0);
-    return float4(color.rgb * u.brightness, 1.0);
+    return float4(applyContrast(color.rgb * u.brightness, u.contrast), 1.0);
 }
 
 /* Dot matrix, adapted from Themaister's public domain libretro shader. */
@@ -282,7 +289,7 @@ fragment float4 filterDot(FilterVaryings in [[stage_in]],
     color += dotTap(pixelNo, -1.0, 1.0, uTex.sample(s, in.texCoord + float2(-d.x, d.y)).rgb);
     color += dotTap(pixelNo, 0.0, 1.0, uTex.sample(s, in.texCoord + float2(0.0, d.y)).rgb);
     color += dotTap(pixelNo, 1.0, 1.0, uTex.sample(s, in.texCoord + float2(d.x, d.y)).rgb);
-    return float4(mix(1.2 * mid, color, BLEND) * u.brightness, 1.0);
+    return float4(applyContrast(mix(1.2 * mid, color, BLEND) * u.brightness, u.contrast), 1.0);
 }
 
 // 9: LCD3x, adapted from Gigaherz's public domain libretro shader.
@@ -296,7 +303,7 @@ fragment float4 filterLcd3x(FilterVaryings in [[stage_in]],
     float3 offsets = 3.14159265 * float3(0.5, 0.5 - 2.0 / 3.0, 0.5 - 4.0 / 3.0);
     float y = (BRIGHTEN_SCAN + sin(angle.y)) / (BRIGHTEN_SCAN + 1.0);
     float3 x = (BRIGHTEN_LCD + sin(angle.x + offsets)) / (BRIGHTEN_LCD + 1.0);
-    return float4(y * x * uTex.sample(s, in.texCoord).rgb * u.brightness, 1.0);
+    return float4(applyContrast(y * x * uTex.sample(s, in.texCoord).rgb * u.brightness, u.contrast), 1.0);
 }
 
 // 10: 扫描线（平滑）, adapted from Themaister's public domain libretro shader.
@@ -311,7 +318,7 @@ fragment float4 filterScanlines(FilterVaryings in [[stage_in]],
     // sine puts one dark band on every source row.
     float2 omega = float2(3.1415 * u.outSize.x, 2.0 * 3.1415 * u.texSize.y);
     float3 scan = c.rgb * (BASE + dot(SINE * sin(in.texCoord * omega), float2(1.0)));
-    return float4(clamp(scan, 0.0, 1.0) * u.brightness, 1.0);
+    return float4(applyContrast(clamp(scan, 0.0, 1.0) * u.brightness, u.contrast), 1.0);
 }
 
 /*
@@ -329,5 +336,5 @@ fragment float4 filterQuilez(FilterVaryings in [[stage_in]],
     f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     p = i + f;
     float3 c = uTex.sample(s, (p - 0.5) / u.texSize).rgb;
-    return float4(c * u.brightness, 1.0);
+    return float4(applyContrast(c * u.brightness, u.contrast), 1.0);
 }

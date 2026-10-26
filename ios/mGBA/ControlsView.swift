@@ -17,10 +17,20 @@ final class ControlsView: UIView {
     static let actionLoad = 2
     static let actionShot = 3
     static let actionFF = 4
-    /** Internal markers for the dedicated turbo/LR keys; not part of the mask. */
+    /** Toggle fast-forward on/off (the portrait shell switch). */
+    static let actionFFToggle = 5
+    static let actionMenu = 6
+    static let actionMute = 7
+    static let actionRewind = 8
+    /** Button styles: the classic translucent outlines or the handheld shell. */
+    static let styleClassic = 0
+    static let styleHandheld = 1
+    /** Internal markers for the dedicated turbo/LR/macro keys; not in the mask. */
     private static let flagTurboA = 1 << 20
     private static let flagTurboB = 1 << 21
     private static let flagLR = 1 << 22
+    private static let flagC = 1 << 23
+    private static let flagC2 = 1 << 24
 
     var onKeysChanged: ((Int) -> Void)?
     var onAction: ((Int) -> Void)?
@@ -56,11 +66,13 @@ final class ControlsView: UIView {
     private var turboLit = false
     /// Opacity of the drawn keys, 0.3-1.5 (1 = the stock translucency).
     private var opacity: CGFloat = 1
-    /* Optional utility keys: turbo A/B, L+R, quick save/load, fast-forward,
-     * screenshot. Hidden until the player turns them on in the settings. */
+    /* Optional utility keys: turbo A/B, L+R, C/C2 macros, quick save/load,
+     * fast-forward, screenshot. Hidden until the player turns them on. */
     private var keyTurboA = CGRect.zero
     private var keyTurboB = CGRect.zero
     private var keyLR = CGRect.zero
+    private var keyC = CGRect.zero
+    private var keyC2 = CGRect.zero
     private var keySave = CGRect.zero
     private var keyLoad = CGRect.zero
     private var keyFast = CGRect.zero
@@ -68,6 +80,8 @@ final class ControlsView: UIView {
     private var keyTurboADefault = CGRect.zero
     private var keyTurboBDefault = CGRect.zero
     private var keyLRDefault = CGRect.zero
+    private var keyCDefault = CGRect.zero
+    private var keyC2Default = CGRect.zero
     private var keySaveDefault = CGRect.zero
     private var keyLoadDefault = CGRect.zero
     private var keyFastDefault = CGRect.zero
@@ -119,6 +133,28 @@ final class ControlsView: UIView {
     private var last = CGPoint.zero
     private var dragMoved = false
 
+    // == Handheld shell skin ==
+    private var skinStyle = ControlsView.styleHandheld
+    private var theme = SkinTheme.purple
+    private var portrait = false
+    private var ffOn = false
+    private var muted = false
+    /** Full PNG skin overlays: button key -> image, "_p" suffix = pressed. */
+    private var skinBitmaps: [String: UIImage] = [:]
+    /** Fixed chrome of the portrait shell: the icon toolbar and its buttons. */
+    private var toolbar = CGRect.zero
+    private var toolbarMenu = CGRect.zero
+    private var toolbarSave = CGRect.zero
+    private var toolbarLoad = CGRect.zero
+    private var toolbarMute = CGRect.zero
+    private var toolbarRewind = CGRect.zero
+    private var toggle = CGRect.zero
+    /** Decorative speaker holes, recomputed per size. */
+    private var speakerRects: [CGRect] = []
+    /** Macro keys C and C2 press this combination of console keys while held. */
+    private var macroMaskC = ControlsView.A | ControlsView.B
+    private var macroMaskC2 = ControlsView.l | ControlsView.r
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = false
@@ -151,6 +187,57 @@ final class ControlsView: UIView {
         default:
             break
         }
+    }
+
+    /** Selects the button drawing style and shell colors. */
+    func setSkin(style: Int, theme: SkinTheme) {
+        skinStyle = style == Self.styleClassic ? Self.styleClassic : Self.styleHandheld
+        self.theme = theme
+        computeDefaults()
+        applyCenters()
+        setNeedsDisplay()
+    }
+
+    /** Replaces shell drawing with an imported PNG skin pack. */
+    func setFullSkin(_ bitmaps: [String: UIImage]?) {
+        skinBitmaps = bitmaps ?? [:]
+        setNeedsDisplay()
+    }
+
+    /** Re-lays the stock keys for the current screen orientation. */
+    func setPortrait(_ on: Bool) {
+        if portrait == on { return }
+        portrait = on
+        computeDefaults()
+        applyCenters()
+        setNeedsDisplay()
+    }
+
+    /** Shell switch state (fast-forward), drawn in the portrait shell. */
+    func setFastForwardOn(_ on: Bool) {
+        if ffOn == on { return }
+        ffOn = on
+        setNeedsDisplay()
+    }
+
+    func setMuted(_ muted: Bool) {
+        if self.muted == muted { return }
+        self.muted = muted
+        setNeedsDisplay()
+    }
+
+    /** Which console keys each macro key (0 = C, 1 = C2) holds down. */
+    func setMacro(_ index: Int, _ mask: Int) {
+        if index == 0 {
+            macroMaskC = mask
+        } else {
+            macroMaskC2 = mask
+        }
+        setNeedsDisplay()
+    }
+
+    func macro(_ index: Int) -> Int {
+        index == 0 ? macroMaskC : macroMaskC2
     }
 
     func setCenters(_ next: [String: CGPoint]) {
@@ -231,10 +318,46 @@ final class ControlsView: UIView {
         min(1, alpha * opacity)
     }
 
+    private func color(_ color: UIColor, alpha: CGFloat) -> UIColor {
+        color.withAlphaComponent(fade(alpha))
+    }
+
+    private func handheld() -> Bool {
+        skinStyle == Self.styleHandheld
+    }
+
+    private func bDown() -> Bool {
+        turboB ? turboLit : (pressed & Self.B) != 0
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        computeDefaults()
+        applyCenters()
+    }
+
+    // MARK: - Stock layouts
+
+    /**
+     * Rebuilds the stock key boxes for the current style and orientation. The
+     * stored (normalized) centers from the layout editor then move each key
+     * around its default.
+     */
+    private func computeDefaults() {
         let w = bounds.width
         let h = bounds.height
+        guard w > 0, h > 0 else { return }
+        if !handheld() {
+            computeClassicDefaults(w, h)
+        } else if portrait {
+            computePortraitShellDefaults(w, h)
+        } else {
+            computeLandscapeShellDefaults(w, h)
+        }
+    }
+
+    /** The original outline-style layout, used by both orientations. */
+    private func computeClassicDefaults(_ w: CGFloat, _ h: CGFloat) {
         let pad: CGFloat = 10
         let menuW: CGFloat = 64
         let menuH: CGFloat = 32
@@ -244,70 +367,280 @@ final class ControlsView: UIView {
         let dpadRoom = center - menuW - 8 - pad - 6
         var dpadSize = min(240, min(w, h) * 0.62)
         dpadSize = min(dpadSize, max(48, dpadRoom))
-        dpad = CGRect(x: pad, y: h - pad - dpadSize, width: dpadSize, height: dpadSize)
+        dpadDefault = CGRect(x: pad, y: h - pad - dpadSize, width: dpadSize, height: dpadSize)
         // Shoulder buttons sit a little lower so the top edge stays reachable.
         let shoulderTop = pad + 40
-        buttonL = CGRect(x: pad, y: shoulderTop, width: 72, height: 36)
-        buttonR = CGRect(x: w - pad - 72, y: shoulderTop, width: 72, height: 36)
+        buttonLDefault = CGRect(x: pad, y: shoulderTop, width: 72, height: 36)
+        buttonRDefault = CGRect(x: w - pad - 72, y: shoulderTop, width: 72, height: 36)
         let faceA: CGFloat = 76
         let face: CGFloat = 58
-        buttonA = CGRect(x: w - pad - faceA, y: h - pad - faceA, width: faceA, height: faceA)
-        buttonB = CGRect(x: buttonA.minX - face - 14, y: buttonA.minY - 36, width: face, height: face)
+        buttonADefault = CGRect(x: w - pad - faceA, y: h - pad - faceA, width: faceA, height: faceA)
+        buttonBDefault = CGRect(x: buttonADefault.minX - face - 14, y: buttonADefault.minY - 36, width: face, height: face)
         let menuTop = h - pad - menuH
-        buttonSelect = CGRect(x: center - menuW - 8, y: menuTop, width: menuW, height: menuH)
-        buttonStart = CGRect(x: center + 8, y: menuTop, width: menuW, height: menuH)
+        buttonSelectDefault = CGRect(x: center - menuW - 8, y: menuTop, width: menuW, height: menuH)
+        buttonStartDefault = CGRect(x: center + 8, y: menuTop, width: menuW, height: menuH)
         // Optional utility keys: defaults sit clear of the stock clusters; the
         // layout editor can drag each of them anywhere.
         let utilW: CGFloat = 56
         let utilH: CGFloat = 34
         let utilTop = menuTop - utilH - 8
-        keySave = CGRect(x: buttonSelect.minX, y: utilTop, width: utilW, height: utilH)
-        keyLoad = CGRect(x: buttonStart.maxX - utilW, y: utilTop, width: utilW, height: utilH)
-        keyFast = CGRect(x: center - utilW / 2, y: utilTop, width: utilW, height: utilH)
-        let lrTop = pad + 40 + 36 + 8
-        keyLR = CGRect(x: center - utilW, y: lrTop, width: utilW * 2, height: utilH)
-        keyShot = CGRect(x: center - utilW / 2, y: lrTop + utilH + 8, width: utilW, height: utilH)
+        keySaveDefault = CGRect(x: buttonSelectDefault.minX, y: utilTop, width: utilW, height: utilH)
+        keyLoadDefault = CGRect(x: buttonStartDefault.maxX - utilW, y: utilTop, width: utilW, height: utilH)
+        keyFastDefault = CGRect(x: center - utilW / 2, y: utilTop, width: utilW, height: utilH)
+        let lrTop = shoulderTop + 36 + 8
+        keyLRDefault = CGRect(x: center - utilW, y: lrTop, width: utilW * 2, height: utilH)
+        keyShotDefault = CGRect(x: center - utilW / 2, y: lrTop + utilH + 8, width: utilW, height: utilH)
         let turbo: CGFloat = 46
-        keyTurboA = CGRect(x: buttonA.minX - 4, y: buttonA.minY - turbo - 6, width: turbo, height: turbo)
-        keyTurboB = CGRect(x: keyTurboA.minX - turbo - 8, y: keyTurboA.minY + 10, width: turbo, height: turbo)
-        slopA = 18
-        slopFace = 10
-        snapDefaults()
-        applyCenters()
+        keyTurboADefault = CGRect(x: buttonADefault.minX - 4, y: buttonADefault.minY - turbo - 6, width: turbo, height: turbo)
+        keyTurboBDefault = CGRect(x: keyTurboADefault.minX - turbo - 8, y: keyTurboADefault.minY + 10, width: turbo, height: turbo)
+        let cSize: CGFloat = 44
+        keyCDefault = CGRect(x: buttonBDefault.minX - cSize - 10, y: buttonBDefault.minY, width: cSize, height: cSize)
+        keyC2Default = CGRect(x: buttonADefault.minX, y: buttonADefault.minY - cSize - 10, width: cSize, height: cSize)
     }
+
+    /**
+     * Portrait shell (Pizza Boy style): a black icon toolbar between the L/R
+     * pills, the fast-forward switch in the top right, a big white cross
+     * d-pad at the lower left, round A/B keys at the right and the pill
+     * SELECT/START pair at the bottom center.
+     */
+    private func computePortraitShellDefaults(_ w: CGFloat, _ h: CGFloat) {
+        let fw = w / 100
+        let fh = h / 100
+
+        // Toolbar row: L ... toolbar ... R all on one line.
+        let rowTop = 10.5 * fh
+        let rowH = 13 * fh
+        let pillW = 15 * fw
+        buttonLDefault = CGRect(x: 3 * fw, y: rowTop, width: pillW, height: rowH)
+        buttonRDefault = CGRect(x: w - 3 * fw - pillW, y: rowTop, width: pillW, height: rowH)
+        let barW = 40 * fw
+        toolbar = CGRect(x: 50 * fw - barW / 2, y: rowTop, width: barW, height: rowH)
+        layoutToolbar()
+
+        // Fast-forward switch, above the row at the right edge.
+        toggle = CGRect(x: w - 22 * fw, y: 0.6 * fh, width: 19 * fw, height: 7.5 * fh)
+
+        // D-pad: big cross at the lower left.
+        let dpadSize = 46 * fw
+        let dLeft = 3 * fw
+        let dTop = 62 * fh - dpadSize / 2
+        dpadDefault = CGRect(x: dLeft, y: dTop, width: dpadSize, height: dpadSize)
+
+        // A/B round keys: A upper right, B lower left of it.
+        let faceR = 13 * fw
+        let ax = 82 * fw
+        let ay = 47 * fh
+        buttonADefault = CGRect(x: ax - faceR, y: ay - faceR, width: faceR * 2, height: faceR * 2)
+        let bx = 66 * fw
+        let by = 76 * fh
+        buttonBDefault = CGRect(x: bx - faceR, y: by - faceR, width: faceR * 2, height: faceR * 2)
+
+        // SELECT / START pills at the bottom center.
+        let pillH = 7.5 * fh
+        let pillW2 = 17 * fw
+        let pillTop = 91.5 * fh - pillH / 2
+        buttonSelectDefault = CGRect(x: 28 * fw - pillW2 / 2, y: pillTop, width: pillW2, height: pillH)
+        buttonStartDefault = CGRect(x: 52 * fw - pillW2 / 2, y: pillTop, width: pillW2, height: pillH)
+
+        // Optional utility keys: a small row under the toolbar; turbo keys
+        // ride next to A/B; the C macro keys sit beside the face cluster.
+        let utilW = 11 * fw
+        let utilH = 7 * fh
+        let utilTop = rowTop + rowH + 3 * fh
+        keySaveDefault = CGRect(x: 18 * fw, y: utilTop, width: utilW, height: utilH)
+        keyLoadDefault = CGRect(x: 31 * fw, y: utilTop, width: utilW, height: utilH)
+        keyFastDefault = CGRect(x: 44 * fw, y: utilTop, width: utilW, height: utilH)
+        keyShotDefault = CGRect(x: 57 * fw, y: utilTop, width: utilW, height: utilH)
+        keyLRDefault = CGRect(x: 70 * fw, y: utilTop, width: utilW, height: utilH)
+        let turbo = 9 * fw
+        keyTurboADefault = CGRect(x: buttonADefault.minX - turbo - 2 * fw, y: buttonADefault.minY + 2 * fh, width: turbo, height: turbo)
+        keyTurboBDefault = CGRect(x: buttonBDefault.minX - turbo - 2 * fw, y: buttonBDefault.minY - 2 * fh, width: turbo, height: turbo)
+        let cSize = 9.5 * fw
+        keyCDefault = CGRect(x: buttonBDefault.minX - cSize - 3 * fw, y: buttonBDefault.midY - cSize / 2, width: cSize, height: cSize)
+        keyC2Default = CGRect(x: buttonADefault.midX - cSize / 2, y: buttonADefault.minY - cSize - 2 * fh, width: cSize, height: cSize)
+        layoutSpeakerPortrait(w, h)
+        // The portrait shell starts smaller so thumbs wrap the keys without
+        // covering them; the layout editor can scale each one up again.
+        shrink(&dpadDefault, 0.8)
+        shrink(&buttonLDefault, 0.85)
+        shrink(&buttonRDefault, 0.85)
+        shrink(&buttonADefault, 0.8)
+        shrink(&buttonBDefault, 0.8)
+        shrink(&buttonSelectDefault, 0.8)
+        shrink(&buttonStartDefault, 0.8)
+        shrink(&keyTurboADefault, 0.8)
+        shrink(&keyTurboBDefault, 0.8)
+        shrink(&keyLRDefault, 0.8)
+        shrink(&keyCDefault, 0.8)
+        shrink(&keyC2Default, 0.8)
+        shrink(&keySaveDefault, 0.8)
+        shrink(&keyLoadDefault, 0.8)
+        shrink(&keyFastDefault, 0.8)
+        shrink(&keyShotDefault, 0.8)
+    }
+
+    /** Landscape shell (GBA hardware style): d-pad left, A/B right, slanted
+     * SELECT/START pills near the screen, speaker slots at the lower right. */
+    private func computeLandscapeShellDefaults(_ w: CGFloat, _ h: CGFloat) {
+        let fw = w / 100
+        let fh = h / 100
+
+        let dpadSize = 26 * fh
+        let dLeft = 5 * fw
+        let dTop = 56 * fh - dpadSize / 2
+        dpadDefault = CGRect(x: dLeft, y: dTop, width: dpadSize, height: dpadSize)
+
+        let faceR = 9.5 * fh
+        let ax = 88 * fw
+        let ay = 40 * fh
+        buttonADefault = CGRect(x: ax - faceR, y: ay - faceR, width: faceR * 2, height: faceR * 2)
+        let bx = 80 * fw
+        let by = 72 * fh
+        buttonBDefault = CGRect(x: bx - faceR, y: by - faceR, width: faceR * 2, height: faceR * 2)
+
+        // START/SELECT: small pills angled like the real console, below the
+        // screen between d-pad and A/B. The boxes stay axis-aligned; only
+        // the drawing is rotated.
+        let pillW = 11 * fw
+        let pillH = 6.5 * fh
+        buttonStartDefault = CGRect(x: 30 * fw - pillW / 2, y: 76 * fh - pillH / 2, width: pillW, height: pillH)
+        buttonSelectDefault = CGRect(x: 30 * fw - pillW / 2 - 1 * fw, y: 87 * fh - pillH / 2, width: pillW, height: pillH)
+
+        // Shoulders sit below the floating menu bar's two rows (button row
+        // plus the save-path strip), so opening the menu cannot cover them.
+        let shoulderTop: CGFloat = 78
+        buttonLDefault = CGRect(x: 2, y: shoulderTop, width: 72, height: 36)
+        buttonRDefault = CGRect(x: w - 74, y: shoulderTop, width: 72, height: 36)
+
+        // Utility keys tuck into the free space below the shoulders.
+        let utilW = 9 * fw
+        let utilH = 8.5 * fh
+        let utilTop = 12 * fh
+        keySaveDefault = CGRect(x: 40 * fw, y: utilTop, width: utilW, height: utilH)
+        keyLoadDefault = CGRect(x: 50 * fw, y: utilTop, width: utilW, height: utilH)
+        keyFastDefault = CGRect(x: 60 * fw, y: utilTop, width: utilW, height: utilH)
+        keyShotDefault = CGRect(x: 70 * fw, y: utilTop, width: utilW, height: utilH)
+        keyLRDefault = CGRect(x: 45 * fw, y: 82 * fh, width: utilW + 6 * fw, height: utilH)
+        keyTurboADefault = CGRect(x: buttonADefault.minX - utilW - 1.5 * fw, y: buttonADefault.minY, width: utilW, height: utilH)
+        keyTurboBDefault = CGRect(x: buttonBDefault.minX - utilW - 1.5 * fw, y: buttonBDefault.minY, width: utilW, height: utilH)
+        let cSize = 7 * fh
+        keyCDefault = CGRect(x: buttonBDefault.minX - cSize - 2 * fw, y: buttonBDefault.midY - cSize / 2, width: cSize, height: cSize)
+        keyC2Default = CGRect(x: buttonADefault.midX - cSize / 2, y: buttonADefault.minY - cSize - 2 * fh, width: cSize, height: cSize)
+        layoutSpeakerLandscape(w, h)
+    }
+
+    /** Scales a default key box around its center. */
+    private func shrink(_ rect: inout CGRect, _ factor: CGFloat) {
+        let cx = rect.midX
+        let cy = rect.midY
+        rect = CGRect(x: cx - rect.width * factor / 2, y: cy - rect.height * factor / 2,
+                      width: rect.width * factor, height: rect.height * factor)
+    }
+
+    private func layoutToolbar() {
+        let pad: CGFloat = 2.5
+        let inner = toolbar.width - pad * 2
+        let cell = inner / 5
+        toolbarMenu = CGRect(x: toolbar.minX + pad, y: toolbar.minY + pad, width: cell, height: toolbar.height - pad * 2)
+        toolbarSave = CGRect(x: toolbarMenu.maxX, y: toolbarMenu.minY, width: cell, height: toolbarMenu.height)
+        toolbarLoad = CGRect(x: toolbarSave.maxX, y: toolbarSave.minY, width: cell, height: toolbarSave.height)
+        toolbarMute = CGRect(x: toolbarLoad.maxX, y: toolbarLoad.minY, width: cell, height: toolbarLoad.height)
+        toolbarRewind = CGRect(x: toolbarMute.maxX, y: toolbarMute.minY, width: toolbar.maxX - pad - toolbarMute.maxX, height: toolbarMute.height)
+    }
+
+    private func layoutSpeakerPortrait(_ w: CGFloat, _ h: CGFloat) {
+        speakerRects.removeAll()
+        let cols: CGFloat = 5
+        let rows: CGFloat = 3
+        let cell: CGFloat = 2.6
+        let gap: CGFloat = 1.9
+        let gridW = cols * cell + (cols - 1) * gap
+        let gridH = rows * cell + (rows - 1) * gap
+        let x0 = w - gridW - 4.5
+        let y0 = h - gridH - 3.5
+        for r in 0..<Int(rows) {
+            for c in 0..<Int(cols) {
+                let x = x0 + CGFloat(c) * (cell + gap)
+                let y = y0 + CGFloat(r) * (cell + gap)
+                speakerRects.append(CGRect(x: x, y: y, width: cell, height: cell))
+            }
+        }
+    }
+
+    private func layoutSpeakerLandscape(_ w: CGFloat, _ h: CGFloat) {
+        speakerRects.removeAll()
+        let slots: CGFloat = 6
+        let len: CGFloat = 7
+        let thick: CGFloat = 1.6
+        let gap: CGFloat = 3.2
+        let x0 = w - 9 - len
+        let y0 = h - (slots * gap + 4)
+        for s in 0..<Int(slots) {
+            let y = y0 + CGFloat(s) * gap
+            speakerRects.append(CGRect(x: x0, y: y, width: len, height: thick))
+        }
+    }
+
+    // MARK: - Drawing
 
     override func draw(_ rect: CGRect) {
-        drawButton(buttonL, "L", (pressed & Self.l) != 0, editing)
-        drawButton(buttonR, "R", (pressed & Self.r) != 0, editing)
-        drawButton(buttonA, "A", (pressed & Self.A) != 0, editing)
-        drawButton(buttonB, "B", turboB ? turboLit : (pressed & Self.B) != 0, editing)
-        drawButton(buttonSelect, "SELECT", (pressed & Self.select) != 0, editing)
-        drawButton(buttonStart, "START", (pressed & Self.start) != 0, editing)
+        let shell = handheld()
+        if shell && portrait && !editing {
+            drawToolbar()
+            drawToggle()
+        }
+        drawKey(buttonL, "L", (pressed & Self.l) != 0, editing, false)
+        drawKey(buttonR, "R", (pressed & Self.r) != 0, editing, false)
+        drawKey(buttonA, "A", (pressed & Self.A) != 0, editing, true)
+        drawKey(buttonB, "B", bDown(), editing, true)
+        drawKey(buttonSelect, "SELECT", (pressed & Self.select) != 0, editing, false)
+        drawKey(buttonStart, "START", (pressed & Self.start) != 0, editing, false)
         drawDpad()
+        if shell && portrait {
+            drawSpeaker()
+        } else if shell {
+            drawSpeakerSlots()
+        }
         if visibleExtras.contains("ta") {
-            drawButton(keyTurboA, "A连", (pressed & Self.A) != 0 && pulseOn, editing)
+            drawKey(keyTurboA, "A连", (pressed & Self.A) != 0 && pulseOn, editing, true)
         }
         if visibleExtras.contains("tb") {
-            drawButton(keyTurboB, "B连", (pressed & Self.B) != 0 && pulseOn, editing)
+            drawKey(keyTurboB, "B连", (pressed & Self.B) != 0 && pulseOn, editing, true)
         }
         if visibleExtras.contains("lr") {
-            drawButton(keyLR, "L+R", (pressed & (Self.l | Self.r)) == (Self.l | Self.r), editing)
+            drawKey(keyLR, "L+R", (pressed & (Self.l | Self.r)) == (Self.l | Self.r), editing, false)
+        }
+        if visibleExtras.contains("c") {
+            drawKey(keyC, "C", (pressed & macroMaskC) == macroMaskC && macroMaskC != 0, editing, true)
+        }
+        if visibleExtras.contains("c2") {
+            drawKey(keyC2, "C2", (pressed & macroMaskC2) == macroMaskC2 && macroMaskC2 != 0, editing, true)
         }
         if visibleExtras.contains("save") {
-            drawButton(keySave, "快存", actionPointers.values.contains(Self.actionSave), editing)
+            drawKey(keySave, "存", actionPointers.values.contains(Self.actionSave), editing, false)
         }
         if visibleExtras.contains("load") {
-            drawButton(keyLoad, "快读", actionPointers.values.contains(Self.actionLoad), editing)
+            drawKey(keyLoad, "读", actionPointers.values.contains(Self.actionLoad), editing, false)
         }
         if visibleExtras.contains("ff") {
-            drawButton(keyFast, "倍速", actionPointers.values.contains(Self.actionFF), editing)
+            drawKey(keyFast, "倍速", actionPointers.values.contains(Self.actionFF), editing, false)
         }
         if visibleExtras.contains("shot") {
-            drawButton(keyShot, "截图", actionPointers.values.contains(Self.actionShot), editing)
+            drawKey(keyShot, "截图", actionPointers.values.contains(Self.actionShot), editing, false)
         }
     }
 
-    private func drawButton(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool) {
+    private func drawKey(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool, _ round: Bool) {
+        guard rect.width > 0, rect.height > 0 else { return }
+        if handheld() {
+            drawShellKey(rect, label, down, selected, round)
+        } else {
+            drawClassicKey(rect, label, down, selected)
+        }
+    }
+
+    private func drawClassicKey(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool) {
         let path = UIBezierPath(roundedRect: rect, cornerRadius: 12)
         if down {
             UIColor(red: 80 / 255, green: 210 / 255, blue: 130 / 255, alpha: fade(70 / 255)).setFill()
@@ -329,12 +662,118 @@ final class ControlsView: UIView {
         if selected { drawCursor(rect) }
     }
 
+    /** White shell button: pill or circle with an accent letter. The fill
+     * starts translucent; raising the opacity control brings it to white. */
+    private func drawShellKey(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool, _ round: Bool) {
+        if let key = Self.labelToKey(label), let bitmap = skinBitmaps[down ? key + "_p" : key] {
+            bitmap.draw(in: rect)
+        } else if let key = Self.labelToKey(label), let bitmap = skinBitmaps[key] {
+            bitmap.draw(in: rect)
+            if down {
+                let path = round
+                    ? UIBezierPath(ovalIn: rect)
+                    : UIBezierPath(roundedRect: rect, cornerRadius: rect.height / 2.4)
+                color(theme.accentDeep, alpha: 110 / 255).setFill()
+                path.fill()
+            }
+        } else {
+            drawShellButton(rect, label, down, selected, round)
+        }
+        if selected { drawCursor(rect) }
+    }
+
+    private func drawShellButton(_ rect: CGRect, _ label: String, _ down: Bool, _ selected: Bool, _ round: Bool) {
+        let radius = round ? min(rect.width, rect.height) / 2 : rect.height / 2.4
+        let path = round
+            ? UIBezierPath(ovalIn: rect)
+            : UIBezierPath(roundedRect: rect, cornerRadius: radius)
+        if down {
+            color(theme.accentDeep, alpha: 150 / 255).setFill()
+        } else {
+            UIColor(white: 1, alpha: fade(150 / 255)).setFill()
+        }
+        path.fill()
+        if selected {
+            color(UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: 1), alpha: 1).setStroke()
+            path.lineWidth = 2.5
+            path.stroke()
+        }
+        let size: CGFloat = label.count > 2 ? 11 : label.count > 1 ? 13 : 17
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.boldSystemFont(ofSize: size),
+            .foregroundColor: down ? UIColor(white: 1, alpha: fade(240 / 255)) : color(theme.accent, alpha: 1)
+        ]
+        let text = label as NSString
+        let textSize = text.size(withAttributes: attrs)
+        text.draw(at: CGPoint(x: rect.midX - textSize.width / 2, y: rect.midY - textSize.height / 2), withAttributes: attrs)
+    }
+
+    /** Maps a drawn label to its skin-pack key, or nil for utility keys. */
+    private static func labelToKey(_ label: String) -> String? {
+        switch label {
+        case "A": return "a"
+        case "B": return "b"
+        case "L": return "l"
+        case "R": return "r"
+        case "SELECT": return "select"
+        case "START": return "start"
+        default: return nil
+        }
+    }
+
     private func drawDpad() {
+        guard dpad.width > 0 else { return }
+        layoutDpadArms()
+        if handheld() {
+            drawShellDpad()
+            return
+        }
         drawDirection(dpadUp, Self.up)
         drawDirection(dpadDown, Self.down)
         drawDirection(dpadLeft, Self.left)
         drawDirection(dpadRight, Self.right)
         if editing { drawCursor(dpad) }
+    }
+
+    /** White cross with a center mark; a pressed arm glows in the accent. */
+    private func drawShellDpad() {
+        if let bitmap = skinBitmaps["dpad"] {
+            bitmap.draw(in: dpad)
+            drawArmGlow(dpadUp, Self.up, 0)
+            drawArmGlow(dpadDown, Self.down, 0)
+            drawArmGlow(dpadLeft, Self.left, 0)
+            drawArmGlow(dpadRight, Self.right, 0)
+            if editing { drawCursor(dpad) }
+            return
+        }
+        let r = dpadUp.width / 2.4
+        // The cross reads as two overlapping rounded bars.
+        let bar = CGRect(x: dpad.minX, y: dpad.midY - dpadUp.width / 2,
+                         width: dpad.width, height: dpadUp.width)
+        let barV = CGRect(x: dpad.midX - dpadLeft.height / 2, y: dpad.minY,
+                          width: dpadLeft.height, height: dpad.height)
+        UIColor(white: 1, alpha: fade(150 / 255)).setFill()
+        UIBezierPath(roundedRect: bar, cornerRadius: r).fill()
+        UIBezierPath(roundedRect: barV, cornerRadius: r).fill()
+        // Pressed arms light up in the accent color.
+        drawArmGlow(dpadUp, Self.up, r)
+        drawArmGlow(dpadDown, Self.down, r)
+        drawArmGlow(dpadLeft, Self.left, r)
+        drawArmGlow(dpadRight, Self.right, r)
+        // Center hub with a small accent mark.
+        let hub = dpadUp.width * 0.92
+        UIColor(white: 1, alpha: fade(170 / 255)).setFill()
+        UIBezierPath(ovalIn: CGRect(x: dpad.midX - hub / 2, y: dpad.midY - hub / 2, width: hub, height: hub)).fill()
+        color(theme.dpadMark, alpha: 150 / 255).setFill()
+        let mark = hub / 5
+        UIBezierPath(ovalIn: CGRect(x: dpad.midX - mark, y: dpad.midY - mark, width: mark * 2, height: mark * 2)).fill()
+        if editing { drawCursor(dpad) }
+    }
+
+    private func drawArmGlow(_ arm: CGRect, _ bit: Int, _ r: CGFloat) {
+        guard (pressed & bit) != 0 else { return }
+        color(theme.accentDeep, alpha: 120 / 255).setFill()
+        UIBezierPath(roundedRect: arm, cornerRadius: r * 0.8).fill()
     }
 
     private func drawDirection(_ rect: CGRect, _ bit: Int) {
@@ -382,6 +821,68 @@ final class ControlsView: UIView {
         path.fill()
     }
 
+    private func drawToolbar() {
+        color(UIColor(red: 12 / 255, green: 12 / 255, blue: 14 / 255, alpha: 1), alpha: 236 / 255).setFill()
+        UIBezierPath(roundedRect: toolbar, cornerRadius: toolbar.height / 2).fill()
+        drawToolbarButton(toolbarMenu, "?", Self.actionMenu)
+        drawToolbarButton(toolbarSave, "存", Self.actionSave)
+        drawToolbarButton(toolbarLoad, "读", Self.actionLoad)
+        drawToolbarButton(toolbarMute, muted ? "🔇" : "♪", Self.actionMute)
+        drawToolbarButton(toolbarRewind, "⏪", Self.actionRewind)
+    }
+
+    private func drawToolbarButton(_ cell: CGRect, _ icon: String, _ action: Int) {
+        if actionPointers.values.contains(action) {
+            color(theme.accentDeep, alpha: 200 / 255).setFill()
+            let size = min(cell.width, cell.height) * 0.84
+            UIBezierPath(ovalIn: CGRect(x: cell.midX - size / 2, y: cell.midY - size / 2,
+                                        width: size, height: size)).fill()
+        }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: UIFont.systemFont(ofSize: 13),
+            .foregroundColor: UIColor(white: 1, alpha: fade(235 / 255))
+        ]
+        let text = icon as NSString
+        let size = text.size(withAttributes: attrs)
+        text.draw(at: CGPoint(x: cell.midX - size.width / 2, y: cell.midY - size.height / 2), withAttributes: attrs)
+    }
+
+    /** Fast-forward switch: green when held on, gray when off. */
+    private func drawToggle() {
+        let radius = toggle.height / 2
+        (ffOn ? UIColor(red: 61 / 255, green: 220 / 255, blue: 132 / 255, alpha: fade(1)) : UIColor(red: 70 / 255, green: 70 / 255, blue: 76 / 255, alpha: fade(210 / 255))).setFill()
+        UIBezierPath(roundedRect: toggle, cornerRadius: radius).fill()
+        let knob = toggle.height * 0.86
+        let kx = ffOn ? toggle.maxX - knob / 2 - 2 : toggle.minX + knob / 2 + 2
+        UIColor(white: 1, alpha: fade(250 / 255)).setFill()
+        UIBezierPath(ovalIn: CGRect(x: kx - knob / 2, y: toggle.midY - knob / 2,
+                                    width: knob, height: knob)).fill()
+        if ffOn {
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 9, weight: .bold),
+                .foregroundColor: UIColor(red: 30 / 255, green: 90 / 255, blue: 50 / 255, alpha: fade(230 / 255))
+            ]
+            let text = "FF" as NSString
+            let size = text.size(withAttributes: attrs)
+            text.draw(at: CGPoint(x: toggle.midX - toggle.width * 0.12 - size.width / 2,
+                                  y: toggle.midY - size.height / 2), withAttributes: attrs)
+        }
+    }
+
+    private func drawSpeaker() {
+        color(theme.speaker, alpha: 1).setFill()
+        for dot in speakerRects {
+            UIBezierPath(ovalIn: dot).fill()
+        }
+    }
+
+    private func drawSpeakerSlots() {
+        color(theme.speaker, alpha: 1).setFill()
+        for slot in speakerRects {
+            UIBezierPath(roundedRect: slot, cornerRadius: slot.height / 2).fill()
+        }
+    }
+
     private func drawCursor(_ rect: CGRect) {
         let arm = max(18, min(rect.width, rect.height) * 0.45)
         let path = UIBezierPath()
@@ -395,6 +896,8 @@ final class ControlsView: UIView {
         path.lineWidth = 2
         path.stroke()
     }
+
+    // MARK: - Touches
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         if editing {
@@ -411,6 +914,7 @@ final class ControlsView: UIView {
                 } else {
                     onAction?(utility)
                 }
+                setNeedsDisplay()
                 continue
             }
             pointers[ObjectIdentifier(touch)] = hitTest(point)
@@ -428,7 +932,7 @@ final class ControlsView: UIView {
             guard let current = pointers[id] else { continue }
             // Face buttons and the dedicated keys stick until release. A thumb
             // sliding a few pixels used to drop A before the game sampled it.
-            if (current & (Self.face | Self.flagTurboA | Self.flagTurboB | Self.flagLR)) != 0 { continue }
+            if (current & (Self.face | Self.flagTurboA | Self.flagTurboB | Self.flagLR | Self.flagC | Self.flagC2)) != 0 { continue }
             pointers[id] = hitTest(touch.location(in: self))
         }
         publish()
@@ -444,6 +948,7 @@ final class ControlsView: UIView {
             if let held = actionPointers[id] {
                 actionPointers.removeValue(forKey: id)
                 if held == Self.actionFF { onFastHold?(false) }
+                setNeedsDisplay()
                 continue
             }
             pointers.removeValue(forKey: id)
@@ -495,6 +1000,10 @@ final class ControlsView: UIView {
                 turbo |= Self.B
             } else if (value & Self.flagLR) != 0 {
                 mask |= Self.l | Self.r
+            } else if (value & Self.flagC) != 0 {
+                mask |= macroMaskC
+            } else if (value & Self.flagC2) != 0 {
+                mask |= macroMaskC2
             } else {
                 mask |= value
             }
@@ -526,6 +1035,14 @@ final class ControlsView: UIView {
 
     /** Optional utility key under the point, or 0 (action codes). */
     private func actionAt(_ point: CGPoint) -> Int {
+        if handheld() && portrait {
+            if toggle.contains(point) { return Self.actionFFToggle }
+            if toolbarMenu.contains(point) { return Self.actionMenu }
+            if toolbarSave.contains(point) { return Self.actionSave }
+            if toolbarLoad.contains(point) { return Self.actionLoad }
+            if toolbarMute.contains(point) { return Self.actionMute }
+            if toolbarRewind.contains(point) { return Self.actionRewind }
+        }
         if visibleExtras.contains("save"), keySave.contains(point) { return Self.actionSave }
         if visibleExtras.contains("load"), keyLoad.contains(point) { return Self.actionLoad }
         if visibleExtras.contains("ff"), keyFast.contains(point) { return Self.actionFF }
@@ -572,6 +1089,8 @@ final class ControlsView: UIView {
         if visibleExtras.contains("ta"), keyTurboA.contains(point) { return Self.flagTurboA }
         if visibleExtras.contains("tb"), keyTurboB.contains(point) { return Self.flagTurboB }
         if visibleExtras.contains("lr"), keyLR.contains(point) { return Self.flagLR }
+        if visibleExtras.contains("c"), keyC.contains(point) { return Self.flagC }
+        if visibleExtras.contains("c2"), keyC2.contains(point) { return Self.flagC2 }
         if let face = nearestFace(point) { return face }
         return hitDpad(point)
     }
@@ -651,11 +1170,18 @@ final class ControlsView: UIView {
         if visibleExtras.contains("ta"), keyTurboA.contains(point) { return "ta" }
         if visibleExtras.contains("tb"), keyTurboB.contains(point) { return "tb" }
         if visibleExtras.contains("lr"), keyLR.contains(point) { return "lr" }
+        if visibleExtras.contains("c"), keyC.contains(point) { return "c" }
+        if visibleExtras.contains("c2"), keyC2.contains(point) { return "c2" }
         if visibleExtras.contains("save"), keySave.contains(point) { return "save" }
         if visibleExtras.contains("load"), keyLoad.contains(point) { return "load" }
         if visibleExtras.contains("ff"), keyFast.contains(point) { return "ff" }
         if visibleExtras.contains("shot"), keyShot.contains(point) { return "shot" }
         return nil
+    }
+
+    /** True when the point lands on a control key instead of empty stage. */
+    func isOverKey(_ point: CGPoint) -> Bool {
+        keyAt(point) != nil
     }
 
     private func rectFor(_ key: String) -> CGRect {
@@ -666,32 +1192,18 @@ final class ControlsView: UIView {
         case "l": return buttonL
         case "r": return buttonR
         case "select": return buttonSelect
+        case "start": return buttonStart
         case "ta": return keyTurboA
         case "tb": return keyTurboB
         case "lr": return keyLR
+        case "c": return keyC
+        case "c2": return keyC2
         case "save": return keySave
         case "load": return keyLoad
         case "ff": return keyFast
         case "shot": return keyShot
         default: return buttonStart
         }
-    }
-
-    private func snapDefaults() {
-        dpadDefault = dpad
-        buttonLDefault = buttonL
-        buttonRDefault = buttonR
-        buttonADefault = buttonA
-        buttonBDefault = buttonB
-        buttonSelectDefault = buttonSelect
-        buttonStartDefault = buttonStart
-        keyTurboADefault = keyTurboA
-        keyTurboBDefault = keyTurboB
-        keyLRDefault = keyLR
-        keySaveDefault = keySave
-        keyLoadDefault = keyLoad
-        keyFastDefault = keyFast
-        keyShotDefault = keyShot
     }
 
     private func applyCenters() {
@@ -705,6 +1217,8 @@ final class ControlsView: UIView {
         if visibleExtras.contains("ta") { place(&keyTurboA, keyTurboADefault, "ta") }
         if visibleExtras.contains("tb") { place(&keyTurboB, keyTurboBDefault, "tb") }
         if visibleExtras.contains("lr") { place(&keyLR, keyLRDefault, "lr") }
+        if visibleExtras.contains("c") { place(&keyC, keyCDefault, "c") }
+        if visibleExtras.contains("c2") { place(&keyC2, keyC2Default, "c2") }
         if visibleExtras.contains("save") { place(&keySave, keySaveDefault, "save") }
         if visibleExtras.contains("load") { place(&keyLoad, keyLoadDefault, "load") }
         if visibleExtras.contains("ff") { place(&keyFast, keyFastDefault, "ff") }
@@ -713,7 +1227,7 @@ final class ControlsView: UIView {
         onLayoutChanged?()
     }
 
-    /// Current bounds of the START key, in this view's coordinates.
+    /** Current bounds of the START key, in this view's coordinates. */
     func startButtonRect() -> CGRect {
         buttonStart
     }

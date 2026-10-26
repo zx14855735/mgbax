@@ -11,6 +11,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var core: OpaquePointer?
     private let gameView = GameView()
     private let controls = ControlsView()
+    private let shellStage = ShellStageView()
+    private let stickerOverlay = StickerOverlayView()
+    private let aiOverlay = AiOverlayView()
     private let hint = UILabel()
     private let fpsView = UILabel()
     private let savePathView = UILabel()
@@ -77,14 +80,21 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdLoad = 2
     private let cmdReset = 3
     private let cmdAutoSave = 4
+    private let cmdRewind = 5
     private let layoutBar = UIView()
     private let bar = UIScrollView()
+    private let rewindBar = UIScrollView()
     private let stage = UIView()
     private let lowerScreen = UIView()
     private let hinge = UIView()
     private var stageLandscape: [NSLayoutConstraint] = []
     private var stagePortrait: [NSLayoutConstraint] = []
+    private var gameClassicLandscape: [NSLayoutConstraint] = []
+    private var gameShellLandscape: [NSLayoutConstraint] = []
+    private var gamePortrait: [NSLayoutConstraint] = []
     private var appliedStagePortrait: Bool?
+    private var appliedShellHandheld: Bool?
+    private var rewindBarHeight: NSLayoutConstraint!
     private var menuButton: UIButton!
     private var menuVisible = true
     private var speedBarWanted = false
@@ -97,6 +107,30 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var menuLeft: CGFloat = -1
     private var menuTop: CGFloat = -1
     private var scopedURL: URL?
+    /// Skins, per-game overrides and the game library all live in the app's
+    /// Documents folder, where the Files app can reach them.
+    private lazy var skinStore = SkinStore(root: docs.appendingPathComponent("skins", isDirectory: true))
+    private let romSettings = RomSettings()
+    private let romLibrary = RomLibrary()
+    private var romCrc: UInt32?
+    private var crcCache: [String: UInt32] = [:]
+    private var perRomFilter: Int?
+    private var perRomSpeed: Double?
+    private var perRomSaveType: Int?
+    private var perRomPalette: Int?
+    private var rewindWanted = false
+    private var rewindSeconds = 15
+    private var rewindHold = false
+    private var lastRewindAt: UInt64 = 0
+    private var ffOn = false
+    private var muted = false
+    private var timedSaveTimer: Timer?
+    private var aiFrame: UIImage?
+    private var activeSkinName: String?
+    private var backupExportURL: URL?
+    private var doubleTapShot: UITapGestureRecognizer?
+    private var stickerEditing = false
+    private var pendingPreview: UIImage?
     private static let menuHideSeconds: TimeInterval = 4
     private static let audioStepFrames = 4
     private static let audioReadFrames: Int32 = 8192
@@ -112,6 +146,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /** Names of the optional on-screen keys, shown and stored in this order. */
     private static let extraKeyChoices: [(String, String)] = [
         ("ta", "A键（连发）"), ("tb", "B键（连发）"), ("lr", "L+R键"),
+        ("c", "C键（组合宏）"), ("c2", "C2键（组合宏）"),
         ("save", "快速存档"), ("load", "快速读档"), ("ff", "倍速（按住快进）"), ("shot", "截图"),
     ]
     /** Filter ids, matching the order shown in the 画质 picker (Shaders.functionNames). */
@@ -156,8 +191,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         core = mgbaMobileCreate(saves, states, "ios")
+        if let core { mgbaMobileSetRewind(core, true) }
         applyCoreOptions()
-        audio.volume = Float(defaults.object(forKey: "volume") == nil ? 100 : defaults.integer(forKey: "volume")) / 100
+        muted = defaults.bool(forKey: "muted")
+        applyVolume()
         audio.lowLatency = defaults.bool(forKey: "low_latency")
         controls.onKeysChanged = { [weak self] mask in
             guard let self else { return }
@@ -177,6 +214,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.quickState(save: false)
             } else if action == ControlsView.actionShot {
                 self.takeScreenshot()
+            } else if action == ControlsView.actionFFToggle {
+                self.toggleFastForward()
+            } else if action == ControlsView.actionMenu {
+                self.toggleMenu()
+            } else if action == ControlsView.actionMute {
+                self.toggleMute()
+            } else if action == ControlsView.actionRewind {
+                self.toggleRewindBar()
             }
         }
         controls.onFastHold = { [weak self] down in
@@ -186,6 +231,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.refreshSpeedButtons()
         }
         applyInputSettings()
+        loadMacroSettings()
+        controls.setMuted(muted)
+        controls.setFastForwardOn(ffOn)
+        applySkin()
+        loadStickers()
+        installDoubleTapScreenshot()
         layoutProfile = activeProfile()
         keyLayout = KeyLayout.decode(profileLayout(layoutProfile))
         controls.setCenters(keyLayout.resolved())
@@ -267,24 +318,62 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         applyStageLayout()
     }
 
-    /** Portrait splits the stage into a DS-like pair of screens. */
+    /** Portrait splits the stage into a DS-like pair of screens; the handheld
+     * style also reshapes the landscape game box so the shell is visible. */
     private func applyStageLayout() {
-        if appliedStagePortrait == portrait {
+        let shell = skinStylePref() == ControlsView.styleHandheld
+        let switched = appliedStagePortrait != portrait
+        let styleChanged = appliedShellHandheld != shell
+        if !switched && !styleChanged {
+            updateShellGeometry()
             return
         }
         appliedStagePortrait = portrait
+        appliedShellHandheld = shell
+        NSLayoutConstraint.deactivate(stageLandscape)
+        NSLayoutConstraint.deactivate(stagePortrait)
+        NSLayoutConstraint.deactivate(gameClassicLandscape)
+        NSLayoutConstraint.deactivate(gameShellLandscape)
+        NSLayoutConstraint.deactivate(gamePortrait)
+        NSLayoutConstraint.activate(portrait ? stagePortrait : stageLandscape)
         if portrait {
-            NSLayoutConstraint.deactivate(stageLandscape)
-            NSLayoutConstraint.activate(stagePortrait)
+            NSLayoutConstraint.activate(gamePortrait)
         } else {
-            NSLayoutConstraint.deactivate(stagePortrait)
-            NSLayoutConstraint.activate(stageLandscape)
+            NSLayoutConstraint.activate(shell ? gameShellLandscape : gameClassicLandscape)
         }
-        hinge.isHidden = !portrait
-        // The handle follows the keys, which move between the screens.
+        controls.setPortrait(portrait)
+        shellStage.portrait = portrait
+        shellStage.handheld = shell
+        lowerScreen.isHidden = portrait ? shell : true
+        hinge.isHidden = !portrait || shell
+        if switched {
+            // Keys, stickers and full-skin backgrounds are stored per
+            // orientation, like the Android stage.
+            reloadKeyLayout()
+            loadStickers()
+            applyFullSkin()
+        }
         menuLeft = -1
         menuTop = -1
         layoutMenuButton()
+        updateShellGeometry()
+    }
+
+    /** Feeds the game's laid-out box to the shell so its bezel can wrap it. */
+    private func updateShellGeometry() {
+        guard shellStage.bounds.width > 0, gameView.bounds.width > 0 else { return }
+        shellStage.gameFrame = stage.convert(gameView.bounds, from: gameView)
+        // The translated blocks are normalized to the emulator picture, which
+        // may be letterboxed inside the game box or the shell layout.
+        aiOverlay.pictureFrame = stage.convert(gameView.pictureRect, from: gameView)
+    }
+
+    /** Reloads the key layout for the current orientation. */
+    private func reloadKeyLayout() {
+        guard !layoutProfile.isEmpty else { return }
+        keyLayout = KeyLayout.decode(profileLayout(layoutProfile))
+        controls.setCenters(keyLayout.resolved())
+        controls.setScales(keyLayout.resolvedScales())
     }
 
     private func buildChrome() {
@@ -307,6 +396,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("联机", #selector(showLink)),
             ("键位", #selector(toggleLayout)),
             ("金手指", #selector(showCheats)),
+            ("图库", #selector(showRomLibrary)),
+            ("倒带", #selector(toggleRewindBar)),
+            ("皮肤", #selector(showSkinDialog)),
+            ("每游戏", #selector(showPerRomDialog)),
+            ("备份", #selector(showBackupDialog)),
+            ("翻译", #selector(showTranslateDialog)),
             ("截图", #selector(takeScreenshot)),
             ("GIF", #selector(toggleGif)),
             ("设置", #selector(showSettings))
@@ -382,6 +477,36 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         savePathView.isHidden = true
         savePathView.isUserInteractionEnabled = true
         savePathView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(copySavePath)))
+        rewindBar.backgroundColor = UIColor(red: 24 / 255, green: 16 / 255, blue: 32 / 255, alpha: 1)
+        rewindBar.showsHorizontalScrollIndicator = false
+        rewindBar.isHidden = true
+        let rewindStack = UIStackView()
+        rewindStack.axis = .horizontal
+        rewindStack.spacing = 4
+        rewindStack.alignment = .center
+        rewindStack.translatesAutoresizingMaskIntoConstraints = false
+        rewindBar.addSubview(rewindStack)
+        let rewindLabel = UILabel()
+        rewindLabel.text = "倒带"
+        rewindLabel.textColor = .white
+        rewindLabel.font = .systemFont(ofSize: 13)
+        rewindStack.addArrangedSubview(rewindLabel)
+        for seconds in [15, 12, 9, 6, 3] {
+            let button = UIButton(type: .system)
+            button.setTitle("\(seconds)秒", for: .normal)
+            button.titleLabel?.font = .systemFont(ofSize: 14)
+            button.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+            button.tag = seconds
+            button.addTarget(self, action: #selector(rewindStep(_:)), for: .touchUpInside)
+            rewindStack.addArrangedSubview(button)
+        }
+        let hold = UIButton(type: .system)
+        hold.setTitle("按住倒带", for: .normal)
+        hold.titleLabel?.font = .systemFont(ofSize: 14)
+        hold.contentEdgeInsets = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+        hold.addTarget(self, action: #selector(rewindHoldDown), for: .touchDown)
+        hold.addTarget(self, action: #selector(rewindHoldUp), for: [.touchUpInside, .touchUpOutside, .touchCancel])
+        rewindStack.addArrangedSubview(hold)
         hint.text = "点击「打开」选择 .gba、.gbc、.gb 或 .zip 游戏；也可以在文件 App 里用 mGBA 打开 ROM。"
         hint.textColor = UIColor(white: 0.87, alpha: 1)
         hint.numberOfLines = 0
@@ -391,10 +516,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         lowerScreen.backgroundColor = UIColor(white: 0.043, alpha: 1)
         hinge.backgroundColor = UIColor(white: 0.18, alpha: 1)
         hinge.isUserInteractionEnabled = false
+        stickerOverlay.onStickersChanged = { [weak self] in self?.persistStickers() }
+        stage.addSubview(shellStage)
         stage.addSubview(lowerScreen)
         stage.addSubview(gameView)
         stage.addSubview(hint)
         stage.addSubview(controls)
+        // Stickers and translations sit above the keys, like the Android
+        // overlays; the sticker view lets touches through unless editing.
+        stage.addSubview(stickerOverlay)
+        stage.addSubview(aiOverlay)
         stage.addSubview(hinge)
         buildLayoutBar()
         // Always-visible handle that pops the menu open. Added last so it stays
@@ -418,24 +549,27 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let menuPan = UIPanGestureRecognizer(target: self, action: #selector(menuTouched(_:)))
         menuPan.cancelsTouchesInView = false
         view.addGestureRecognizer(menuPan)
-        for item in [bar, stack, speedBar, savePathView, stage, lowerScreen, gameView, hint, controls, layoutBar, hinge] {
+        for item in [bar, stack, speedBar, rewindBar, savePathView, stage, lowerScreen, gameView, hint, shellStage,
+                     stickerOverlay, aiOverlay, controls, layoutBar, hinge] {
             item.translatesAutoresizingMaskIntoConstraints = false
         }
         view.addSubview(bar)
         view.addSubview(speedBar)
+        view.addSubview(rewindBar)
         view.addSubview(savePathView)
         view.addSubview(stage)
         view.addSubview(layoutBar)
         speedBarHeight = speedBar.heightAnchor.constraint(equalToConstant: 0)
+        rewindBarHeight = rewindBar.heightAnchor.constraint(equalToConstant: 0)
         savePathHeight = savePathView.heightAnchor.constraint(equalToConstant: 0)
         // Landscape: the menu bar on top, the keys over the full-screen game.
         stageLandscape = [
             bar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             speedBar.topAnchor.constraint(equalTo: bar.bottomAnchor),
-            savePathView.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
+            rewindBar.topAnchor.constraint(equalTo: speedBar.bottomAnchor),
+            savePathView.topAnchor.constraint(equalTo: rewindBar.bottomAnchor),
             stage.topAnchor.constraint(equalTo: savePathView.bottomAnchor),
             stage.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            gameView.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             controls.topAnchor.constraint(equalTo: stage.topAnchor),
             controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             hint.centerYAnchor.constraint(equalTo: stage.centerYAnchor)
@@ -445,13 +579,33 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stagePortrait = [
             stage.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             stage.bottomAnchor.constraint(equalTo: savePathView.topAnchor),
-            savePathView.bottomAnchor.constraint(equalTo: speedBar.topAnchor),
+            savePathView.bottomAnchor.constraint(equalTo: rewindBar.topAnchor),
+            rewindBar.bottomAnchor.constraint(equalTo: speedBar.topAnchor),
             speedBar.bottomAnchor.constraint(equalTo: bar.topAnchor),
             bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
-            gameView.heightAnchor.constraint(equalTo: stage.heightAnchor, multiplier: 0.5),
             controls.topAnchor.constraint(equalTo: gameView.bottomAnchor),
             controls.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             hint.centerYAnchor.constraint(equalTo: gameView.centerYAnchor)
+        ]
+        // The game box: full-screen classic landscape, a handheld body with a
+        // smaller screen in the shell style, or the upper half in portrait.
+        gameClassicLandscape = [
+            gameView.topAnchor.constraint(equalTo: stage.topAnchor),
+            gameView.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            gameView.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            gameView.bottomAnchor.constraint(equalTo: stage.bottomAnchor)
+        ]
+        gameShellLandscape = [
+            gameView.centerXAnchor.constraint(equalTo: stage.centerXAnchor),
+            gameView.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
+            gameView.widthAnchor.constraint(equalTo: stage.widthAnchor, multiplier: 0.58),
+            gameView.heightAnchor.constraint(equalTo: stage.heightAnchor, multiplier: 0.74)
+        ]
+        gamePortrait = [
+            gameView.topAnchor.constraint(equalTo: stage.topAnchor),
+            gameView.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            gameView.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            gameView.heightAnchor.constraint(equalTo: stage.heightAnchor, multiplier: 0.5)
         ]
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -470,19 +624,36 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             speedStack.leadingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.leadingAnchor, constant: 4),
             speedStack.trailingAnchor.constraint(equalTo: speedBar.contentLayoutGuide.trailingAnchor, constant: -4),
             speedStack.heightAnchor.constraint(equalTo: speedBar.frameLayoutGuide.heightAnchor),
+            rewindBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            rewindBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            rewindBarHeight,
+            rewindStack.topAnchor.constraint(equalTo: rewindBar.contentLayoutGuide.topAnchor),
+            rewindStack.bottomAnchor.constraint(equalTo: rewindBar.contentLayoutGuide.bottomAnchor),
+            rewindStack.leadingAnchor.constraint(equalTo: rewindBar.contentLayoutGuide.leadingAnchor, constant: 4),
+            rewindStack.trailingAnchor.constraint(equalTo: rewindBar.contentLayoutGuide.trailingAnchor, constant: -4),
+            rewindStack.heightAnchor.constraint(equalTo: rewindBar.frameLayoutGuide.heightAnchor),
             savePathView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             savePathView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
             savePathHeight,
             stage.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stage.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            gameView.topAnchor.constraint(equalTo: stage.topAnchor),
-            gameView.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
-            gameView.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
             controls.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
             controls.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
             hint.centerXAnchor.constraint(equalTo: stage.centerXAnchor),
             hint.leadingAnchor.constraint(greaterThanOrEqualTo: stage.leadingAnchor, constant: 24),
             hint.trailingAnchor.constraint(lessThanOrEqualTo: stage.trailingAnchor, constant: -24),
+            shellStage.topAnchor.constraint(equalTo: stage.topAnchor),
+            shellStage.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            shellStage.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            shellStage.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            stickerOverlay.topAnchor.constraint(equalTo: stage.topAnchor),
+            stickerOverlay.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            stickerOverlay.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            stickerOverlay.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
+            aiOverlay.topAnchor.constraint(equalTo: stage.topAnchor),
+            aiOverlay.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            aiOverlay.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            aiOverlay.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
             // The lower screen collapses to nothing in landscape, where it
             // simply ends where the game does.
             lowerScreen.topAnchor.constraint(equalTo: gameView.bottomAnchor),
@@ -500,8 +671,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             layoutBar.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
         NSLayoutConstraint.activate(portrait ? stagePortrait : stageLandscape)
-        appliedStagePortrait = portrait
+        NSLayoutConstraint.activate(portrait ? gamePortrait : gameClassicLandscape)
         hinge.isHidden = !portrait
+        lowerScreen.isHidden = !portrait
     }
 
     private func buildLayoutBar() {
@@ -639,6 +811,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             showMenu()
             menuHideWork?.cancel()
         } else {
+            layoutMenuButton()
             armMenuAutoHide()
         }
     }
@@ -679,7 +852,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let cmd = command
             command = 0
             let isPaused = paused
-            let mult: Double = fastHold ? max(speed, fastHoldSpeed()) : speed
+            let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
                 loadRom(path)
@@ -706,6 +879,39 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 gate.lock()
                 let until = Date(timeIntervalSinceNow: 0.016)
                 gate.wait(until: until)
+                gate.unlock()
+                continue
+            }
+            // 按住倒带: one second every ~400 ms; emulation pauses while the
+            // button is held, like the Android rewind bar.
+            gate.lock()
+            let wantHoldRewind = rewindHold
+            let lastRewind = lastRewindAt
+            gate.unlock()
+            if wantHoldRewind {
+                let holdNow = DispatchTime.now().uptimeNanoseconds
+                if lastRewind == 0 || holdNow &- lastRewind >= 400_000_000 {
+                    gate.lock()
+                    lastRewindAt = holdNow
+                    gate.unlock()
+                    if mgbaMobileRewind(core, 1) {
+                        mgbaMobileClearAudio(core)
+                        _ = mgbaMobileRunFrames(core, 1)
+                        // This branch skips the pacing and present below it, so
+                        // the rewound frame has to be shown here or holding the
+                        // button would look frozen.
+                        present(core, &video, &videoCap)
+                    } else {
+                        gate.lock()
+                        rewindHold = false
+                        gate.unlock()
+                        toast("没有可倒带的历史")
+                    }
+                }
+                slices = 0
+                fpsStamp = DispatchTime.now().uptimeNanoseconds
+                gate.lock()
+                gate.wait(until: Date(timeIntervalSinceNow: 0.016))
                 gate.unlock()
                 continue
             }
@@ -879,7 +1085,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     if let frame = self.gameView.captureFilteredFrame(
                         pixels: base, width: w, height: h,
                         outWidth: w, outHeight: h,
-                        brightness: Float(min(150, max(50, self.gameView.brightness))) / 100) {
+                        brightness: Float(min(150, max(50, self.gameView.brightness))) / 100,
+                        contrast: Float(min(150, max(50, self.gameView.contrast))) / 100) {
                         self.gifQueue?.offer(frame)
                     } else if self.gifQueue != nil {
                         // Metal capture unavailable: keep the raw frame.
@@ -924,7 +1131,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func loadRom(_ path: String) {
         guard let core else { return }
+        stopTimedSave()
         audio.stop()
+        // The checksum keys the per-game overrides; compute it before the load
+        // and cache it because a 32 MB ROM is not worth reading twice.
+        if let cached = crcCache[path] {
+            romCrc = cached
+        } else if let crc = RomSettings.crc32(ofFile: URL(fileURLWithPath: path)) {
+            romCrc = crc
+            crcCache[path] = crc
+        } else {
+            romCrc = nil
+        }
         let ok = mgbaMobileLoad(core, path)
         if !ok {
             DispatchQueue.main.async { [weak self] in
@@ -935,6 +1153,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             return
         }
+        DispatchQueue.main.async { [weak self] in
+            self?.aiOverlay.hide()
+        }
         var title = [CChar](repeating: 0, count: 32)
         mgbaMobileTitle(core, &title, 32)
         let name = String(cString: title).trimmingCharacters(in: .whitespaces)
@@ -942,7 +1163,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // queue level then steers that resampler (see AudioOut.rateDrift).
         audio.start()
         _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
+        // Do not let the previous game's overrides colour the global pass; the
+        // per-game pass below loads this ROM's own overrides.
+        perRomFilter = nil
+        perRomSpeed = nil
+        perRomSaveType = nil
+        perRomPalette = nil
         applyCoreOptions()
+        applyPerRomSettings()
         frameDebt = 0
         gate.lock()
         paused = false
@@ -960,6 +1188,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.showSaveLocation()
             self.refreshSlotButton()
             self.armMenuAutoHide()
+            self.startTimedSave()
         }
     }
 
@@ -971,7 +1200,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let current = slot
         if cmd == cmdSave {
             let ok = mgbaMobileSaveState(core, Int32(current))
-            if ok { writePreview(current) }
+            if ok {
+                writePreview(current)
+            } else {
+                pendingPreview = nil
+            }
             toast(ok ? "已保存即时存档 \(current)" : "即时存档失败")
             DispatchQueue.main.async { self.refreshSlotButton() }
         } else if cmd == cmdLoad {
@@ -992,6 +1225,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // Silent save into the reserved slot on the way to the background.
             if mgbaMobileSaveState(core, Self.autoSlot) {
                 writePreview(Self.autoSlot)
+            }
+        } else if cmd == cmdRewind {
+            let seconds = max(1, rewindSeconds)
+            let ok = mgbaMobileRewind(core, Int32(seconds))
+            mgbaMobileClearAudio(core)
+            if ok {
+                _ = mgbaMobileRunFrames(core, 1)
+                toast("已倒带 \(seconds) 秒")
+            } else {
+                toast("没有可倒带的历史")
             }
         }
     }
@@ -1088,20 +1331,66 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func pick(kind: Int) {
         pickerKind = kind
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.data], asCopy: false)
+        let types: [UTType]
+        var copy = false
+        switch kind {
+        case 3, 6, 8:
+            types = [.folder]
+        case 4, 5:
+            types = [.zip]
+            // Archives are unpacked in the background; a local copy survives
+            // iCloud providers that close their stream once the picker closes.
+            copy = true
+        case 7:
+            types = [.image]
+        default:
+            types = [.data]
+        }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: copy)
         picker.delegate = self
-        present(picker, animated: true)
+        presentSheet(picker)
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        let kind = pickerKind
+        pickerKind = 0
         guard let url = urls.first else { return }
-        if pickerKind == 1 {
+        switch kind {
+        case 1:
             openExternal(url)
-        } else if pickerKind == 3 {
-            importMyBoySaves(urls)
-        } else {
+        case 2:
             DispatchQueue.global().async { [weak self] in self?.importBios(url) }
+        case 3:
+            importMyBoySaves(urls)
+        case 4:
+            importBackup(url)
+        case 5:
+            importSkinZip(url)
+        case 6:
+            importSkinFolder(url)
+        case 7:
+            importStickerImage(url)
+        case 8:
+            importStickerFolder(url)
+        case 9:
+            // The archive was copied out to the chosen location; the temporary
+            // file can go now.
+            if let temp = backupExportURL {
+                try? FileManager.default.removeItem(at: temp)
+            }
+            backupExportURL = nil
+            toast("备份已导出")
+        default:
+            break
         }
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        if pickerKind == 9, let temp = backupExportURL {
+            try? FileManager.default.removeItem(at: temp)
+            backupExportURL = nil
+        }
+        pickerKind = 0
     }
 
     /// Loads a ROM handed over by the file picker or by another app ("用 mGBA
@@ -1110,9 +1399,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     func openExternal(_ url: URL) {
         hint.isHidden = false
         hint.text = "正在读取游戏…"
-        guard let path = adoptRomURL(url) else {
+        guard let adopted = adoptRomURL(url) else {
             toast("无法加载这个游戏")
             return
+        }
+        var path = adopted
+        if adopted.lowercased().hasSuffix(".zip") {
+            // A zip archive: pull the first game entry into Documents, like
+            // the Android build. The archive itself stays where it was.
+            guard let extracted = extractRomZip(URL(fileURLWithPath: adopted)) else {
+                stopAccessingScopedRom()
+                defaults.removeObject(forKey: "lastRomBookmark")
+                hint.isHidden = true
+                toast("压缩包里没有可用的游戏")
+                return
+            }
+            path = extracted
+            stopAccessingScopedRom()
+            let extractedURL = URL(fileURLWithPath: path)
+            if let bookmark = try? extractedURL.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+                defaults.set(bookmark, forKey: "lastRomBookmark")
+            } else {
+                defaults.removeObject(forKey: "lastRomBookmark")
+            }
         }
         defaults.set(path, forKey: "lastRom")
         gate.lock()
@@ -1255,7 +1564,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.setSpeed(value)
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert)
     }
 
     private func setSpeed(_ value: Double) {
@@ -1294,11 +1603,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// screen the way it does on Android.
     private func updateMenuLayout() {
         let showSpeed = menuVisible && speedBarWanted
+        let showRewind = menuVisible && rewindWanted
         let showPath = menuVisible && savePathWanted
         bar.isHidden = !menuVisible
         speedBar.isHidden = !showSpeed
+        rewindBar.isHidden = !showRewind
         savePathView.isHidden = !showPath
         speedBarHeight.constant = showSpeed ? 40 : 0
+        rewindBarHeight.constant = showRewind ? 40 : 0
         if showPath {
             let width = max(0, view.bounds.width - 16)
             let height = savePathView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
@@ -1323,6 +1635,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let point = gesture.location(in: view)
         let inside = bar.frame.contains(point)
             || (speedBarWanted && speedBar.frame.contains(point))
+            || (rewindWanted && rewindBar.frame.contains(point))
             || (savePathWanted && savePathView.frame.contains(point))
         if inside { armMenuAutoHide() }
     }
@@ -1331,6 +1644,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// key in landscape, on the top edge of the lower screen in portrait.
     private func layoutMenuButton() {
         guard menuButton != nil, menuLeading != nil, menuCenterY != nil else { return }
+        // The shell already draws its own menu button in the portrait toolbar;
+        // while laying keys out the floating handle would only cover them.
+        if layoutEditing || (portrait && skinStylePref() == ControlsView.styleHandheld) {
+            menuButton.isHidden = true
+            return
+        }
+        menuButton.isHidden = false
         let size = menuButton.bounds.size == .zero ? menuButton.intrinsicContentSize : menuButton.bounds.size
         let left: CGFloat
         let top: CGFloat
@@ -1351,7 +1671,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func refreshSpeedButtons() {
-        let shown = fastHold ? max(speed, fastHoldSpeed()) : speed
+        let shown = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
         fastButton.setTitle("\(Self.speedLabel(shown))倍", for: .normal)
         var tierMatched = false
         for (index, button) in speedButtons.enumerated() {
@@ -1382,7 +1702,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             popover.sourceView = view
             popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
         }
-        present(alert, animated: true)
+        presentSheet(alert)
     }
 
     private func showOrientationDialog() {
@@ -1400,7 +1720,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             })
         }
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert)
+    }
+
+    /** Output gain; mute only silences playback, the volume stays stored. */
+    private func applyVolume() {
+        let percent = defaults.object(forKey: "volume") == nil ? 100 : defaults.integer(forKey: "volume")
+        audio.volume = muted ? 0 : Float(max(0, min(150, percent))) / 100
     }
 
     private func showSoundDialog() {
@@ -1419,7 +1745,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let percent = Int(volume.value)
             volumeLabel.text = "音量 \(percent)%"
             self.defaults.set(percent, forKey: "volume")
-            self.audio.volume = Float(percent) / 100
+            self.applyVolume()
         }, for: .valueChanged)
         let lowLatency = labeledSwitch("低延迟音频（支持的设备上减少声音延迟）", defaults.bool(forKey: "low_latency"))
         lowLatency.1.addAction(UIAction { [weak self] _ in
@@ -1430,7 +1756,34 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(volumeLabel)
         box.addArrangedSubview(volume)
         box.addArrangedSubview(lowLatency.0)
-        present(SheetController(title: "声音", content: box), animated: true)
+        // Per-channel gains, in the spirit of Pizza Boy's 声道音量.
+        let channelKeys = ["vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"]
+        let channelNames = ["声道 1", "声道 2", "声道 3", "声道 4", "声道 A", "声道 B"]
+        for (index, key) in channelKeys.enumerated() {
+            let value = defaults.object(forKey: key) == nil ? 100 : defaults.integer(forKey: key)
+            let label = UILabel()
+            label.text = "\(channelNames[index]) \(value)%"
+            let bar = UISlider()
+            bar.minimumValue = 0
+            bar.maximumValue = 150
+            bar.value = Float(max(0, min(150, value)))
+            bar.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                let percent = Int(bar.value)
+                label.text = "\(channelNames[index]) \(percent)%"
+                self.defaults.set(percent, forKey: key)
+                self.applyChannelVolumes()
+            }, for: .valueChanged)
+            box.addArrangedSubview(label)
+            box.addArrangedSubview(bar)
+        }
+        let hint = UILabel()
+        hint.text = "声道音量只影响混音输出，100% 是游戏原始音量；仅静音时整体静音。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 11)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(hint)
+        presentSheet(SheetController(title: "声音", content: box))
     }
 
     private func showInputDialog() {
@@ -1475,8 +1828,43 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         opacity.value = Float(opacityNow)
         let extras = UIButton(type: .system)
         extras.contentHorizontalAlignment = .left
-        extras.setTitle("虚拟按键开关（连发/快存/快读/倍速/截图）", for: .normal)
+        extras.setTitle("虚拟按键开关（连发/宏/快存/快读/倍速/截图）", for: .normal)
         extras.addAction(UIAction { [weak self] _ in self?.showExtraKeysDialog() }, for: .touchUpInside)
+        let cKey = UIButton(type: .system)
+        cKey.contentHorizontalAlignment = .left
+        cKey.setTitle("C 键组合宏：\(macroTitle(controls.macro(0)))", for: .normal)
+        cKey.addAction(UIAction { [weak self] _ in
+            self?.showMacroDialog(which: 0) { [weak self] in
+                guard let self else { return }
+                cKey.setTitle("C 键组合宏：\(self.macroTitle(self.controls.macro(0)))", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let c2Key = UIButton(type: .system)
+        c2Key.contentHorizontalAlignment = .left
+        c2Key.setTitle("C2 键组合宏：\(macroTitle(controls.macro(1)))", for: .normal)
+        c2Key.addAction(UIAction { [weak self] _ in
+            self?.showMacroDialog(which: 1) { [weak self] in
+                guard let self else { return }
+                c2Key.setTitle("C2 键组合宏：\(self.macroTitle(self.controls.macro(1)))", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let shotFormat = UIButton(type: .system)
+        shotFormat.contentHorizontalAlignment = .left
+        var formatIndex = (defaults.string(forKey: "shot_format") ?? "png").lowercased() == "jpg" ? 1 : 0
+        shotFormat.setTitle("截图格式：\(formatIndex == 1 ? "JPG" : "PNG")", for: .normal)
+        shotFormat.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "截图格式", current: formatIndex, options: ["PNG", "JPG"]) { [weak self] index in
+                guard let self else { return }
+                formatIndex = index
+                self.defaults.set(index == 1 ? "jpg" : "png", forKey: "shot_format")
+                shotFormat.setTitle("截图格式：\(index == 1 ? "JPG" : "PNG")", for: .normal)
+            }
+        }, for: .touchUpInside)
+        let doubleShot = labeledSwitch("双击屏幕截图", defaults.bool(forKey: "double_click_shot"))
+        doubleShot.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(doubleShot.1.isOn, forKey: "double_click_shot")
+        }, for: .valueChanged)
         rate.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             let value = Int(rate.value) + 2
@@ -1504,7 +1892,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(opacityLabel)
         box.addArrangedSubview(opacity)
         box.addArrangedSubview(extras)
-        present(SheetController(title: "输入", content: box), animated: true)
+        box.addArrangedSubview(cKey)
+        box.addArrangedSubview(c2Key)
+        box.addArrangedSubview(shotFormat)
+        box.addArrangedSubview(doubleShot.0)
+        let hint = UILabel()
+        hint.text = "C/C2 是组合键：按住时同时按下所选按键。双击截图只响应游戏画面上的双击。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 11)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(hint)
+        presentSheet(SheetController(title: "输入", content: box))
     }
 
     private func showExtraKeysDialog() {
@@ -1527,7 +1925,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }, for: .valueChanged)
             box.addArrangedSubview(row.0)
         }
-        present(SheetController(title: "虚拟按键开关（连发/快存/快读/倍速/截图）", content: box), animated: true)
+        presentSheet(SheetController(title: "虚拟按键开关（连发/快存/快读/倍速/截图）", content: box))
     }
 
     private func extraKeys() -> Set<String> {
@@ -1581,6 +1979,39 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(patches.1.isOn, forKey: "patches")
             self.applyCoreOptions()
         }, for: .valueChanged)
+        let quickRotate = labeledSwitch("快速存档自动轮换槽位 1-9", defaults.bool(forKey: "quick_rotate"))
+        quickRotate.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(quickRotate.1.isOn, forKey: "quick_rotate")
+        }, for: .valueChanged)
+        let confirmQuick = labeledSwitch("快速存/读档前确认", defaults.bool(forKey: "confirm_quick"))
+        confirmQuick.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(confirmQuick.1.isOn, forKey: "confirm_quick")
+        }, for: .valueChanged)
+        let timedSave = UIButton(type: .system)
+        timedSave.contentHorizontalAlignment = .left
+        func timedTitle(_ minutes: Int) -> String {
+            minutes <= 0 ? "定时自动存档：关闭" : "定时自动存档：每 \(minutes) 分钟"
+        }
+        var timedMinutes = defaults.object(forKey: "timed_save_min") == nil ? 0 : defaults.integer(forKey: "timed_save_min")
+        timedSave.setTitle(timedTitle(timedMinutes), for: .normal)
+        timedSave.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let values = [0, 5, 10, 30]
+            let index = values.firstIndex(of: timedMinutes) ?? 0
+            self.pickOption(title: "定时自动存档",
+                            current: index,
+                            options: ["关闭", "每 5 分钟", "每 10 分钟", "每 30 分钟"]) { [weak self] pick in
+                guard let self else { return }
+                timedMinutes = values[pick]
+                self.defaults.set(timedMinutes, forKey: "timed_save_min")
+                timedSave.setTitle(timedTitle(timedMinutes), for: .normal)
+                if timedMinutes > 0, let core = self.core, mgbaMobileIsLoaded(core) {
+                    self.startTimedSave()
+                } else {
+                    self.stopTimedSave()
+                }
+            }
+        }, for: .touchUpInside)
         let deleteSav = UIButton(type: .system)
         deleteSav.contentHorizontalAlignment = .left
         deleteSav.setTitle("删除电池存档（.sav）", for: .normal)
@@ -1594,9 +2025,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(autoSave.0)
         box.addArrangedSubview(confirmClose.0)
         box.addArrangedSubview(patches.0)
+        box.addArrangedSubview(quickRotate.0)
+        box.addArrangedSubview(confirmQuick.0)
+        box.addArrangedSubview(timedSave)
         box.addArrangedSubview(deleteSav)
         box.addArrangedSubview(importSav)
-        present(SheetController(title: "存档", content: box), animated: true)
+        presentSheet(SheetController(title: "存档", content: box))
     }
 
     private func chooseOrientation(_ mode: String) {
@@ -1649,22 +2083,46 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ? (defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level"))
             : -1))
         mgbaMobileSetCartRumble(core, defaults.bool(forKey: "cart_rumble"))
-        // Twelve gb.pal entries for the chosen palette. Index 0 is the core's
-        // own stock colors, sent explicitly so a previous palette is cleared.
-        let base = Self.gbPalettes[palettePref()]
+        pushGbPalette(palettePref())
+        mgbaMobileSetSgbBorders(core, defaults.bool(forKey: "sgb_borders"))
+        applyChannelVolumes()
+        updateTiltSensor()
+        // Neutral until a reading arrives; keeps held cartridges from drifting.
+        mgbaMobileSetRotation(core, 0, 0, 0)
+    }
+
+    /// Twelve gb.pal entries for the chosen palette. Index 0 is the core's own
+    /// stock colors, sent explicitly so a previous palette is cleared.
+    private func pushGbPalette(_ index: Int) {
+        guard let core else { return }
+        let safe = index >= 0 && index < Self.gbPalettes.count ? index : 0
+        let base = Self.gbPalettes[safe]
         var colors = [Int32](repeating: 0, count: 12)
-        for index in 0..<12 {
-            colors[index] = base[index % 4]
+        for slot in 0..<12 {
+            colors[slot] = base[slot % 4]
         }
         colors.withUnsafeBufferPointer { buffer in
             if let address = buffer.baseAddress {
                 mgbaMobileSetGbPalette(core, address)
             }
         }
-        mgbaMobileSetSgbBorders(core, defaults.bool(forKey: "sgb_borders"))
-        updateTiltSensor()
-        // Neutral until a reading arrives; keeps held cartridges from drifting.
-        mgbaMobileSetRotation(core, 0, 0, 0)
+    }
+
+    /// Per-channel gains: PSG 1-4 then the GBA DMA A/B FIFOs. The slider is a
+    /// percentage, the core wants 0-384 in 1/256ths of full volume.
+    private func applyChannelVolumes() {
+        guard let core else { return }
+        let keys = ["vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"]
+        var gains = [Int32](repeating: 256, count: keys.count)
+        for (index, key) in keys.enumerated() {
+            let percent = defaults.object(forKey: key) == nil ? 100 : defaults.integer(forKey: key)
+            gains[index] = Int32(max(0, min(384, percent * 256 / 100)))
+        }
+        gains.withUnsafeBufferPointer { buffer in
+            if let address = buffer.baseAddress {
+                mgbaMobileSetChannelVolumes(core, address)
+            }
+        }
     }
 
     /** Pushes the input-related preferences into the on-screen controls. */
@@ -1673,6 +2131,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         controls.setTurboRate(defaults.integer(forKey: "turbo_rate") == 0 ? 25 : defaults.integer(forKey: "turbo_rate"))
         controls.setVisibleExtras(extraKeys())
         controls.setOpacity(defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity"))
+        loadMacroSettings()
     }
 
     // == Key layout profiles ==
@@ -1708,21 +2167,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return Self.defaultProfile
     }
 
+    /** Landscape layouts live under a #L key, like the Android profiles; the
+     * portrait key stays shared so older layouts keep working. */
+    private var layoutSuffix: String { portrait ? "" : "#L" }
+
     private func profileLayout(_ name: String) -> String {
-        if let data = defaults.string(forKey: Self.profilePrefix + name) {
+        let base = Self.profilePrefix + name
+        if let data = defaults.string(forKey: base + layoutSuffix) {
+            return data
+        }
+        if let data = defaults.string(forKey: base) {
             return data
         }
         if name == Self.defaultProfile {
             let legacy = defaults.string(forKey: "key_layout") ?? ""
-            defaults.set(legacy, forKey: Self.profilePrefix + name)
+            defaults.set(legacy, forKey: base + layoutSuffix)
             return legacy
         }
         return ""
     }
 
-    /** Persists the current layout into its profile. */
+    /** Persists the current layout into its profile for this orientation. */
     private func saveKeyLayout() {
-        defaults.set(keyLayout.encode(), forKey: Self.profilePrefix + layoutProfile)
+        defaults.set(keyLayout.encode(), forKey: Self.profilePrefix + layoutProfile + layoutSuffix)
     }
 
     private func switchProfile(_ name: String) {
@@ -1824,7 +2291,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                         self.toast("已删除 \(name)")
                     })
                     confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
-                    self.present(confirm, animated: true)
+                    self.presentSheet(confirm)
                 }, for: .touchUpInside)
                 deleteRow.addArrangedSubview(del)
             }
@@ -1835,7 +2302,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         hint.font = .systemFont(ofSize: 12)
         hint.textColor = .secondaryLabel
         box.addArrangedSubview(hint)
-        present(SheetController(title: "按键映射配置", content: box), animated: true)
+        presentSheet(SheetController(title: "按键映射配置", content: box))
     }
 
     private func promptProfileName(_ prefill: String?, copy: Bool) {
@@ -1855,7 +2322,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.createProfile(name, copyCurrent: copy)
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert)
     }
 
     /** Starts or stops the device posture listener for tilt cartridges. */
@@ -1991,7 +2458,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(palette)
         box.addArrangedSubview(fastLabel)
         box.addArrangedSubview(fastBar)
-        present(SheetController(title: "高级", content: box), animated: true)
+        presentSheet(SheetController(title: "高级", content: box))
     }
 
     /** Game clock: wall clock, a fixed moment, or wall clock shifted by minutes. */
@@ -2014,12 +2481,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.pickRtcOffset(label)
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert)
     }
 
     private func pickRtcDate(_ label: UIButton) {
         let sheet = SheetController(title: "选择固定时间", content: makeRtcDatePicker(label))
-        present(sheet, animated: true)
+        presentSheet(sheet)
     }
 
     private func makeRtcDatePicker(_ label: UIButton) -> UIView {
@@ -2039,7 +2506,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(picker.date.timeIntervalSince1970, forKey: "rtc_epoch")
             self.applyCoreOptions()
             label.setTitle("游戏时钟：\(Self.clockName(1))", for: .normal)
-            self.dismiss(animated: true)
+            self.topmostPresenter.dismiss(animated: true)
         }, for: .touchUpInside)
         let box = UIStackView(arrangedSubviews: [picker, done])
         box.axis = .vertical
@@ -2061,7 +2528,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             label.setTitle("游戏时钟：\(Self.clockName(2))", for: .normal)
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert)
     }
 
     private func showHelpDialog() {
@@ -2069,7 +2536,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         text.numberOfLines = 0
         text.font = .systemFont(ofSize: 14)
         text.text = "游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」存进相册，「录像」录制 GIF。"
-        present(SheetController(title: "帮助", content: text), animated: true)
+        presentSheet(SheetController(title: "帮助", content: text))
     }
 
     // == Settings plumbing ==
@@ -2186,7 +2653,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     self?.showCheats()
                 })
                 confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
-                self?.present(confirm, animated: true)
+                self?.presentSheet(confirm)
             }, for: .touchUpInside)
             row.addArrangedSubview(toggle)
             row.addArrangedSubview(label)
@@ -2197,7 +2664,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         add.setTitle("新增", for: .normal)
         add.addAction(UIAction { [weak self] _ in self?.showCheatEdit() }, for: .touchUpInside)
         box.addArrangedSubview(add)
-        present(sheet, animated: true)
+        presentSheet(sheet)
     }
 
     private func showCheatEdit() {
@@ -2263,12 +2730,1151 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(hint)
         box.addArrangedSubview(lines)
         box.addArrangedSubview(ok)
-        present(SheetController(title: "新增", content: box), animated: true)
+        presentSheet(SheetController(title: "新增", content: box))
+    }
+
+    // == Shell skin ==
+
+    private func skinStylePref() -> Int {
+        defaults.object(forKey: "skin_style") == nil
+            ? ControlsView.styleHandheld
+            : (defaults.integer(forKey: "skin_style") == ControlsView.styleClassic
+                ? ControlsView.styleClassic : ControlsView.styleHandheld)
+    }
+
+    private func skinColorPref() -> Int {
+        let value = defaults.integer(forKey: "skin_color")
+        return value >= 0 && value < SkinTheme.all.count ? value : 0
+    }
+
+    /// Pushes the button style, body color and imported PNG pack into the
+    /// controls and the stage around the game.
+    private func applySkin() {
+        let style = skinStylePref()
+        let theme = SkinTheme.byIndex(skinColorPref())
+        controls.setSkin(style: style, theme: theme)
+        shellStage.theme = theme
+        // Force the stage constraints to switch between the shell and the
+        // classic full-screen picture.
+        appliedStagePortrait = nil
+        appliedShellHandheld = nil
+        applyStageLayout()
+        applyFullSkin()
+        layoutMenuButton()
+    }
+
+    @objc private func showSkinDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+
+        func choiceButton(_ title: String, checked: Bool, handler: @escaping () -> Void) -> UIButton {
+            let button = UIButton(type: .system)
+            button.contentHorizontalAlignment = .left
+            button.setTitle(checked ? "✓ \(title)" : "    \(title)", for: .normal)
+            button.addAction(UIAction { _ in handler() }, for: .touchUpInside)
+            return button
+        }
+
+        let styleLabel = UILabel()
+        styleLabel.font = .boldSystemFont(ofSize: 15)
+        styleLabel.text = "按键样式"
+        let styleStack = UIStackView()
+        styleStack.axis = .vertical
+        styleStack.spacing = 2
+        var stylePick = skinStylePref()
+        let classic = choiceButton("经典透明按键", checked: stylePick == ControlsView.styleClassic) {}
+        let handheld = choiceButton("掌机外壳（推荐）", checked: stylePick == ControlsView.styleHandheld) {}
+        func refreshStyle() {
+            classic.setTitle(stylePick == ControlsView.styleClassic ? "✓ 经典透明按键" : "    经典透明按键", for: .normal)
+            handheld.setTitle(stylePick == ControlsView.styleHandheld ? "✓ 掌机外壳（推荐）" : "    掌机外壳（推荐）", for: .normal)
+        }
+        classic.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            stylePick = ControlsView.styleClassic
+            self.defaults.set(stylePick, forKey: "skin_style")
+            self.applySkin()
+            refreshStyle()
+        }, for: .touchUpInside)
+        handheld.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            stylePick = ControlsView.styleHandheld
+            self.defaults.set(stylePick, forKey: "skin_style")
+            self.applySkin()
+            refreshStyle()
+        }, for: .touchUpInside)
+        styleStack.addArrangedSubview(classic)
+        styleStack.addArrangedSubview(handheld)
+
+        let colorLabel = UILabel()
+        colorLabel.font = .boldSystemFont(ofSize: 15)
+        colorLabel.text = "外壳颜色"
+        let colorStack = UIStackView()
+        colorStack.axis = .vertical
+        colorStack.spacing = 2
+        var colorPick = skinColorPref()
+        var colorButtons: [UIButton] = []
+        for (index, theme) in SkinTheme.all.enumerated() {
+            let button = choiceButton(theme.name, checked: index == colorPick) {}
+            button.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                colorPick = index
+                self.defaults.set(index, forKey: "skin_color")
+                self.applySkin()
+                for (slot, item) in colorButtons.enumerated() {
+                    item.setTitle(slot == index ? "✓ \(SkinTheme.all[slot].name)" : "    \(SkinTheme.all[slot].name)", for: .normal)
+                }
+            }, for: .touchUpInside)
+            colorButtons.append(button)
+            colorStack.addArrangedSubview(button)
+        }
+
+        let packLabel = UILabel()
+        packLabel.font = .boldSystemFont(ofSize: 15)
+        packLabel.text = "整包皮肤（PNG）"
+        let packStack = UIStackView()
+        packStack.axis = .vertical
+        packStack.spacing = 2
+        var refreshPacks: (() -> Void)!
+        refreshPacks = { [weak self] in
+            guard let self else { return }
+            for view in packStack.arrangedSubviews {
+                packStack.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            let packs = self.skinStore.list()
+            var current = self.defaults.string(forKey: "full_skin")
+            if let name = current, !packs.contains(name) {
+                self.defaults.removeObject(forKey: "full_skin")
+                current = nil
+                self.applyFullSkin()
+            }
+            let none = choiceButton("不使用整包皮肤", checked: current == nil) {}
+            none.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.defaults.removeObject(forKey: "full_skin")
+                self.applyFullSkin()
+                refreshPacks()
+            }, for: .touchUpInside)
+            packStack.addArrangedSubview(none)
+            for name in packs {
+                let row = choiceButton(name, checked: name == current) {}
+                row.addAction(UIAction { [weak self] _ in
+                    guard let self else { return }
+                    self.defaults.set(name, forKey: "full_skin")
+                    self.applyFullSkin()
+                    refreshPacks()
+                }, for: .touchUpInside)
+                packStack.addArrangedSubview(row)
+            }
+        }
+        refreshPacks()
+
+        let importPack = UIButton(type: .system)
+        importPack.contentHorizontalAlignment = .left
+        importPack.setTitle("导入整包皮肤（ZIP）", for: .normal)
+        importPack.addAction(UIAction { [weak self] _ in self?.pick(kind: 5) }, for: .touchUpInside)
+        let scanPack = UIButton(type: .system)
+        scanPack.contentHorizontalAlignment = .left
+        scanPack.setTitle("从文件夹导入整包皮肤", for: .normal)
+        scanPack.addAction(UIAction { [weak self] _ in self?.pick(kind: 6) }, for: .touchUpInside)
+        let deletePack = UIButton(type: .system)
+        deletePack.contentHorizontalAlignment = .left
+        deletePack.setTitle("删除当前整包皮肤", for: .normal)
+        deletePack.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            guard let name = self.defaults.string(forKey: "full_skin") else {
+                self.toast("请先选择一个整包皮肤")
+                return
+            }
+            self.skinStore.delete(name)
+            self.defaults.removeObject(forKey: "full_skin")
+            self.applyFullSkin()
+            refreshPacks()
+            self.toast("已删除皮肤包：\(name)")
+        }, for: .touchUpInside)
+        let packHelp = UILabel()
+        packHelp.text = "ZIP 或文件夹里放 dpad/a/b/l/r/select/start 的 PNG，可加 _p 表示按下；背景用 bg_portrait.png / bg_landscape.png。"
+        packHelp.textColor = .secondaryLabel
+        packHelp.font = .systemFont(ofSize: 11)
+        packHelp.numberOfLines = 0
+
+        let stickerLabel = UILabel()
+        stickerLabel.font = .boldSystemFont(ofSize: 15)
+        stickerLabel.text = "贴纸"
+        let stickerEdit = labeledSwitch("编辑贴纸（拖动移动，双指缩放）", stickerOverlay.editing)
+        stickerEdit.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.stickerEditing = stickerEdit.1.isOn
+            self.stickerOverlay.editing = stickerEdit.1.isOn
+        }, for: .valueChanged)
+        let addSticker = UIButton(type: .system)
+        addSticker.contentHorizontalAlignment = .left
+        addSticker.setTitle("添加贴纸图片", for: .normal)
+        addSticker.addAction(UIAction { [weak self] _ in self?.pick(kind: 7) }, for: .touchUpInside)
+        let folderSticker = UIButton(type: .system)
+        folderSticker.contentHorizontalAlignment = .left
+        folderSticker.setTitle("从文件夹选择贴纸", for: .normal)
+        folderSticker.addAction(UIAction { [weak self] _ in self?.pick(kind: 8) }, for: .touchUpInside)
+        let clearStickers = UIButton(type: .system)
+        clearStickers.contentHorizontalAlignment = .left
+        clearStickers.setTitle("清空贴纸", for: .normal)
+        clearStickers.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.stickerOverlay.clear()
+            self.toast("已清空贴纸")
+        }, for: .touchUpInside)
+
+        box.addArrangedSubview(styleLabel)
+        box.addArrangedSubview(styleStack)
+        box.addArrangedSubview(colorLabel)
+        box.addArrangedSubview(colorStack)
+        box.addArrangedSubview(packLabel)
+        box.addArrangedSubview(packStack)
+        box.addArrangedSubview(importPack)
+        box.addArrangedSubview(scanPack)
+        box.addArrangedSubview(deletePack)
+        box.addArrangedSubview(packHelp)
+        box.addArrangedSubview(stickerLabel)
+        box.addArrangedSubview(stickerEdit.0)
+        box.addArrangedSubview(addSticker)
+        box.addArrangedSubview(folderSticker)
+        box.addArrangedSubview(clearStickers)
+        presentSheet(SheetController(title: "皮肤", content: box))
+    }
+
+    /// Pushes the active full PNG pack into the controls and the shell.
+    private func applyFullSkin() {
+        var name = defaults.string(forKey: "full_skin")
+        if let current = name, !skinStore.list().contains(current) {
+            defaults.removeObject(forKey: "full_skin")
+            name = nil
+        }
+        activeSkinName = name
+        let bitmaps = name.flatMap { skinStore.load($0) }
+        controls.setFullSkin(bitmaps)
+        shellStage.background = bitmaps?[portrait ? "bg_portrait" : "bg_landscape"]
+    }
+
+    /// Unpacks a picked zip and makes it the active pack, like the Android
+    /// import action.
+    private func importSkinZip(_ url: URL) {
+        let store = skinStore
+        let suggested = (url.lastPathComponent as NSString).deletingPathExtension
+        toast("正在导入皮肤…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let scoped = url.startAccessingSecurityScopedResource()
+            let imported = store.importZip(url, suggestedName: suggested)
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let imported else {
+                    self.toast("皮肤包无效：缺少按键 PNG")
+                    return
+                }
+                self.defaults.set(imported, forKey: "full_skin")
+                self.applyFullSkin()
+                self.toast("已导入皮肤包：\(imported)")
+            }
+        }
+    }
+
+    /// A picked folder is one pack; if it instead holds several pack folders
+    /// (a "skins" folder), every one with button PNGs is imported.
+    private func importSkinFolder(_ url: URL) {
+        let store = skinStore
+        toast("正在导入皮肤…")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let scoped = url.startAccessingSecurityScopedResource()
+            var imported: [String] = []
+            if let one = store.importDirectory(url, name: url.lastPathComponent) {
+                imported.append(one)
+            } else {
+                let keys: [URLResourceKey] = [.isDirectoryKey]
+                let items = (try? FileManager.default.contentsOfDirectory(at: url,
+                                                                          includingPropertiesForKeys: keys,
+                                                                          options: [.skipsHiddenFiles])) ?? []
+                let folders = items.filter {
+                    (try? $0.resourceValues(forKeys: keys).isDirectory) == true
+                }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+                for folder in folders {
+                    if let one = store.importDirectory(folder, name: folder.lastPathComponent) {
+                        imported.append(one)
+                    }
+                }
+            }
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard !imported.isEmpty else {
+                    self.toast("文件夹里没有可用的按键 PNG")
+                    return
+                }
+                if imported.count == 1, let name = imported.first {
+                    self.defaults.set(name, forKey: "full_skin")
+                }
+                self.applyFullSkin()
+                self.toast(imported.count == 1
+                    ? "已导入皮肤包：\(imported[0])"
+                    : "已导入 \(imported.count) 个皮肤包")
+            }
+        }
+    }
+
+    // == Stickers ==
+
+    /// Stickers are stored per orientation, like the Android overlay.
+    private var stickerPrefix: String { portrait ? "ver_" : "hor_" }
+
+    private func loadStickers() {
+        let prefix = stickerPrefix
+        var list: [StickerOverlayView.Sticker] = []
+        for index in 0..<StickerOverlayView.maxStickers {
+            let base = prefix + "sticker\(index)_"
+            guard let path = defaults.string(forKey: base + "path"),
+                  FileManager.default.fileExists(atPath: path) else { continue }
+            let x = defaults.object(forKey: base + "x") == nil ? 0.5 : defaults.double(forKey: base + "x")
+            let y = defaults.object(forKey: base + "y") == nil ? 0.4 : defaults.double(forKey: base + "y")
+            let w = defaults.object(forKey: base + "w") == nil ? 0.3 : defaults.double(forKey: base + "w")
+            let alpha = defaults.object(forKey: base + "alpha") == nil ? 255 : defaults.integer(forKey: base + "alpha")
+            list.append(StickerOverlayView.Sticker(path: path, x: CGFloat(x), y: CGFloat(y),
+                                                   w: CGFloat(w), alpha: alpha))
+        }
+        stickerOverlay.setStickers(list)
+    }
+
+    private func persistStickers() {
+        let prefix = stickerPrefix
+        for index in 0..<StickerOverlayView.maxStickers {
+            let base = prefix + "sticker\(index)_"
+            defaults.removeObject(forKey: base + "path")
+            defaults.removeObject(forKey: base + "x")
+            defaults.removeObject(forKey: base + "y")
+            defaults.removeObject(forKey: base + "w")
+            defaults.removeObject(forKey: base + "alpha")
+        }
+        for (index, sticker) in stickerOverlay.stickers.enumerated() where index < StickerOverlayView.maxStickers {
+            let base = prefix + "sticker\(index)_"
+            defaults.set(sticker.path, forKey: base + "path")
+            defaults.set(Double(sticker.x), forKey: base + "x")
+            defaults.set(Double(sticker.y), forKey: base + "y")
+            defaults.set(Double(sticker.w), forKey: base + "w")
+            defaults.set(sticker.alpha, forKey: base + "alpha")
+        }
+    }
+
+    private func installDoubleTapScreenshot() {
+        guard doubleTapShot == nil else { return }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTapShot(_:)))
+        tap.numberOfTapsRequired = 2
+        tap.cancelsTouchesInView = false
+        // The keys sit above the game view, so the recognizer lives on the
+        // stage and filters the point itself; a delayed touchesEnded would
+        // hold every key press until the double tap gave up.
+        tap.delaysTouchesEnded = false
+        stage.addGestureRecognizer(tap)
+        doubleTapShot = tap
+    }
+
+    @objc private func handleDoubleTapShot(_ gesture: UITapGestureRecognizer) {
+        guard defaults.bool(forKey: "double_click_shot") else { return }
+        let point = gesture.location(in: stage)
+        guard gameView.pictureRect.contains(stage.convert(point, to: gameView)) else { return }
+        // Double tapping a key is input, not a screenshot request.
+        guard !controls.isOverKey(stage.convert(point, to: controls)) else { return }
+        takeScreenshot()
+    }
+
+    private func importStickerImage(_ url: URL) {
+        guard let path = copyStickerImage(url, index: 0) else {
+            toast("贴纸图片无法读取")
+            return
+        }
+        guard stickerOverlay.addSticker(path: path) else {
+            toast("贴纸图片无法解码")
+            return
+        }
+        stickerEditing = true
+        stickerOverlay.editing = true
+        toast("已添加贴纸，拖动调整位置")
+    }
+
+    private func importStickerFolder(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        let items = (try? FileManager.default.contentsOfDirectory(at: url,
+                                                                  includingPropertiesForKeys: nil,
+                                                                  options: [.skipsHiddenFiles])) ?? []
+        let images = items.filter { item in
+            ["png", "jpg", "jpeg", "webp", "gif"].contains(item.pathExtension.lowercased())
+        }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        var copied: [String] = []
+        for (index, image) in images.prefix(30).enumerated() {
+            if let path = copyStickerImage(image, index: index) {
+                copied.append(path)
+            }
+        }
+        if scoped { url.stopAccessingSecurityScopedResource() }
+        guard !copied.isEmpty else {
+            toast("文件夹里没有可用的贴纸图片")
+            return
+        }
+        if copied.count == 1, let only = copied.first {
+            addStickerPath(only)
+            return
+        }
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 2
+        for path in copied {
+            let name = URL(fileURLWithPath: path).lastPathComponent
+            let button = UIButton(type: .system)
+            button.contentHorizontalAlignment = .left
+            button.setTitle(name, for: .normal)
+            button.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.topmostPresenter.dismiss(animated: true) { self.addStickerPath(path) }
+            }, for: .touchUpInside)
+            box.addArrangedSubview(button)
+        }
+        presentSheet(SheetController(title: "选择贴纸", content: box))
+    }
+
+    private func addStickerPath(_ path: String) {
+        guard stickerOverlay.addSticker(path: path) else {
+            toast("贴纸图片无法解码")
+            return
+        }
+        stickerEditing = true
+        stickerOverlay.editing = true
+        toast("已添加贴纸，拖动调整位置")
+    }
+
+    /// Copies a picked image into the app so it survives the source moving.
+    private func copyStickerImage(_ source: URL, index: Int) -> String? {
+        let dir = docs.appendingPathComponent("stickers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let ext = source.pathExtension.isEmpty ? "png" : source.pathExtension.lowercased()
+        let name = "sticker-\(Self.fileStamp())-\(index).\(ext)"
+        let dest = dir.appendingPathComponent(name)
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: source)
+            try data.write(to: dest, options: .atomic)
+            return dest.path
+        } catch {
+            return nil
+        }
+    }
+
+    // == Per-game settings ==
+
+    /// Reads the overrides for the loaded ROM's CRC and overlays them on the
+    /// global settings. Called after every load, like the Android activity.
+    private func applyPerRomSettings() {
+        perRomFilter = nil
+        perRomSpeed = nil
+        perRomSaveType = nil
+        perRomPalette = nil
+        guard let crc = romCrc else { return }
+        let filter = romSettings.get(crc, "filter", fallback: RomSettings.defaultValue)
+        if filter != RomSettings.defaultValue, let value = Int(filter),
+           value >= 0, value < Self.filterNames.count {
+            perRomFilter = value
+        }
+        let speed = romSettings.get(crc, "speed", fallback: RomSettings.defaultValue)
+        if speed != RomSettings.defaultValue, let value = Double(speed) {
+            perRomSpeed = value
+        }
+        let saveType = romSettings.get(crc, "save_type", fallback: RomSettings.defaultValue)
+        if saveType != RomSettings.defaultValue, let value = Int(saveType) {
+            perRomSaveType = value
+        }
+        let palette = romSettings.get(crc, "gb_palette", fallback: RomSettings.defaultValue)
+        if palette != RomSettings.defaultValue, let value = Int(palette),
+           value >= 0, value < Self.gbPalettes.count {
+            perRomPalette = value
+        }
+        if let core {
+            let type = perRomSaveType ?? saveTypePref()
+            mgbaMobileSetSaveType(core, Int32(type))
+            pushGbPalette(perRomPalette ?? palettePref())
+        }
+        let filterValue = perRomFilter ?? filterPref()
+        let speedValue = perRomSpeed
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.gameView.filter = filterValue
+            if let speedValue { self.setSpeed(speedValue) }
+        }
+        let summary = perRomSummary()
+        if !summary.isEmpty {
+            toast("已应用本游戏设置：\(summary)")
+        }
+    }
+
+    private func perRomSummary() -> String {
+        var parts: [String] = []
+        if let filter = perRomFilter { parts.append(filterName(filter)) }
+        if let speed = perRomSpeed { parts.append("\(Self.speedLabel(speed))倍") }
+        if let saveType = perRomSaveType { parts.append(Self.saveTypeName(saveType)) }
+        if let palette = perRomPalette { parts.append(paletteName(palette)) }
+        return parts.joined(separator: " ")
+    }
+
+    private func filterName(_ index: Int) -> String {
+        index >= 0 && index < Self.filterNames.count ? Self.filterNames[index] : "关闭"
+    }
+
+    private func paletteName(_ index: Int) -> String {
+        index >= 0 && index < Self.gbPaletteNames.count ? Self.gbPaletteNames[index] : "默认"
+    }
+
+    @objc private func showPerRomDialog() {
+        guard let core, mgbaMobileIsLoaded(core), let crc = romCrc else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let filter = UIButton(type: .system)
+        filter.contentHorizontalAlignment = .left
+        let speed = UIButton(type: .system)
+        speed.contentHorizontalAlignment = .left
+        let saveType = UIButton(type: .system)
+        saveType.contentHorizontalAlignment = .left
+        let palette = UIButton(type: .system)
+        palette.contentHorizontalAlignment = .left
+
+        func refreshTitles() {
+            let filterValue = romSettings.get(crc, "filter", fallback: RomSettings.defaultValue)
+            filter.setTitle("滤镜：\(filterValue == RomSettings.defaultValue ? "跟随全局" : filterName(Int(filterValue) ?? 0))", for: .normal)
+            let speedValue = romSettings.get(crc, "speed", fallback: RomSettings.defaultValue)
+            speed.setTitle("倍速：\(speedValue == RomSettings.defaultValue ? "跟随全局" : "\(speedValue)倍")", for: .normal)
+            let saveValue = romSettings.get(crc, "save_type", fallback: RomSettings.defaultValue)
+            saveType.setTitle("存档类型：\(saveValue == RomSettings.defaultValue ? "跟随全局" : Self.saveTypeName(Int(saveValue) ?? 0))", for: .normal)
+            let paletteValue = romSettings.get(crc, "gb_palette", fallback: RomSettings.defaultValue)
+            palette.setTitle("GB 调色板：\(paletteValue == RomSettings.defaultValue ? "跟随全局" : paletteName(Int(paletteValue) ?? 0))", for: .normal)
+        }
+        refreshTitles()
+
+        filter.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let stored = self.romSettings.get(crc, "filter", fallback: RomSettings.defaultValue)
+            let options = ["跟随全局"] + Self.filterNames
+            let current = stored == RomSettings.defaultValue ? 0 : (Int(stored) ?? 0) + 1
+            self.pickOption(title: "本游戏滤镜", current: current, options: options) { [weak self] index in
+                guard let self else { return }
+                self.romSettings.put(crc, "filter", index == 0 ? RomSettings.defaultValue : String(index - 1))
+                self.applyPerRomSettings()
+                refreshTitles()
+            }
+        }, for: .touchUpInside)
+
+        speed.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let stored = self.romSettings.get(crc, "speed", fallback: RomSettings.defaultValue)
+            let alert = UIAlertController(title: "本游戏倍速", message: "0.05 ~ 16，留空或点「跟随全局」清除。", preferredStyle: .alert)
+            alert.addTextField { field in
+                field.text = stored == RomSettings.defaultValue ? "" : stored
+                field.placeholder = "例如 1.5"
+                field.keyboardType = .decimalPad
+            }
+            func clearSpeed() {
+                self.romSettings.put(crc, "speed", RomSettings.defaultValue)
+                self.applyPerRomSettings()
+                refreshTitles()
+            }
+            alert.addAction(UIAlertAction(title: "跟随全局", style: .default) { _ in clearSpeed() })
+            alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in
+                let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+                guard let value = Double(text.replacingOccurrences(of: ",", with: ".")) else {
+                    self.toast("倍速范围仅限 0.05~16")
+                    return
+                }
+                let clamped = min(16, max(0.05, value))
+                self.romSettings.put(crc, "speed", String(clamped))
+                self.applyPerRomSettings()
+                refreshTitles()
+            })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+            self.presentSheet(alert)
+        }, for: .touchUpInside)
+
+        saveType.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let values = [-1, 0, 1, 2, 3, 4, 5, 6]
+            let stored = self.romSettings.get(crc, "save_type", fallback: RomSettings.defaultValue)
+            let options = ["跟随全局"] + values.map { Self.saveTypeName($0) }
+            let current = stored == RomSettings.defaultValue
+                ? 0 : (values.firstIndex(of: Int(stored) ?? 0) ?? 0) + 1
+            self.pickOption(title: "本游戏存档类型", current: current, options: options) { [weak self] index in
+                guard let self else { return }
+                self.romSettings.put(crc, "save_type", index == 0 ? RomSettings.defaultValue : String(values[index - 1]))
+                self.applyPerRomSettings()
+                refreshTitles()
+            }
+        }, for: .touchUpInside)
+
+        palette.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let stored = self.romSettings.get(crc, "gb_palette", fallback: RomSettings.defaultValue)
+            let options = ["跟随全局"] + Self.gbPaletteNames
+            let current = stored == RomSettings.defaultValue ? 0 : (Int(stored) ?? 0) + 1
+            self.pickOption(title: "本游戏 GB 调色板", current: current, options: options) { [weak self] index in
+                guard let self else { return }
+                self.romSettings.put(crc, "gb_palette", index == 0 ? RomSettings.defaultValue : String(index - 1))
+                self.applyPerRomSettings()
+                refreshTitles()
+            }
+        }, for: .touchUpInside)
+
+        let reset = UIButton(type: .system)
+        reset.contentHorizontalAlignment = .left
+        reset.setTitle("清除本游戏的全部覆盖", for: .normal)
+        reset.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.romSettings.clear(crc)
+            self.applyPerRomSettings()
+            refreshTitles()
+            self.toast("已清除本游戏设置")
+        }, for: .touchUpInside)
+        let hint = UILabel()
+        hint.text = "按 CRC32 \(String(crc, radix: 16).uppercased()) 保存。留空的项目使用全局设置。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 11)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(filter)
+        box.addArrangedSubview(speed)
+        box.addArrangedSubview(saveType)
+        box.addArrangedSubview(palette)
+        box.addArrangedSubview(reset)
+        box.addArrangedSubview(hint)
+        presentSheet(SheetController(title: "本游戏设置", content: box))
+    }
+
+    // == ROM library ==
+
+    @objc private func showRomLibrary() {
+        let roots = romRoots()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var scoped: [URL] = []
+            for root in roots where root.startAccessingSecurityScopedResource() {
+                scoped.append(root)
+            }
+            let found = self.romLibrary.scan(roots: roots)
+            for url in scoped { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async { self.showRomLibraryList(found) }
+        }
+    }
+
+    private func romRoots() -> [URL] {
+        var roots = [
+            docs,
+            docs.appendingPathComponent("roms", isDirectory: true),
+            docs.appendingPathComponent("Inbox", isDirectory: true),
+        ]
+        if let last = romLibrary.lastRom() {
+            roots.append(last.deletingLastPathComponent())
+        }
+        var seen = Set<String>()
+        return roots.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    private func showRomLibraryList(_ found: [RomLibrary.Entry]) {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 4
+        let actions = UIStackView()
+        actions.axis = .horizontal
+        actions.spacing = 8
+        let rescan = UIButton(type: .system)
+        rescan.setTitle("重新扫描", for: .normal)
+        rescan.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) { self.showRomLibrary() }
+        }, for: .touchUpInside)
+        let open = UIButton(type: .system)
+        open.setTitle("打开文件", for: .normal)
+        open.addAction(UIAction { [weak self] _ in self?.pick(kind: 1) }, for: .touchUpInside)
+        actions.addArrangedSubview(rescan)
+        actions.addArrangedSubview(open)
+        actions.addArrangedSubview(UIView())
+        box.addArrangedSubview(actions)
+        if found.isEmpty {
+            let empty = UILabel()
+            empty.text = "没有找到游戏。把 ROM 放进「文件」App 的 mGBA 文件夹，或用「打开文件」选择。"
+            empty.numberOfLines = 0
+            empty.textColor = .secondaryLabel
+            box.addArrangedSubview(empty)
+        }
+        let favs = romLibrary.favorites()
+        let last = romLibrary.lastRom()?.path
+        var ordered: [RomLibrary.Entry] = []
+        var seen = Set<String>()
+        if let last, let entry = found.first(where: { $0.url.path == last }), seen.insert(entry.url.path).inserted {
+            ordered.append(entry)
+        }
+        for entry in found where favs.contains(entry.url.path) && seen.insert(entry.url.path).inserted {
+            ordered.append(entry)
+        }
+        for entry in found where seen.insert(entry.url.path).inserted {
+            ordered.append(entry)
+        }
+        for entry in ordered {
+            box.addArrangedSubview(romLibraryRow(entry,
+                                                 favorite: favs.contains(entry.url.path),
+                                                 last: entry.url.path == last))
+        }
+        presentSheet(SheetController(title: "图库", content: box))
+    }
+
+    private func romLibraryRow(_ entry: RomLibrary.Entry, favorite: Bool, last: Bool) -> UIView {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.alignment = .center
+        let open = UIButton(type: .system)
+        open.contentHorizontalAlignment = .left
+        open.titleLabel?.numberOfLines = 2
+        open.titleLabel?.font = .systemFont(ofSize: 14)
+        func title(_ favorite: Bool) -> String {
+            let mark = favorite ? "★ " : "☆ "
+            let suffix = last ? "（上次）" : ""
+            return "\(mark)\(entry.url.lastPathComponent)\(suffix)\n\(entry.url.deletingLastPathComponent().path)"
+        }
+        open.setTitle(title(favorite), for: .normal)
+        open.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        open.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) { self.openFoundRom(entry.url) }
+        }, for: .touchUpInside)
+        let star = UIButton(type: .system)
+        star.setTitle(favorite ? "★" : "☆", for: .normal)
+        star.setTitleColor(UIColor(red: 1, green: 0.68, blue: 0.2, alpha: 1), for: .normal)
+        star.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        star.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let now = self.romLibrary.toggleFavorite(entry.url)
+            star.setTitle(now ? "★" : "☆", for: .normal)
+            open.setTitle(title(now), for: .normal)
+            self.toast(now ? "已收藏" : "已取消收藏")
+        }, for: .touchUpInside)
+        row.addArrangedSubview(open)
+        row.addArrangedSubview(star)
+        return row
+    }
+
+    private func openFoundRom(_ url: URL) {
+        openExternal(url)
+    }
+
+    /// A zip-ROM: writes the first game entry into Documents/roms/unpacked.
+    private func extractRomZip(_ url: URL) -> String? {
+        guard let entries = Zip.read(url) else { return nil }
+        let dir = docs.appendingPathComponent("roms/unpacked", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for entry in entries {
+            let name = zipBaseName(entry.name)
+            guard RomLibrary.isRomFile(name), !entry.data.isEmpty else { continue }
+            let dest = dir.appendingPathComponent(sanitize(name))
+            do {
+                try entry.data.write(to: dest, options: .atomic)
+                return dest.path
+            } catch {
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func zipBaseName(_ name: String) -> String {
+        var file = name
+        if let index = file.range(of: "/", options: .backwards) {
+            file = String(file[index.upperBound...])
+        }
+        if let index = file.range(of: "\\", options: .backwards) {
+            file = String(file[index.upperBound...])
+        }
+        return file
+    }
+
+    // == Backup ==
+
+    @objc private func showBackupDialog() {
+        let alert = UIAlertController(title: "备份", message: "备份包含设置、电池存档和即时存档。", preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "导出备份（ZIP）", style: .default) { [weak self] _ in self?.exportBackup() })
+        alert.addAction(UIAlertAction(title: "导入备份（ZIP）", style: .default) { [weak self] _ in self?.pick(kind: 4) })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        }
+        presentSheet(alert)
+    }
+
+    private func exportBackup() {
+        let settings = persistentSettings()
+        let saves = docs.appendingPathComponent("saves", isDirectory: true)
+        let states = docs.appendingPathComponent("states", isDirectory: true)
+        let dest = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mGBAx-backup-\(Self.fileStamp()).zip")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let count = BackupStore.export(settings: settings, saves: saves, states: states, to: dest)
+            DispatchQueue.main.async {
+                guard count != nil else {
+                    self.toast("备份失败")
+                    return
+                }
+                self.backupExportURL = dest
+                self.pickerKind = 9
+                self.presentSheet(UIDocumentPickerViewController(forExporting: [dest], asCopy: true))
+            }
+        }
+    }
+
+    private func importBackup(_ url: URL) {
+        let saves = docs.appendingPathComponent("saves", isDirectory: true)
+        let states = docs.appendingPathComponent("states", isDirectory: true)
+        // The document picker hands out a security scoped URL; the scope has to
+        // stay open while the archive is read on the background queue.
+        let scoped = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let settings = BackupStore.restore(from: url, saves: saves, states: states)
+            if scoped { url.stopAccessingSecurityScopedResource() }
+            DispatchQueue.main.async {
+                guard let settings else {
+                    self.toast("备份文件无效或无法读取")
+                    return
+                }
+                for (key, value) in settings where !(value is NSNull) {
+                    self.defaults.set(value, forKey: key)
+                }
+                self.applyRestoredSettings()
+                self.toast("备份已恢复")
+            }
+        }
+    }
+
+    /// The app's own persistent preferences, the same set Android exports.
+    private func persistentSettings() -> [String: Any] {
+        let id = Bundle.main.bundleIdentifier ?? "io.mgba"
+        return defaults.persistentDomain(forName: id) ?? [:]
+    }
+
+    private func applyRestoredSettings() {
+        orientationMode = defaults.string(forKey: "orientation") ?? "landscape"
+        muted = defaults.bool(forKey: "muted")
+        applyVolume()
+        audio.lowLatency = defaults.bool(forKey: "low_latency")
+        audio.setSoundEnabled(defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio"))
+        loadMacroSettings()
+        controls.setMuted(muted)
+        controls.setFastForwardOn(ffOn)
+        applyInputSettings()
+        applySkin()
+        applyVideo()
+        applyCoreOptions()
+        layoutProfile = activeProfile()
+        reloadKeyLayout()
+        loadStickers()
+        refreshSpeedButtons()
+        updateMenuLayout()
+        applyOrientation()
+        if let core, mgbaMobileIsLoaded(core) {
+            applyPerRomSettings()
+            startTimedSave()
+        } else {
+            stopTimedSave()
+        }
+    }
+
+    // == AI translate ==
+
+    @objc private func showTranslateDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+        let keyButton = UIButton(type: .system)
+        keyButton.contentHorizontalAlignment = .left
+        func refreshKey() {
+            let key = (defaults.string(forKey: "ai_key") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            keyButton.setTitle(key.isEmpty ? "设置 Gemini API Key（必填）" : "Gemini API Key：已设置（点按修改）", for: .normal)
+        }
+        refreshKey()
+        keyButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.promptAiKey(current: self.defaults.string(forKey: "ai_key") ?? "") { refreshKey() }
+        }, for: .touchUpInside)
+        let langButton = UIButton(type: .system)
+        langButton.contentHorizontalAlignment = .left
+        func refreshLang() {
+            let lang = defaults.string(forKey: "ai_lang") ?? "简体中文"
+            langButton.setTitle("翻译语言：\(lang)", for: .normal)
+        }
+        refreshLang()
+        langButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let alert = UIAlertController(title: "翻译语言", message: "例如 简体中文、繁體中文、English、日本語", preferredStyle: .alert)
+            alert.addTextField { field in
+                field.text = self.defaults.string(forKey: "ai_lang") ?? "简体中文"
+                field.placeholder = "简体中文"
+            }
+            alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+                guard let self else { return }
+                let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                if text.isEmpty {
+                    self.defaults.removeObject(forKey: "ai_lang")
+                } else {
+                    self.defaults.set(text, forKey: "ai_lang")
+                }
+                refreshLang()
+            })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+            self.presentSheet(alert)
+        }, for: .touchUpInside)
+        let go = UIButton(type: .system)
+        go.contentHorizontalAlignment = .left
+        go.setTitle("翻译当前画面", for: .normal)
+        go.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let key = (self.defaults.string(forKey: "ai_key") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !key.isEmpty else {
+                self.toast("请先设置 Gemini API Key")
+                return
+            }
+            self.topmostPresenter.dismiss(animated: true) { self.startTranslation() }
+        }, for: .touchUpInside)
+        let clear = UIButton(type: .system)
+        clear.contentHorizontalAlignment = .left
+        clear.setTitle("清除 API Key", for: .normal)
+        clear.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.removeObject(forKey: "ai_key")
+            refreshKey()
+            self.toast("已清除 API Key")
+        }, for: .touchUpInside)
+        let hint = UILabel()
+        hint.text = "识别画面中的文字并用 Gemini 翻译。画面只发送到 Google 的接口；没有文字时会跳过。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 11)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(keyButton)
+        box.addArrangedSubview(langButton)
+        box.addArrangedSubview(go)
+        box.addArrangedSubview(clear)
+        box.addArrangedSubview(hint)
+        presentSheet(SheetController(title: "AI 翻译", content: box))
+    }
+
+    private func promptAiKey(current: String, completion: (() -> Void)? = nil) {
+        let alert = UIAlertController(title: "Gemini API Key",
+                                      message: "在 Google AI Studio 创建 API Key。Key 只保存在本机。",
+                                      preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = current
+            field.placeholder = "AIza..."
+            field.isSecureTextEntry = true
+        }
+        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+            guard let self else { return }
+            let value = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if value.isEmpty {
+                self.defaults.removeObject(forKey: "ai_key")
+            } else {
+                self.defaults.set(value, forKey: "ai_key")
+            }
+            completion?()
+        })
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        presentSheet(alert)
+    }
+
+    private func startTranslation() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let key = (defaults.string(forKey: "ai_key") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            toast("请先设置 Gemini API Key")
+            return
+        }
+        guard let frame = gameView.copyLast() ?? aiFrame else {
+            toast("翻译失败：没有画面")
+            return
+        }
+        let send = AiTranslate.snapshot(frame, maxSide: 960)
+        aiFrame = send
+        aiOverlay.hide()
+        toast("正在翻译…")
+        AiTranslate.translate(frame: send,
+                              apiKey: key,
+                              targetLang: defaults.string(forKey: "ai_lang") ?? "简体中文") { [weak self] blocks, error in
+            guard let self else { return }
+            if let error {
+                self.toast("翻译失败：\(error)")
+                return
+            }
+            guard let blocks, !blocks.isEmpty else {
+                self.toast("没有找到可翻译的文字")
+                return
+            }
+            self.aiOverlay.pictureFrame = self.stage.convert(self.gameView.pictureRect, from: self.gameView)
+            self.aiOverlay.show(blocks, frame: send)
+            self.toast("已翻译 \(blocks.count) 处文字，点击画面关闭")
+        }
+    }
+
+    // == Rewind, mute and fast-forward ==
+
+    @objc private func toggleRewindBar() {
+        rewindWanted.toggle()
+        updateMenuLayout()
+        if rewindWanted {
+            showMenu()
+            armMenuAutoHide()
+        }
+    }
+
+    @objc private func rewindStep(_ sender: UIButton) {
+        rewindSeconds = max(1, sender.tag)
+        postCommand(cmdRewind)
+        wakeInput()
+    }
+
+    @objc private func rewindHoldDown() {
+        gate.lock()
+        rewindHold = true
+        lastRewindAt = 0
+        gate.unlock()
+        wakeInput()
+    }
+
+    @objc private func rewindHoldUp() {
+        gate.lock()
+        rewindHold = false
+        gate.unlock()
+    }
+
+    @objc private func toggleFastForward() {
+        ffOn.toggle()
+        controls.setFastForwardOn(ffOn)
+        refreshSpeedButtons()
+        toast(ffOn ? "已开启快进（\(Self.speedLabel(fastHoldSpeed()))倍）" : "已关闭快进")
+    }
+
+    @objc private func toggleMute() {
+        muted.toggle()
+        defaults.set(muted, forKey: "muted")
+        controls.setMuted(muted)
+        applyVolume()
+        toast(muted ? "已静音" : "已取消静音")
+    }
+
+    // == Timed saves ==
+
+    /// Periodic silent save into the reserved auto slot while a game runs.
+    private func startTimedSave() {
+        stopTimedSave()
+        let minutes = defaults.object(forKey: "timed_save_min") == nil ? 0 : defaults.integer(forKey: "timed_save_min")
+        guard minutes > 0 else { return }
+        let timer = Timer(timeInterval: TimeInterval(minutes * 60), repeats: true) { [weak self] _ in
+            guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+            self.gate.lock()
+            let isPaused = self.paused
+            self.gate.unlock()
+            guard !isPaused else { return }
+            if let frame = self.gameView.copyLast() {
+                self.gate.lock()
+                self.pendingPreview = frame
+                self.gate.unlock()
+            }
+            self.postCommand(self.cmdAutoSave)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        timedSaveTimer = timer
+    }
+
+    private func stopTimedSave() {
+        if Thread.isMainThread {
+            timedSaveTimer?.invalidate()
+            timedSaveTimer = nil
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.timedSaveTimer?.invalidate()
+                self?.timedSaveTimer = nil
+            }
+        }
+    }
+
+    // == C / C2 macros ==
+
+    private func loadMacroSettings() {
+        let c = defaults.object(forKey: "c_macro") == nil
+            ? (ControlsView.A | ControlsView.B) : defaults.integer(forKey: "c_macro")
+        let c2 = defaults.object(forKey: "c2_macro") == nil
+            ? (ControlsView.l | ControlsView.r) : defaults.integer(forKey: "c2_macro")
+        controls.setMacro(0, c)
+        controls.setMacro(1, c2)
+    }
+
+    private func macroTitle(_ mask: Int) -> String {
+        let entries: [(Int, String)] = [
+            (ControlsView.A, "A"), (ControlsView.B, "B"),
+            (ControlsView.l, "L"), (ControlsView.r, "R"),
+            (ControlsView.select, "SELECT"), (ControlsView.start, "START"),
+            (ControlsView.up, "UP"), (ControlsView.down, "DOWN"),
+            (ControlsView.left, "LEFT"), (ControlsView.right, "RIGHT"),
+        ]
+        let names = entries.filter { (mask & $0.0) != 0 }.map { $0.1 }
+        return names.isEmpty ? "无" : names.joined(separator: "+")
+    }
+
+    private func showMacroDialog(which: Int, onChange: (() -> Void)? = nil) {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 2
+        let hint = UILabel()
+        hint.text = "按住 C/C2 键时，同时按下下面勾选的按键。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 11)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(hint)
+        let entries: [(Int, String)] = [
+            (ControlsView.A, "A"), (ControlsView.B, "B"),
+            (ControlsView.l, "L"), (ControlsView.r, "R"),
+            (ControlsView.select, "SELECT"), (ControlsView.start, "START"),
+            (ControlsView.up, "UP"), (ControlsView.down, "DOWN"),
+            (ControlsView.left, "LEFT"), (ControlsView.right, "RIGHT"),
+        ]
+        var mask = controls.macro(which)
+        let key = which == 0 ? "c_macro" : "c2_macro"
+        for (bit, name) in entries {
+            let row = labeledSwitch(name, (mask & bit) != 0)
+            row.1.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                if row.1.isOn {
+                    mask |= bit
+                } else {
+                    mask &= ~bit
+                }
+                self.controls.setMacro(which, mask)
+                self.defaults.set(mask, forKey: key)
+                onChange?()
+            }, for: .valueChanged)
+            box.addArrangedSubview(row.0)
+        }
+        presentSheet(SheetController(title: which == 0 ? "C 键组合宏" : "C2 键组合宏", content: box))
     }
 
     // == Screenshots & GIF ==
 
-    /** Saves the current frame as a PNG into the photo library. */
+    /** Saves the current frame as PNG or JPG into the photo library. */
     @objc private func takeScreenshot() {
         guard let core, mgbaMobileIsLoaded(core) else {
             toast("请先打开一个游戏")
@@ -2289,12 +3895,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("请先打开一个游戏")
             return
         }
-        guard let data = shot.pngData() else {
+        let jpg = (defaults.string(forKey: "shot_format") ?? "png").lowercased() == "jpg"
+        guard let data = jpg ? shot.jpegData(compressionQuality: 0.95) : shot.pngData() else {
             toast("截图失败")
             return
         }
         let stamp = Self.fileStamp()
-        let name = "mGBAx-\(stamp).png"
+        let name = "mGBAx-\(stamp).\(jpg ? "jpg" : "png")"
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -2304,6 +3911,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                         request.creationDate = Date()
                         let options = PHAssetResourceCreationOptions()
                         options.originalFilename = name
+                        options.uniformTypeIdentifier = jpg ? UTType.jpeg.identifier : UTType.png.identifier
                         request.addResource(with: .photo, data: data, options: options)
                     } completionHandler: { ok, _ in
                         DispatchQueue.main.async {
@@ -2466,10 +4074,32 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("请先打开一个游戏")
             return
         }
-        if save {
-            postCommand(cmdSave)
+        let go = { [weak self] in
+            guard let self else { return }
+            if save && self.defaults.bool(forKey: "quick_rotate") {
+                self.slot = self.slot % 9 + 1
+                self.refreshSlotButton()
+            }
+            if save {
+                if let frame = self.gameView.copyLast() {
+                    self.gate.lock()
+                    self.pendingPreview = frame
+                    self.gate.unlock()
+                }
+                self.postCommand(self.cmdSave)
+            } else {
+                self.postCommand(self.cmdLoad)
+            }
+        }
+        if defaults.bool(forKey: "confirm_quick") {
+            let title = save ? "快速存档" : "快速读档"
+            let message = save ? "保存到槽位 \(slot)？" : "从槽位 \(slot) 读取？当前进度会丢失。"
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "确定", style: .default) { _ in go() })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+            presentSheet(alert)
         } else {
-            postCommand(cmdLoad)
+            go()
         }
     }
 
@@ -2478,7 +4108,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         pickerKind = 3
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.folder], asCopy: false)
         picker.delegate = self
-        present(picker, animated: true)
+        presentSheet(picker)
     }
 
     /// Copies every .sav in the picked folder next to the matching ROM save
@@ -2554,7 +4184,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         })
         confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(confirm, animated: true)
+        presentSheet(confirm)
     }
 
     @objc private func cycleSlot() {
@@ -2573,7 +4203,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.postCommand(self.cmdReset)
         })
         confirm.addAction(UIAlertAction(title: "取消", style: .cancel))
-        present(confirm, animated: true)
+        presentSheet(confirm)
     }
 
     @objc private func saveState() { chooseSlot(save: true) }
@@ -2630,11 +4260,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 }
                 self.slot = tag
                 self.refreshSlotButton()
+                if save, let frame = self.gameView.copyLast() {
+                    self.gate.lock()
+                    self.pendingPreview = frame
+                    self.gate.unlock()
+                }
                 self.postCommand(save ? self.cmdSave : self.cmdLoad)
                 sheet?.dismiss(animated: true)
             }, for: .touchUpInside)
         }
-        present(sheet, animated: true)
+        presentSheet(sheet)
     }
 
     private func slotRow(_ label: String, _ image: UIImage?, tag: Int) -> UIButton {
@@ -2651,7 +4286,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func writePreview(_ index: Int) {
-        guard let image = gameView.copyLast(), let data = image.pngData() else { return }
+        gate.lock()
+        let pending = pendingPreview
+        pendingPreview = nil
+        gate.unlock()
+        guard let image = pending ?? gameView.copyLast(), let data = image.pngData() else { return }
         try? data.write(to: stateURL(index).appendingPathExtension("png"))
     }
 
@@ -2703,9 +4342,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gameView.lockAspect = aspect
         gameView.integerScale = defaults.bool(forKey: "vf_integer")
         gameView.scanlines = defaults.bool(forKey: "vf_scan")
-        gameView.filter = filterPref()
+        // A per-game filter override outlives a global quality change, so the
+        // running game keeps the look the player picked for it.
+        gameView.filter = perRomFilter ?? filterPref()
         let bright = defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")
         gameView.brightness = bright
+        let contrast = defaults.object(forKey: "vf_contrast") == nil ? 100 : defaults.integer(forKey: "vf_contrast")
+        gameView.contrast = contrast
     }
 
     private func filterPref() -> Int {
@@ -2737,11 +4380,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let autoSkip = labeledSwitch("自动跳帧（跟不上时自动跳帧保速度）", defaults.bool(forKey: "vf_skip_auto"))
         let skip = slider(max: 5, value: Float(defaults.integer(forKey: "vf_skip")))
         let bright = slider(max: 100, value: Float((defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")) - 50))
+        let contrast = slider(max: 100, value: Float((defaults.object(forKey: "vf_contrast") == nil ? 100 : defaults.integer(forKey: "vf_contrast")) - 50))
         let skipLabel = UILabel()
         let brightLabel = UILabel()
+        let contrastLabel = UILabel()
         func refresh() {
             skipLabel.text = "跳帧 \(Int(skip.value))"
             brightLabel.text = "亮度 \(Int(bright.value) + 50)%"
+            contrastLabel.text = "对比度 \(Int(contrast.value) + 50)%"
             defaults.set(blend.1.isOn, forKey: "vf_blend")
             defaults.set(linear.1.isOn, forKey: "vf_linear")
             defaults.set(aspect.1.isOn, forKey: "vf_aspect")
@@ -2749,6 +4395,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             defaults.set(scan.1.isOn, forKey: "vf_scan")
             defaults.set(Int(skip.value), forKey: "vf_skip")
             defaults.set(Int(bright.value) + 50, forKey: "vf_bright")
+            defaults.set(Int(contrast.value) + 50, forKey: "vf_contrast")
             applyVideo()
         }
         for item in [blend, linear, aspect, integer, scan] {
@@ -2761,6 +4408,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(skip)
         box.addArrangedSubview(brightLabel)
         box.addArrangedSubview(bright)
+        box.addArrangedSubview(contrastLabel)
+        box.addArrangedSubview(contrast)
         // The manual level is meaningless while auto frameskip owns it.
         skip.isEnabled = !autoSkip.1.isOn
         skipLabel.isEnabled = !autoSkip.1.isOn
@@ -2773,8 +4422,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }, for: .valueChanged)
         skip.addAction(UIAction { _ in refresh() }, for: .valueChanged)
         bright.addAction(UIAction { _ in refresh() }, for: .valueChanged)
+        contrast.addAction(UIAction { _ in refresh() }, for: .valueChanged)
         refresh()
-        present(SheetController(title: "画质", content: box), animated: true)
+        presentSheet(SheetController(title: "画质", content: box))
     }
 
     /** A single-choice picker sheet; the result lands through `handler`. */
@@ -2787,12 +4437,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             button.contentHorizontalAlignment = .left
             button.setTitle(index == current ? "✓ \(name)" : "    \(name)", for: .normal)
             button.addAction(UIAction { [weak self] _ in
-                self?.dismiss(animated: true)
+                self?.topmostPresenter.dismiss(animated: true)
                 handler(index)
             }, for: .touchUpInside)
             box.addArrangedSubview(button)
         }
-        present(SheetController(title: title, content: box), animated: true)
+        presentSheet(SheetController(title: title, content: box))
     }
 
     @objc private func showLink() {
@@ -2922,7 +4572,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             status.text = "断开"
         })
         box.addArrangedSubview(status)
-        present(SheetController(title: "联机", content: box), animated: true)
+        presentSheet(SheetController(title: "联机", content: box))
     }
 
     private func ensureRemote() -> RemoteLink {
@@ -3180,11 +4830,45 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return row
     }
 
+    /// Topmost controller that can still present: the deepest sheet in the
+    /// chain. Dismissing controllers are skipped so a picker that just closed
+    /// does not swallow the next dialog.
+    private var topmostPresenter: UIViewController {
+        var host: UIViewController = self
+        while let next = host.presentedViewController, !next.isBeingDismissed {
+            host = next
+        }
+        return host
+    }
+
+    /// Presents above every open sheet. While an alert or picker is still
+    /// animating away the call retries briefly instead of dropping the sheet
+    /// ("already presenting").
+    private func presentSheet(_ controller: UIViewController, completion: (() -> Void)? = nil) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let host = self.topmostPresenter
+            if host.presentedViewController != nil || host.isBeingDismissed {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    self.presentSheet(controller, completion: completion)
+                }
+                return
+            }
+            host.present(controller, animated: true, completion: completion)
+        }
+    }
+
     private func toast(_ message: String) {
         DispatchQueue.main.async {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
-            self.present(alert, animated: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { alert.dismiss(animated: true) }
+            // Dismiss only once the alert is on screen: presentSheet may wait
+            // for another sheet to close, and an earlier timer used to fire
+            // first and leave the alert up for good.
+            self.presentSheet(alert) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                    alert.dismiss(animated: true)
+                }
+            }
         }
     }
 

@@ -18,6 +18,16 @@
 		B1000000000000000000000B /* ShaderRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000B /* ShaderRenderer.swift */; };
 		B1000000000000000000000C /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000C /* Shaders.metal */; };
 		B1000000000000000000000D /* GifEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000D /* GifEncoder.swift */; };
+		B1000000000000000000000E /* AiOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000E /* AiOverlayView.swift */; };
+		B1000000000000000000000F /* AiTranslate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000F /* AiTranslate.swift */; };
+		B10000000000000000000010 /* BackupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000010 /* BackupStore.swift */; };
+		B10000000000000000000011 /* RomLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000011 /* RomLibrary.swift */; };
+		B10000000000000000000012 /* RomSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000012 /* RomSettings.swift */; };
+		B10000000000000000000013 /* ShellStageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000013 /* ShellStageView.swift */; };
+		B10000000000000000000014 /* SkinStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000014 /* SkinStore.swift */; };
+		B10000000000000000000015 /* SkinTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000015 /* SkinTheme.swift */; };
+		B10000000000000000000016 /* StickerOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000016 /* StickerOverlayView.swift */; };
+		B10000000000000000000017 /* Zip.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000017 /* Zip.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +42,16 @@
 		E1000000000000000000000B /* ShaderRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShaderRenderer.swift; sourceTree = "<group>"; };
 		E1000000000000000000000C /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
 		E1000000000000000000000D /* GifEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifEncoder.swift; sourceTree = "<group>"; };
+		E1000000000000000000000E /* AiOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiOverlayView.swift; sourceTree = "<group>"; };
+		E1000000000000000000000F /* AiTranslate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiTranslate.swift; sourceTree = "<group>"; };
+		E10000000000000000000010 /* BackupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupStore.swift; sourceTree = "<group>"; };
+		E10000000000000000000011 /* RomLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomLibrary.swift; sourceTree = "<group>"; };
+		E10000000000000000000012 /* RomSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomSettings.swift; sourceTree = "<group>"; };
+		E10000000000000000000013 /* ShellStageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellStageView.swift; sourceTree = "<group>"; };
+		E10000000000000000000014 /* SkinStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinStore.swift; sourceTree = "<group>"; };
+		E10000000000000000000015 /* SkinTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinTheme.swift; sourceTree = "<group>"; };
+		E10000000000000000000016 /* StickerOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerOverlayView.swift; sourceTree = "<group>"; };
+		E10000000000000000000017 /* Zip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Zip.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -69,6 +89,16 @@
 				E1000000000000000000000B /* ShaderRenderer.swift */,
 				E1000000000000000000000C /* Shaders.metal */,
 				E1000000000000000000000D /* GifEncoder.swift */,
+				E1000000000000000000000E /* AiOverlayView.swift */,
+				E1000000000000000000000F /* AiTranslate.swift */,
+				E10000000000000000000010 /* BackupStore.swift */,
+				E10000000000000000000011 /* RomLibrary.swift */,
+				E10000000000000000000012 /* RomSettings.swift */,
+				E10000000000000000000013 /* ShellStageView.swift */,
+				E10000000000000000000014 /* SkinStore.swift */,
+				E10000000000000000000015 /* SkinTheme.swift */,
+				E10000000000000000000016 /* StickerOverlayView.swift */,
+				E10000000000000000000017 /* Zip.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -175,6 +205,16 @@
 				B1000000000000000000000B /* ShaderRenderer.swift in Sources */,
 				B1000000000000000000000C /* Shaders.metal in Sources */,
 				B1000000000000000000000D /* GifEncoder.swift in Sources */,
+				B1000000000000000000000E /* AiOverlayView.swift in Sources */,
+				B1000000000000000000000F /* AiTranslate.swift in Sources */,
+				B10000000000000000000010 /* BackupStore.swift in Sources */,
+				B10000000000000000000011 /* RomLibrary.swift in Sources */,
+				B10000000000000000000012 /* RomSettings.swift in Sources */,
+				B10000000000000000000013 /* ShellStageView.swift in Sources */,
+				B10000000000000000000014 /* SkinStore.swift in Sources */,
+				B10000000000000000000015 /* SkinTheme.swift in Sources */,
+				B10000000000000000000016 /* StickerOverlayView.swift in Sources */,
+				B10000000000000000000017 /* Zip.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
