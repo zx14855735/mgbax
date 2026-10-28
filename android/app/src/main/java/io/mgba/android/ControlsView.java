@@ -163,7 +163,7 @@ public class ControlsView extends View {
     private int macroMaskC2 = L | R;
 
     // == Handheld shell skin ==
-    private int skinStyle = STYLE_HANDHELD;
+    private int skinStyle = STYLE_CLASSIC;
     private SkinTheme skin = SkinTheme.PURPLE;
     private boolean portrait;
     private boolean ffOn;

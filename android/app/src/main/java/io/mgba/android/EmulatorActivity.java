@@ -4867,7 +4867,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_STICKER = 8;
 
     private int skinStylePref() {
-        return getPreferences(MODE_PRIVATE).getInt("skin_style", ControlsView.STYLE_HANDHELD);
+        return getPreferences(MODE_PRIVATE).getInt("skin_style", ControlsView.STYLE_CLASSIC);
     }
 
     private int skinColorPref() {
