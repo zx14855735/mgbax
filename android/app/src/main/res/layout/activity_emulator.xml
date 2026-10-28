@@ -190,26 +190,45 @@
             </LinearLayout>
         </HorizontalScrollView>
 
-        <HorizontalScrollView
+        <LinearLayout
             android:id="@+id/speed_bar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:background="#101810"
-            android:fillViewport="true"
-            android:scrollbars="none"
+            android:orientation="vertical"
+            android:paddingBottom="2dp"
             android:visibility="gone">
 
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/speed_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="4dp"
+                    android:paddingTop="2dp"
+                    android:paddingEnd="4dp"
+                    android:paddingBottom="2dp" />
+            </HorizontalScrollView>
+
+            <!-- 倍速声音 / 不变速 常驻在第二行。放在横向滚动的按钮行里时它们
+                 被挤到屏幕右侧之外（且滚动条隐藏），用户根本看不到这个开关。 -->
             <LinearLayout
-                android:id="@+id/speed_row"
-                android:layout_width="wrap_content"
+                android:id="@+id/audio_row"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingStart="4dp"
-                android:paddingTop="2dp"
-                android:paddingEnd="4dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
                 android:paddingBottom="2dp" />
-        </HorizontalScrollView>
+        </LinearLayout>
 
         <HorizontalScrollView
             android:id="@+id/rewind_bar"

@@ -2296,10 +2296,21 @@ void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double str
 	 * Touching them here - as an earlier version did with mAudioBufferClear and
 	 * deinitAudioHold - races wsolaGenerate and crashes (use-after-free). So
 	 * only publish the request; the audio thread acts on it on its next read.
+	 *
+	 * The front end republishes this on every emulated slice (~60 times a
+	 * second) while the mode is on, so an unchanged request must be a no-op:
+	 * arming the pending clear every time made the next read throw away the
+	 * parked input and the analysis cursor, and zeroing the resampler timestamp
+	 * every time restarted its fractional phase - together that turned the
+	 * stretched music into chopped, ringing scraps.
 	 */
+	bool changed = on != emu->audioHoldOn || fabs(stretch - emu->wsolaStretch) > 0.01;
 	emu->wsolaStretch = stretch;
-	emu->wsolaClearPending = true;
 	emu->audioHoldOn = on;
+	if (!changed) {
+		return;
+	}
+	emu->wsolaClearPending = true;
 	if (emu->audioResamplerInited) {
 		emu->audioResampler.timestamp = 0;
 	}
@@ -2544,6 +2555,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	if (!source || !coreRate) {
 		return 0;
 	}
+	size_t held = 0;
 	if (emu->audioHoldOn) {
 		// Time-stretch the surplus with WSOLA so the music stays continuous and
 		// at its own pitch, then resample the stretched output at the console
@@ -2563,7 +2575,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 				emu->wsolaClearPending = false;
 			}
 			wsolaFeed(emu, source);
-			wsolaGenerate(emu, (size_t) maxFrames);
+			held = wsolaGenerate(emu, (size_t) maxFrames);
 			source = &emu->audioHold;
 		}
 	}
@@ -2585,7 +2597,14 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		// the device last demonstrated (measured at the previous speed), not
 		// from the console's nominal rate. Overestimating starves the stream
 		// into gaps; underestimating only sheds samples at the core's ring.
-		pace = emu->audioPaceThroughput / speed;
+		//
+		// 不变速 is the exception: it reads the stretched output at the
+		// console's own rate no matter how fast the game runs, so a throughput
+		// remembered from 4x/16x tape playback would seed the resampler four to
+		// sixteen times too fast - it would eat the staging buffer instantly
+		// and the music would come out as short, pitched-up scraps for the
+		// first second after the toggle, until a fresh reading locked it.
+		pace = emu->audioHoldOn ? audioNativeFps(emu) : emu->audioPaceThroughput / speed;
 		double nominal = audioNativeFps(emu);
 		if (pace > nominal) {
 			pace = nominal;
@@ -2604,6 +2623,19 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		fpsRatio = 1.0;
 	}
 	double inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
+	if (emu->audioHoldOn) {
+		/* One line per second is enough to tell, from a device logcat, whether
+		 * the stretcher is running, at what ratio, and whether it is keeping
+		 * up: hold/in back up permanently means it is not draining, held = 0
+		 * means it produced nothing for this read. */
+		static int traceTick;
+		if ((traceTick++ % 60) == 1) {
+			MOBILE_LOGI("audio 不变速 on: stretch %.2f speed %.2f inRate %.0f coreRate %u held %zu hold %zu in %zu dropped %zu",
+					emu->wsolaStretch, speed, inRate, coreRate, held,
+					mAudioBufferAvailable(&emu->audioHold), mAudioBufferAvailable(&emu->wsolaIn),
+					emu->wsolaDropped);
+		}
+	}
 	size_t got = mAudioBufferRead(&emu->audioOut, out, (size_t) maxFrames);
 	mAudioResamplerSetSource(&emu->audioResampler, source, inRate, true);
 	processAudioResampler(emu);

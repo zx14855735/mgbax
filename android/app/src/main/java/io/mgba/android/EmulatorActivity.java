@@ -164,7 +164,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private TextView menuButton;
     private ScreenArea screenArea;
     private final Runnable hideMenu = this::hideMenuNow;
-    private HorizontalScrollView speedBar;
+    private LinearLayout speedBar;
     private final Button[] speedButtons = new Button[SPEED_TIERS.length];
     private Button speedCustom;
 
@@ -213,6 +213,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private double appliedGameSpeed = -1;
     /** Whether the native constant-pitch park buffer is currently switched on. */
     private boolean constantPitchOn;
+    /** Multiplier the native stretcher was last told about (avoids re-arming it). */
+    private double constantPitchStretch;
     /** Software volume, 0-150 percent, applied when frames reach the track. */
     private int volumePercent = 100;
     private long nextFastPresent;
@@ -1951,9 +1953,13 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         if (core != null) {
             if (holdSurplus) {
-                // Keep the WSOLA stretch in sync with the current multiplier; the
-                // native side only rebuilds the stretcher when the value changes.
-                core.setAudioConstantPitch(true, mult);
+                // Keep the WSOLA stretch in sync with the current multiplier.
+                // This runs on every emulated slice, so only publish changes:
+                // re-arming the stretcher resets its parked input.
+                if (!constantPitchOn || Math.abs(mult - constantPitchStretch) > 0.01) {
+                    core.setAudioConstantPitch(true, mult);
+                    constantPitchStretch = mult;
+                }
             } else if (constantPitchOn) {
                 core.setAudioConstantPitch(false, 1.0);
             }
@@ -3435,6 +3441,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private void buildSpeedBar() {
         speedBar = findViewById(R.id.speed_bar);
         LinearLayout row = findViewById(R.id.speed_row);
+        LinearLayout audioRow = findViewById(R.id.audio_row);
         TextView label = new TextView(this);
         label.setText(R.string.speed_pick);
         label.setTextColor(Color.WHITE);
@@ -3470,18 +3477,20 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox sound = new CheckBox(this);
         sound.setText(R.string.speed_sound);
         sound.setTextColor(Color.WHITE);
+        sound.setTextSize(13);
         boolean soundOn = prefs.getBoolean("fast_audio", true);
         sound.setChecked(soundOn);
-        row.addView(sound);
+        audioRow.addView(sound);
 
         CheckBox constSpeed = new CheckBox(this);
         constSpeed.setText(R.string.speed_sound_const);
         constSpeed.setTextColor(Color.WHITE);
+        constSpeed.setTextSize(13);
         boolean constOn = prefs.getBoolean("fast_audio_const", false);
         constSpeed.setChecked(constOn);
         constSpeed.setEnabled(soundOn);
         constSpeed.setAlpha(soundOn ? 1.0f : 0.45f);
-        row.addView(constSpeed);
+        audioRow.addView(constSpeed);
 
         sound.setOnCheckedChangeListener((v, checked) -> {
             prefs.edit().putBoolean("fast_audio", checked).apply();
