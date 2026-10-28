@@ -14,6 +14,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -210,6 +211,8 @@ public class EmulatorActivity extends AppCompatActivity {
      *  re-locks the resampler even when the requested audio speed is unchanged
      *  (e.g. 不变速 mode always plays at 1x regardless of the fast-forward factor). */
     private double appliedGameSpeed = -1;
+    /** Whether the native constant-pitch park buffer is currently switched on. */
+    private boolean constantPitchOn;
     /** Software volume, 0-150 percent, applied when frames reach the track. */
     private int volumePercent = 100;
     private long nextFastPresent;
@@ -262,6 +265,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private SeekBar scaleBar;
     private TextView linkStatusView;
     private EditText linkRoomView;
+    private TextView relayServerView;
     private RemoteLink remoteLink;
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
     private GBoyLink gboyLink;
@@ -1812,6 +1816,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         appliedSpeed = -1;
         appliedGameSpeed = -1;
+        constantPitchOn = false;
+        if (core != null) {
+            core.setAudioConstantPitch(false, 1.0);
+        }
         audioMuted = false;
         // Prefer the rate the device's audio hardware actually runs at so the
         // system does not have to resample our output; the core's own rate is
@@ -1923,16 +1931,33 @@ public class EmulatorActivity extends AppCompatActivity {
         boolean constPitch = prefs.getBoolean("fast_audio_const", false);
         boolean mute = !soundOn && mult > 1.01;
         double audioSpeed;
+        boolean holdSurplus;
         if (mult <= 1.01) {
             // Normal speed and slow motion: audio always tracks the game.
             audioSpeed = mult;
+            holdSurplus = false;
         } else if (soundOn && constPitch) {
-            // 不变速: keep the music at its normal speed; the resampler discards
-            // the extra samples the fast-forwarded game produces.
+            // 不变速: the music keeps its own speed and pitch. The fast game
+            // produces several times more audio than the device can play at
+            // that speed, so the surplus is parked and replayed instead of
+            // being shredded by the core's ring - without that the music
+            // comes out as scraps, right pitch but unrecognisable.
             audioSpeed = 1.0;
+            holdSurplus = true;
         } else {
             // Varspeed (tape style): audio follows the game and pitches up.
             audioSpeed = mult;
+            holdSurplus = false;
+        }
+        if (core != null) {
+            if (holdSurplus) {
+                // Keep the WSOLA stretch in sync with the current multiplier; the
+                // native side only rebuilds the stretcher when the value changes.
+                core.setAudioConstantPitch(true, mult);
+            } else if (constantPitchOn) {
+                core.setAudioConstantPitch(false, 1.0);
+            }
+            constantPitchOn = holdSurplus;
         }
         if (mute != audioMuted) {
             audioMuted = mute;
@@ -2987,7 +3012,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     }
                     if (core.linkHost(p)) {
                         getPreferences(MODE_PRIVATE).edit().putInt("link_port", p).apply();
-                        status.setText(getString(R.string.link_waiting, localIpv4(), p));
+                        status.setText(getString(R.string.link_waiting_multi, localIpv4Hint(p)));
                         startLinkWatch();
                     } else {
                         status.setText(linkMessage());
@@ -3027,6 +3052,30 @@ public class EmulatorActivity extends AppCompatActivity {
                     ensureRemote().join(relayText, code);
                     startLinkWatch();
                 })));
+        // ---- 本机作为中继服务器：原来要另跑 relay.py，现在直接装在 APK 里 ----
+        TextView serverHelp = new TextView(this);
+        serverHelp.setText(R.string.link_server_help);
+        serverHelp.setTextColor(0xFF222222);
+        serverHelp.setPadding(0, pad, 0, 0);
+        box.addView(serverHelp);
+        TextView serverState = new TextView(this);
+        serverState.setTextColor(0xFF1B5E20);
+        serverState.setPadding(0, pad, 0, 0);
+        serverState.setText(relayServerText());
+        relayServerView = serverState;
+        box.addView(buttonRow(
+                linkButton(getString(R.string.link_server_start), v -> {
+                    requestNotificationPermission();
+                    RelayService.start(this, RemoteLink.RELAY_PORT);
+                    inputHandler.removeCallbacks(relayTicker);
+                    inputHandler.postDelayed(relayTicker, 400);
+                }),
+                linkButton(getString(R.string.link_server_stop), v -> {
+                    RelayService.stop(this);
+                    inputHandler.removeCallbacks(relayTicker);
+                    inputHandler.postDelayed(relayTicker, 200);
+                })));
+        box.addView(serverState);
         // ---- GBoy (My Boy) Wi-Fi link ----
         TextView gboyHelp = new TextView(this);
         gboyHelp.setText(R.string.link_gboy_help);
@@ -3088,11 +3137,19 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(status);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);
-        new AlertDialog.Builder(this)
+        AlertDialog linkDialog = new AlertDialog.Builder(this)
                 .setTitle(R.string.link_title)
                 .setView(scroll)
                 .setNegativeButton(android.R.string.cancel, null)
-                .show();
+                .create();
+        linkDialog.setOnDismissListener(d -> {
+            // 让 ticker 自己停下，别继续攥着已经销毁的 View
+            relayServerView = null;
+            inputHandler.removeCallbacks(relayTicker);
+        });
+        linkDialog.show();
+        inputHandler.removeCallbacks(relayTicker);
+        inputHandler.post(relayTicker);
     }
 
     private GBoyLink ensureGboy() {
@@ -3231,6 +3288,41 @@ public class EmulatorActivity extends AppCompatActivity {
         inputHandler.post(linkWatch);
     }
 
+    /** 每秒刷一次中继状态；对话框关掉（relayServerView 置空）就自然停。 */
+    private final Runnable relayTicker = new Runnable() {
+        @Override
+        public void run() {
+            TextView view = relayServerView;
+            if (view == null) {
+                return;
+            }
+            view.setText(relayServerText());
+            inputHandler.postDelayed(this, 1000);
+        }
+    };
+
+    private String relayServerText() {
+        RelayServer server = RelayService.server();
+        if (server == null || !server.isRunning()) {
+            return getString(R.string.link_server_idle);
+        }
+        return getString(R.string.link_server_running, localIpv4Hint(server.port()), server.statusText());
+    }
+
+    /** Android 13+ 的通知权限只为前台服务那张常驻通知，拒绝也不影响中继本身。 */
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) {
+            return;
+        }
+        if (checkSelfPermission("android.permission.POST_NOTIFICATIONS") == PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        try {
+            requestPermissions(new String[] {"android.permission.POST_NOTIFICATIONS"}, 0x4D48);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
     private static int linkState(String status) {
         if (status == null || status.isEmpty()) {
             return 0;
@@ -3268,6 +3360,16 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private String localIpv4() {
+        List<String> all = localIpv4List();
+        return all.isEmpty() ? "0.0.0.0" : all.get(0);
+    }
+
+    /**
+     * 本机所有可用的 IPv4。异地联机时对方要走虚拟局域网或公网地址，
+     * 所以不能只报第一个（那通常是 192.168.x.x，外网不可达）。
+     */
+    private List<String> localIpv4List() {
+        ArrayList<String> out = new ArrayList<>();
         try {
             ArrayList<NetworkInterface> ifaces = Collections.list(NetworkInterface.getNetworkInterfaces());
             for (NetworkInterface iface : ifaces) {
@@ -3275,14 +3377,55 @@ public class EmulatorActivity extends AppCompatActivity {
                     continue;
                 }
                 for (InetAddress address : Collections.list(iface.getInetAddresses())) {
-                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
-                        return address.getHostAddress();
+                    if (!(address instanceof Inet4Address) || address.isLoopbackAddress()) {
+                        continue;
+                    }
+                    String ip = address.getHostAddress();
+                    if (ip == null || ip.startsWith("169.254.")) {
+                        continue;   // 链路本地地址，对端一定连不上
+                    }
+                    if (!out.contains(ip)) {
+                        out.add(ip);
                     }
                 }
             }
         } catch (Exception ignored) {
         }
-        return "0.0.0.0";
+        Collections.sort(out, Comparator.comparingInt(EmulatorActivity::ipv4Rank));
+        return out;
+    }
+
+    /** 家用局域网排前面，虚拟网卡（Tailscale 100.64/10、ZeroTier 等）排后面。 */
+    private static int ipv4Rank(String ip) {
+        if (ip.startsWith("192.168.")) {
+            return 0;
+        }
+        if (ip.startsWith("10.")) {
+            return 1;
+        }
+        if (ip.startsWith("172.")) {
+            return 2;
+        }
+        if (ip.startsWith("100.")) {
+            return 3;   // Tailscale / CGNAT 段
+        }
+        return 4;
+    }
+
+    /** 把所有本机地址和端口拼成多行提示，创建方直接照着报给对面。 */
+    private String localIpv4Hint(int port) {
+        List<String> all = localIpv4List();
+        if (all.isEmpty()) {
+            return "0.0.0.0:" + port;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String ip : all) {
+            if (sb.length() > 0) {
+                sb.append('\n');
+            }
+            sb.append(ip).append(':').append(port);
+        }
+        return sb.toString();
     }
 
     private int dp(int value) {

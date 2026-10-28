@@ -106,6 +106,20 @@ public final class MgbaCore {
     }
 
     /**
+     * Turns 不变速 (constant pitch) playback on or off. While it is on, the
+     * surplus audio a fast-forwarded game produces is parked and replayed at
+     * the console's own rate instead of being shredded by the core's small
+     * ring, so the music keeps its own speed and pitch and only jumps when
+     * the park fills. The caller passes speed 1 to readAudioOut while this
+     * is on.
+     */
+    public void setAudioConstantPitch(boolean on, double stretch) {
+        if (handle != 0) {
+            nativeSetAudioConstantPitch(handle, on, (float) stretch);
+        }
+    }
+
+    /**
      * Drops the pace estimate so the resampler re-locks from the console's own
      * frame rate after a speed change, instead of carrying a stale reading that
      * detunes or starves audio for a window. Called whenever the playback
@@ -346,6 +360,7 @@ public final class MgbaCore {
 
     private static native int nativeReadAudioOut(long handle, short[] out, double speed, float drift);
     private static native void nativeSetAudioPaceFps(long handle, float fps);
+    private static native void nativeSetAudioConstantPitch(long handle, boolean on, float stretch);
     private static native void nativeResetAudioPace(long handle);
     private static native boolean nativeIsAudioPaceSeeded(long handle);
 

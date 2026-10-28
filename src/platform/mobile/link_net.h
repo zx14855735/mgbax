@@ -33,14 +33,16 @@ void netLinkPublish(struct NetLink* link, uint16_t mode, uint32_t value);
 bool netLinkRequest(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t* seqOut);
 bool netLinkTakeReply(struct NetLink* link, uint16_t seq, uint32_t* remoteOut);
 
-/* 「推一次就走」：本机每次 SIO 传输开始时把本帧数据推给对端，不等应答。
- * 对端在自己的传输周期末尾取用，于是两边都不必为一个往返买单（Wi-Fi 上
- * 往返动辄几十毫秒，等它必然错过游戏的传输窗口）。 */
+/* 「推一次就走」：本机把「第 index 轮要发的字」推给对端，不等应答。
+ * 对端在自己的那一轮里取用，于是两边都不必为一个往返买单（Wi-Fi 上往返
+ * 动辄几十毫秒，等它必然错过游戏的传输窗口）。 */
 void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t index);
-bool netLinkTakePeer(struct NetLink* link, uint16_t minIndex, uint32_t* value);
 
-/* 等对端把第 index 轮的数据推过来并取走。timeoutMs > 0 时会真的阻塞调用线程
- * （模拟线程），这正是联机需要的背压：等网络的时候模拟时钟不应该往前走。 */
-bool netLinkWaitForPeer(struct NetLink* link, uint16_t index, int timeoutMs, uint32_t* value);
+/* 取对端第 want 轮的字。对端按轮次先后推送，这里也按先后取，早于 want 的
+ * 迟到推送直接丢弃（本机早已按超时收尾过那一轮）。timeoutMs > 0 时会阻塞
+ * 调用线程（模拟线程），这正是联机需要的背压：等网络的时候模拟时钟不应该
+ * 往前走。indexOut 回带真正取到的轮次，和 want 不等就说明中间丢过一轮。 */
+bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut);
+void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops);
 
 #endif

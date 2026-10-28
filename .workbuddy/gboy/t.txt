@@ -1,0 +1,7 @@
+ping
+login
+guest
+room_list
+create_game_room
+user_info
+getUserInfo

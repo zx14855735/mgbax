@@ -1,0 +1,351 @@
+--------- beginning of main
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=12 siocnt=200C rcnt=C000 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x80
+I/mGBA    ( 5543): FrameKeys 0x80
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): Latched 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): Latched 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x1
+I/mGBA    ( 5543): FrameKeys 0x1
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): Held 0x0
+I/mGBA    ( 5543): FrameKeys 0x0
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]
+I/mGBA    ( 5543): SIO poll mode=2 siocnt=200C rcnt=0001 drv=0 wait=0
+I/mGBA    ( 5543): PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0 qf=0]

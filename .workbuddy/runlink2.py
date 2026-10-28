@@ -51,6 +51,28 @@ def release_both():
         setkeys(s, 0)
 
 
+def ensure_foreground(serial, tries=4):
+    """把模拟器 Activity 真正顶到前台。
+
+    5554 这台经常出现 am start 报 Starting 成功、但 topResumedActivity 还是
+    NexusLauncher 的情况；后面所有点按都会落到桌面上。这里重试并在每次重发前
+    收掉锁屏。
+    """
+    for i in range(tries):
+        lt.raw('-s', serial, 'shell', 'wm', 'dismiss-keyguard')
+        lt.raw('-s', serial, 'shell', 'am', 'start', '-n', 'io.mgba.android/.EmulatorActivity',
+               '-a', 'android.intent.action.VIEW',
+               '-d', 'file:///sdcard/Android/data/io.mgba.android/files/rom.gba')
+        time.sleep(6)
+        act = lt.sh(serial, 'dumpsys', 'activity', 'activities').stdout.decode('utf-8', 'replace')
+        for l in act.splitlines():
+            if ('topResumedActivity' in l or 'mResumedActivity' in l) and 'io.mgba.android' in l:
+                print(serial, 'foreground ok on try', i, flush=True)
+                return True
+        print(serial, 'not foreground, retry', i, flush=True)
+    return False
+
+
 def shot(tag):
     lt.snap(lt.A, tag + '_a')
     lt.snap(lt.B, tag + '_b')
@@ -76,10 +98,14 @@ def main():
     for s in (lt.A, lt.B):
         lt.raw('-s', s, 'shell', 'am', 'force-stop', 'io.mgba.android')
         lt.raw('-s', s, 'shell', 'logcat', '-c')
-        lt.raw('-s', s, 'shell', 'am', 'start', '-n', 'io.mgba.android/.EmulatorActivity',
-               '-a', 'android.intent.action.VIEW',
-               '-d', 'file:///sdcard/Android/data/io.mgba.android/files/rom.gba')
-    time.sleep(18)
+        r = lt.raw('-s', s, 'shell', 'am', 'start', '-n', 'io.mgba.android/.EmulatorActivity',
+                   '-a', 'android.intent.action.VIEW',
+                   '-d', 'file:///sdcard/Android/data/io.mgba.android/files/rom.gba')
+        print(s, 'am start:', (r.stdout + r.stderr).decode('utf-8', 'replace').strip()[:200], flush=True)
+    for s in (lt.A, lt.B):
+        print(s, 'foreground:', ensure_foreground(s), flush=True)
+        loaded = 'Loaded' in lt.sh(s, 'logcat', '-d', '-t', '300', '-s', 'mGBA').stdout.decode('utf-8', 'replace')
+        print(s, 'rom loaded:', loaded, flush=True)
     both(START_KEY, 0.3, 2.0)
     both(START_KEY, 0.3, 2.0)
     both(A_KEY, 0.3, 3.5)

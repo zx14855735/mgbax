@@ -25,7 +25,7 @@ def devices():
 
 def main():
     log = open(os.path.join(OUT, 'avds_e2e.log'), 'w')
-    subprocess.Popen(['bash', '.workbuddy/start_avds2.sh'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
+    subprocess.Popen(['bash', '.workbuddy/start_avds3.sh'], cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
     ok = False
     for i in range(72):
@@ -52,12 +52,34 @@ def main():
         if good == 2:
             break
 
+    # 确保 ROM 在位，并从「最后一次打开的 ROM」之外的确定路径启动
     for s in ('emulator-5554', 'emulator-5556'):
+        subprocess.run([ADB, '-s', s, 'shell', 'mkdir', '-p',
+                        '/sdcard/Android/data/io.mgba.android/files'], capture_output=True, timeout=60)
+        for dst in ('/sdcard/Android/data/io.mgba.android/files/rom.gba', '/sdcard/Download/rom.gba'):
+            subprocess.run([ADB, '-s', s, 'push', r'D:\gen8\rom.gba', dst],
+                           capture_output=True, timeout=300)
         subprocess.run([ADB, '-s', s, 'shell', 'logcat', '-c'], capture_output=True, timeout=60)
+
     print('=== devices ready, running flow ===', flush=True)
 
     flow = __import__(FLOW)
     flow.main()
+
+    for s, tag in (('emulator-5554', 'A'), ('emulator-5556', 'B')):
+        out = subprocess.run([ADB, '-s', s, 'shell', 'logcat', '-d', '-s', 'mGBA', '-v', 'brief'],
+                             capture_output=True, timeout=120).stdout.decode('utf-8', 'replace')
+        with open(os.path.join(OUT, 'e2e_' + tag + '.log'), 'w', encoding='utf-8') as f:
+            f.write(out)
+        print(tag, 'mGBA log lines', len(out.splitlines()), flush=True)
+        # 崩溃/ANR 也留一份，避免只在 mGBA tag 里找时漏掉
+        crash = subprocess.run([ADB, '-s', s, 'shell', 'logcat', '-d', '-v', 'brief'],
+                               capture_output=True, timeout=120).stdout.decode('utf-8', 'replace')
+        hits = [l for l in crash.splitlines()
+                if 'AndroidRuntime' in l or 'FATAL' in l or 'tombstone' in l or 'am_proc_died' in l]
+        with open(os.path.join(OUT, 'e2e_' + tag + '_crash.log'), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(hits[-40:]))
+        print(tag, 'crash-ish lines', len(hits), flush=True)
     return 0
 
 

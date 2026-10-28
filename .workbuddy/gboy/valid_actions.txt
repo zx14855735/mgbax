@@ -1,0 +1,8 @@
+create_game_room	{"type":"create_game_room","success":false,"error":"创建房间失败：参数缺失"}
+invite_player	{"type":"invite_player","success":false,"error":"邀请失败：参数缺失"}
+join_room	{"type":"join_room","success":false,"error":"加入房间失败：参数缺失"}
+leave_room	{"type":"leave_room","success":false,"error":"您不在任何游戏房间中"}
+query_room	{"type":"query_room","success":false,"error":"登录已失效，请重新登录"}
+ready	{"type":"ready","success":false,"error":"准备失败：参数缺失"}
+update_room_settings	{"type":"room_settings_updated","success":false,"error":"登录已失效，请重新登录"}
+accept_invite	{"type":"accept_invite","success":false,"error":"登录已失效，请重新登录"}

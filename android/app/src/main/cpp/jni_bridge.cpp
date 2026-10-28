@@ -120,6 +120,11 @@ Java_io_mgba_android_MgbaCore_nativeIsAudioPaceSeeded(JNIEnv*, jobject, jlong ha
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetAudioConstantPitch(JNIEnv*, jobject, jlong handle, jboolean on, jfloat stretch) {
+	mgbaMobileSetAudioConstantPitch((struct MgbaMobile*) handle, on == JNI_TRUE, (double) stretch);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeClearAudio(JNIEnv*, jobject, jlong handle) {
 	mgbaMobileClearAudio((struct MgbaMobile*) handle);
 }

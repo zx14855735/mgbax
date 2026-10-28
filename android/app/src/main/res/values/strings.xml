@@ -81,7 +81,13 @@
     <string name="link_room_copied">房间号 %1$s 已复制\n对方中继填 %2$s</string>
     <string name="link_close">断开</string>
     <string name="link_ip_hint">对方 IP，例如 192.168.1.8</string>
+    <string name="link_server_help">本机作中继：把这台设备直接当成联机服务器，不用另开电脑、装 Python 或租服务器。开启后把下面列出的地址和端口告诉对方，两人在「联机地址」里填同一个，一边点远程创建拿房间号，另一边填房间号加入。锁屏或切到后台也会继续跑。</string>
+    <string name="link_server_start">本机作中继</string>
+    <string name="link_server_stop">停止中继</string>
+    <string name="link_server_idle">中继未运行</string>
+    <string name="link_server_running">中继运行中（%2$s）\n对方在「联机地址」填：\n%1$s</string>
     <string name="link_waiting">等待连接\n本机 %1$s:%2$d\n你是 1P</string>
+    <string name="link_waiting_multi">等待连接\n本机 %1$s\n你是 1P\n异地联机时对方填虚拟局域网或公网地址</string>
     <string name="link_bad_port">端口无效</string>
     <string name="link_gboy_help">联机大厅：和对方联机对战。两边打开同一个游戏，保持 1 倍速，不要暂停。创房一方是 1P，另一方填对方 IP 加入。端口默认 6374，就是 GBoy/My Boy 的 Wi-Fi 联机服务器协议，与其直接互通（远程按键模式）。</string>
     <string name="link_gboy_host">大厅创建</string>

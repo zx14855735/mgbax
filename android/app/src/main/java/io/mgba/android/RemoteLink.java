@@ -404,6 +404,11 @@ public final class RemoteLink {
     static final class RelayHub {
         private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();
 
+        /** 当前存在的房间数，供「本机当中继」模式显示负载。 */
+        int roomCount() {
+            return rooms.size();
+        }
+
         void handle(Socket socket) {
             try {
                 String line = readLine(socket.getInputStream());

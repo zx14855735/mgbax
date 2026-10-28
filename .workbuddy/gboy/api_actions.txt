@@ -1,0 +1,8 @@
+check_favorite	{"success":false,"message":"登录状态已失效，请重新登录。","error_code":401}
+create_order	{"success":false,"code":"TOKEN_INVALID","message":"登录状态已失效，请重新登录。"}
+daily_signin	{"success":false,"message":"登录状态已失效，请重新登录。"}
+forgot_password_send_code	{"success":false,"message":"该邮箱未注册。"}
+forgot_password_reset	{"success":false,"message":"请求格式错误，缺少必需的字段。"}
+get_favorites	{"success":false,"message":"登录状态已失效，请重新登录。","code":401}
+get_user_info	{"success":false,"message":"登录状态已失效，请重新登录。"}
+get_packages	{"success":false,"code":"TOKEN_INVALID","message":"登录状态已失效，请重新登录。"}

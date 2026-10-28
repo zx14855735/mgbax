@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <math.h>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -123,11 +124,20 @@ struct MgbaMobile {
 	uint32_t sioStash;
 	bool sioStashValid;
 	bool sioSlavePending;
-	/* 「每轮推一次」的发送状态：SIOMLT_SEND 一变就把新一轮的数据推给对端，
-	 * 传输到点时直接取对端这一轮的值收尾，不再为每个往返买单。 */
+	/* 「每轮推一次」的发送状态：sioPushIndex 是已经推出去的最新轮次（0 = 还没推），
+	 * sioPushValue 只用于排查。 */
 	uint32_t sioPushValue;
 	uint16_t sioPushIndex;
 	bool sioPushed;
+	/* 从机用：下一轮要推的轮号。收尾之后隔一次轮询才推，中间这段时间正好让
+	 * 游戏的 SIO 中断处理把本轮真正要发的字写进 SIOMLT_SEND。 */
+	uint16_t sioPushPending;
+	/* 取到的对端轮次和本机期望的不一致（丢了一轮）的次数。 */
+	uint32_t sioMisorder;
+	/* 联机排查：逐轮打印（有上限，不会刷爆 logcat）。 */
+	uint32_t xferDbg;
+	uint32_t pushDbg;
+	uint32_t toDbg;
 	uint32_t heldKeys;
 	uint32_t latchedKeys;
 	uint32_t frameKeys;
@@ -158,6 +168,40 @@ struct MgbaMobile {
 	double audioPaceThroughput;
 	/* Speed the current pace was measured at; set alongside every read. */
 	double audioPaceSpeed;
+	/*
+	 * 不变速 (constant pitch) playback. A fast-forwarded game produces several
+	 * times more audio than the device can play at the console's own speed.
+	 * Dropping the surplus shreds the music; parking it and replaying made the
+	 * tune jump a whole section whenever the park filled. Instead we time-stretch
+	 * with WSOLA: the surplus is compressed in time while the pitch is kept, so
+	 * fast-forward plays continuous, normal-tempo, normal-pitch music with no
+	 * skipped section and no shredding.
+	 *
+	 * wsolaIn  - parked core audio (the WSOLA input queue)
+	 * audioHold - WSOLA output, fed to the resampler at the console rate
+	 */
+	struct mAudioBuffer audioHold;       /* WSOLA output the resampler reads */
+	struct mAudioBuffer wsolaIn;         /* WSOLA input queue (parked core audio) */
+	size_t wsolaAnaPos;                  /* analysis cursor, frames from wsolaIn head */
+	/* Frames the stretcher had to throw away because the staging buffer could
+	 * not take them. Must stay 0: a non-zero value is a hole in the stream. */
+	size_t wsolaDropped;
+	size_t wsolaN;                       /* frame length, samples per channel */
+	size_t wsolaHa;                      /* analysis hop, samples per channel */
+	size_t wsolaHs;                      /* synthesis hop, samples per channel */
+	double wsolaStretch;                 /* requested stretch (set by UI thread) */
+	double wsolaConfigured;              /* stretch the buffers were built for */
+	float* wsolaAcc;                     /* OLA signal accumulator, length wsolaN*2 */
+	int16_t* wsolaEmit;                  /* emit scratch, length wsolaN*2 */
+	int16_t* wsolaPrev;                  /* last ref2 emitted-domain samples (phase ref) */
+	int16_t* wsolaWindow;                /* Hann window, length wsolaN*2 */
+	int16_t* wsolaScratch;               /* discard scratch for the input queue */
+	bool audioHoldOn;
+	bool audioHoldInited;
+	/* Set by the UI thread on every toggle; the audio thread clears the staged
+	 * audio once before the next WSOLA run so a re-enable never replays stale
+	 * samples. Kept as a flag so the UI thread never touches the buffers. */
+	bool wsolaClearPending;
 	/* Last three raw window readings; the middle one feeds the estimator. A
 	 * free-running front end's window readings scatter with a heavy tail
 	 * (scheduler jitter shows up as one window running several percent off),
@@ -242,6 +286,11 @@ enum {
 #define MOBILE_AUDIO_PACE_THROUGHPUT_DECAY 0.9995
 /* How much already-resampled audio the reader may hold back between pumps. */
 #define MOBILE_AUDIO_OUT_FRAMES 16384
+/* WSOLA time-stretch for 不变速 playback. */
+#define MOBILE_AUDIO_WSOLA_N 1024           /* frame length, samples per channel */
+#define MOBILE_AUDIO_WSOLA_IN_SECONDS 6     /* input queue length, seconds */
+#define MOBILE_AUDIO_WSOLA_OUT_SECONDS 2    /* output staging buffer, seconds */
+#define MOBILE_AUDIO_WSOLA_SCRATCH 4096
 
 static void attachKeyCallback(struct MgbaMobile* emu);
 static void detachLink(struct MgbaMobile* emu);
@@ -273,7 +322,285 @@ static void resetAudioOutput(struct MgbaMobile* emu) {
 	mAudioBufferClear(&emu->audioOut);
 }
 
+static void deinitAudioHold(struct MgbaMobile* emu) {
+	if (!emu->audioHoldInited) {
+		return;
+	}
+	mAudioBufferDeinit(&emu->audioHold);
+	mAudioBufferDeinit(&emu->wsolaIn);
+	free(emu->wsolaAcc);
+	free(emu->wsolaEmit);
+	free(emu->wsolaPrev);
+	free(emu->wsolaWindow);
+	free(emu->wsolaScratch);
+	emu->wsolaAcc = NULL;
+	emu->wsolaEmit = NULL;
+	emu->wsolaPrev = NULL;
+	emu->wsolaWindow = NULL;
+	emu->wsolaScratch = NULL;
+	emu->audioHoldInited = false;
+}
+
+/*
+ * (Re)configures the WSOLA time-stretcher for a given stretch factor. The
+ * synthesis hop is held at a fixed 50% window overlap (clean Hann COLA) and the
+ * analysis hop is scaled so the ratio analysis/synthesis equals the stretch:
+ * dropping s = mult times more audio than real time, compressed into real time,
+ * means the music runs at its own tempo with no skipped section.
+ */
+static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stretch) {
+	/* `stretch` is the requested multiplier (emu->wsolaStretch, set by the UI).
+	 * Compare against what the buffers were actually built for - not against
+	 * wsolaStretch itself, which would always match and never rebuild when the
+	 * fast-forward speed changes. Rebuilding only ever happens here, on the
+	 * audio thread, so the buffers are never freed under a running
+	 * wsolaGenerate. */
+	if (emu->audioHoldInited && fabs(stretch - emu->wsolaConfigured) < 0.01) {
+		return;
+	}
+	deinitAudioHold(emu);
+	if (!coreRate || stretch < 1.001) {
+		return;
+	}
+	emu->wsolaN = MOBILE_AUDIO_WSOLA_N;
+	/* 50% synthesis overlap: the window is the whole frame and the synthesis hop
+	 * is half the frame, so a plain Hann window is exactly COLA-flat and - more
+	 * importantly - the overlap is low enough that near-identical phase-locked
+	 * segments do not over-overlap into a comb-filter / "electric" chorus. The
+	 * analysis hop is scaled by the stretch (Ha = N/2 * stretch), so the ratio
+	 * analysis/synthesis equals the stretch; for stretch > 2 this necessarily
+	 * skips some input uniformly, which is time compression rendered through a
+	 * smooth overlap-add (not a decimation) and is inaudible as a jump. */
+	emu->wsolaHs = emu->wsolaN / 2;
+	emu->wsolaHa = (size_t) (emu->wsolaN / 2.0 * stretch + 0.5);
+	if (emu->wsolaHs < 1) {
+		emu->wsolaHs = 1;
+	}
+	if (emu->wsolaHa < 1) {
+		emu->wsolaHa = 1;
+	}
+	emu->wsolaConfigured = stretch;
+	emu->wsolaAnaPos = 0;
+	emu->wsolaDropped = 0;
+	mAudioBufferInit(&emu->audioHold, (size_t) coreRate * MOBILE_AUDIO_WSOLA_OUT_SECONDS, 2);
+	mAudioBufferInit(&emu->wsolaIn, (size_t) coreRate * MOBILE_AUDIO_WSOLA_IN_SECONDS, 2);
+	/* Mark inited now so a failed allocation below is cleaned up by
+	 * deinitAudioHold() instead of leaking and leaving a half-built state. */
+	emu->audioHoldInited = true;
+	emu->wsolaAcc = (float*) calloc(emu->wsolaN * 2, sizeof(float));
+	emu->wsolaEmit = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
+	emu->wsolaPrev = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
+	emu->wsolaWindow = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
+	emu->wsolaScratch = (int16_t*) calloc(MOBILE_AUDIO_WSOLA_SCRATCH * 2, sizeof(int16_t));
+	if (!emu->wsolaAcc || !emu->wsolaEmit || !emu->wsolaPrev || !emu->wsolaWindow || !emu->wsolaScratch) {
+		/* Out of memory: fall back to the plain (non-stretched) path rather
+		 * than dereferencing a NULL accumulator. */
+		deinitAudioHold(emu);
+		return;
+	}
+	size_t n2 = emu->wsolaN * 2;
+	/* Periodic Hann (denominator n2, not n2-1). At the 50% synthesis overlap
+	 * w[j] + w[j + N] == 1 exactly, so the overlap-add is COLA-flat: the seam
+	 * gain is a constant 1, no amplitude ripple and - critically - no
+	 * comb-filter / "electric" coloration. */
+	for (size_t i = 0; i < n2; ++i) {
+		double w = 0.5 * (1.0 - cos(2.0 * M_PI * i / n2));
+		emu->wsolaWindow[i] = (int16_t) (w * 32767.0);
+	}
+}
+
+/* Parks everything the core just produced into the WSOLA input queue. */
+static void wsolaFeed(struct MgbaMobile* emu, struct mAudioBuffer* source) {
+	size_t available;
+	size_t capacity = mAudioBufferCapacity(&emu->wsolaIn);
+	while ((available = mAudioBufferAvailable(source)) > 0) {
+		/* Never read more than the parked queue can take: the samples are
+		 * already out of the core's ring by then, so anything mAudioBufferWrite
+		 * refuses would be lost mid-stream. Leaving them in the ring keeps the
+		 * pressure on the core instead of punching a hole in the music. */
+		size_t room = capacity - mAudioBufferAvailable(&emu->wsolaIn);
+		size_t chunk = available > MOBILE_AUDIO_WSOLA_SCRATCH ? MOBILE_AUDIO_WSOLA_SCRATCH : available;
+		if (chunk > room) {
+			chunk = room;
+		}
+		if (!chunk) {
+			break;
+		}
+		size_t got = mAudioBufferRead(source, emu->wsolaScratch, chunk);
+		if (!got) {
+			break;
+		}
+		size_t put = mAudioBufferWrite(&emu->wsolaIn, emu->wsolaScratch, got);
+		if (put < got) {
+			emu->wsolaDropped += got - put;
+		}
+	}
+}
+
+/*
+ * Runs the WSOLA time-stretcher to fill the output buffer with up to `want`
+ * frames. For each synthesis step it slides an analysis window through the
+ * input, picks the offset whose start best matches the samples already emitted
+ * (phase alignment, so the overlap-add stays continuous), windows it with a
+ * Hann window and overlap-adds into the accumulator before flushing the final
+ * leading samples. Because input is consumed at the analysis hop and output is
+ * emitted at the synthesis hop, the ratio of the two is exactly the stretch:
+ * no section is ever dropped, so the tune never jumps.
+ *
+ * The synthesis overlap is fixed at 50% (wsolaHs = wsolaN/2), which is the
+ * overlap at which a Hann window is naturally COLA-flat and - critically - the
+ * overlap is low enough that near-identical phase-locked segments do not
+ * over-overlap into a comb-filter / "electric" coloration. The analysis hop is
+ * scaled by the stretch, so for stretch > 2 some input is skipped uniformly;
+ * that is time compression, rendered via a smooth overlap-add rather than a
+ * decimation, so it is inaudible as a jump.
+ */
+static size_t wsolaGenerate(struct MgbaMobile* emu, size_t want) {
+	if (!emu->audioHoldInited) {
+		return 0;
+	}
+	size_t N = emu->wsolaN;            /* analysis frame length, stereo frames */
+	size_t N2 = N * 2;                 /* full frame, interleaved samples     */
+	size_t Ha = emu->wsolaHa;          /* analysis hop, frames               */
+	size_t Hs = emu->wsolaHs;          /* synthesis hop, frames (N/2)        */
+	size_t Hs2 = Hs * 2;               /* = N, the 50% overlap-add stride    */
+	size_t W2 = N2;                    /* overlap-add window = whole frame    */
+	/* Phase-lock over the synthesis hop: the new frame's first Hs samples must
+	 * continue from the Hs samples just emitted, so the seam is continuous. */
+	size_t ref = Hs;
+	size_t ref2 = Hs2;
+	float* acc = emu->wsolaAcc;
+	int16_t* win = emu->wsolaWindow;    /* plain Hann window (COLA-flat at 50%) */
+	int16_t* prev = emu->wsolaPrev;     /* output-domain phase reference        */
+	int16_t* frame = emu->wsolaScratch; /* single-frame scratch (int16) */
+	int16_t* emit = emu->wsolaEmit;     /* emit scratch (int16) */
+	size_t available = mAudioBufferAvailable(&emu->wsolaIn);
+	size_t holdCapacity = mAudioBufferCapacity(&emu->audioHold);
+	size_t ap = emu->wsolaAnaPos;
+	size_t produced = 0;
+	/* Search tolerance is kept small - only a few signal periods - so the phase
+	 * match lands on the true continuation rather than jumping to a
+	 * wrong-harmonic correlation peak. With a large analysis hop (high stretch)
+	 * a wide tolerance lets the cross-correlation lock onto a peak one or more
+	 * whole periods away, which halves (or worse) the effective stride and doubles
+	 * the perceived pitch. A coarse step keeps the search stable. */
+	int tol = (int) (N / 4);
+	if (tol > (int) (Ha / 2)) {
+		tol = (int) (Ha / 2);
+	}
+
+	/* Emit at most what this call was asked for, and never start a frame the
+	 * staging buffer cannot hold in full. Over-producing is what broke the
+	 * device: the front end asks for a big block (AUDIO_READ_FRAMES = 8192) and
+	 * the old `want * 8` bound let one call pour tens of thousands of frames
+	 * into a two-second staging buffer. mAudioBufferWrite then accepted short
+	 * writes and the remainder was discarded - whole synthesis hops vanished
+	 * from the music while the analysis cursor still advanced, so fast-forward
+	 * played chopped, gappy audio instead of the stretched track. Backpressure
+	 * (stop, leave the input parked) keeps every hop intact. */
+	while (produced < want && ap + N <= available) {
+		if (holdCapacity - mAudioBufferAvailable(&emu->audioHold) < Hs) {
+			break;
+		}
+		int lo = (int) ap - tol;
+		if (lo < 0) {
+			lo = 0;
+		}
+		int hi = (int) ap + tol;
+		if ((size_t) (hi + (int) N) > available) {
+			hi = (int) available - (int) N;
+		}
+		if (hi < lo) {
+			hi = lo;
+		}
+		int bestD = (int) ap;
+		float best = -1e30f;
+		for (int d = lo; d <= hi; d += 8) {
+			long long dot = 0, e1 = 0, e2 = 0;
+			for (size_t i = 0; i < ref; ++i) {
+				int16_t L = mAudioBufferPeek(&emu->wsolaIn, 0, d + i);
+				int16_t R = mAudioBufferPeek(&emu->wsolaIn, 1, d + i);
+				int16_t pL = prev[i * 2];
+				int16_t pR = prev[i * 2 + 1];
+				int ma = (int) L + (int) R;
+				int mp = (int) pL + (int) pR;
+				dot += (long long) ma * mp;
+				e1 += (long long) ma * ma;
+				e2 += (long long) mp * mp;
+			}
+			float sc = e2 > 0 ? (float) dot / (sqrtf((float) e1 * e2) + 1) : 0;
+			if (sc > best) {
+				best = sc;
+				bestD = d;
+			}
+		}
+		size_t fp = (size_t) bestD;
+		for (size_t i = 0; i < N; ++i) {
+			frame[i * 2] = mAudioBufferPeek(&emu->wsolaIn, 0, fp + i);
+			frame[i * 2 + 1] = mAudioBufferPeek(&emu->wsolaIn, 1, fp + i);
+		}
+		/* Overlap-add with the Hann window at the fixed 50% synthesis overlap. A
+		 * Hann window sums to a constant there, so the seam gain is flat (no
+		 * amplitude modulation / electric ringing) and - because the overlap is
+		 * only 50% - near-identical phase-locked segments do not over-overlap into
+		 * the comb-filter / "electric" chorus that the old 87.5% overlap had. */
+		for (size_t i = 0; i < W2; ++i) {
+			acc[i] += (float) frame[i] * (float) win[i] * (1.0f / 32768.0f);
+		}
+		for (size_t i = 0; i < Hs2; ++i) {
+			float v = acc[i];
+			int iv = (int) (v + (v >= 0 ? 0.5f : -0.5f));
+			if (iv > 32767) {
+				iv = 32767;
+			} else if (iv < -32768) {
+				iv = -32768;
+			}
+			emit[i] = (int16_t) iv;
+		}
+		size_t wrote = mAudioBufferWrite(&emu->audioHold, emit, Hs);
+		if (wrote < Hs) {
+			/* Should not happen (room was checked above), but a short write is
+			 * a hole in the stream - record it instead of hiding it. */
+			emu->wsolaDropped += Hs - wrote;
+		}
+		/* Advance the phase reference: keep the last ref2 samples of the
+		 * accumulator tail - the windowed overlap region of the frame just emitted
+		 * - so the next frame's head is phase-aligned to it. */
+		{
+			size_t base = W2 - ref2;
+			for (size_t i = 0; i < ref2; ++i) {
+				float v = acc[base + i];
+				int iv = (int) (v + (v >= 0 ? 0.5f : -0.5f));
+				if (iv > 32767) iv = 32767;
+				else if (iv < -32768) iv = -32768;
+				prev[i] = (int16_t) iv;
+			}
+		}
+		memmove(acc, acc + Hs2, (W2 - Hs2) * sizeof(float));
+		/* The shift left by Hs2 leaves acc[Hs2 .. W2) holding the bytes that were
+		 * already there; clear it so the next overlap-add only mixes in the
+		 * *current* frame's tail. Without this the accumulator would sum every
+		 * previous tail indefinitely, blowing the signal up into a distorted,
+		 * ever-growing waveform - the "electric" / metallic artefact. */
+		memset(acc + Hs2, 0, (W2 - Hs2) * sizeof(float));
+		produced += Hs;
+		ap = fp + Ha;
+	}
+	emu->wsolaAnaPos = ap;
+	if (ap > 0) {
+		size_t rem = ap;
+		while (rem > 0) {
+			size_t c = rem > MOBILE_AUDIO_WSOLA_SCRATCH ? MOBILE_AUDIO_WSOLA_SCRATCH : rem;
+			mAudioBufferRead(&emu->wsolaIn, emu->wsolaScratch, c);
+			rem -= c;
+		}
+		emu->wsolaAnaPos = 0;
+	}
+	return produced;
+}
+
 static void deinitAudioOutput(struct MgbaMobile* emu) {
+	deinitAudioHold(emu);
 	free(emu->audioWindow);
 	emu->audioWindow = NULL;
 	emu->audioWindowFrames = 0;
@@ -1123,34 +1450,69 @@ static void serviceLink(struct MgbaMobile* emu) {
 	uint16_t localMode = 0;
 	uint32_t local = readLinkOut(emu, &localMode);
 	netLinkPublish(emu->link, localMode, local);
-	/* 关键：MULTI 下两边都不要等网络。游戏每完成一轮就会改写 SIOMLT_SEND，
-	 * 这里一变就把「下一轮要发的字」连同轮次推给对端；对端在自己的传输到点
-	 * 时直接取用。往返被藏进游戏本身那一帧的时间里，单轮耗时回到真机的量级
-	 * （原来每轮要等一条 ACK，实测 16ms/轮，握手要跑上万轮，游戏最后报
-	 * 「连接发生了错误」）。 */
+	/* MULTI 的发送是「一轮一次、两边各推各的」，不再为每个往返等一条 ACK
+	 * （原来每轮要等 ACK，实测 16ms/轮，握手要跑上万轮，游戏最后报「连接
+	 * 发生了错误」）。1P 在写 SIOCNT 起传输那一刻推，2P 在收尾之后的下一
+	 * 次轮询推 —— 两边的时机差别见下面各自的注释，这是本文件最容易错位
+	 * 一格的地方。 */
 	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
-		/* 一轮要推的东西：本轮完成之后游戏会改写 SIOMLT_SEND，所以推一次
-		 * “可能还是旧值”的，等值真的变了再补推一次（同轮次、覆盖旧值）。
-		 * 第一轮之前不推：那时 SIOMLT_SEND 还是游戏初始化前的残留值，
-		 * 拿它当第一轮的字必然错。 */
-		uint16_t want = (uint16_t) (emu->sioIndex + 1);
-		if (gba->sio.mode == GBA_SIO_MULTI &&
-		    (!emu->sioPushed || local != emu->sioPushValue || emu->sioPushIndex != want)) {
-			netLinkPush(emu->link, GBA_SIO_MULTI, local, want);
-			emu->sioPushValue = local;
-			emu->sioPushIndex = want;
-			emu->sioPushed = true;
+		int player = netLinkPlayer(emu->link);
+		if (gba->sio.mode == GBA_SIO_MULTI && player != 0) {
+			/* 从机推字的时机是本文件里最容易踩错的一处。
+			 *
+			 * 真机里从机不产生时钟，它本轮发什么，取决于主的时钟扫过来那一
+			 * 瞬间 SIOMLT_SEND 里是什么。而在 gen8 里，SIOMLT_SEND 是在 SIO
+			 * 中断处理（DoSend）里写的 —— 也就是说，第 R 轮的字要等第 R-1 轮
+			 * 收尾、中断处理跑完之后才存在。
+			 *
+			 * 所以：收尾的那一次轮询里绝对不能推（那时中断还没跑，SIOMLT_SEND
+			 * 还是上一轮的值），必须等下一次轮询再推。这里就是「下一次」：
+			 * 收尾时把轮号记进 sioPushPending，下一轮轮询到这儿才真正发出去。
+			 * 早一步推旧值，对端就会把上一轮的数据当成这一轮，握手能过、
+			 * checksum 必挂。 */
+			if (!emu->sioPushed && !emu->sioPushPending) {
+				/* 第一次进入 MULTI：第 1 轮的字就是此刻 SIOMLT_SEND 里的值
+				 * （游戏初始化时写的 0），和真机一致。 */
+				emu->sioPushPending = 1;
+			}
+			if (emu->sioPushPending) {
+				uint16_t round = emu->sioPushPending;
+				emu->sioPushPending = 0;
+				netLinkPush(emu->link, GBA_SIO_MULTI, local, round);
+				if (emu->pushDbg < 80) {
+					++emu->pushDbg;
+					MOBILE_LOGI("PUSH #%u me=%d idx=%u val=%04X",
+					            emu->pushDbg, player, (unsigned) round, (unsigned) local);
+				}
+				emu->sioPushValue = local;
+				emu->sioPushIndex = round;
+				emu->sioPushed = true;
+			}
 		}
 		/* 从机不自己起传输：真机里 MULTI 的时钟是 1P 产生的，从机只是在自己的
 		 * SIO 被时钟扫过时收尾。1P 每轮开始时把本轮的字推过来，收到就把这次
 		 * 传输收掉（写 SIOMULTI + 发 SIO 中断），从机自己的游戏才会往下走。 */
-		if (gba->sio.mode == GBA_SIO_MULTI && netLinkPlayer(emu->link) != 0 && !emu->sioWaiting) {
-			uint32_t remote;
-			if (netLinkWaitForPeer(emu->link, (uint16_t) (emu->sioIndex + 1), 0, &remote)) {
-				++emu->sioIndex;
+		if (gba->sio.mode == GBA_SIO_MULTI && player != 0 && !emu->sioWaiting) {
+			uint16_t want = (uint16_t) (emu->sioIndex + 1);
+			uint16_t got = 0;
+			uint32_t remote = 0;
+			if (netLinkTakePeerWord(emu->link, want, 0, &remote, &got)) {
+				if (got != want) {
+					/* 中间丢了一轮（对端超时收尾过），轮次已经对不上，但接着跑
+					 * 比卡死强：游戏自己会靠 checksum 发现并断开重来。 */
+					++emu->sioMisorder;
+					if (emu->sioMisorder < 8) {
+						MOBILE_LOGI("SIO 轮次错位 me=%d want=%u got=%u n=%u",
+						            player, (unsigned) want, (unsigned) got, emu->sioMisorder);
+					}
+				}
+				emu->sioIndex = want;
 				emu->sioHasRemote = true;
 				emu->sioRemote = remote;
+				/* 本轮收尾之后游戏才会写下一轮的字，所以下一轮的推送留到
+				 * 下一次轮询，见上面的 PUSH 分支。 */
+				emu->sioPushPending = (uint16_t) (emu->sioIndex + 1);
 				completeMultiTransfer(emu, remote, true, 0);
 			}
 		}
@@ -1184,9 +1546,9 @@ static void serviceLink(struct MgbaMobile* emu) {
 		}
 		finishIncoming(emu, mode, value, player);
 	}
-	/* 看门狗：从机 Busy 立起来后如果主机迟迟不发请求（主机那边卡住、或者
-	 * 已经掉线），5 帧之后用最近一次对端数据收尾，让游戏自己报通信错误，
-	 * 而不是永久卡在 Busy 上。只对从机生效，主机有自己的重试/超时。 */
+	/* 看门狗：从机 Busy 立起来后如果主机迟迟不发这一轮的字（主机卡住、或者
+	 * 已经掉线），5 帧之后按「没有对端数据」收尾，让游戏自己报通信错误，
+	 * 而不是永久卡在 Busy 上。同样不用旧值。 */
 	if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
 	    emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
@@ -1196,7 +1558,7 @@ static void serviceLink(struct MgbaMobile* emu) {
 			if (now - emu->sioBusyCycle > 5 * 280896) {
 				emu->sioBusyCycle = now;
 				emu->sioTimeouts++;
-				completeMultiTransfer(emu, emu->sioRemote, emu->sioHasRemote, 0);
+				completeMultiTransfer(emu, 0, false, 0);
 			}
 		}
 	}
@@ -1244,6 +1606,14 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 	emu->sioOk++;
 	emu->sioBusyCycle = 0;
 	emu->sioStashValid = false;
+	if (emu->xferDbg < 150) {
+		++emu->xferDbg;
+		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
+		            emu->xferDbg, me, (unsigned) emu->sioIndex,
+		            (unsigned) (me >= 0 && me < 4 ? data[me] : 0),
+		            (unsigned) (haveRemote ? remote : 0xDEADu), haveRemote ? 1 : 0,
+		            emu->sioTimeouts);
+	}
 	if ((emu->sioOk & 0x3F) == 0) {
 		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
@@ -1266,12 +1636,20 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		return;
 	}
 	uint32_t remote = 0;
+	uint16_t got = 0;
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
 	 * 一帧就只剩下一次传输，必然被判掉线。 */
-	bool haveRemote = emu->link && netLinkWaitForPeer(emu->link, emu->sioIndex, 400, &remote);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 400, &remote, &got);
 	if (haveRemote) {
+		if (got != emu->sioIndex) {
+			++emu->sioMisorder;
+			if (emu->sioMisorder < 8) {
+				MOBILE_LOGI("SIO 轮次错位 me=%d want=%u got=%u n=%u",
+				            0, (unsigned) emu->sioIndex, (unsigned) got, emu->sioMisorder);
+			}
+		}
 		emu->sioWaiting = false;
 		emu->sioHasRemote = true;
 		emu->sioRemote = remote;
@@ -1280,8 +1658,17 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	LINK_VERBOSE("SIO multi timeout seq=%u", emu->sioSeq);
 	emu->sioTimeouts++;
+	if (emu->toDbg < 40) {
+		++emu->toDbg;
+		MOBILE_LOGI("TO #%u seq=%u me=%d stashed=%d",
+		            emu->toDbg, emu->sioSeq, netLinkPlayer(emu->link), emu->sioHasRemote ? 1 : 0);
+	}
 	emu->sioWaiting = false;
-	completeMultiTransfer(emu, emu->sioRemote, emu->sioHasRemote, cyclesLate);
+	/* 超时绝不能用上一轮的旧值收尾 —— 那正是「握手能过、checksum 必挂」的来源：
+	 * 游戏会把上一轮的数据当成这一轮，双方向量从此错位，而且错得很隐蔽。
+	 * 按「这一轮没有对端数据」收尾（对端槽位是 0xFFFF），游戏自己会把它当成
+	 * 空槽/通信错误处理，要么重试要么干净地断开。 */
+	completeMultiTransfer(emu, 0, false, cyclesLate);
 }
 
 static bool gbaLinkInit(struct GBASIODriver* driver) {
@@ -1375,12 +1762,17 @@ static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driv
 		return false;
 	}
 	emu->sioStartCycle = mTimingCurrentTime(timing);
-	/* 立刻把本轮数据推出去，别等对端来问：对端可能比本机早到传输到点，
-	 * 那时它需要的正是这一轮的字。 */
-	netLinkPush(emu->link, GBA_SIO_MULTI, local, emu->sioIndex);
-	emu->sioPushValue = local;
-	emu->sioPushIndex = emu->sioIndex;
-	emu->sioPushed = true;
+	/* 1P 是产生时钟的一方，它在写 SIOCNT 起传输这一刻，本轮要发的字早就由游戏
+	 * 写进 SIOMLT_SEND 了（gen8 的 DoSend 在中断处理里写、StartTransfer 之后
+	 * 才写 SIOCNT），所以这里推出去的就是本轮的真值 —— 而且只推这一次。
+	 * 一轮推两次（例如再让轮询去补推一个 SIOIndex+1）就会把「下一轮的槽位」提前
+	 * 填上这一轮的旧值，对端按轮次取的时候正好错位一格。 */
+	if (!emu->sioPushed || emu->sioPushIndex != emu->sioIndex) {
+		netLinkPush(emu->link, GBA_SIO_MULTI, local, emu->sioIndex);
+		emu->sioPushValue = local;
+		emu->sioPushIndex = emu->sioIndex;
+		emu->sioPushed = true;
+	}
 	mTimingDeschedule(timing, &emu->sioDone);
 	mTimingSchedule(timing, &emu->sioDone, GBASIOTransferCycles(GBA_SIO_MULTI, driver->p->siocnt, gbaLinkDevices(driver)));
 	if (emu->sioKick < 200) {
@@ -1656,6 +2048,9 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->sioPushed = false;
 		emu->sioPushValue = 0;
 		emu->sioPushIndex = 0;
+		emu->sioPushPending = 0;
+		emu->sioMisorder = 0;
+		emu->sioHasRemote = false;
 		emu->sioEvtDbg = 0;
 		emu->sioTakeDbg = 0;
 		emu->sioInDbg = 0;
@@ -1846,6 +2241,9 @@ void mgbaMobileClearAudio(struct MgbaMobile* emu) {
 	if (buffer) {
 		mAudioBufferClear(buffer);
 	}
+	if (emu->audioHoldInited) {
+		mAudioBufferClear(&emu->audioHold);
+	}
 	resetAudioOutput(emu);
 }
 
@@ -1875,6 +2273,40 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate) {
 	emu->audioOutRate = outRate;
 	MOBILE_LOGI("Audio output resampler at %d Hz", outRate);
 	return true;
+}
+
+/*
+ * Turns 不变速 (constant pitch) playback on or off. While it is on the
+ * fast-forwarded game's surplus audio is parked in a buffer and replayed at
+ * the console's own rate instead of being shredded by the core's ring, so the
+ * music keeps its speed and pitch and only jumps when the park fills. The
+ * front end is expected to pass speed 1 to mgbaMobileReadAudioOut while this
+ * is on - the resampler rate is what sets the pitch, and this only decides
+ * where the surplus goes.
+ */
+void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double stretch) {
+	if (!emu) {
+		return;
+	}
+	/*
+	 * Called from the UI thread (the speed-menu checkbox) while
+	 * mgbaMobileReadAudioOut runs on the emulation/audio thread. The WSOLA
+	 * buffers are owned exclusively by the audio thread: initAudioHold (called
+	 * from readAudioOut) allocates/rebuilds them and only teardown frees them.
+	 * Touching them here - as an earlier version did with mAudioBufferClear and
+	 * deinitAudioHold - races wsolaGenerate and crashes (use-after-free). So
+	 * only publish the request; the audio thread acts on it on its next read.
+	 */
+	emu->wsolaStretch = stretch;
+	emu->wsolaClearPending = true;
+	emu->audioHoldOn = on;
+	if (emu->audioResamplerInited) {
+		emu->audioResampler.timestamp = 0;
+	}
+}
+
+size_t mgbaMobileWsolaDropped(const struct MgbaMobile* emu) {
+	return emu ? emu->wsolaDropped : 0;
 }
 
 /*
@@ -2111,6 +2543,29 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	unsigned coreRate = emu->core->audioSampleRate(emu->core);
 	if (!source || !coreRate) {
 		return 0;
+	}
+	if (emu->audioHoldOn) {
+		// Time-stretch the surplus with WSOLA so the music stays continuous and
+		// at its own pitch, then resample the stretched output at the console
+		// rate. No section is ever dropped, so the tune never jumps.
+		//
+		// This runs on the emulation/audio thread, which owns every WSOLA
+		// buffer; the UI only ever sets audioHoldOn / wsolaStretch /
+		// wsolaClearPending (see mgbaMobileSetAudioConstantPitch).
+		initAudioHold(emu, coreRate, emu->wsolaStretch);
+		if (emu->audioHoldInited) {
+			if (emu->wsolaClearPending) {
+				// A toggle happened since last time: drop anything staged under
+				// the previous speed/mode so a re-enable never replays it.
+				mAudioBufferClear(&emu->audioHold);
+				mAudioBufferClear(&emu->wsolaIn);
+				emu->wsolaAnaPos = 0;
+				emu->wsolaClearPending = false;
+			}
+			wsolaFeed(emu, source);
+			wsolaGenerate(emu, (size_t) maxFrames);
+			source = &emu->audioHold;
+		}
 	}
 	if (speed < 0.05) {
 		speed = 0.05;

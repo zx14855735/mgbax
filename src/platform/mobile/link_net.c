@@ -188,10 +188,25 @@ enum {
 	PKT_ACK = 2,
 	PKT_TICK = 3,
 	PKT_BYE = 4,
-	PKT_PUSH = 5
+	PKT_PUSH = 5,
+	PKT_PING = 6,
+	PKT_PONG = 7
 };
 
 enum { REQ_QUEUE = 8 };
+
+/* 对端每轮推一个字过来，本机每完成一轮取走一个字。两边都是「一轮一推一取」，
+ * 所以这里必须按先来先取排队，不能只留最新一条 —— 主机跑在前面时，它已经在
+ * 推第 N+1 轮了，而从机还在等第 N 轮；只留最新一条会把第 N 轮的字直接覆盖掉，
+ * 从机只能拿到第 N+1 轮的字顶上去，整条流从此错位一格，送进游戏的 SIOMULTI
+ * 永远是别人的上一轮数据（握手能过、checksum 必挂）。 */
+enum { PEER_QUEUE = 16 };
+
+struct PeerWord {
+	uint16_t index;
+	uint16_t mode;
+	uint32_t value;
+};
 
 struct Packet {
 	uint32_t magic;
@@ -235,18 +250,26 @@ struct NetLink {
 	uint16_t ackSeq;
 	uint32_t ackValue;
 
-	/* 对端在它自己那次传输开始时推过来的数据：只在确认收到时置位，取走即消耗。
-	 * 有了它，本机就能在自己的传输周期结束时直接收尾，不必等网络往返。 */
-	uint32_t peerValue;
-	uint16_t peerMode;
-	uint16_t peerIndex;
-	bool peerValid;
+	/* 对端在它自己那次传输开始时推过来的数据：按轮次先来先取。 */
+	struct PeerWord peerQ[PEER_QUEUE];
+	int peerHead;
+	int peerCount;
+	uint32_t peerStale;
+	uint32_t peerDrops;
 
 	struct Req queue[REQ_QUEUE];
 	int qHead;
 	int qCount;
 	/* 联机排查：只打前几条 REQ，确认请求确实到达了 IO 线程。 */
 	int reqDbg;
+
+	/* 延迟探测：每秒一个往返。GBA 联机线是同步串行协议，两边必须同一个
+	 * 节拍上交换同一个字，所以 RTT 会直接换成掉帧——异地联机前先看清这个数。 */
+	uint32_t pingAt;
+	uint32_t lastPingAt;
+	uint16_t pingSeq;
+	bool pingOut;
+	int rttMs;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -362,6 +385,24 @@ static void* readerMain(void* arg) {
 		if (pkt.type == PKT_BYE) {
 			break;
 		}
+		if (pkt.type == PKT_PING) {
+			/* 探针立刻原样回声，走 IO 线程，不经过模拟线程也不会被 SIO 阻塞影响。 */
+			sendPacket(link, PKT_PONG, pkt.seq, 0, pkt.value);
+			continue;
+		}
+		if (pkt.type == PKT_PONG) {
+			pthread_mutex_lock(&link->mu);
+			if (link->pingOut && pkt.seq == link->pingSeq) {
+				/* 用对端回带的时间戳算，避免两边时钟不同步。 */
+				int ms = (int) (nowMs() - pkt.value);
+				link->pingOut = false;
+				if (ms >= 0 && ms < 5000) {
+					link->rttMs = link->rttMs > 0 ? (link->rttMs * 3 + ms) / 4 : ms;
+				}
+			}
+			pthread_mutex_unlock(&link->mu);
+			continue;
+		}
 		if (pkt.type == PKT_TICK) {
 			pthread_mutex_lock(&link->mu);
 			if (pkt.value > link->peerTick) {
@@ -384,14 +425,18 @@ static void* readerMain(void* arg) {
 		}
 		if (pkt.type == PKT_PUSH) {
 			pthread_mutex_lock(&link->mu);
-			/* 只保留更新的一次推送；旧序号的迟到包直接丢掉，否则会错位一格。
-			 * 同一轮次允许被覆盖：对端本轮的字可能先推来旧值、改完再推一次。 */
-			if (!link->peerValid || (int16_t) (pkt.seq - link->peerIndex) >= 0) {
-				link->peerValue = pkt.value;
-				link->peerMode = pkt.mode;
-				link->peerIndex = pkt.seq;
-				link->peerValid = true;
+			if (link->peerCount == PEER_QUEUE) {
+				/* 队列满了说明有一轮的推送永远收不到（对端多推/丢包），
+				 * 丢掉最老的一条继续跑，至少别把整条链路卡死。 */
+				link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+				link->peerCount--;
+				++link->peerDrops;
 			}
+			int slot = (link->peerHead + link->peerCount) % PEER_QUEUE;
+			link->peerQ[slot].index = pkt.seq;
+			link->peerQ[slot].mode = pkt.mode;
+			link->peerQ[slot].value = pkt.value;
+			link->peerCount++;
 			pthread_cond_broadcast(&link->cv);
 			pthread_mutex_unlock(&link->mu);
 			continue;
@@ -480,6 +525,10 @@ static void* hostMain(void* arg) {
 		link->peerTick = 0;
 		link->qHead = 0;
 		link->qCount = 0;
+		link->peerHead = 0;
+		link->peerCount = 0;
+		link->peerStale = 0;
+		link->peerDrops = 0;
 		setMessage(link, "已连接，你是 1P");
 		pthread_mutex_unlock(&link->mu);
 		LINK_LOG("Link client accepted");
@@ -568,6 +617,8 @@ void netLinkClose(struct NetLink* link) {
 	link->stop = false;
 	link->state = LINK_OFF;
 	link->qCount = 0;
+	link->peerHead = 0;
+	link->peerCount = 0;
 	setMessage(link, "");
 	pthread_mutex_unlock(&link->mu);
 }
@@ -645,6 +696,10 @@ bool netLinkJoin(struct NetLink* link, const char* host, int port) {
 	link->state = LINK_CONNECTED;
 	link->localTick = 0;
 	link->peerTick = 0;
+	link->peerHead = 0;
+	link->peerCount = 0;
+	link->peerStale = 0;
+	link->peerDrops = 0;
 	link->stop = false;
 	setMessage(link, "已连接，你是 2P");
 	pthread_mutex_unlock(&link->mu);
@@ -685,7 +740,11 @@ void netLinkStatusText(struct NetLink* link, char* out, size_t outLen) {
 		return;
 	}
 	pthread_mutex_lock(&link->mu);
-	snprintf(out, outLen, "%d %d %s", link->state, link->player, link->message);
+	if (link->rttMs > 0) {
+		snprintf(out, outLen, "%d %d %s · 延迟 %dms", link->state, link->player, link->message, link->rttMs);
+	} else {
+		snprintf(out, outLen, "%d %d %s", link->state, link->player, link->message);
+	}
 	pthread_mutex_unlock(&link->mu);
 }
 
@@ -699,7 +758,20 @@ bool netLinkBarrier(struct NetLink* link, int timeoutMs) {
 		return false;
 	}
 	uint32_t mine = ++link->localTick;
+	/* 每秒发一个探针量 RTT，联机状态栏直接显示，异地联机先看这个数。 */
+	uint32_t now = nowMs();
+	bool probe = !link->pingOut && (link->rttMs == 0 || now - link->lastPingAt >= 1000);
+	uint16_t probeSeq = 0;
+	if (probe) {
+		probeSeq = ++link->pingSeq;
+		link->pingOut = true;
+		link->pingAt = now;
+		link->lastPingAt = now;
+	}
 	pthread_mutex_unlock(&link->mu);
+	if (probe) {
+		sendPacket(link, PKT_PING, probeSeq, 0, now);
+	}
 	if (!sendPacket(link, PKT_TICK, (uint16_t) mine, 0, mine)) {
 		return false;
 	}
@@ -815,55 +887,69 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
 	sendPacket(link, PKT_PUSH, index, mode, local);
 }
 
-bool netLinkTakePeer(struct NetLink* link, uint16_t minIndex, uint32_t* value) {
-	if (!link) {
-		return false;
-	}
-	pthread_mutex_lock(&link->mu);
-	if (!link->peerValid) {
-		pthread_mutex_unlock(&link->mu);
-		return false;
-	}
-	if ((int16_t) (link->peerIndex - minIndex) < 0) {
-		/* 比本机这次传输还老的推送：这一次先不取（取了整条流会错位一格），
-		 * 但也不要丢掉 —— 对端的新推送会覆盖它，等不到新的再退化成旧值。 */
-		pthread_mutex_unlock(&link->mu);
-		return false;
-	}
-	link->peerValid = false;
-	if (value) {
-		*value = link->peerValue;
-	}
-	pthread_mutex_unlock(&link->mu);
-	return true;
-}
-
-bool netLinkWaitForPeer(struct NetLink* link, uint16_t index, int timeoutMs, uint32_t* value) {
+bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut) {
 	if (!link) {
 		return false;
 	}
 	bool ok = false;
 	pthread_mutex_lock(&link->mu);
+	uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
 	for (;;) {
-		if (link->peerValid && (int16_t) (link->peerIndex - index) >= 0) {
-			link->peerValid = false;
+		while (link->peerCount > 0) {
+			struct PeerWord w = link->peerQ[link->peerHead];
+			link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+			link->peerCount--;
+			if ((int16_t) (w.index - want) < 0) {
+				/* 比本轮还老的推送：本机早就超时收尾过了，丢掉，
+				 * 否则后面的每一轮都会被这条拖慢一格。 */
+				++link->peerStale;
+				continue;
+			}
 			if (value) {
-				*value = link->peerValue;
+				*value = w.value;
+			}
+			if (indexOut) {
+				*indexOut = w.index;
 			}
 			ok = true;
 			break;
 		}
-		if (link->state != LINK_CONNECTED || timeoutMs <= 0) {
+		if (ok || timeoutMs <= 0) {
 			break;
 		}
-		int slice = timeoutMs > 20 ? 20 : timeoutMs;
+		if (link->state != LINK_CONNECTED || link->stop) {
+			break;
+		}
+		uint32_t now = nowMs();
+		if ((int32_t) (expireAt - now) <= 0) {
+			break;
+		}
 		struct timespec ts;
-		deadline(&ts, slice);
+		deadline(&ts, 20);
 		pthread_cond_timedwait(&link->cv, &link->mu, &ts);
-		timeoutMs -= slice;
 	}
 	pthread_mutex_unlock(&link->mu);
 	return ok;
+}
+
+void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {
+	if (stale) {
+		*stale = 0;
+	}
+	if (drops) {
+		*drops = 0;
+	}
+	if (!link) {
+		return;
+	}
+	pthread_mutex_lock(&link->mu);
+	if (stale) {
+		*stale = link->peerStale;
+	}
+	if (drops) {
+		*drops = link->peerDrops;
+	}
+	pthread_mutex_unlock(&link->mu);
 }
 
 bool netLinkRequest(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t* seqOut) {

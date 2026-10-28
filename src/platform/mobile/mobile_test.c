@@ -559,6 +559,312 @@ static void testAudioConstPitch(const char* dir) {
 	mgbaMobileDestroy(emu);
 }
 
+/*
+ * Share of edge intervals that stray more than a quarter from the median.
+ * A tune played in one continuous run has evenly spaced edges, so this stays
+ * near zero; audio shredded by a ring that overflows every few milliseconds
+ * still measures the right average pitch but its edges scatter, which is
+ * exactly why it stops sounding like music.
+ */
+static double audioEdgeJitter(const int16_t* samples, int frames) {
+	int peak = 0;
+	int threshold;
+	int above = 0;
+	int cooldown = 0;
+	int i;
+	int count = 0;
+	long prev = -1;
+	static long gaps[8192];
+	for (i = 0; i < frames; ++i) {
+		int value = samples[i * 2];
+		if (value < 0) {
+			value = -value;
+		}
+		if (value > peak) {
+			peak = value;
+		}
+	}
+	if (peak < 500) {
+		return 1.0;
+	}
+	threshold = peak / 4;
+	for (i = 0; i < frames && count < 8192; ++i) {
+		int value = samples[i * 2];
+		if (cooldown > 0) {
+			--cooldown;
+		}
+		if (!above && value >= threshold) {
+			if (prev >= 0) {
+				gaps[count++] = i - prev;
+			}
+			prev = i;
+			cooldown = 8;
+			above = 1;
+		} else if (above && value < -threshold) {
+			above = 0;
+		}
+	}
+	if (count < 16) {
+		return 1.0;
+	}
+	long median = gaps[count / 2];
+	if (median <= 0) {
+		return 1.0;
+	}
+	int bad = 0;
+	for (i = 0; i < count; ++i) {
+		long d = gaps[i] - median;
+		if (d < 0) {
+			d = -d;
+		}
+		if (d * 4 > median) {
+			++bad;
+		}
+	}
+	return (double) bad / (double) count;
+}
+
+/*
+ * Models the playback loop the way a device actually runs it: the front end
+ * paces at the console frame rate and the audio device drains a fixed number
+ * of output frames per slice (outRate/slicesPerSec), no matter how many
+ * emulated frames the game ran in that slice. Anything the game produces
+ * beyond that has to be dropped somewhere, so this is the only model that
+ * shows what 不变速 really sounds like - the earlier fixed-size collection
+ * filled its buffer as fast as the resampler would go and therefore never
+ * exercised the surplus at all.
+ */
+static int collectRealtimeAudio(struct MgbaMobile* emu, int16_t* out, int slices,
+		int perSlice, int gameFrames, double audioSpeed) {
+	int16_t* tmp = (int16_t*) calloc(8192 * 2, sizeof(int16_t));
+	int total = 0;
+	int slice;
+	if (!tmp) {
+		return 0;
+	}
+	for (slice = 0; slice < slices; ++slice) {
+		int want = perSlice;
+		int guard = 0;
+		mgbaMobileRunFrames(emu, gameFrames);
+		while (want > 0 && guard++ < 64) {
+			int got = mgbaMobileReadAudioOut(emu, tmp, want > 8192 ? 8192 : want,
+					audioSpeed, 0.0f);
+			if (got <= 0) {
+				break;
+			}
+			if (total + got > slices * perSlice) {
+				got = slices * perSlice - total;
+			}
+			memcpy(out + total * 2, tmp, (size_t) got * 2 * sizeof(int16_t));
+			total += got;
+			want -= got;
+		}
+	}
+	free(tmp);
+	return total;
+}
+
+static void testAudioConstPitchRealtime(const char* dir) {
+	const int OUT_RATE = 48000;
+	const double SLICES_PER_SEC = 59.73;
+	const int SLICES = 300;
+	const int PER_SLICE = (int) (OUT_RATE / SLICES_PER_SEC) + 1;
+	const int CAP = SLICES * PER_SLICE;
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	double base;
+	double pitch;
+	double shredded;
+	double held;
+	int total;
+	expect(writeAudioRom(dir, path, sizeof(path)), "write realtime rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load realtime rom");
+	out = (int16_t*) calloc((size_t) CAP * 2 + 2, sizeof(int16_t));
+	expect(out != NULL, "realtime buffer");
+	if (!out) {
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, OUT_RATE), "realtime resampler");
+
+	// 1x: one emulated frame per slice, resampler at 1.
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileClearAudio(emu);
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	total = collectRealtimeAudio(emu, out, SLICES, PER_SLICE, 1, 1.0);
+	base = audioPitchHz(out, total, OUT_RATE);
+	printf("realtime 1x: %d/%d frames, %.1f Hz\n", total, CAP, base);
+	expect(base > 480.0 && base < 545.0, "realtime 1x plays at its own frequency");
+
+	// Tape style: 4 emulated frames per slice, resampler following at 4.
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileClearAudio(emu);
+	memset(out, 0, ((size_t) CAP * 2 + 2) * sizeof(int16_t));
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	total = collectRealtimeAudio(emu, out, SLICES, PER_SLICE, 4, 4.0);
+	pitch = audioPitchHz(out, total, OUT_RATE);
+	printf("realtime tape 4x: %d/%d frames, %.1f Hz (base %.1f, %.2fx)\n",
+			total, CAP, pitch, base, base > 0.0 ? pitch / base : 0.0);
+	expect(pitch > base * 3.2 && pitch < base * 4.8, "realtime tape 4x pitches up 4x");
+
+	// 不变速: 4 emulated frames per slice, resampler held at 1. The surplus
+	// has to be dropped, but what reaches the device must keep its pitch.
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileClearAudio(emu);
+	memset(out, 0, ((size_t) CAP * 2 + 2) * sizeof(int16_t));
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	total = collectRealtimeAudio(emu, out, SLICES, PER_SLICE, 4, 1.0);
+	pitch = audioPitchHz(out, total, OUT_RATE);
+	printf("realtime 不变速 4x: %d/%d frames, %.1f Hz (base %.1f, %.2fx), jitter %.3f\n",
+			total, CAP, pitch, base, base > 0.0 ? pitch / base : 0.0,
+			audioEdgeJitter(out, total));
+	expect(pitch > base * 0.85 && pitch < base * 1.15, "realtime 不变速 4x keeps the pitch");
+	shredded = audioEdgeJitter(out, total);
+
+	// Same again with the surplus time-stretched (WSOLA) instead of dropped:
+	// the pitch is unchanged and the music plays continuously at its own tempo,
+	// covering the whole track (no section skipped).
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileSetAudioConstantPitch(emu, true, 4.0);
+	mgbaMobileClearAudio(emu);
+	memset(out, 0, ((size_t) CAP * 2 + 2) * sizeof(int16_t));
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	total = collectRealtimeAudio(emu, out, SLICES, PER_SLICE, 4, 1.0);
+	pitch = audioPitchHz(out, total, OUT_RATE);
+	held = audioEdgeJitter(out, total);
+	printf("realtime 不变速 4x WSOLA: %d/%d frames, %.1f Hz (%.2fx), jitter %.3f (scatter was %.3f)\n",
+			total, CAP, pitch, base > 0.0 ? pitch / base : 0.0, held, shredded);
+	expect(pitch > base * 0.85 && pitch < base * 1.15, "WSOLA 不变速 4x keeps the pitch");
+	expect(total >= CAP * 0.8, "WSOLA 不变速 4x plays the whole track (no 3/4 dropped)");
+	expect(held < 0.10 && held < shredded * 0.7,
+			"WSOLA 不变速 4x is far more continuous than the shredded path (no section jump)");
+	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
+	free(out);
+	mgbaMobileDestroy(emu);
+}
+
+/*
+ * Models the Android front end's audio pump as closely as it can be modelled
+ * off-device: mgbaMobileReadAudioOut is asked for a large fixed block (the
+ * front end passes AUDIO_READ_FRAMES = 8192) and drains up to eight of those
+ * per paced slice, taking everything it gets.
+ *
+ * That big request is what exposed the staging-buffer overflow. The old
+ * `produced < want * 8` bound let a single call pour tens of thousands of
+ * frames into the two-second staging buffer; mAudioBufferWrite accepts short
+ * writes, the remainder was dropped, and the analysis cursor still advanced -
+ * whole synthesis hops vanished while the input was consumed anyway, so
+ * fast-forward played chopped, gappy music instead of the stretched track. The
+ * per-slice harness above only ever asks for ~800 frames, which is small enough
+ * that the buffer never filled, which is exactly why it passed.
+ */
+static void testAudioConstPitchDevicePump(const char* dir) {
+	const int OUT_RATE = 48000;
+	const double SLICES_PER_SEC = 59.73;
+	const int SLICES = 300;
+	const int PER_SLICE = (int) (OUT_RATE / SLICES_PER_SEC) + 1;
+	const int CAP = SLICES * PER_SLICE;
+	const int BLOCK = 8192;   /* EmulatorActivity.AUDIO_READ_FRAMES */
+	const int ROUNDS = 8;     /* pumpAudio() drain rounds per slice */
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	int16_t* tmp;
+	int64_t delivered = 0;
+	int total = 0;
+	double base;
+	double pitch;
+	size_t dropped;
+	int slice;
+	int round;
+
+	expect(writeAudioRom(dir, path, sizeof(path)), "write device-pump rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load device-pump rom");
+	out = (int16_t*) calloc((size_t) CAP * 2 + 2, sizeof(int16_t));
+	tmp = (int16_t*) calloc((size_t) BLOCK * 2, sizeof(int16_t));
+	expect(out != NULL && tmp != NULL, "device-pump buffers");
+	if (!out || !tmp) {
+		free(out);
+		free(tmp);
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, OUT_RATE), "device-pump resampler");
+
+	/* Baseline at 1x with the same block size, so the ratio is comparable. */
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileClearAudio(emu);
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	for (slice = 0; slice < SLICES; ++slice) {
+		mgbaMobileRunFrames(emu, 1);
+		for (round = 0; round < ROUNDS; ++round) {
+			int got = mgbaMobileReadAudioOut(emu, tmp, BLOCK, 1.0, 0.0f);
+			if (got <= 0) {
+				break;
+			}
+			if (total + got > CAP) {
+				got = CAP - total;
+			}
+			if (got <= 0) {
+				break;
+			}
+			memcpy(out + total * 2, tmp, (size_t) got * 2 * sizeof(int16_t));
+			total += got;
+		}
+	}
+	base = audioPitchHz(out, total, OUT_RATE);
+	printf("device pump 1x: %d/%d frames, %.1f Hz\n", total, CAP, base);
+	expect(base > 480.0 && base < 545.0, "device pump 1x plays at its own frequency");
+
+	/* 不变速 at 4x through the device's block size. */
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileSetAudioConstantPitch(emu, true, 4.0);
+	mgbaMobileClearAudio(emu);
+	memset(out, 0, ((size_t) CAP * 2 + 2) * sizeof(int16_t));
+	total = 0;
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	for (slice = 0; slice < SLICES; ++slice) {
+		/* The front end calls syncFastAudio() at the top of every slice, and
+		 * while 不变速 is on that republishes the mode ~60 times a second. */
+		mgbaMobileSetAudioConstantPitch(emu, true, 4.0);
+		mgbaMobileRunFrames(emu, 4);
+		for (round = 0; round < ROUNDS; ++round) {
+			int got = mgbaMobileReadAudioOut(emu, tmp, BLOCK, 1.0, 0.0f);
+			if (got <= 0) {
+				break;
+			}
+			delivered += got;
+			if (total >= CAP) {
+				continue;
+			}
+			if (total + got > CAP) {
+				got = CAP - total;
+			}
+			memcpy(out + total * 2, tmp, (size_t) got * 2 * sizeof(int16_t));
+			total += got;
+		}
+	}
+	pitch = audioPitchHz(out, total, OUT_RATE);
+	dropped = mgbaMobileWsolaDropped(emu);
+	printf("device pump 不变速 4x WSOLA: %d/%d frames (delivered %lld), %.1f Hz (%.2fx), dropped %zu\n",
+			total, CAP, (long long) delivered, pitch, base > 0.0 ? pitch / base : 0.0, dropped);
+	expect(pitch > base * 0.85 && pitch < base * 1.15, "device pump WSOLA keeps the pitch");
+	expect(dropped == 0, "device pump WSOLA never discards a synthesis hop");
+	/* The device drains one second of audio per second of wall clock, so a
+	 * correct pump delivers about CAP frames no matter how many rounds it is
+	 * allowed; far more would mean it is pushing audio the device cannot play. */
+	expect(delivered <= (int64_t) (CAP * 1.25), "device pump WSOLA delivers one second per second");
+	expect(total >= CAP * 0.8, "device pump WSOLA fills the whole window");
+
+	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
+	free(out);
+	free(tmp);
+	mgbaMobileDestroy(emu);
+}
+
 struct ExArgs {
 	struct NetLink* link;
 	uint32_t value;
@@ -972,6 +1278,8 @@ int main(int argc, char** argv) {
 	testAudioOut(dir);
 	testAudioPitch(dir);
 	testAudioConstPitch(dir);
+	testAudioConstPitchRealtime(dir);
+	testAudioConstPitchDevicePump(dir);
 	testLink();
 	testRelay();
 	if (g_failed) {

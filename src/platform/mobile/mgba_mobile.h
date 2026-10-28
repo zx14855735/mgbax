@@ -39,6 +39,21 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate);
  */
 int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, double speed, float drift);
 /*
+ * Turns 不变速 (constant pitch) playback on or off: with it on, the surplus
+ * audio a fast-forwarded game produces is parked and replayed at the console's
+ * own rate instead of being shredded by the core's ring. The surplus is time-
+ * stretched with WSOLA so the music keeps its own speed and pitch with no
+ * skipped section. Pass speed 1 to mgbaMobileReadAudioOut while it is on;
+ * stretch is the fast-forward multiplier.
+ */
+void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double stretch);
+/*
+ * Frames the time-stretcher had to discard because its staging buffer could not
+ * take them. Should always be 0; a non-zero value means a hole in the music
+ * (the tests use it to prove the stretcher never eats input it cannot emit).
+ */
+size_t mgbaMobileWsolaDropped(const struct MgbaMobile* emu);
+/*
  * Frames per second the front end is actually pacing emulation at (measured,
  * not nominal). Call about once a second; the resampler follows it so audio
  * stays locked to the playback device even when the front end cannot hold its
