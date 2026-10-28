@@ -4686,6 +4686,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 gboy.close()
             }
             self.gboyRemoteKeys = 0
+            // Mirror the Android disconnect path: republish the (now empty)
+            // key mask so the last remote peer's buttons don't linger on the
+            // core until the next local key event.
+            self.publishKeys()
             self.linkWatch?.cancel()
             self.lastLinkState = 0
             status.text = "断开"
