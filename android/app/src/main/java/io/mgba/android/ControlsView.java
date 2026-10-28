@@ -374,6 +374,15 @@ public class ControlsView extends View {
         invalidate();
     }
 
+    /**
+     * True while the dedicated turbo-B on-screen key is held (pulsing B on its
+     * own cadence). The hold-B auto-turbo must not also arm for this press, or
+     * the two systems stack and fight over the B bit (see EmulatorActivity).
+     */
+    public boolean turboBPressed() {
+        return (pulseMask & B) != 0;
+    }
+
     /** Shows the optional utility keys named like "ta", "tb", "lr", "save"... */
     public void setVisibleExtras(java.util.Collection<String> keys) {
         visibleExtras.clear();

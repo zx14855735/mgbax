@@ -80,6 +80,31 @@ static int writeFile(const char* path, const unsigned char* data, size_t size) {
 	return 1;
 }
 
+static int copyFile(const char* from, const char* to) {
+	FILE* src = fopen(from, "rb");
+	FILE* dst;
+	char buffer[65536];
+	size_t got;
+	if (!src) {
+		return 0;
+	}
+	dst = fopen(to, "wb");
+	if (!dst) {
+		fclose(src);
+		return 0;
+	}
+	while ((got = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+		if (fwrite(buffer, 1, got, dst) != got) {
+			fclose(src);
+			fclose(dst);
+			return 0;
+		}
+	}
+	fclose(src);
+	fclose(dst);
+	return 1;
+}
+
 static void testGb(const char* dir) {
 	unsigned char* rom;
 	char path[512];
@@ -731,6 +756,127 @@ static void testRelay(void) {
 	pthread_cond_destroy(&guestFake.cv);
 }
 
+/*
+ * 连点B (turbo B) against a real game.
+ *
+ * Two front-end features drive the same key: the dedicated 连发 key on screen
+ * pulses B into the held keys, and the hold-B auto-turbo arms at the same time
+ * and pulses B through the core's turbo mask. While both are active the key
+ * must still come up on the turbo's off frames - if it does not, the game sees
+ * B held on every frame, and a game that runs while B is held never lets go
+ * (跑步卡死).
+ *
+ * The key state is read back through the console's own key register, so what
+ * is checked is exactly what the game sees.
+ */
+#define TURBO_B_BIT (1u << 1)
+
+/* What the front end publishes as held on frame i, per scenario. */
+#define TURBO_PULSE 0
+#define TURBO_HOLD 1
+#define TURBO_NONE 2
+
+struct TurboTrace {
+	int pressed;
+	int released;
+	int stuck;
+	int maxStuck;
+};
+
+static uint32_t turboHeldMask(int scenario, int i) {
+	if (scenario == TURBO_PULSE) {
+		/* The 连发 key pulses B into the held keys on its own cadence. */
+		return (i & 1) ? TURBO_B_BIT : 0u;
+	}
+	if (scenario == TURBO_HOLD) {
+		return TURBO_B_BIT;
+	}
+	return 0u;
+}
+
+static void turboTraceRun(struct MgbaMobile* emu, struct TurboTrace* trace, int scenario, int frames, int printFirst) {
+	int i;
+	for (i = 0; i < frames; ++i) {
+		mgbaMobileSetKeys(emu, turboHeldMask(scenario, i));
+		mgbaMobileRunFrames(emu, 1);
+		/* B is bit 1 of the active-low key register: clear means pressed. */
+		uint16_t keys = mgbaMobileLastKeys(emu);
+		if (keys & TURBO_B_BIT) {
+			++trace->released;
+			trace->stuck = 0;
+		} else {
+			++trace->pressed;
+			++trace->stuck;
+			if (trace->stuck > trace->maxStuck) {
+				trace->maxStuck = trace->stuck;
+			}
+		}
+		if (printFirst > 0) {
+			printf("  frame %3d: B %s (reg 0x%04X)\n", i, (keys & TURBO_B_BIT) ? "up  " : "down", keys);
+			--printFirst;
+		}
+	}
+}
+
+static void testTurboB(const char* dir) {
+	const char* romPath = getenv("MGBA_TEST_ROM");
+	char path[512];
+	struct MgbaMobile* emu;
+	struct TurboTrace trace;
+	if (!romPath) {
+		romPath = "D:/gen8/rom.gba";
+	}
+	snprintf(path, sizeof(path), "%s/turbo_rom.gba", dir);
+	/* Copy the ROM next to the test so a run can never touch a real save
+	 * file sitting next to the original. */
+	if (!copyFile(romPath, path)) {
+		printf("skip turboB: no rom at %s\n", romPath);
+		return;
+	}
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(emu != NULL, "turboB create emu");
+	if (!emu) {
+		return;
+	}
+	expect(mgbaMobileLoad(emu, path), "turboB load rom");
+	printf("turboB rom %s\n", path);
+
+	/*
+	 * The 连点B case: the 连发 key pulses B into the held keys while the
+	 * hold-B auto-turbo is armed and pulses B through the core's turbo mask.
+	 * B has to come up on the turbo's off frames, otherwise the game sees it
+	 * held on every frame and the character runs forever (跑步卡死).
+	 */
+	memset(&trace, 0, sizeof(trace));
+	mgbaMobileSetTurbo(emu, TURBO_B_BIT);
+	turboTraceRun(emu, &trace, TURBO_PULSE, 240, 12);
+	mgbaMobileSetTurbo(emu, 0);
+	printf("turboB 连点B: pressed=%d released=%d longestHeldRun=%d\n", trace.pressed, trace.released, trace.maxStuck);
+	expect(trace.released > 0, "turboB: B is released on the turbo off frames");
+	expect(trace.pressed > 0, "turboB: B is pressed on the turbo on frames");
+	expect(trace.maxStuck < 240, "turboB: B is not pinned on for every frame");
+
+	/* Only the 连发 key, no auto-turbo: B still pulses on the key's cadence. */
+	memset(&trace, 0, sizeof(trace));
+	turboTraceRun(emu, &trace, TURBO_PULSE, 60, 0);
+	printf("turboB 连发键: pressed=%d released=%d\n", trace.pressed, trace.released);
+	expect(trace.pressed > 0 && trace.released > 0, "turboB: the 连发 key alone pulses B");
+
+	/* A plain held B stays down on every frame. */
+	memset(&trace, 0, sizeof(trace));
+	turboTraceRun(emu, &trace, TURBO_HOLD, 60, 0);
+	printf("turboB 按住B: pressed=%d released=%d\n", trace.pressed, trace.released);
+	expect(trace.pressed == 60 && trace.released == 0, "turboB: a held B stays down");
+
+	/* And letting go brings it up again and keeps it up (松开即停). */
+	memset(&trace, 0, sizeof(trace));
+	turboTraceRun(emu, &trace, TURBO_NONE, 60, 0);
+	printf("turboB 松手: pressed=%d released=%d\n", trace.pressed, trace.released);
+	expect(trace.released == 60 && trace.pressed == 0, "turboB: releasing B lets it up for good");
+
+	mgbaMobileDestroy(emu);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 #ifdef _WIN32
@@ -751,6 +897,7 @@ int main(int argc, char** argv) {
 	testResample();
 	testGb(dir);
 	testGba(dir);
+	testTurboB(dir);
 	testAudioOut(dir);
 	testAudioPitch(dir);
 	testLink();

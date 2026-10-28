@@ -1,0 +1,108 @@
+<conversation_history_summary>
+Summary of the conversation between an AI agent and user.
+All tasks described below are already completed.
+**DO NOT re-run, re-do or re-execute any tasks mentioned!**
+Use this summary only for context understanding.
+
+<analysis>
+The conversation continues a task to fix a GBA multiplayer (SIO) link bug in mGBA for Android, specifically for Pokemon Quetzal. The root cause was previously identified as: (1) mGBA kernel `sio.c` only triggers MULTI transfer on Busy(bit7) rising edge for host(id==0), slave branch is TODO; (2) Pokemon games write 0x600F (IRQ bit14 set, Busy=0) to start MULTI transfer, which the kernel never acts on; (3) blocking network waits in emulation thread.
+
+In the recent continuation, the agent built multiple diagnostic APK versions, installed them to two AVDs (emulator-5554=A, emulator-5556=B), and methodically walked both through the game to test real multiplayer. Key discovery: A-key "failures" in menus were actually the game stuck on SIO handshake (input was proven delivered via `Held 0x1` latch logs), not input problems. B-side save file issues were resolved by completing a new game and saving. The kick detection (bit14/0x4000 rising edge) was added to `gbaLinkWriteCnt`. The agent found that game writes 0x600F repeatedly, and kick only fires on rising edge so it triggers once. Latest build (16:12) added full SIO diagnostics (poll every 120 frames, kick logs, RCNT logs). Most recent actions: both AVDs launched with quetzal.gba, cleared logs, both continued from save into bedroom, about to create lobby. User interrupted at the final lobby step.
+</analysis>
+
+<summary>
+
+1. **Primary Request and Intent:**
+   - User provided opencode session screenshot titled 「双方使用联机大厅显示已连接上 却不能在这个rom上联机玩」 (lobby shows connected but can't multiplayer on this ROM) — two mGBAx show connected in lobby but Pokemon Quetzal (GBA romhack) fails to actually link.
+   - Clarified via AskUserQuestion: link entry = 宝可梦中心2F联机柜台 (Pokemon Center 2F link counter); failure = 报通信错误/中断 (communication error/disconnect); verification = 我自己从头打通游戏 (AI plays through from new save to test real multiplayer).
+   - Ongoing intent: find root cause of "lobby connects but game doesn't link" and fix it, then verify in real game.
+
+2. **Key Technical Concepts:**
+   - mGBA mobile core `src/platform/mobile/mgba_mobile.c` (Android/iOS shared); `link_net.h`/`link_net.c` (PUSH channel); `EmulatorActivity.java`, `MgbaCore.java`, `ControlsView.java`, `GBoyLink.java` (Android frontend).
+   - GBA SIO: `enum GBASIOMode` (MULTI=2); SIOCNT register; Busy=bit7 (0x0080); IRQ=bit14 (0x4000); SIOMLT_SEND/ SIOMULTI0..3.
+   - **Core kernel fact (`src/gba/sio.c` `GBASIOWriteSIOCNT`)**: MULTI transfer only starts on Busy(bit7) 0→1 rising edge AND id==0 (host); slave (id≠0) branch is `// TODO` — never schedules completion. Pokemon writes `0x600F` (IRQ set, Busy=0) to start MULTI → kernel never acts.
+   - Two lobby paths: ① 局域网创建 (port 8765, `core.linkHost`); ② 大厅创建/大厅加入 (GBoy, port 6374 + `startSioListener`, serial tunnel on 6375). Serial tunnel only on path ②.
+   - Port mapping: AVD host forwards 16374→A:6374, 16375→A:6375; B joins `10.0.2.2:16374` which auto-connects to `10.0.2.2:16375`.
+   - AVDs: emulator-5554 (A, logical 540×1200 / physical 1080×2400); emulator-5556 (B). ADB=`D:\Android\Sdk\platform-tools\adb.exe`.
+   - Key input fact: `noteKeys` latches rising edge to `latchedKeys`, `beginFrameKeys` samples next frame — single-frame `input keyevent` IS delivered (proven by `Held 0x1` log). A-key "failures" = game blocked on SIO handshake, not input.
+
+3. **Files and Code Sections:**
+   - `src/platform/mobile/mgba_mobile.c` (primary edits):
+     - `gbaLinkWriteCnt` kick detection (current state):
+       ```c
+       bool wasBusy = (driver->p->siocnt & 0x0080) != 0;
+       bool nowBusy = (value & 0x0080) != 0;
+       bool kick = !nowBusy && (value & 0x4000) && !(driver->p->siocnt & 0x4000);
+       if (nowBusy || kick) {
+           struct mTiming* timing = coreTiming(emu);
+           if (timing) emu->sioBusyCycle = mTimingCurrentTime(timing);
+           if (emu->sioKick < 200) { ++emu->sioKick;
+               MOBILE_LOGI("SIO kick busy=%d kick=%d attached=%d waiting=%d", nowBusy, kick, emu->linkAttached, emu->sioWaiting); }
+           if (!emu->sioWaiting) beginMultiTransfer(emu, driver, nowBusy ? "slave" : "poll");
+       }
+       return GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
+       ```
+     - `beginMultiTransfer(emu, driver, who)`: `netLinkPush(emu->link, GBA_SIO_MULTI, local, ++emu->sioIndex); emu->sioWaiting=true; emu->sioRetries=0; mTimingSchedule(&emu->sioDone, GBASIOTransferCycles(...gbaLinkDevices(driver))); return true;` (with optional `MOBILE_LOGI("SIO begin...")` when sioKick<200).
+     - `gbaLinkDevices()` returns 1 (peer count, not total).
+     - `sioDoneEvent`: takes peer via `netLinkTakePeer(emu->sioIndex)`, else retry 512 cycles ×2048, then `completeMultiTransfer`.
+     - `completeMultiTransfer`: calls `GBASIOMultiplayerFinishTransfer` (fills SIOMULTI, clears Busy, fires IRQ).
+     - Added `uint32_t sioKick;` field; SIO poll log every 120 frames (`mode/siocnt/drv/wait`); RCNT write logging; `gbaLinkWriteRcnt` diagnostic.
+   - `src/platform/mobile/link_net.h`/`link_net.c`: PUSH channel (`netLinkPush`/`netLinkTakePeer`, PKT_PUSH, peerValue/peerIndex/peerValid).
+   - `.workbuddy/lobby.py`: `python lobby.py A host` / `B join` / `cancel` / `status` / `close` — opens dialog, scrolls, fills IP `10.0.2.2`/port `16374`, taps 大厅创建/大厅加入.
+   - `.workbuddy/nav.py`: `python nav.py A|B key <name> <count>` / `snap <name>`; KEY map a=96,b=97,start=108,dirs=19-22,l1=102,r1=103.
+   - `android/app/src/main/java/io/mgba/android/EmulatorActivity.java`: `mapKey` confirms A=96, START=108, dirs 19-22; `noteKeys` latch logic.
+   - `android/app/src/main/java/io/mgba/android/ControlsView.java`: virtual buttons self-drawn (no a11y id); logical 540×1200, but `input` uses physical 1080×2400 coords — touch calibration failed to hit buttons.
+
+4. **Errors and fixes:**
+   - adb not found → use `dev.ADB` / full path `D:\Android\Sdk\platform-tools\adb.exe`.
+   - Touch coordinates wrong (used (954,193) > logical width 540) → input uses physical 1080×2400; but even physical coords (886,1128)/(280,1814) missed virtual keys → reverted to `input keyevent` (proven reliable via latch).
+   - A-key "failing" in menus → NOT input issue; `Held 0x1` log proves delivery; game was stuck on SIO handshake waiting for MULTI completion.
+   - B-side save not recognized (menu only showed 开始游戏) → B never actually saved before; redid new-game flow (gender→region Kanto→Red→name A→YES→skip dialogs→save) to produce valid `quetzal.sav`.
+   - SIO never triggered → game writes `0x600F` (bit7=0), kernel needs bit7 rising edge; added kick on bit14(0x4000) rising edge.
+   - kick fires only once (rising edge); repeated `0x600F` writes don't re-trigger → added diagnostics to observe; `siocnt` stuck at 600F, `wait=0`.
+   - 按键漏按 (adb jitter on multi-keyevent) → send keys serially in single `adb shell` command with sleeps; use `--longpress` for A/B/START.
+
+5. **Problem Solving:**
+   - Root cause confirmed: Pokemon writes `0x600F` to start MULTI; mGBA kernel only starts on Busy(bit7) rising edge for host, slave branch is TODO → Busy never clears → game times out with "通信错误".
+   - Fix approach: kick detection on IRQ(bit14) rising edge + PUSH channel (双端自主按时完成 + 传输序号对齐) + 从机 Busy 上升沿补发起.
+   - Verified: `Link attached as P1`/`P2` (both ends attach); poll shows `mode=2 MULTI`, `siocnt=200C`→`600F`; but `wait=0`/transfers not completing yet because both ends must reach 2P wait simultaneously.
+   - Discovered Quetzal "联机" menu shows 2P/3P/4P directly when save exists (no BOY/GIRL/POKéMON); missing save shows the profile setup branch.
+   - 设置 menu has separate 联机→合作模式 (co-op mode toggle: 启用/EXP/取消).
+
+6. **All user messages:**
+   - 「@image#1:Clipboard_Screenshot.png 接手opencode的这个任务」
+   - (AskUserQuestion) 「宝可梦中心2F联机柜台」「报通信错误/中断」「我自己从头打通游戏」
+   - 「aborted」
+   - (automated task notifications for builds o1Rv9v, mngail, 4x4zEq, c7hpCr, mgZv7I — all exit 0)
+   - 「继续」
+   - 「Interrupted by user」 (at final lobby creation step)
+
+7. **Pending Tasks:**
+   - Complete real-game multiplayer test: both ends in bedroom → A creates lobby (大厅创建) → B joins (大厅加入) → both enter 联机→2P wait simultaneously → verify SIO transfers (`SIO multi me=.. ok=.. to=0 fb=0`) and that they leave wait screen into actual co-op (no 通信错误).
+   - If still failing: refine kick trigger (game repeats 0x600F — may need to trigger on any MULTI write with 0x4000 set while `!sioWaiting`, not just rising edge); check NORMAL_8/32 exchange path for Pokemon Center counter.
+
+8. **Current Work:**
+   - Built diagnostic APK (timestamp 16:12, exit 0). Installed to both AVDs.
+   - Both launched `quetzal.gba` (cleared logs). A: START→上→A→A continued → entered bedroom (`p_a_room.png`). B: same → bedroom (`p_b_room.png`).
+   - Next step was `python lobby.py A host` then `python lobby.py B join` to establish lobby, then both enter 2P. User interrupted right after the host/join command was issued (output "Interrupted by user").
+   - Code state: `gbaLinkWriteCnt` has kick-on-bit14-rising-edge + busy-rising; `beginMultiTransfer` PUSH; diagnostics print SIO poll (120-frame) and kick logs (sioKick<200); `sioKick` field added.
+
+9. **Optional Next Step:**
+   Resume the interrupted lobby step: run `python lobby.py A host` (A creates 大厅), `python lobby.py B join` (B joins `10.0.2.2:16374`), confirm both show "已连接 1P/2P", close dialogs, then drive both into 联机→2P wait screen simultaneously (serial `input keyevent` with sleeps, `--longpress` for A), and check logcat for `SIO begin`/`SIO kick`/`SIO multi` to confirm MULTI transfers now occur. If kick only fires once due to repeated 0x600F writes, change trigger condition from rising-edge to "MULTI mode + 0x4000 set + !sioWaiting".
+</summary>
+
+</conversation_history_summary>
+============================================================
+LAST 10 assistant text outputs:
+--- [line 2972] ---
+`compileDebugJavaWithJavac` 又是 UP-TO-DATE——gradle 增量状态已经不可信，我的 `onCreate` 改动始终没进去。强制重跑 Java 编译任务（不触发 NDK 全量重编）：
+--- [line 2966] ---
+等待 build9（强制重编 Java）。
+--- [line 2962] ---
+build8 **又没重编 Java**（任务列表里根本没有 `compileDebugJavaWithJavac`，全是 UP-TO-DATE）——gradle 增量把我的改动跳过了，所以 APK 里根本没有截图触发代码。这次强制 touch 源文件再编：
+--- [line 2958] ---
+`takeScreenshot` 日志仍未出现。我先确认 build8 是否真的重编了 Java（之前多次被增量跳过），再决定下一步：
+--- [line 2954] ---
+Build8 成功。安装、单次启动带 `--ez shot true`，等 14 秒让延迟截图触发，看日志里的 `last=` 判断 `copyLast()` 是否非空：
+--- [line 2948] ---
+等待构建。

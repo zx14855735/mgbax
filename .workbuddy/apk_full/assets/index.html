@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#6750A4">
+<title>GBoy配置管理</title>
+<style>
+:root{--primary:#6750A4;--primary-hover:#7c67b8;--bg:#F7F2FA;--surface:#FFFFFF;
+--text:#1C1B1F;--muted:#79747E;--border:#E7E0EC;--danger:#B3261E;
+--shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.04);
+--shadow-hover:0 2px 6px rgba(0,0,0,.10),0 8px 20px rgba(0,0,0,.06);}
+@media (prefers-color-scheme: dark){:root{--bg:#1C1B1F;--surface:#2B2930;--text:#E6E1E5;
+--muted:#938F99;--border:#49454F;--shadow:0 1px 2px rgba(0,0,0,.3);--shadow-hover:0 4px 12px rgba(0,0,0,.4);}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{margin:0;background:var(--bg);color:var(--text);
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+.app{max-width:900px;margin:0 auto;padding:0 16px 80px;}
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;
+gap:12px;padding:14px 0;background:var(--bg);border-bottom:1px solid var(--border);margin-bottom:12px;}
+.brand{display:flex;align-items:center;gap:10px;min-width:0;}
+.logo{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;color:var(--primary);}
+.logo svg{width:26px;height:26px;display:block;}
+.title{font-size:18px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.actions{display:flex;gap:8px;flex-shrink:0;}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 16px;border-radius:20px;
+border:1px solid var(--border);background:var(--surface);color:var(--text);
+font-size:14px;font-weight:500;cursor:pointer;text-decoration:none;
+transition:all .15s ease;white-space:nowrap;}
+.btn svg{width:16px;height:16px;display:block;flex-shrink:0;}
+.btn input[type=file]{display:none;}
+.btn:hover{box-shadow:var(--shadow-hover);transform:translateY(-1px);}
+.btn.primary{background:var(--primary);color:#fff;border-color:var(--primary);}
+.btn.primary:hover{background:var(--primary-hover);}
+.panels{margin-bottom:12px;}
+.panel{display:none;background:var(--surface);border-radius:14px;padding:14px;
+box-shadow:var(--shadow);margin-bottom:10px;}
+.panel.open{display:block;animation:slide .2s ease;}
+@keyframes slide{from{opacity:0;transform:translateY(-6px);}to{opacity:1;transform:translateY(0);}}
+.panel form{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+.panel input[type=file],.panel input[type=text]{flex:1;min-width:180px;padding:10px 14px;
+border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font-size:14px;}
+.panel input[type=text]:focus{outline:2px solid var(--primary);outline-offset:-2px;border-color:transparent;}
+.crumb{display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:10px 14px;
+background:var(--surface);border-radius:12px;box-shadow:var(--shadow);
+margin-bottom:14px;font-size:13px;word-break:break-all;}
+.crumb a{color:var(--primary);text-decoration:none;padding:2px 6px;border-radius:6px;}
+.crumb a:hover{background:var(--bg);}
+.crumb .sep{color:var(--muted);}
+.grid{display:grid;grid-template-columns:1fr;gap:8px;}
+@media(min-width:640px){.grid{grid-template-columns:repeat(2,1fr);}}
+.card{position:relative;background:var(--surface);border-radius:12px;
+box-shadow:var(--shadow);transition:all .15s ease;overflow:hidden;}
+.card:hover{box-shadow:var(--shadow-hover);transform:translateY(-1px);}
+.card-main{display:flex;align-items:center;gap:12px;padding:14px;text-decoration:none;
+color:var(--text);min-width:0;flex-wrap:nowrap;}
+.icon{flex:0 0 42px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+background:var(--bg);border-radius:10px;overflow:hidden;}
+.icon svg{width:24px;height:24px;display:block;flex-shrink:0;}
+.icon .thumb{width:100%;height:100%;object-fit:cover;display:block;}
+.meta{min-width:0;flex:1;overflow:hidden;}
+.name{display:block;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sub{display:block;font-size:12px;color:var(--muted);margin-top:2px;}
+.ops{display:flex;gap:6px;justify-content:flex-end;padding:0 12px 12px;}
+.btn-ghost{display:inline-flex;align-items:center;gap:2px;background:transparent;
+border:1px solid var(--border);color:var(--muted);
+padding:5px 12px;border-radius:16px;font-size:12px;cursor:pointer;text-decoration:none;
+transition:all .15s ease;}
+.btn-ghost svg{width:12px;height:12px;display:block;}
+.btn-ghost:hover{background:var(--bg);color:var(--text);}
+.btn-ghost.danger:hover{color:var(--danger);border-color:var(--danger);}
+.rename-form{display:none;gap:8px;padding:0 12px 12px;}
+.rename-form.open{display:flex;}
+.rename-form input{flex:1;padding:8px 12px;border:1px solid var(--border);
+border-radius:10px;background:var(--bg);color:var(--text);font-size:13px;}
+.rename-form .btn{padding:8px 16px;font-size:13px;}
+.empty{text-align:center;padding:60px 20px;color:var(--muted);grid-column:1/-1;}
+.empty-icon{font-size:52px;margin-bottom:12px;opacity:.5;}
+.upload-info{width:100%;font-size:13px;color:var(--muted);margin-top:6px;}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+    </span>
+    <span class="title">GBoy配置管理</span>
+  </div>
+  <div class="actions">
+    <button class="btn primary" data-target="uploadPanel" type="button">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+      上传
+    </button>
+    <button class="btn" data-target="mkdirPanel" type="button">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+      新建
+    </button>
+  </div>
+</header>
+<div class="panels">
+  <div id="uploadPanel" class="panel">
+    <form method="post" action="/upload?p={{CUR_REL}}" enctype="multipart/form-data" id="uploadForm">
+      <label class="btn" style="flex:1;min-width:140px">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+        选择文件
+        <input type="file" id="fileInput" multiple>
+      </label>
+      <label class="btn" style="flex:1;min-width:140px">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg>
+        选择文件夹
+        <input type="file" id="dirInput" webkitdirectory directory multiple>
+      </label>
+      <div class="upload-info" id="uploadInfo"></div>
+      <button class="btn primary" type="submit" id="uploadSubmit" style="display:none;width:100%">开始上传</button>
+    </form>
+  </div>
+  <div id="mkdirPanel" class="panel">
+    <form method="post" action="/mkdir?p={{CUR_REL}}" id="mkdirForm">
+      <input type="text" name="name" required placeholder="文件夹名称">
+      <button class="btn primary" type="submit">创建</button>
+    </form>
+  </div>
+</div>
+<div class="crumb">{{CRUMB}}</div>
+{{ITEMS}}
+</div>
+<script>
+function togglePanel(id){
+  var p=document.getElementById(id);
+  document.querySelectorAll('.panel').forEach(function(el){ if(el!==p)el.classList.remove('open'); });
+  p.classList.toggle('open');
+}
+document.querySelectorAll('[data-target]').forEach(function(b){
+  b.addEventListener('click',function(e){
+    e.preventDefault();
+    togglePanel(b.getAttribute('data-target'));
+  });
+});
+document.querySelectorAll('[data-rename]').forEach(function(b){
+  b.addEventListener('click',function(e){
+    e.preventDefault();
+    var form=b.closest('.card').querySelector('.rename-form');
+    form.classList.toggle('open');
+    if(form.classList.contains('open')){
+      var i=form.querySelector('input[name=new]');
+      i.focus(); i.select();
+    }
+  });
+});
+
+// ---- 删除：fetch ----
+function doDelete(rel,name){
+  if(!confirm('确定删除 '+name+' 吗？此操作不可恢复。'))return;
+  fetch('/delete?p='+encodeURIComponent(rel), {method:'POST', cache:'no-store'})
+    .then(function(r){
+      if(!r.ok) return r.text().then(function(t){ alert('删除失败：'+t); });
+      location.reload();
+    })
+    .catch(function(e){ alert('删除失败：'+e); });
+}
+document.querySelectorAll('[data-delrel]').forEach(function(b){
+  b.addEventListener('click',function(e){
+    e.preventDefault();
+    doDelete(b.getAttribute('data-delrel'), b.getAttribute('data-delname'));
+  });
+});
+
+// ---- 重命名：fetch ----
+document.querySelectorAll('.rename-form').forEach(function(f){
+  f.addEventListener('submit', function(e){
+    e.preventDefault();
+    var fd = new URLSearchParams(new FormData(f)).toString();
+    fetch(f.getAttribute('action'), {
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+      body: fd
+    }).then(function(r){
+      if(!r.ok) return r.text().then(function(t){ alert('重命名失败：'+t); });
+      location.reload();
+    }).catch(function(e){ alert('重命名失败：'+e); });
+  });
+});
+
+// ---- 新建文件夹：fetch ----
+var mkdirForm = document.getElementById('mkdirForm');
+if (mkdirForm) {
+  mkdirForm.addEventListener('submit', function(e){
+    e.preventDefault();
+    var fd = new URLSearchParams(new FormData(mkdirForm)).toString();
+    fetch(mkdirForm.getAttribute('action'), {
+      method:'POST',
+      cache:'no-store',
+      headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+      body: fd
+    }).then(function(r){
+      if(!r.ok) return r.text().then(function(t){ alert('创建失败：'+t); });
+      location.reload();
+    }).catch(function(e){ alert('创建失败：'+e); });
+  });
+}
+
+// ---- 上传：支持多选文件 / 文件夹 ----
+(function(){
+  var uploadForm = document.getElementById('uploadForm');
+  if (!uploadForm) return;
+
+  var fileInput = document.getElementById('fileInput');
+  var dirInput = document.getElementById('dirInput');
+  var uploadInfo = document.getElementById('uploadInfo');
+  var uploadSubmit = document.getElementById('uploadSubmit');
+  var selectedFiles = [];
+
+  function fmtSize(n){
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n/1024).toFixed(1) + ' KB';
+    if (n < 1073741824) return (n/1048576).toFixed(1) + ' MB';
+    return (n/1073741824).toFixed(2) + ' GB';
+  }
+
+  function updateInfo(){
+    if (selectedFiles.length === 0) {
+      uploadInfo.textContent = '';
+      uploadSubmit.style.display = 'none';
+      return;
+    }
+    var totalSize = 0;
+    for (var i = 0; i < selectedFiles.length; i++) totalSize += selectedFiles[i].size;
+    uploadInfo.textContent = '已选 ' + selectedFiles.length + ' 个文件，共 ' + fmtSize(totalSize);
+    uploadSubmit.style.display = '';
+  }
+
+  fileInput.addEventListener('change', function(){
+    selectedFiles = Array.prototype.slice.call(fileInput.files);
+    dirInput.value = '';
+    updateInfo();
+  });
+
+  dirInput.addEventListener('change', function(){
+    selectedFiles = Array.prototype.slice.call(dirInput.files);
+    fileInput.value = '';
+    updateInfo();
+  });
+
+  uploadForm.addEventListener('submit', function(e){
+    e.preventDefault();
+    if (selectedFiles.length === 0) return;
+
+    uploadSubmit.disabled = true;
+    uploadSubmit.textContent = '上传中...';
+
+    var actionUrl = uploadForm.getAttribute('action');
+    var qp = actionUrl.indexOf('?');
+    var baseUrl = qp >= 0 ? actionUrl.substring(0, qp) : '/upload';
+    var baseQuery = qp >= 0 ? actionUrl.substring(qp) : '';
+
+    var total = selectedFiles.length;
+    var done = 0;
+    var failed = 0;
+
+    function next(i){
+      if (i >= total) {
+        if (failed > 0) {
+          alert('完成：成功 ' + (total - failed) + ' 个，失败 ' + failed + ' 个');
+        }
+        location.reload();
+        return;
+      }
+
+      var f = selectedFiles[i];
+      var fd = new FormData();
+      fd.append('file', f, f.name);
+
+      // 文件夹上传时 webkitRelativePath 形如 "顶层目录/子目录/file.txt"
+      // 去掉最外层目录名，保留内层结构
+      var rel = f.webkitRelativePath || f.name;
+      var parts = rel.split('/');
+      if (parts.length > 1) parts.shift();
+      var serverName = parts.join('/');
+
+      fd.append('filename', serverName);
+      try {
+        fd.append('filename_b64', btoa(unescape(encodeURIComponent(serverName))));
+      } catch(err){}
+
+      fetch(baseUrl + baseQuery, {
+        method: 'POST',
+        cache: 'no-store',
+        body: fd
+      }).then(function(r){
+        if (!r.ok) failed++;
+      }).catch(function(){
+        failed++;
+      }).then(function(){
+        done++;
+        uploadSubmit.textContent = '上传中 ' + done + '/' + total;
+        next(i + 1);
+      });
+    }
+
+    next(0);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,487 @@
+--------- beginning of main
+10-28 01:21:19.073 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:19.073 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:21.242 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:21.243 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:23.343 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:23.343 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:25.423 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:25.424 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:27.479 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:27.480 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:29.596 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:29.596 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:31.640 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:31.640 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:33.675 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:33.677 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:35.703 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:35.703 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:37.710 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:37.710 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:39.720 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:39.720 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:41.808 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:41.808 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:44.028 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:44.029 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:46.282 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:46.282 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:48.352 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:48.353 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:50.642 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:50.642 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:52.842 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:52.842 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:55.264 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:55.265 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:21:56.880 14062 14062 I mGBA    : Held 0x1
+10-28 01:21:56.883 14062 14062 I mGBA    : Held 0x0
+10-28 01:21:56.893 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:21:56.916 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:21:57.047 14062 14086 I mGBA    : SIO CNT mode=MULTI val=2014 busy=0 irq=0 attached=1 waiting=0
+10-28 01:21:57.047 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:21:57.047 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:21:57.047 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:21:57.052 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:21:57.052 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:21:58.578 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:21:58.578 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:01.094 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:01.095 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:03.349 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:03.350 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:05.604 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:05.604 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:07.827 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:07.828 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:09.942 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:09.943 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:12.207 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:12.207 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:14.674 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:14.674 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:16.777 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:16.777 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:18.814 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:18.814 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:20.852 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:20.852 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:22.869 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:22.870 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:24.913 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:24.914 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:26.926 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:26.926 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:29.025 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:29.026 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:31.040 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:31.040 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:33.041 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:33.041 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:35.055 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:35.055 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:37.098 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:37.101 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:37.634 14062 14062 I mGBA    : Held 0x1
+10-28 01:22:37.638 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:22:37.640 14062 14062 I mGBA    : Held 0x0
+10-28 01:22:37.655 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:22:39.142 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:39.143 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:41.308 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:41.308 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:43.385 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:43.385 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:45.435 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:45.435 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:47.467 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:47.467 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:49.476 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:49.476 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:51.486 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:51.486 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:53.495 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:53.495 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:55.503 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:55.503 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:57.516 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:57.516 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:22:59.531 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:22:59.531 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:01.531 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:01.531 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:03.577 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:03.577 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:05.586 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:05.586 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:07.595 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:07.602 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:09.763 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:09.763 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:12.023 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:12.023 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:12.949 14062 14062 I mGBA    : Held 0x80
+10-28 01:23:12.950 14062 14086 I mGBA    : FrameKeys 0x80
+10-28 01:23:12.952 14062 14062 I mGBA    : Held 0x0
+10-28 01:23:12.963 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:23:14.090 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:14.091 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:16.293 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:16.293 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:18.390 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:18.390 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:20.437 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:20.437 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:22.446 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:22.447 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:24.505 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:24.505 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:26.536 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:26.536 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:28.574 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:28.574 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:30.594 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:30.594 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:32.602 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:32.602 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:34.608 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:34.608 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:36.650 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:36.651 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:38.662 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:38.663 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:40.671 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:40.671 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:42.686 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:42.687 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:44.744 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:44.744 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:45.662 14062 14062 I mGBA    : Held 0x80
+10-28 01:23:45.670 14062 14062 I mGBA    : Held 0x0
+10-28 01:23:45.679 14062 14086 I mGBA    : FrameKeys 0x80
+10-28 01:23:45.690 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:23:46.603 14062 14062 I mGBA    : Held 0x80
+10-28 01:23:46.609 14062 14086 I mGBA    : FrameKeys 0x80
+10-28 01:23:46.610 14062 14062 I mGBA    : Held 0x0
+10-28 01:23:46.627 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:23:46.749 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:46.749 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:48.756 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:48.756 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:50.943 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:50.945 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:52.984 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:52.985 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:54.992 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:54.992 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:57.809 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:57.809 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:23:59.811 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:23:59.811 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:01.853 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:01.853 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:03.867 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:03.867 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:05.875 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:05.875 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:07.892 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:07.892 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:09.899 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:09.902 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:11.910 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:11.910 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:13.917 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:13.918 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:15.924 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:15.924 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:17.933 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:17.933 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:19.943 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:19.944 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:21.951 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:21.951 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:23.957 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:23.957 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:25.973 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:25.973 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:27.976 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:27.976 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:30.026 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:30.026 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:32.067 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:32.070 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:32.155 14062 14062 I mGBA    : Held 0x40
+10-28 01:24:32.158 14062 14062 I mGBA    : Held 0x0
+10-28 01:24:32.159 14062 14086 I mGBA    : Latched 0x40
+10-28 01:24:34.074 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:34.074 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:36.259 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:36.259 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:38.306 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:38.306 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:40.315 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:40.315 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:42.326 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:42.327 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:44.334 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:44.335 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:46.342 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:46.342 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:48.352 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:48.352 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:50.360 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:50.361 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:52.369 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:52.369 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:54.378 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:54.380 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:56.503 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:56.503 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:24:57.280 14062 14062 I mGBA    : Held 0x1
+10-28 01:24:57.291 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:24:57.302 14062 14062 I mGBA    : Held 0x0
+10-28 01:24:57.305 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:24:58.556 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:24:58.557 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:01.180 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:01.180 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:03.535 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:03.537 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:05.649 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:05.651 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:07.785 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:07.785 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:09.792 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:09.793 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:11.803 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:11.803 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:13.813 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:13.813 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:15.865 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:15.865 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:17.947 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:17.948 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:20.023 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:20.024 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:22.106 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:22.106 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:24.152 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:24.152 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:26.183 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:26.183 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:28.250 14062 14062 I mGBA    : Held 0x1
+10-28 01:25:28.253 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:28.253 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:28.254 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:25:28.258 14062 14062 I mGBA    : Held 0x0
+10-28 01:25:28.271 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:25:30.310 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:30.310 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:32.865 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:32.865 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:35.044 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:35.044 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:37.180 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:37.180 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:39.247 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:39.249 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:41.389 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:41.389 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:43.442 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:43.443 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:45.558 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:45.558 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:47.772 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:47.773 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:49.892 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:49.893 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:51.960 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:51.962 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:54.088 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:54.088 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:56.326 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:56.326 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:25:58.393 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:25:58.393 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:00.593 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:00.594 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:02.639 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:02.640 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:04.686 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:04.687 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:07.062 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:07.063 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:09.292 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:09.293 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:10.589 14062 14062 I mGBA    : Held 0x1
+10-28 01:26:10.590 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:26:10.592 14062 14062 I mGBA    : Held 0x0
+10-28 01:26:10.609 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:26:11.591 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:11.592 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:11.726 14062 14062 I mGBA    : Held 0x1
+10-28 01:26:11.734 14062 14062 I mGBA    : Held 0x0
+10-28 01:26:11.735 14062 14086 I mGBA    : FrameKeys 0x1
+10-28 01:26:11.753 14062 14086 I mGBA    : FrameKeys 0x0
+10-28 01:26:13.837 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:13.837 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:16.284 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:16.284 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:18.692 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:26:18.692 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT mode=MULTI val=601F busy=0 irq=1 attached=1 waiting=0
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO kick busy=0 irq=1 attached=1 waiting=0 id=1
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT out=601F (slave=1 ready=1 id=1)
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:26:20.406 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:26:20.407 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:26:20.407 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:26:20.407 14062 14086 I mGBA    : SIO CNT mode=MULTI val=601F busy=0 irq=1 attached=1 waiting=0
+10-28 01:26:20.407 14062 14086 I mGBA    : SIO kick busy=0 irq=1 attached=1 waiting=0 id=1
+10-28 01:26:20.407 14062 14086 I mGBA    : SIO CNT out=601F (slave=1 ready=1 id=1)
+10-28 01:26:20.423 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:26:20.423 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:26:20.515 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:26:20.515 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:26:20.515 14062 14086 I mGBA    : SIO CNT mode=MULTI val=601F busy=0 irq=1 attached=1 waiting=0
+10-28 01:26:20.515 14062 14086 I mGBA    : SIO kick busy=0 irq=1 attached=1 waiting=0 id=1
+10-28 01:26:20.515 14062 14086 I mGBA    : SIO CNT out=601F (slave=1 ready=1 id=1)
+10-28 01:26:21.159 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:21.161 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=15]
+10-28 01:26:23.317 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:23.317 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=76]
+10-28 01:26:25.650 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:25.654 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=137]
+10-28 01:26:27.877 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:27.882 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=203]
+10-28 01:26:30.358 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:30.358 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=12]
+10-28 01:26:32.723 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:32.723 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=73]
+10-28 01:26:34.920 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:34.922 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=136]
+10-28 01:26:37.163 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:37.163 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=194]
+10-28 01:26:39.335 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:39.335 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=5]
+10-28 01:26:41.453 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:41.454 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=71]
+10-28 01:26:43.804 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:43.804 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=133]
+10-28 01:26:46.105 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:46.105 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=197]
+10-28 01:26:48.312 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:48.312 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=9]
+10-28 01:26:50.768 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:50.771 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=72]
+10-28 01:26:53.041 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:53.041 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=139]
+10-28 01:26:55.189 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:55.189 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=204]
+10-28 01:26:57.406 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:57.407 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=7]
+10-28 01:26:59.454 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:26:59.454 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=67]
+10-28 01:27:02.053 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:02.053 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=130]
+10-28 01:27:04.209 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:04.209 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=191]
+10-28 01:27:06.768 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:06.768 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=251]
+10-28 01:27:09.101 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:09.101 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=61]
+10-28 01:27:11.218 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:11.218 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=127]
+10-28 01:27:13.527 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:13.527 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=190]
+10-28 01:27:15.801 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:15.802 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=252]
+10-28 01:27:18.284 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:18.284 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=60]
+10-28 01:27:20.382 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:20.389 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=123]
+10-28 01:27:22.419 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:22.420 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=186]
+10-28 01:27:24.543 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:24.543 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=253]
+10-28 01:27:26.836 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:26.837 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=63]
+10-28 01:27:28.925 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:28.925 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=132]
+10-28 01:27:31.257 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:31.257 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=193]
+10-28 01:27:33.609 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:33.609 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:27:35.733 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:35.733 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=64]
+10-28 01:27:37.825 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:37.826 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=127]
+10-28 01:27:40.107 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:40.107 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=191]
+10-28 01:27:42.199 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:42.199 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:27:44.241 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:44.241 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=63]
+10-28 01:27:46.293 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:46.293 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=130]
+10-28 01:27:48.439 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:48.440 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=190]
+10-28 01:27:50.934 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:50.934 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=255]
+10-28 01:27:53.510 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:53.511 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=57]
+10-28 01:27:56.037 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:56.038 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=124]
+10-28 01:27:58.133 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:27:58.133 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=186]
+10-28 01:28:00.433 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:00.433 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=249]
+10-28 01:28:02.661 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:02.663 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=53]
+10-28 01:28:04.890 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:04.890 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=117]
+10-28 01:28:07.020 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:07.020 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=180]
+10-28 01:28:09.311 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:09.312 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=245]
+10-28 01:28:11.353 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:11.353 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=46]
+10-28 01:28:13.762 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:13.762 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=106]
+10-28 01:28:16.425 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:16.425 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=162]
+10-28 01:28:18.675 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:18.675 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=226]
+10-28 01:28:21.734 14062 14086 I mGBA    : SIO poll mode=2 siocnt=601F rcnt=0005 drv=1 wait=0
+10-28 01:28:21.736 14062 14086 I mGBA    : PEEK st=00000209 adv=0 link[m=0 st=2 id=1 pc=2 hs=0 err=0 ck=0 lag=0 sc=30]
+10-28 01:28:23.780 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:28:23.781 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:28:23.806 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:28:23.806 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:28:23.840 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:28:23.841 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:28:23.860 14062 14086 I mGBA    : SIO CNT mode=MULTI val=201C busy=0 irq=0 attached=1 waiting=0
+10-28 01:28:23.860 14062 14086 I mGBA    : SIO CNT out=201C (slave=1 ready=1 id=1)
+10-28 01:28:23.942 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:23.942 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:26.063 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:26.064 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:28.199 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:28.199 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:30.694 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:30.694 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:32.778 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:32.778 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:34.816 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:34.817 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:36.939 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:36.939 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:39.024 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:39.025 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:41.189 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:41.190 14062 14086 I mGBA    : PEEK st=00000000 adv=0 link[m=0 st=1 id=0 pc=0 hs=0 err=0 ck=0 lag=0 sc=0]
+10-28 01:28:43.293 14062 14086 I mGBA    : SIO poll mode=2 siocnt=201C rcnt=0005 drv=1 wait=0
+10-28 01:28:43.293 14062 14086 I mGBA    : PEEK st=000

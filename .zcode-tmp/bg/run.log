@@ -1,0 +1,62 @@
+[08:14:11] === background run start ===
+[08:14:17] emulators launched (1024MB each)
+[08:16:50] attempt 1: boot A=True B=True
+[08:17:49] emulator-5554 rom loaded: True
+[08:18:00] emulator-5556 rom loaded: True
+[08:18:04] emulator-5554 portrait screenshot (540x1200); waiting for landscape
+[08:18:14] emulator-5554 portrait screenshot (540x1200); waiting for landscape
+[08:18:23] emulator-5554 portrait screenshot (540x1200); waiting for landscape
+[08:18:28] FATAL RuntimeError('emulator-5554 stuck portrait')
+[08:23:14] === background run start ===
+[08:23:21] emulator-5554 rom loaded: True
+[08:23:28] emulator-5556 rom loaded: True
+[08:23:36] scales A=1.0000 B=0.8547
+[08:23:43] snap bg_a_dialog: 1200x540
+[08:24:21] A hosting: False
+[08:24:32] snap bg_b_dialog: 2340x1080
+[08:25:39] B joined+attached: False
+[08:26:13] A peer: False
+[08:26:15] snap bg_a_lobby: 1200x540
+[08:26:19] snap bg_b_lobby: 2340x1080
+[08:26:43] snap bg_flow1_a: 1200x540
+[08:26:46] snap bg_flow1_b: 2340x1080
+[08:26:55] snap bg_flow2_a: 1200x540
+[08:26:59] snap bg_flow2_b: 2340x1080
+[08:27:05] snap bg_set_a0: 1200x540
+[08:27:09] snap bg_set_b0: 2340x1080
+[08:27:16] snap bg_set_a1: 1200x540
+[08:27:21] snap bg_set_b1: 2340x1080
+[08:27:31] snap bg_set_a2: 1200x540
+[08:27:36] snap bg_set_b2: 2340x1080
+[08:28:08] snap bg_set_last_a: 1200x540
+[08:28:13] snap bg_set_last_b: 2340x1080
+[08:28:25] === background run done (emulators still up for follow-up) ===
+[08:30:47] === background run v2 start ===
+[08:30:58] emulator-5554 NOT FOUND [Wait]
+[08:31:07] emulator-5556 NOT FOUND [Wait]
+[08:31:17] emulator-5554 rom loaded: True
+[08:31:25] emulator-5556 rom loaded: True
+[08:31:37] emulator-5554 NOT FOUND [Wait]
+[08:31:42] emulator-5556 NOT FOUND [Wait]
+[08:31:45] snap bg_probe_a: 1200x540
+[08:31:48] snap bg_probe_b: 2340x1080
+[08:31:50] gba scales A=1.0000 B=1.0000
+[08:31:57] emulator-5554 tapped [☰] at 481,410
+[08:32:04] emulator-5554 NOT FOUND [联机]
+[08:32:09] emulator-5554 NOT FOUND [大厅创建]
+[08:32:12] emulator-5554 NOT FOUND [CANCEL]
+[08:32:17] emulator-5554 tapped [☰] at 481,410
+[08:32:23] emulator-5554 NOT FOUND [联机]
+[08:32:28] emulator-5554 NOT FOUND [大厅创建]
+[08:32:32] emulator-5554 NOT FOUND [CANCEL]
+[08:32:38] emulator-5556 tapped [☰] at 1019,820
+[08:32:44] emulator-5556 tapped [联机] at 1517,60
+[08:32:48] emulator-5556 NOT FOUND [大厅加入]
+[08:32:51] emulator-5556 NOT FOUND [CANCEL]
+[08:32:57] emulator-5556 tapped [☰] at 1019,820
+[08:33:04] emulator-5556 tapped [联机] at 1517,60
+[08:33:07] emulator-5556 NOT FOUND [大厅加入]
+[08:33:11] emulator-5556 NOT FOUND [CANCEL]
+[08:33:35] snap bg_a_lobby: 1200x540
+[08:33:38] snap bg_b_lobby: 2340x1080
+[08:33:48] FATAL: lobby stage failed

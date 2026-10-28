@@ -1,0 +1,25 @@
+snap D:\mgba-android-version\.workbuddy\s1_a.png 55448
+snap D:\mgba-android-version\.workbuddy\s1_b.png 170546
+A dialog True
+emulator-5554 tap '局域网创建' 429 405
+A host True
+B dialog True
+emulator-5556 tap '局域网加入' 1551 762
+B join True
+emulator-5554 tap 'CANCEL' 890 474
+emulator-5556 tap 'CANCEL' 1769 959
+snap D:\mgba-android-version\.workbuddy\s2_a.png 93464
+snap D:\mgba-android-version\.workbuddy\s2_b.png 350597
+snap D:\mgba-android-version\.workbuddy\s3_a.png 101927
+snap D:\mgba-android-version\.workbuddy\s3_b.png 351943
+snap D:\mgba-android-version\.workbuddy\s4_a.png 92280
+snap D:\mgba-android-version\.workbuddy\s4_b.png 338065
+snap D:\mgba-android-version\.workbuddy\s5_a.png 93652
+snap D:\mgba-android-version\.workbuddy\s5_b.png 338065
+holding A on both
+snap D:\mgba-android-version\.workbuddy\s6_a.png 97458
+snap D:\mgba-android-version\.workbuddy\s6_b.png 339524
+snap D:\mgba-android-version\.workbuddy\s7_a.png 95704
+snap D:\mgba-android-version\.workbuddy\s7_b.png 340905
+A log lines 4514
+B log lines 3773

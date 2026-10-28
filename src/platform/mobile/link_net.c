@@ -16,6 +16,16 @@
 #define LINK_LOG(...) ((void) 0)
 #endif
 
+/* 每条请求打一行日志会把 60 帧联机拖成幻灯片，默认关掉。 */
+#ifndef MGBA_LINK_VERBOSE
+#define MGBA_LINK_VERBOSE 0
+#endif
+#if MGBA_LINK_VERBOSE
+#define LINK_VERBOSE(...) LINK_LOG(__VA_ARGS__)
+#else
+#define LINK_VERBOSE(...) ((void) 0)
+#endif
+
 #ifdef _WIN32
 #ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0601
@@ -47,6 +57,7 @@ static void linkSockInit(void) {
 }
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -83,6 +94,77 @@ static int waitReadable(int fd, int timeoutMs) {
 #endif
 }
 
+static int setNonBlock(int fd, bool nonBlock) {
+#ifdef _WIN32
+	u_long mode = nonBlock ? 1 : 0;
+	return ioctlsocket(fd, FIONBIO, &mode);
+#else
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		return -1;
+	}
+	if (nonBlock) {
+		flags |= O_NONBLOCK;
+	} else {
+		flags &= ~O_NONBLOCK;
+	}
+	return fcntl(fd, F_SETFL, flags);
+#endif
+}
+
+/** Outbound connect with a hard deadline: the guest probes ports the peer may
+ *  not have listening at all, and a firewalled SYN must not park the probe
+ *  thread for the OS's two-minute connect timeout. */
+static int connectTcp(struct sockaddr_in* addr, int timeoutMs) {
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) {
+		return -1;
+	}
+	if (setNonBlock(fd, true) < 0) {
+		link_close(fd);
+		return -1;
+	}
+	if (connect(fd, (struct sockaddr*) addr, sizeof(*addr)) < 0) {
+#ifdef _WIN32
+		int err = WSAGetLastError();
+		if (err != WSAEWOULDBLOCK && err != WSAEINPROGRESS) {
+			link_close(fd);
+			return -1;
+		}
+#else
+		if (errno != EINPROGRESS && errno != EWOULDBLOCK) {
+			link_close(fd);
+			return -1;
+		}
+#endif
+		fd_set wfds;
+		FD_ZERO(&wfds);
+		FD_SET(fd, &wfds);
+		struct timeval tv;
+		tv.tv_sec = timeoutMs / 1000;
+		tv.tv_usec = (timeoutMs % 1000) * 1000;
+#ifdef _WIN32
+		if (select(0, NULL, &wfds, NULL, &tv) <= 0) {
+			link_close(fd);
+			return -1;
+		}
+#else
+		if (select(fd + 1, NULL, &wfds, NULL, &tv) <= 0) {
+			link_close(fd);
+			return -1;
+		}
+#endif
+		int soErr = 0;
+		socklen_t soLen = sizeof(soErr);
+		if (getsockopt(fd, SOL_SOCKET, SO_ERROR, (char*) &soErr, &soLen) < 0 || soErr != 0) {
+			link_close(fd);
+			return -1;
+		}
+	}
+	setNonBlock(fd, false);
+	return fd;
+}
+
 static void linkTune(int fd) {
 	int one = 1;
 	if (fd < 0) {
@@ -105,7 +187,8 @@ enum {
 	PKT_REQ = 1,
 	PKT_ACK = 2,
 	PKT_TICK = 3,
-	PKT_BYE = 4
+	PKT_BYE = 4,
+	PKT_PUSH = 5
 };
 
 enum { REQ_QUEUE = 8 };
@@ -124,6 +207,7 @@ struct Req {
 	uint16_t mode;
 	uint16_t player;
 	uint32_t value;
+	uint32_t stamp;
 };
 
 struct NetLink {
@@ -141,17 +225,28 @@ struct NetLink {
 	char message[96];
 
 	uint32_t published;
+	uint32_t publishedMode;
 	uint32_t localTick;
 	uint32_t peerTick;
 	uint16_t nextSeq;
 	bool waiting;
 	uint16_t waitSeq;
 	bool hasAck;
+	uint16_t ackSeq;
 	uint32_t ackValue;
+
+	/* 对端在它自己那次传输开始时推过来的数据：只在确认收到时置位，取走即消耗。
+	 * 有了它，本机就能在自己的传输周期结束时直接收尾，不必等网络往返。 */
+	uint32_t peerValue;
+	uint16_t peerMode;
+	uint16_t peerIndex;
+	bool peerValid;
 
 	struct Req queue[REQ_QUEUE];
 	int qHead;
 	int qCount;
+	/* 联机排查：只打前几条 REQ，确认请求确实到达了 IO 线程。 */
+	int reqDbg;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -169,6 +264,12 @@ static void deadline(struct timespec* ts, int timeoutMs) {
 		ts->tv_sec += 1;
 		ts->tv_nsec -= 1000000000L;
 	}
+}
+
+static uint32_t nowMs(void) {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (uint32_t) (tv.tv_sec * 1000u + tv.tv_usec / 1000u);
 }
 
 static bool writeAll(int fd, const void* data, size_t len) {
@@ -243,6 +344,7 @@ static void enqueueReq(struct NetLink* link, const struct Packet* pkt) {
 	link->queue[idx].mode = pkt->mode;
 	link->queue[idx].player = pkt->player;
 	link->queue[idx].value = pkt->value;
+	link->queue[idx].stamp = nowMs();
 	link->qCount++;
 }
 
@@ -271,33 +373,48 @@ static void* readerMain(void* arg) {
 		}
 		if (pkt.type == PKT_ACK) {
 			pthread_mutex_lock(&link->mu);
-			if (link->waiting && pkt.seq == link->waitSeq) {
+			if (!link->hasAck || pkt.seq == link->waitSeq) {
 				link->ackValue = pkt.value;
+				link->ackSeq = pkt.seq;
 				link->hasAck = true;
 				pthread_cond_broadcast(&link->cv);
 			}
 			pthread_mutex_unlock(&link->mu);
 			continue;
 		}
-		if (pkt.type == PKT_REQ) {
-			bool answerNow = false;
-			uint32_t published = 0;
+		if (pkt.type == PKT_PUSH) {
 			pthread_mutex_lock(&link->mu);
-			if (link->waiting) {
-				answerNow = true;
-				published = __atomic_load_n(&link->published, __ATOMIC_ACQUIRE);
-				if (!link->hasAck) {
-					link->ackValue = pkt.value;
-					link->hasAck = true;
+			/* 只保留更新的一次推送；旧序号的迟到包直接丢掉，否则会错位一格。
+			 * 同一轮次允许被覆盖：对端本轮的字可能先推来旧值、改完再推一次。 */
+			if (!link->peerValid || (int16_t) (pkt.seq - link->peerIndex) >= 0) {
+				link->peerValue = pkt.value;
+				link->peerMode = pkt.mode;
+				link->peerIndex = pkt.seq;
+				link->peerValid = true;
+			}
+			pthread_cond_broadcast(&link->cv);
+			pthread_mutex_unlock(&link->mu);
+			continue;
+		}
+		if (pkt.type == PKT_REQ) {
+			/* 应答必须由 IO 线程立刻发出：模拟线程可能整帧都在等这个应答，
+			 * 走模拟线程再回复会把一个网络往返放大成两帧的卡顿。 */
+			uint32_t published = __atomic_load_n(&link->published, __ATOMIC_ACQUIRE);
+			uint32_t publishedMode = __atomic_load_n(&link->publishedMode, __ATOMIC_ACQUIRE);
+			sendPacket(link, PKT_ACK, pkt.seq, (uint16_t) publishedMode, published);
+			/* GBA MULTI 模式只有 1P 会发起传输，从机（2P）的传输完成要靠这条
+			 * 请求驱动，所以把它排给模拟线程去写 SIOMULTI/发中断。其余模式两
+			 * 边各自会发起传输，排队反而会造成重复完成。 */
+			if (pkt.mode == 2) {
+				pthread_mutex_lock(&link->mu);
+				enqueueReq(link, &pkt);
+				if (link->reqDbg < 12) {
+					++link->reqDbg;
+					LINK_LOG("Link REQ #%d seq=%u mode=%u player=%u value=%04X q=%d",
+					         link->reqDbg, pkt.seq, pkt.mode, pkt.player, pkt.value, link->qCount);
 				}
 				pthread_cond_broadcast(&link->cv);
-			} else {
-				enqueueReq(link, &pkt);
-				pthread_cond_broadcast(&link->cv);
-			}
-			pthread_mutex_unlock(&link->mu);
-			if (answerNow) {
-				sendPacket(link, PKT_ACK, pkt.seq, pkt.mode, published);
+				pthread_mutex_unlock(&link->mu);
 			}
 		}
 	}
@@ -502,24 +619,19 @@ bool netLinkJoin(struct NetLink* link, const char* host, int port) {
 		return false;
 	}
 	netLinkClose(link);
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) {
-		return false;
-	}
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons((uint16_t) port);
 	if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-		link_close(fd);
 		pthread_mutex_lock(&link->mu);
 		link->state = LINK_DOWN;
 		setMessage(link, "IP 地址无效");
 		pthread_mutex_unlock(&link->mu);
 		return false;
 	}
-	if (connect(fd, (struct sockaddr*) &addr, sizeof(addr)) < 0) {
-		link_close(fd);
+	int fd = connectTcp(&addr, 3000);
+	if (fd < 0) {
 		pthread_mutex_lock(&link->mu);
 		link->state = LINK_DOWN;
 		setMessage(link, "连不上对方");
@@ -617,6 +729,8 @@ bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32
 		return false;
 	}
 	__atomic_store_n(&link->published, local, __ATOMIC_RELEASE);
+	uint32_t startedAt = nowMs();
+	(void) startedAt;
 	uint16_t seq = ++link->nextSeq;
 	link->waiting = true;
 	link->waitSeq = seq;
@@ -640,6 +754,7 @@ bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32
 	uint32_t value = link->ackValue;
 	link->waiting = false;
 	pthread_mutex_unlock(&link->mu);
+	LINK_VERBOSE("exchange mode=%u seq=%u ok=%d ms=%u", mode, seq, ok, nowMs() - startedAt);
 	if (ok && remoteOut) {
 		*remoteOut = value;
 	}
@@ -659,6 +774,7 @@ bool netLinkTakeRequest(struct NetLink* link, uint16_t* seq, uint16_t* mode, uin
 	link->qHead = (link->qHead + 1) % REQ_QUEUE;
 	link->qCount--;
 	pthread_mutex_unlock(&link->mu);
+	LINK_VERBOSE("req seq=%u qdelay=%ums", req.seq, nowMs() - req.stamp);
 	if (seq) {
 		*seq = req.seq;
 	}
@@ -680,4 +796,113 @@ void netLinkReply(struct NetLink* link, uint16_t seq, uint16_t mode, uint32_t va
 	}
 	__atomic_store_n(&link->published, value, __ATOMIC_RELEASE);
 	sendPacket(link, PKT_ACK, seq, mode, value);
+}
+
+void netLinkPublish(struct NetLink* link, uint16_t mode, uint32_t value) {
+	if (!link) {
+		return;
+	}
+	__atomic_store_n(&link->published, value, __ATOMIC_RELEASE);
+	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
+}
+
+void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t index) {
+	if (!link) {
+		return;
+	}
+	__atomic_store_n(&link->published, local, __ATOMIC_RELEASE);
+	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
+	sendPacket(link, PKT_PUSH, index, mode, local);
+}
+
+bool netLinkTakePeer(struct NetLink* link, uint16_t minIndex, uint32_t* value) {
+	if (!link) {
+		return false;
+	}
+	pthread_mutex_lock(&link->mu);
+	if (!link->peerValid) {
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	if ((int16_t) (link->peerIndex - minIndex) < 0) {
+		/* 比本机这次传输还老的推送：这一次先不取（取了整条流会错位一格），
+		 * 但也不要丢掉 —— 对端的新推送会覆盖它，等不到新的再退化成旧值。 */
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	link->peerValid = false;
+	if (value) {
+		*value = link->peerValue;
+	}
+	pthread_mutex_unlock(&link->mu);
+	return true;
+}
+
+bool netLinkWaitForPeer(struct NetLink* link, uint16_t index, int timeoutMs, uint32_t* value) {
+	if (!link) {
+		return false;
+	}
+	bool ok = false;
+	pthread_mutex_lock(&link->mu);
+	for (;;) {
+		if (link->peerValid && (int16_t) (link->peerIndex - index) >= 0) {
+			link->peerValid = false;
+			if (value) {
+				*value = link->peerValue;
+			}
+			ok = true;
+			break;
+		}
+		if (link->state != LINK_CONNECTED || timeoutMs <= 0) {
+			break;
+		}
+		int slice = timeoutMs > 20 ? 20 : timeoutMs;
+		struct timespec ts;
+		deadline(&ts, slice);
+		pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+		timeoutMs -= slice;
+	}
+	pthread_mutex_unlock(&link->mu);
+	return ok;
+}
+
+bool netLinkRequest(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t* seqOut) {
+	if (!link) {
+		return false;
+	}
+	pthread_mutex_lock(&link->mu);
+	if (link->state != LINK_CONNECTED || link->sock < 0) {
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	__atomic_store_n(&link->published, local, __ATOMIC_RELEASE);
+	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
+	uint16_t seq = ++link->nextSeq;
+	link->waitSeq = seq;
+	link->hasAck = false;
+	pthread_mutex_unlock(&link->mu);
+	if (!sendPacket(link, PKT_REQ, seq, mode, local)) {
+		return false;
+	}
+	if (seqOut) {
+		*seqOut = seq;
+	}
+	return true;
+}
+
+bool netLinkTakeReply(struct NetLink* link, uint16_t seq, uint32_t* remoteOut) {
+	if (!link) {
+		return false;
+	}
+	bool ok = false;
+	pthread_mutex_lock(&link->mu);
+	if (link->hasAck && link->ackSeq == seq && link->state == LINK_CONNECTED) {
+		if (remoteOut) {
+			*remoteOut = link->ackValue;
+		}
+		link->hasAck = false;
+		ok = true;
+	}
+	pthread_mutex_unlock(&link->mu);
+	return ok;
 }

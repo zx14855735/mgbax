@@ -20,6 +20,14 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* path);
 bool mgbaMobileIsLoaded(const struct MgbaMobile* emu);
 void mgbaMobileSetKeys(struct MgbaMobile* emu, uint32_t keys);
 void mgbaMobileSetTurbo(struct MgbaMobile* emu, uint32_t mask);
+/*
+ * The key state the game was last given, in the console's own active-low
+ * convention: a set bit means the key is released, a clear bit means it is
+ * pressed. This is what the game actually reads, which is not always the
+ * mask the front end asked for - a turbo key is pulsed by the core itself,
+ * one frame on and one frame off.
+ */
+uint16_t mgbaMobileLastKeys(struct MgbaMobile* emu);
 bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count);
 int mgbaMobileReadAudio(struct MgbaMobile* emu, int16_t* out, int maxFrames);
 /* Quality resampler to the audio device's rate; 0 disables it. */

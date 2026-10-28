@@ -10,6 +10,9 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
@@ -125,6 +128,16 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private MgbaCore core;
     private GameView gameView;
+
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.SCREENSHOT` grab the
+     *  current GBA frame as a PNG, bypassing the headless GL surface capture. */
+    private final BroadcastReceiver screenshotReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Log.i(TAG, "screenshot broadcast received");
+            saveDebugShot();
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -300,7 +313,20 @@ public class EmulatorActivity extends AppCompatActivity {
         applyOrientation();
         setContentView(R.layout.activity_emulator);
         gameView = findViewById(R.id.game);
+        // Exported so `adb shell am broadcast` can drive headless test runs;
+        // Android 13+ requires the flag to be spelled out.
+        IntentFilter screenshotFilter = new IntentFilter("io.mgba.android.action.SCREENSHOT");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(screenshotReceiver, screenshotFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(screenshotReceiver, screenshotFilter);
+        }
         hint = findViewById(R.id.hint);
+        // When launched with --ez shot true, grab the GBA frame after the ROM
+        // has had time to load and start rendering, bypassing headless capture.
+        if (getIntent() != null && getIntent().getBooleanExtra("shot", false)) {
+            gameView.postDelayed(this::saveDebugShot, 12000);
+        }
         screenArea = findViewById(R.id.screen_area);
         fpsView = findViewById(R.id.fps);
         pauseButton = findViewById(R.id.btn_pause);
@@ -612,7 +638,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
-    /** Keys applied this frame: local input plus the GBoy peer's mask. */
+    /**
+     * Keys applied this frame: local input plus the GBoy peer's mask, exactly
+     * like the GBoy/My Boy lobby (远程按键模式).
+     */
     private int userKeys() {
         return touchKeys | hwKeys | gboyRemoteKeys;
     }
@@ -623,8 +652,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (nowB && !wasB) {
             inputHandler.removeCallbacks(armTurbo);
             // Holding B only auto-turboes in the classic mode; the dedicated
-            // 连发 keys have their own pulsing in ControlsView.
-            if (turboModePref() == 0) {
+            // 连发 keys have their own pulsing in ControlsView and must not
+            // also arm this auto-turbo, or B is driven from two sources at
+            // once and gets pinned on (跑步卡死).
+            if (turboModePref() == 0 && (controls == null || !controls.turboBPressed())) {
                 inputHandler.postDelayed(armTurbo, TURBO_ARM_MS);
             }
         } else if (!nowB && wasB) {
@@ -890,6 +921,9 @@ public class EmulatorActivity extends AppCompatActivity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (intent != null && intent.getBooleanExtra("shot", false)) {
+            takeScreenshot();
+        }
         handleViewIntent(intent);
     }
 
@@ -2992,6 +3026,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 gboyLink.close();
             }
             gboyRemoteKeys = 0;
+            publishKeys();
             inputHandler.removeCallbacks(linkWatch);
             lastLinkState = 0;
             status.setText(R.string.link_close);
@@ -4269,8 +4304,39 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Test hook: writes the current GBA frame under the app's external files
+     * dir (no MediaStore round-trip, safe from adb). This is what the
+     * SCREENSHOT broadcast and the {@code shot} launch extra use.
+     */
+    private void saveDebugShot() {
+        Bitmap shot = gameView.copyLast();
+        if (shot == null) {
+            Log.i(TAG, "debug shot: no frame yet");
+            return;
+        }
+        new Thread(() -> {
+            File dir = new File(getExternalFilesDir(null), "shots");
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                Log.w(TAG, "debug shot: cannot create " + dir);
+                shot.recycle();
+                return;
+            }
+            File file = new File(dir, System.currentTimeMillis() + ".png");
+            try (OutputStream out = new FileOutputStream(file)) {
+                shot.compress(Bitmap.CompressFormat.PNG, 100, out);
+                Log.i(TAG, "debug shot saved " + file);
+            } catch (Exception e) {
+                Log.w(TAG, "debug shot failed", e);
+            } finally {
+                shot.recycle();
+            }
+        }, "debug-shot").start();
+    }
+
     /** Saves the current frame as a PNG into the system Pictures folder. */
     private void takeScreenshot() {
+        Log.i(TAG, "takeScreenshot core=" + (core != null && core.isLoaded()) + " last=" + (gameView.copyLast() != null));
         if (core == null || !core.isLoaded()) {
             toast(getString(R.string.no_rom));
             return;
@@ -5952,6 +6018,10 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        try {
+            unregisterReceiver(screenshotReceiver);
+        } catch (Exception ignored) {
+        }
         stopTimedSave();
         if (remoteLink != null) {
             remoteLink.close();

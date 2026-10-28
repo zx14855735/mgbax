@@ -36,6 +36,16 @@
 #define MOBILE_LOGE(...) ((void) 0)
 #endif
 
+/* 每次传输都打日志会拖慢联机（一秒钟几十条），排查时再打开。 */
+#ifndef MGBA_LINK_VERBOSE
+#define MGBA_LINK_VERBOSE 0
+#endif
+#if MGBA_LINK_VERBOSE
+#define LINK_VERBOSE(...) MOBILE_LOGI(__VA_ARGS__)
+#else
+#define LINK_VERBOSE(...) ((void) 0)
+#endif
+
 #ifdef _WIN32
 #include <direct.h>
 #define mobile_mkdir(path) _mkdir(path)
@@ -71,6 +81,47 @@ struct MgbaMobile {
 	struct GbLinkDriver gbLink;
 	struct mTimingEvent linkEvent;
 	bool linkAttached;
+	/* 一次 MULTI 传输的挂起状态：发起时把本帧数据发出去，传输应当结束的时刻
+	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
+	 * 毫秒，游戏内的联机握手会直接超时。 */
+	struct mTimingEvent sioDone;
+	bool sioWaiting;
+	uint16_t sioSeq;
+	int sioRetries;
+	bool sioHasRemote;
+	uint32_t sioRemote;
+	/* 联机传输统计：真机/游戏里排查时对着 logcat 看这几项就够 ——
+	 * ok 是已完成次数，peak 是单次最坏耗时（0.1ms），to 是超时次数。 */
+	uint32_t sioStartCycle;
+	uint32_t sioOk;
+	uint32_t sioPeak;
+	uint32_t sioTimeouts;
+	uint32_t sioLateness;
+	uint32_t sioFallback;
+	uint32_t sioStarts;
+	uint16_t sioIndex;
+	uint32_t sioBails;
+	uint32_t sioBusyCycle;
+	uint32_t sioDbg;
+	uint32_t sioPoll;
+	uint32_t sioPrevStatus;
+	uint32_t sioKick;
+	/* 联机排查用的限次计数：轮询事件、请求消费、从机收尾各打前几条。 */
+	uint32_t sioEvtDbg;
+	uint32_t sioTakeDbg;
+	uint32_t sioInDbg;
+	uint32_t sioSkipDbg;
+	uint32_t sioSlaveDoneDbg;
+	/* 从机用：主机请求里的数据先存着，等本机下一次 MULTI 传输开始时再用。
+	 * 主机跑在前面时请求会落在从机的空档里，直接丢掉就永远对不上了。 */
+	uint32_t sioStash;
+	bool sioStashValid;
+	bool sioSlavePending;
+	/* 「每轮推一次」的发送状态：SIOMLT_SEND 一变就把新一轮的数据推给对端，
+	 * 传输到点时直接取对端这一轮的值收尾，不再为每个往返买单。 */
+	uint32_t sioPushValue;
+	uint16_t sioPushIndex;
+	bool sioPushed;
 	uint32_t heldKeys;
 	uint32_t latchedKeys;
 	uint32_t frameKeys;
@@ -483,8 +534,16 @@ static uint32_t beginFrameKeys(struct MgbaMobile* emu) {
 
 static uint16_t readLiveKeys(struct mKeyCallback* callback) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) ((char*) callback - offsetof(struct MgbaMobile, keyCallback));
-	uint32_t held = loadHeld(emu);
-	uint32_t latch = __atomic_exchange_n(&emu->latchedKeys, 0, __ATOMIC_ACQ_REL);
+	/* The turbo key is driven exclusively by applyTurbo() through turboMask.
+	 * If the same key bit leaks in here via held/latched (e.g. a dedicated
+	 * 连发 button that also pulses this key, or a held key that raced with
+	 * the auto-turbo arming), it would re-set the key on the turbo's OFF
+	 * frame and pin it on forever. In a game that runs while B is held that
+	 * presents as "running stuck" (跑步卡死). Mask the turbo bit out of
+	 * held/latch so only the per-frame turbo decision stands. */
+	uint32_t turbo = __atomic_load_n(&emu->turboMask, __ATOMIC_ACQUIRE);
+	uint32_t held = loadHeld(emu) & ~turbo;
+	uint32_t latch = __atomic_exchange_n(&emu->latchedKeys, 0, __ATOMIC_ACQ_REL) & ~turbo;
 	uint32_t keys = emu->frameKeys | held | latch;
 	emu->frameKeys = keys;
 	if (latch) {
@@ -973,7 +1032,26 @@ static void finishIncoming(struct MgbaMobile* emu, uint16_t mode, uint32_t remot
 	int me = netLinkPlayer(emu->link);
 	if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
+		if (emu->sioInDbg < 40) {
+			++emu->sioInDbg;
+			MOBILE_LOGI("SIO in me=%d pktmode=%u player=%d siomode=%d siocnt=%04X wait=%d remote=%04X",
+			            me, mode, player, (int) gba->sio.mode, gba->sio.siocnt, emu->sioWaiting, remote);
+		}
 		if (gba->sio.mode == GBA_SIO_MULTI && (mode == GBA_SIO_MULTI || mode == 0)) {
+			/* 只在游戏确实处于联机等待时才收尾：要么 Busy 立着（游戏自己起了
+			 * 一次传输），要么开了 SIO 中断使能（宝可梦的等待写法 0x600F，
+			 * Busy 留给硬件置位）。两个都没有说明游戏不在联机，乱填数据发
+			 * 中断会把游戏没在等的交换结果塞给它。 */
+			bool busy = (gba->sio.siocnt & 0x0080) != 0;
+			bool armed = (gba->sio.siocnt & 0x4000) != 0;
+			if (emu->sioWaiting || !(busy || armed)) {
+				if (emu->sioSkipDbg < 20) {
+					++emu->sioSkipDbg;
+					MOBILE_LOGI("SIO in skip me=%d busy=%d armed=%d wait=%d siocnt=%04X",
+					            me, busy, armed, emu->sioWaiting, gba->sio.siocnt);
+				}
+				return;
+			}
 			uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
 			uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
 			if (player >= 0 && player < 4) {
@@ -982,6 +1060,15 @@ static void finishIncoming(struct MgbaMobile* emu, uint16_t mode, uint32_t remot
 			if (me >= 0 && me < 4) {
 				data[me] = local;
 			}
+			LINK_VERBOSE("SIO multi done slave me=%d m0=%04x m1=%04x", me, data[0], data[1]);
+			if (emu->sioSlaveDoneDbg < 20) {
+				++emu->sioSlaveDoneDbg;
+				MOBILE_LOGI("SIO slave done me=%d player=%d m0=%04X m1=%04X siocnt=%04X",
+				            me, player, data[0], data[1], gba->sio.siocnt);
+			}
+			emu->sioFallback++;
+			emu->sioHasRemote = true;
+			emu->sioRemote = remote;
 			GBASIOMultiplayerFinishTransfer(&gba->sio, data, 0);
 		} else if (gba->sio.mode == GBA_SIO_NORMAL_8) {
 			GBASIONormal8FinishTransfer(&gba->sio, (uint8_t) remote, 0);
@@ -1007,30 +1094,188 @@ static void finishIncoming(struct MgbaMobile* emu, uint16_t mode, uint32_t remot
 	}
 }
 
+static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate);
+
+/* 联机排查用的游戏内存窥探（只在开着 MGBA_LINK_PEEK 时编译进去）。
+ * 地址来自 ROM 工程的 rom.map（pokeemerald 系布局）。 */
+#ifndef MGBA_LINK_PEEK
+#define MGBA_LINK_PEEK 1
+#endif
+
+#if MGBA_LINK_PEEK
+#define PEEK_LINK_STATUS 0x03002A90u
+#define PEEK_LINK_STATE  0x03002ACCu
+#define PEEK_LINK        0x03002AE8u
+#endif
+
 static void serviceLink(struct MgbaMobile* emu) {
 	if (!emu->linkAttached || !emu->link) {
 		return;
 	}
+	/* 让 IO 线程随时能拿到本机当前要发的字节：对端发请求时它直接回，不必等
+	 * 模拟线程排到。 */
+	uint16_t localMode = 0;
+	uint32_t local = readLinkOut(emu, &localMode);
+	netLinkPublish(emu->link, localMode, local);
+	/* 关键：MULTI 下两边都不要等网络。游戏每完成一轮就会改写 SIOMLT_SEND，
+	 * 这里一变就把「下一轮要发的字」连同轮次推给对端；对端在自己的传输到点
+	 * 时直接取用。往返被藏进游戏本身那一帧的时间里，单轮耗时回到真机的量级
+	 * （原来每轮要等一条 ACK，实测 16ms/轮，握手要跑上万轮，游戏最后报
+	 * 「连接发生了错误」）。 */
+	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) emu->core->board;
+		/* 一轮要推的东西：本轮完成之后游戏会改写 SIOMLT_SEND，所以推一次
+		 * “可能还是旧值”的，等值真的变了再补推一次（同轮次、覆盖旧值）。
+		 * 第一轮之前不推：那时 SIOMLT_SEND 还是游戏初始化前的残留值，
+		 * 拿它当第一轮的字必然错。 */
+		uint16_t want = (uint16_t) (emu->sioIndex + 1);
+		if (gba->sio.mode == GBA_SIO_MULTI &&
+		    (!emu->sioPushed || local != emu->sioPushValue || emu->sioPushIndex != want)) {
+			netLinkPush(emu->link, GBA_SIO_MULTI, local, want);
+			emu->sioPushValue = local;
+			emu->sioPushIndex = want;
+			emu->sioPushed = true;
+		}
+		/* 从机不自己起传输：真机里 MULTI 的时钟是 1P 产生的，从机只是在自己的
+		 * SIO 被时钟扫过时收尾。1P 每轮开始时把本轮的字推过来，收到就把这次
+		 * 传输收掉（写 SIOMULTI + 发 SIO 中断），从机自己的游戏才会往下走。 */
+		if (gba->sio.mode == GBA_SIO_MULTI && netLinkPlayer(emu->link) != 0 && !emu->sioWaiting) {
+			uint32_t remote;
+			if (netLinkWaitForPeer(emu->link, (uint16_t) (emu->sioIndex + 1), 0, &remote)) {
+				++emu->sioIndex;
+				emu->sioHasRemote = true;
+				emu->sioRemote = remote;
+				completeMultiTransfer(emu, remote, true, 0);
+			}
+		}
+	}
+	/* 先收主机的传输请求：从机的这一次传输应当由它来收尾。做完再考虑看门狗，
+	 * 否则排队中的请求会被看门狗把 Busy 清掉、然后被 busy 守卫丢掉。 */
 	int guard = 0;
+	int taken = 0;
 	uint16_t seq;
 	uint16_t mode;
 	uint32_t value;
 	int player;
 	while (guard++ < 8 && netLinkTakeRequest(emu->link, &seq, &mode, &value, &player)) {
-		uint16_t localMode = 0;
-		uint32_t local = readLinkOut(emu, &localMode);
-		netLinkReply(emu->link, seq, localMode, local);
+		++taken;
+		if (emu->sioTakeDbg < 30 && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+			++emu->sioTakeDbg;
+			struct GBA* g = (struct GBA*) emu->core->board;
+			MOBILE_LOGI("SIO take seq=%u mode=%u player=%d siocnt=%04X wait=%d",
+			            seq, mode, player, g->sio.siocnt, emu->sioWaiting);
+		}
+		if (emu->sioWaiting) {
+			/* 本机正等自己这次传输的应答，说明双方都在当主机（正常不会发生
+			 * ：只有 1P 能发起 MULTI 传输）。丢弃，避免同一次传输被完成两次。 */
+			continue;
+		}
+		LINK_VERBOSE("SIO req seq=%u mode=%u value=%08x player=%d", seq, mode, value, player);
+		if (mode == GBA_SIO_MULTI) {
+			/* MULTI 不再走请求：两边各自按轮次推送、各自到点收尾，请求一旦
+			 * 也拿来收尾就会把同一轮完成两次。 */
+			continue;
+		}
 		finishIncoming(emu, mode, value, player);
+	}
+	/* 看门狗：从机 Busy 立起来后如果主机迟迟不发请求（主机那边卡住、或者
+	 * 已经掉线），5 帧之后用最近一次对端数据收尾，让游戏自己报通信错误，
+	 * 而不是永久卡在 Busy 上。只对从机生效，主机有自己的重试/超时。 */
+	if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
+	    emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) emu->core->board;
+		struct mTiming* timing = coreTiming(emu);
+		if (gba->sio.mode == GBA_SIO_MULTI && (gba->sio.siocnt & 0x0080) && timing && emu->sioBusyCycle) {
+			uint32_t now = mTimingCurrentTime(timing);
+			if (now - emu->sioBusyCycle > 5 * 280896) {
+				emu->sioBusyCycle = now;
+				emu->sioTimeouts++;
+				completeMultiTransfer(emu, emu->sioRemote, emu->sioHasRemote, 0);
+			}
+		}
 	}
 }
 
 static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	UNUSED(cyclesLate);
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
+	if (emu->sioEvtDbg < 20 && emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		++emu->sioEvtDbg;
+		struct GBA* g = (struct GBA*) emu->core->board;
+		MOBILE_LOGI("SIO evt #%u mode=%d siocnt=%04X attached=%d wait=%d",
+		            emu->sioEvtDbg, (int) g->sio.mode, g->sio.siocnt, emu->linkAttached, emu->sioWaiting);
+	}
 	serviceLink(emu);
 	if (emu->linkAttached) {
 		mTimingSchedule(timing, &emu->linkEvent, 8192);
 	}
+}
+
+/* 用一次传输的数据填 SIOMULTI0..3 并结束这次传输。 */
+static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int me = netLinkPlayer(emu->link);
+	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+	if (me >= 0 && me < 4) {
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	}
+	if (haveRemote) {
+		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	/* 单次传输耗时（单位 0.1ms）与统计，联机排查就靠这行。 */
+	struct mTiming* timing = coreTiming(emu);
+	if (timing) {
+		uint32_t spent = mTimingCurrentTime(timing) - emu->sioStartCycle;
+		uint32_t tenth = spent / 1677 + ((spent % 1677) ? 1 : 0);
+		emu->sioLateness = tenth;
+		if (tenth > emu->sioPeak) {
+			emu->sioPeak = tenth;
+		}
+	}
+	emu->sioOk++;
+	emu->sioBusyCycle = 0;
+	emu->sioStashValid = false;
+	if ((emu->sioOk & 0x3F) == 0) {
+		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
+		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
+	}
+	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
+}
+
+/**
+ * 传输应到期的时刻：对端应答已经在手上就地完成，否则隔一小段模拟时间再看，
+ * 绝不把模拟线程挂在这里等网络。对端掉线时按超时收尾，游戏自己会报通信错误
+ * 而不是永久卡在 Busy。
+ */
+static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) user;
+	if (!emu->sioWaiting) {
+		return;
+	}
+	uint32_t remote = 0;
+	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
+	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
+	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
+	 * 一帧就只剩下一次传输，必然被判掉线。 */
+	bool haveRemote = emu->link && netLinkWaitForPeer(emu->link, emu->sioIndex, 400, &remote);
+	if (haveRemote) {
+		emu->sioWaiting = false;
+		emu->sioHasRemote = true;
+		emu->sioRemote = remote;
+		completeMultiTransfer(emu, remote, true, cyclesLate);
+		return;
+	}
+	LINK_VERBOSE("SIO multi timeout seq=%u", emu->sioSeq);
+	emu->sioTimeouts++;
+	emu->sioWaiting = false;
+	completeMultiTransfer(emu, emu->sioRemote, emu->sioHasRemote, cyclesLate);
 }
 
 static bool gbaLinkInit(struct GBASIODriver* driver) {
@@ -1039,6 +1284,10 @@ static bool gbaLinkInit(struct GBASIODriver* driver) {
 	emu->linkEvent.callback = linkPollEvent;
 	emu->linkEvent.name = "Mobile Link";
 	emu->linkEvent.priority = 0x70;
+	emu->sioDone.context = emu;
+	emu->sioDone.callback = sioDoneEvent;
+	emu->sioDone.name = "Mobile SIO Done";
+	emu->sioDone.priority = 0x7F;
 	armLinkEvent(emu);
 	return true;
 }
@@ -1046,13 +1295,17 @@ static bool gbaLinkInit(struct GBASIODriver* driver) {
 static void gbaLinkDeinit(struct GBASIODriver* driver) {
 	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	struct mTiming* timing = coreTiming(emu);
+	emu->sioWaiting = false;
 	if (timing) {
 		mTimingDeschedule(timing, &emu->linkEvent);
+		mTimingDeschedule(timing, &emu->sioDone);
 	}
 }
 
 static void gbaLinkReset(struct GBASIODriver* driver) {
-	armLinkEvent(((struct GbaLinkDriver*) driver)->emu);
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
+	emu->sioWaiting = false;
+	armLinkEvent(emu);
 }
 
 static uint32_t gbaLinkId(const struct GBASIODriver* driver) {
@@ -1074,8 +1327,12 @@ static void gbaLinkSaveState(struct GBASIODriver* driver, void** state, size_t* 
 }
 
 static void gbaLinkSetMode(struct GBASIODriver* driver, enum GBASIOMode mode) {
-	UNUSED(driver);
-	UNUSED(mode);
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
+	if (emu && emu->sioDbg < 60) {
+		++emu->sioDbg;
+		MOBILE_LOGI("SIO mode -> %d", (int) mode);
+	}
+	LINK_VERBOSE("SIO mode -> %d", (int) mode);
 }
 
 static bool gbaLinkHandles(struct GBASIODriver* driver, enum GBASIOMode mode) {
@@ -1085,16 +1342,130 @@ static bool gbaLinkHandles(struct GBASIODriver* driver, enum GBASIOMode mode) {
 
 static int gbaLinkDevices(struct GBASIODriver* driver) {
 	UNUSED(driver);
-	return 2;
+	/* 与 gbp.c 的语义一致：连着的“对端”数量（不含自己）。两边 2 人联机
+	 * 时这里是 1，内核才会用 2P 的传输周期；填 2 会按 3P 算，每次传输
+	 * 比真机慢 50%，游戏的超时窗口就对不上了。 */
+	return 1;
 }
 
 static int gbaLinkDeviceId(struct GBASIODriver* driver) {
 	return netLinkPlayer(((struct GbaLinkDriver*) driver)->emu->link);
 }
 
+static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driver, const char* who) {
+	if (!emu->link || !emu->linkAttached || !emu->core || !driver->p || driver->p->mode != GBA_SIO_MULTI) {
+		return false;
+	}
+	if (emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return false;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	++emu->sioIndex;
+	emu->sioWaiting = true;
+	emu->sioRetries = 0;
+	struct mTiming* timing = coreTiming(emu);
+	if (!timing) {
+		return false;
+	}
+	emu->sioStartCycle = mTimingCurrentTime(timing);
+	/* 立刻把本轮数据推出去，别等对端来问：对端可能比本机早到传输到点，
+	 * 那时它需要的正是这一轮的字。 */
+	netLinkPush(emu->link, GBA_SIO_MULTI, local, emu->sioIndex);
+	emu->sioPushValue = local;
+	emu->sioPushIndex = emu->sioIndex;
+	emu->sioPushed = true;
+	mTimingDeschedule(timing, &emu->sioDone);
+	mTimingSchedule(timing, &emu->sioDone, GBASIOTransferCycles(GBA_SIO_MULTI, driver->p->siocnt, gbaLinkDevices(driver)));
+	if (emu->sioKick < 200) {
+		++emu->sioKick;
+		MOBILE_LOGI("SIO begin (%s) idx=%u local=%04X", who, emu->sioIndex, local);
+	}
+	return true;
+}
+
 static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
+	if (emu->sioDbg < 60) {
+		++emu->sioDbg;
+		MOBILE_LOGI("SIO CNT <- %04X (mode %d, id %d)", value,
+		            driver->p ? (int) driver->p->mode : -1,
+		            netLinkPlayer(emu->link));
+	}
 	if (driver->p && driver->p->mode == GBA_SIO_MULTI) {
-		return GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
+		/* 内核只在 1P（id==0）写 start 位时调 _startTransfer，2P..4P 那一路
+		 * 在 sio.c 里是 TODO。真实硬件里从机不产生时钟，它的数据是在主机
+		 * 的时钟里被同时采样的，所以从机只需要：Busy 立起来之后等主机的
+		 * 那一次传输请求，请求一到就连同对端数据一起收尾。这里记下 Busy
+		 * 起始时刻，供看门狗兜底（主机迟迟不发请求时至少别把游戏挂死）。 */
+		/*
+		 * 内核只把 SIOCNT 里 bit7（Busy）的上升沿当成“开始传输”。可 Pokemon
+		 * 系的联机代码发起一次多机传输时写的是 0x600F：IRQ 位（bit14）置起、
+		 * baud=3，Busy 留给硬件去置。这种写法在内核那一支根本不会调
+		 * _startTransfer，Busy 也就永远不落，游戏只能一路空转到通信超时。
+		 * 这里把 bit14 的上升沿与 bit7 的上升沿都当成一次传输请求。
+		 */
+		bool wasBusy = (driver->p->siocnt & 0x0080) != 0;
+		bool nowBusy = (value & 0x0080) != 0;
+		bool irq = (value & 0x4000) != 0;
+		/* 内核只把 busy(bit7) 的上升沿当成“开始传输”。可 Pokemon 系联机代码
+		 * 发起一次 MULTI 传输时写的是 0x600F：IRQ(bit14) 置起、Busy 不置，内核
+		 * 那一支（1P 才走、2P 是 TODO）根本不会起传输，Busy 也永远不落，游戏
+		 * 只能一路空转到通信超时。这里把“busy 上升沿”和“IRQ 置位且当前没有挂起
+		 * 的传输”都当成一次发起请求。关键点：0x600F 每次都这么写，bit14 在第一次
+		 * 之后再没有上升沿，所以必须靠“IRQ 置位 + !sioWaiting”来持续触发，否则
+		 * 除第一次外所有传输都起不来。!sioWaiting 守卫保证同一次传输不会被发起两次。 */
+		bool wantStart = nowBusy || (irq && !emu->sioWaiting);
+		if (emu->sioDbg < 400) {
+			++emu->sioDbg;
+			MOBILE_LOGI("SIO CNT mode=MULTI val=%04X busy=%d irq=%d attached=%d waiting=%d",
+			            value, nowBusy, irq, emu->linkAttached, emu->sioWaiting);
+		}
+		if (wantStart) {
+			struct mTiming* timing = coreTiming(emu);
+			if (timing) {
+				emu->sioBusyCycle = mTimingCurrentTime(timing);
+			}
+			if (emu->sioKick < 400) {
+				++emu->sioKick;
+				MOBILE_LOGI("SIO kick busy=%d irq=%d attached=%d waiting=%d id=%d",
+				            nowBusy, irq, emu->linkAttached, emu->sioWaiting,
+				            netLinkPlayer(emu->link));
+			}
+			if (!emu->sioWaiting && netLinkPlayer(emu->link) == 0) {
+				/* 只有 1P 真的发起传输；从机的传输由 1P 的那一次驱动，
+				 * 见 serviceLink。 */
+				beginMultiTransfer(emu, driver, nowBusy ? "busy" : "irq");
+			}
+		}
+		uint16_t out = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
+		/* 必须按“本机是不是 1P”明确改写 Slave 位（SIOCNT bit2）。
+		 *
+		 * 内核 GBASIOWriteSIOCNT 里 MULTI 分支是
+		 *   value &= 0xFF83;  value = SetSlave(value, id || !connected);
+		 *   value = SetId(value, id);  value |= sio->siocnt & 0x00FC;
+		 * 最后那个 |= 把旧 siocnt 的 bit2..7 或回来，所以 Slave/Ready 位是
+		 * 「粘」的：只要有一次置起来就再也清不掉。没挂联机驱动时 connected=0，
+		 * 内核一律置 Slave=1；而宝可梦在进联机设施之前（开机 ResetSerial）
+		 * 就已经写过 SIOCNT，Slave 从此永远是 1。
+		 *
+		 * 而宝可梦正是靠这一位分主从（link.c 的 CheckMasterOrSlave）：
+		 *   terminals = *(vu32*)REG_ADDR_SIOCNT & (SIO_MULTI_SD | SIO_MULTI_SI);
+		 *   isMaster = (terminals == SIO_MULTI_SD && localId == 0);
+		 * SIO_MULTI_SD=0x0008(Ready)、SIO_MULTI_SI=0x0004(Slave)，即
+		 * 「Slave=0 且 Ready=1」才是主机。Slave 粘在 1 时两边都认为自己是从机，
+		 * 谁也不写 START(0x0080)，谁也收不到中断 —— 两端就一直停
+		 * 在「请稍候」，这正是「大厅连上了、游戏里却联不上」的直接原因。 */
+		if (emu->linkAttached && emu->link) {
+			out = GBASIOMultiplayerSetSlave(out, netLinkPlayer(emu->link) != 0);
+		}
+		if (emu->sioDbg < 400) {
+			++emu->sioDbg;
+			MOBILE_LOGI("SIO CNT out=%04X (slave=%d ready=%d id=%d)", out,
+			            (out & 0x0004) ? 1 : 0, (out & 0x0008) ? 1 : 0,
+			            netLinkPlayer(emu->link));
+		}
+		return out;
 	}
 	if (driver->p && (driver->p->mode == GBA_SIO_NORMAL_8 || driver->p->mode == GBA_SIO_NORMAL_32)) {
 		return GBASIONormalFillSi(value);
@@ -1103,28 +1474,57 @@ static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 }
 
 static uint16_t gbaLinkWriteRcnt(struct GBASIODriver* driver, uint16_t value) {
-	UNUSED(driver);
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
+	if (emu->sioDbg < 60) {
+		++emu->sioDbg;
+		MOBILE_LOGI("SIO RCNT <- %04X (mode %d)", value,
+		            driver->p ? (int) driver->p->mode : -1);
+	}
 	return value;
 }
 
 static bool gbaLinkStart(struct GBASIODriver* driver) {
-	UNUSED(driver);
-	return true;
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
+	if (emu->sioDbg < 60) {
+		++emu->sioDbg;
+		MOBILE_LOGI("SIO start (mode %d, id %d)", driver->p ? (int) driver->p->mode : -1,
+		            netLinkPlayer(emu->link));
+	}
+	if (!emu->link || !emu->core || !driver->p || driver->p->mode != GBA_SIO_MULTI) {
+		return true;
+	}
+	if (emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return true;
+	}
+	if (emu->sioWaiting) {
+		/* 宝可梦发起一次传输会连写两笔 SIOCNT：先 0x600F（IRQ 触发，writeCnt
+		 * 已经 begin 并发出 REQ），再置 Busy 走到这里。第二次 begin 会顶掉
+		 * 应答序号、让对端多收一次请求，直接沿用第一次的即可。 */
+		return false;
+	}
+	if (netLinkPlayer(emu->link) != 0) {
+		/* 从机置 Busy 也不发起：它的传输由 1P 的那一次驱动。 */
+		return true;
+	}
+	if (!beginMultiTransfer(emu, driver, "master")) {
+		return true;
+	}
+	/* 完成由本驱动负责（网络应答到达时写 SIOMULTI 并发 SIO 中断）。 */
+	return false;
 }
 
+/* 只在没连上对端（走内核默认调度）时被调用：用最近一次对端数据收尾即可，
+ * 传输本身不能在这里等网络。 */
 static void gbaLinkFinishMulti(struct GBASIODriver* driver, uint16_t data[4]) {
 	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	struct GBA* gba = (struct GBA*) emu->core->board;
-	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-	uint32_t remote = 0xFFFFFFFFu;
 	int me = netLinkPlayer(emu->link);
 	data[0] = data[1] = data[2] = data[3] = 0xFFFF;
 	if (me >= 0 && me < 4) {
-		data[me] = local;
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
 	}
-	if (netLinkExchange(emu->link, GBA_SIO_MULTI, local, &remote, 800)) {
-		int peer = me == 0 ? 1 : 0;
-		data[peer] = (uint16_t) remote;
+	if (emu->sioHasRemote) {
+		data[me == 0 ? 1 : 0] = (uint16_t) emu->sioRemote;
 	}
 }
 
@@ -1240,6 +1640,21 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->linkAttached = true;
 	}
 	if (emu->linkAttached) {
+		emu->sioOk = 0;
+		emu->sioPeak = 0;
+		emu->sioTimeouts = 0;
+		emu->sioFallback = 0;
+		emu->sioWaiting = false;
+		emu->sioBusyCycle = 0;
+		emu->sioIndex = 0;
+		emu->sioPushed = false;
+		emu->sioPushValue = 0;
+		emu->sioPushIndex = 0;
+		emu->sioEvtDbg = 0;
+		emu->sioTakeDbg = 0;
+		emu->sioInDbg = 0;
+		emu->sioSkipDbg = 0;
+		emu->sioSlaveDoneDbg = 0;
 		MOBILE_LOGI("Link attached as P%d", netLinkPlayer(emu->link) + 1);
 	}
 }
@@ -1273,6 +1688,18 @@ void mgbaMobileSetTurbo(struct MgbaMobile* emu, uint32_t mask) {
 	}
 }
 
+uint16_t mgbaMobileLastKeys(struct MgbaMobile* emu) {
+	if (!emu || !emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	/* Reading the console's key register is exactly what the game does, and
+	 * it is what pulls the live key state through the key callback. The
+	 * result is the console's active-low convention: a set bit means the key
+	 * is released, a clear bit means it is pressed. */
+	return GBAIORead(gba, GBA_REG_KEYINPUT);
+}
+
 bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 	if (!emu || !emu->core) {
 		return false;
@@ -1281,6 +1708,48 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		count = 1;
 	}
 	pollLink(emu);
+	if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* g = (struct GBA*) emu->core->board;
+		uint32_t stNow = (uint32_t) GBAView32(g->cpu, PEEK_LINK_STATUS);
+		/* 错误位一旦置起立即报警（每帧），不依赖降采样，避免漏掉瞬时错误。 */
+		if (stNow & 0x0007F000u) {
+			MOBILE_LOGI("LINK_ERR st=%08X qFull=%d hw=%d ck=%d lagM=%d lagS=%d siocnt=%04X waiting=%d me=%d",
+			            stNow,
+			            (int) GBAView8(g->cpu, PEEK_LINK + 0x12),
+			            (int)((stNow >> 12) & 1), (int)((stNow >> 13) & 1),
+			            (int)((stNow >> 16) & 1), (int)((stNow >> 18) & 1),
+			            g->sio.siocnt, emu->sioWaiting, netLinkPlayer(emu->link));
+		}
+		if ((++emu->sioPoll % 4) == 0) {
+		MOBILE_LOGI("SIO poll mode=%d siocnt=%04X rcnt=%04X drv=%d wait=%d",
+		            (int) g->sio.mode, g->sio.siocnt, g->sio.rcnt,
+		            g->sio.driver != NULL, emu->sioWaiting);
+#if MGBA_LINK_PEEK
+		MOBILE_LOGI("PEEK st=%08X adv=%d link[m=%d st=%d id=%d pc=%d hs=%d err=%d ck=%d lag=%d sc=%d qf=%d]",
+		            stNow,
+		            (int) GBAView8(g->cpu, PEEK_LINK_STATE),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x00),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x01),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x02),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x03),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x0E),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x10),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x11),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x13),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x0D),
+		            (int) GBAView8(g->cpu, PEEK_LINK + 0x12));
+#endif
+		}
+		/* 检测到 gLinkStatus 由非零掉到 0（CloseLink 复位）：把复位前那帧的状态
+		 * 和当时的 SIO 现场打出来，定位到底是哪条路径触发了断链。 */
+		if (emu->sioPrevStatus != 0 && stNow == 0) {
+			MOBILE_LOGI("LINK_RESET prev=%08X qFull=%d siocnt=%04X waiting=%d me=%d",
+			            emu->sioPrevStatus,
+			            (int) GBAView8(g->cpu, PEEK_LINK + 0x12),
+			            g->sio.siocnt, emu->sioWaiting, netLinkPlayer(emu->link));
+		}
+		emu->sioPrevStatus = stNow;
+	}
 	if (count == 1 && emu->link && netLinkState(emu->link) == 2) {
 		netLinkBarrier(emu->link, 400);
 	}

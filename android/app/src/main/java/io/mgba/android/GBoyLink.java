@@ -166,7 +166,7 @@ public final class GBoyLink {
         tune(accepted);
         status("对方已接入，正在同步…");
         String note = handshake(accepted, true);
-        session(accepted, true, note);
+        session(accepted, true, null, port, note);
     }
 
     private void guestLoop(String ip, int port) throws IOException {
@@ -179,7 +179,7 @@ public final class GBoyLink {
         tune(current);
         status("已连上，正在同步…");
         String note = handshake(current, false);
-        session(current, false, note);
+        session(current, false, ip, port, note);
     }
 
     private String handshake(Socket current, boolean asHost) throws IOException {
@@ -226,7 +226,7 @@ public final class GBoyLink {
         return note + "\n" + extra;
     }
 
-    private void session(Socket current, boolean asHost, String note) throws IOException {
+    private void session(Socket current, boolean asHost, String peerIp, int port, String note) throws IOException {
         // The steady state has no handshake deadline: the peer may not even
         // have connected yet, and its key frames arrive at their own cadence.
         try {

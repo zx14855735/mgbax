@@ -82,7 +82,7 @@
     <string name="link_ip_hint">对方 IP，例如 192.168.1.8</string>
     <string name="link_waiting">等待连接\n本机 %1$s:%2$d\n你是 1P</string>
     <string name="link_bad_port">端口无效</string>
-    <string name="link_gboy_help">联机大厅：和对方联机对战。两边打开同一个游戏，保持 1 倍速，不要暂停。创房一方是 1P，另一方填对方 IP 加入。端口默认 6374，与其他模拟器的 Wi-Fi 联机互通。</string>
+    <string name="link_gboy_help">联机大厅：和对方联机对战。两边打开同一个游戏，保持 1 倍速，不要暂停。创房一方是 1P，另一方填对方 IP 加入。端口默认 6374，就是 GBoy/My Boy 的 Wi-Fi 联机服务器协议，与其直接互通（远程按键模式）。</string>
     <string name="link_gboy_host">大厅创建</string>
     <string name="link_gboy_join">大厅加入</string>
     <string name="link_gboy_ip_hint">对方（或本机）IP，例如 192.168.1.8</string>

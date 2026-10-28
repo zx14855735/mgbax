@@ -1,0 +1,7 @@
+com.fl.saas.s2s.S2SFullVideoAdapter
+com.fl.saas.s2s.S2SRewardVideoAdapter
+com.fl.saas.s2s.S2SInterstitialAdapter
+com.fl.saas.s2s.S2SSplashAdapter
+com.fl.saas.s2s.S2STemplateAdapter
+com.fl.saas.s2s.S2SBannerAdapter
+com.fl.saas.s2s.S2SNativeAdapter

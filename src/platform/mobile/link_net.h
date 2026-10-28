@@ -27,4 +27,20 @@ bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32
 bool netLinkTakeRequest(struct NetLink* link, uint16_t* seq, uint16_t* mode, uint32_t* value, int* player);
 void netLinkReply(struct NetLink* link, uint16_t seq, uint16_t mode, uint32_t value);
 
+/* 非阻塞的请求/应答：主机在 SIO 传输开始时就把本帧数据发出去，由模拟线程在
+ * 传输应当结束的时刻取回对端应答，中途不再 sleep/等待网络。 */
+void netLinkPublish(struct NetLink* link, uint16_t mode, uint32_t value);
+bool netLinkRequest(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t* seqOut);
+bool netLinkTakeReply(struct NetLink* link, uint16_t seq, uint32_t* remoteOut);
+
+/* 「推一次就走」：本机每次 SIO 传输开始时把本帧数据推给对端，不等应答。
+ * 对端在自己的传输周期末尾取用，于是两边都不必为一个往返买单（Wi-Fi 上
+ * 往返动辄几十毫秒，等它必然错过游戏的传输窗口）。 */
+void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t index);
+bool netLinkTakePeer(struct NetLink* link, uint16_t minIndex, uint32_t* value);
+
+/* 等对端把第 index 轮的数据推过来并取走。timeoutMs > 0 时会真的阻塞调用线程
+ * （模拟线程），这正是联机需要的背压：等网络的时候模拟时钟不应该往前走。 */
+bool netLinkWaitForPeer(struct NetLink* link, uint16_t index, int timeoutMs, uint32_t* value);
+
 #endif
