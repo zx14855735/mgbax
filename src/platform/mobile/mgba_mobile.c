@@ -105,6 +105,12 @@ struct MgbaMobile {
 	uint32_t sioDbg;
 	uint32_t sioPoll;
 	uint32_t sioPrevStatus;
+	uint32_t sioPrevAdv;
+	uint32_t sioPrevHs;
+	int32_t  sioPrevLinkState;
+	int32_t  sioPrevPc;
+	uint32_t sioPrevM0;
+	uint32_t sioPrevM1;
 	uint32_t sioKick;
 	/* 联机排查用的限次计数：轮询事件、请求消费、从机收尾各打前几条。 */
 	uint32_t sioEvtDbg;
@@ -1720,7 +1726,44 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 			            (int)((stNow >> 16) & 1), (int)((stNow >> 18) & 1),
 			            g->sio.siocnt, emu->sioWaiting, netLinkPlayer(emu->link));
 		}
-		if ((++emu->sioPoll % 4) == 0) {
+		/* 逐帧盯着握手推进的几个关键量，只在变化时打点：
+		 * adv = gShouldAdvanceLinkState（游戏推进联机的旗标，LinkMain1 每帧会清零）
+		 * hs  = gLink.handshakeAsMaster（为真时主机才会把 0x8FFF 写进 SIOMULTI0）
+		 * st  = gLink.state / pc = gLink.playerCount
+		 * m0/m1 = SIOMULTI0/1（主/从各自的握手字）
+		 * 这几个量在一帧内就会被吃掉，靠降采样必然漏掉，所以必须逐帧比变化。 */
+		{
+			int adv = (int) GBAView8(g->cpu, PEEK_LINK_STATE);
+			int hs  = (int) GBAView8(g->cpu, PEEK_LINK + 0x0E);
+			int st  = (int) GBAView8(g->cpu, PEEK_LINK + 0x01);
+			int pc  = (int) GBAView8(g->cpu, PEEK_LINK + 0x03);
+			uint32_t m0 = GBAIORead(g, GBA_REG_SIOMULTI0);
+			uint32_t m1 = GBAIORead(g, GBA_REG_SIOMULTI1);
+			if ((uint32_t) adv != emu->sioPrevAdv) {
+				MOBILE_LOGI("ADV %u->%d st=%d pc=%d hs=%d m0=%04X m1=%04X me=%d",
+				            emu->sioPrevAdv, adv, st, pc, hs, m0, m1, netLinkPlayer(emu->link));
+				emu->sioPrevAdv = (uint32_t) adv;
+			}
+			if ((uint32_t) hs != emu->sioPrevHs) {
+				MOBILE_LOGI("HS %u->%d st=%d pc=%d adv=%d m0=%04X m1=%04X me=%d",
+				            emu->sioPrevHs, hs, st, pc, adv, m0, m1, netLinkPlayer(emu->link));
+				emu->sioPrevHs = (uint32_t) hs;
+			}
+			if (st != emu->sioPrevLinkState || pc != emu->sioPrevPc) {
+				MOBILE_LOGI("ST %d->%d pc %d->%d adv=%d hs=%d m0=%04X m1=%04X me=%d",
+				            emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, m0, m1,
+				            netLinkPlayer(emu->link));
+				emu->sioPrevLinkState = st;
+				emu->sioPrevPc = pc;
+			}
+			if (m0 != emu->sioPrevM0 || m1 != emu->sioPrevM1) {
+				MOBILE_LOGI("MLT m0=%04X m1=%04X st=%d pc=%d hs=%d adv=%d me=%d",
+				            m0, m1, st, pc, hs, adv, netLinkPlayer(emu->link));
+				emu->sioPrevM0 = m0;
+				emu->sioPrevM1 = m1;
+			}
+		}
+		if ((++emu->sioPoll % 60) == 0) {
 		MOBILE_LOGI("SIO poll mode=%d siocnt=%04X rcnt=%04X drv=%d wait=%d",
 		            (int) g->sio.mode, g->sio.siocnt, g->sio.rcnt,
 		            g->sio.driver != NULL, emu->sioWaiting);

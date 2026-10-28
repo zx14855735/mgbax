@@ -138,6 +138,21 @@ public class EmulatorActivity extends AppCompatActivity {
             saveDebugShot();
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.KEYS --ei mask N` set the
+     *  held hardware key mask directly. adb's `input keyevent` only produces a momentary
+     *  down/up pair, which can never satisfy a game that polls JOY_HELD(x); automuting a
+     *  link test needs a key that stays down, so drive it from here instead. */
+    private final BroadcastReceiver keysReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int mask = intent.getIntExtra("mask", 0);
+            int prev = hwKeys;
+            hwKeys = mask;
+            Log.i(TAG, "keys broadcast mask=" + mask + " prev=" + prev);
+            // noteUserKeys() publishes the merged mask itself.
+            noteUserKeys(touchKeys, prev);
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -191,6 +206,10 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean audioMuted;
     private volatile boolean audioStarted;
     private double appliedSpeed = -1;
+    /** Game speed (mult) the audio pipeline was last configured for; a change
+     *  re-locks the resampler even when the requested audio speed is unchanged
+     *  (e.g. 不变速 mode always plays at 1x regardless of the fast-forward factor). */
+    private double appliedGameSpeed = -1;
     /** Software volume, 0-150 percent, applied when frames reach the track. */
     private int volumePercent = 100;
     private long nextFastPresent;
@@ -320,6 +339,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(screenshotReceiver, screenshotFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(screenshotReceiver, screenshotFilter);
+        }
+        IntentFilter keysFilter = new IntentFilter("io.mgba.android.action.KEYS");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(keysReceiver, keysFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(keysReceiver, keysFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
@@ -1786,6 +1811,7 @@ public class EmulatorActivity extends AppCompatActivity {
             sourceRate = 32768;
         }
         appliedSpeed = -1;
+        appliedGameSpeed = -1;
         audioMuted = false;
         // Prefer the rate the device's audio hardware actually runs at so the
         // system does not have to resample our output; the core's own rate is
@@ -1882,10 +1908,32 @@ public class EmulatorActivity extends AppCompatActivity {
      * a pace window straddling the change blends the two rates (half a second of
      * 1x plus half of 16x reports a meaningless middle value) and the resampler
      * would lock onto it.
+     *
+     * While fast-forwarding (mult > 1) the music can be:
+     *   - 倍速声音 off            -> muted (no audio at all)
+     *   - 倍速声音 on, 不变速 off  -> varispeed: audio follows the game and pitches up (tape style)
+     *   - 倍速声音 on, 不变速 on   -> constant pitch: the music keeps its normal speed and the
+     *                                surplus samples the fast game produces are dropped by the resampler
+     * At 1x and during slow motion the audio always tracks the game speed.
      */
     private boolean syncFastAudio(double mult) {
         boolean changed = false;
-        boolean mute = mult > 1.01 && !getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true);
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        boolean soundOn = prefs.getBoolean("fast_audio", true);
+        boolean constPitch = prefs.getBoolean("fast_audio_const", false);
+        boolean mute = !soundOn && mult > 1.01;
+        double audioSpeed;
+        if (mult <= 1.01) {
+            // Normal speed and slow motion: audio always tracks the game.
+            audioSpeed = mult;
+        } else if (soundOn && constPitch) {
+            // 不变速: keep the music at its normal speed; the resampler discards
+            // the extra samples the fast-forwarded game produces.
+            audioSpeed = 1.0;
+        } else {
+            // Varspeed (tape style): audio follows the game and pitches up.
+            audioSpeed = mult;
+        }
         if (mute != audioMuted) {
             audioMuted = mute;
             resetAudio();
@@ -1895,13 +1943,19 @@ public class EmulatorActivity extends AppCompatActivity {
             core.clearAudio();
             return changed;
         }
-        if (mult != appliedSpeed) {
-            appliedSpeed = mult;
+        if (audioSpeed != appliedSpeed || mult != appliedGameSpeed) {
+            appliedSpeed = audioSpeed;
+            appliedGameSpeed = mult;
             core.clearAudio();
             resetAudio();
             changed = true;
         }
         return changed;
+    }
+
+    /** Effective emulation speed right now, including the held fast-forward key. */
+    private float currentGameSpeed() {
+        return fastHold || ffOn ? Math.max(speed, fastHoldSpeed()) : speed;
     }
 
     /** Discards queued audio and pauses the track; the pump refills and resumes it. */
@@ -3269,12 +3323,34 @@ public class EmulatorActivity extends AppCompatActivity {
         speedCustom.setPadding(dp(8), 0, dp(8), 0);
         speedCustom.setOnClickListener(v -> showCustomSpeedDialog());
         row.addView(speedCustom);
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         CheckBox sound = new CheckBox(this);
         sound.setText(R.string.speed_sound);
         sound.setTextColor(Color.WHITE);
-        sound.setChecked(getPreferences(MODE_PRIVATE).getBoolean("fast_audio", true));
-        sound.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("fast_audio", checked).apply());
+        boolean soundOn = prefs.getBoolean("fast_audio", true);
+        sound.setChecked(soundOn);
         row.addView(sound);
+
+        CheckBox constSpeed = new CheckBox(this);
+        constSpeed.setText(R.string.speed_sound_const);
+        constSpeed.setTextColor(Color.WHITE);
+        boolean constOn = prefs.getBoolean("fast_audio_const", false);
+        constSpeed.setChecked(constOn);
+        constSpeed.setEnabled(soundOn);
+        constSpeed.setAlpha(soundOn ? 1.0f : 0.45f);
+        row.addView(constSpeed);
+
+        sound.setOnCheckedChangeListener((v, checked) -> {
+            prefs.edit().putBoolean("fast_audio", checked).apply();
+            // 不变速 only makes sense when sound is on during fast-forward.
+            constSpeed.setEnabled(checked);
+            constSpeed.setAlpha(checked ? 1.0f : 0.45f);
+            syncFastAudio(currentGameSpeed());
+        });
+        constSpeed.setOnCheckedChangeListener((v, checked) -> {
+            prefs.edit().putBoolean("fast_audio_const", checked).apply();
+            syncFastAudio(currentGameSpeed());
+        });
         refreshSpeedButtons();
     }
 
@@ -6020,6 +6096,10 @@ public class EmulatorActivity extends AppCompatActivity {
         running = false;
         try {
             unregisterReceiver(screenshotReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(keysReceiver);
         } catch (Exception ignored) {
         }
         stopTimedSave();

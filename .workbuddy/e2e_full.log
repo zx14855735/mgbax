@@ -1,0 +1,47 @@
+t=0s devices=['emulator-5554']
+t=5s devices=['emulator-5554']
+t=10s devices=['emulator-5554']
+t=15s devices=['emulator-5554', 'emulator-5556']
+=== devices ready, running flow ===
+snap D:\mgba-android-version\.workbuddy\s1_a.png 0
+snap D:\mgba-android-version\.workbuddy\s1_b.png 1344623
+A dialog False
+emulator-5554 NOT FOUND 局域网创建 Button
+A host False
+B dialog False
+emulator-5556 NOT FOUND 局域网加入 Button
+B join False
+link not up, retry 0
+A dialog False
+emulator-5554 NOT FOUND 局域网创建 Button
+A host False
+B dialog True
+emulator-5556 tap '局域网加入' 1551 762
+B join True
+link not up, retry 1
+A dialog False
+emulator-5554 NOT FOUND 局域网创建 Button
+A host False
+B dialog False
+emulator-5556 NOT FOUND 局域网加入 Button
+B join False
+link not up, retry 2
+emulator-5554 NOT FOUND CANCEL Button
+emulator-5556 NOT FOUND CANCEL Button
+snap D:\mgba-android-version\.workbuddy\s2_a.png 0
+snap D:\mgba-android-version\.workbuddy\s2_b.png 204075
+snap D:\mgba-android-version\.workbuddy\s3_a.png 0
+snap D:\mgba-android-version\.workbuddy\s3_b.png 332930
+snap D:\mgba-android-version\.workbuddy\s4_a.png 0
+snap D:\mgba-android-version\.workbuddy\s4_b.png 390636
+snap D:\mgba-android-version\.workbuddy\s5_a.png 0
+snap D:\mgba-android-version\.workbuddy\s5_b.png 0
+holding A on both
+snap D:\mgba-android-version\.workbuddy\s6_a.png 0
+snap D:\mgba-android-version\.workbuddy\s6_b.png 1349505
+snap D:\mgba-android-version\.workbuddy\s7_a.png 0
+snap D:\mgba-android-version\.workbuddy\s7_b.png 375151
+A log lines 0
+B log lines 228
+A log lines 0
+B log lines 232

@@ -14,6 +14,7 @@
     <string name="speed_value">%1$s倍</string>
     <string name="speed_pick">倍速</string>
     <string name="speed_sound">倍速声音</string>
+    <string name="speed_sound_const">不变速</string>
     <string name="reset">复位</string>
     <string name="slot_initial">槽位 1</string>
     <string name="slot">槽位 %1$d</string>

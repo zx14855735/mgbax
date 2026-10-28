@@ -3,18 +3,18 @@ INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
 INFO         | IPv4 server found: 172.18.0.2
-INFO         | Ignore IPv6 address: 48e5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: 48e5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: 48e5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: 38eb:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: 38eb:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: 38eb:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e8f5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e8f5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e8f5:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e0fb:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e0fb:f9c4:fd01:0:d0d8:f9c4:fd01:0
-INFO         | Ignore IPv6 address: e0fb:f9c4:fd01:0:d0d8:f9c4:fd01:0
+INFO         | Ignore IPv6 address: 7882:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 7882:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 7882:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 6888:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 6888:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 6888:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1893:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1893:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1893:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1099:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1099:a74:b701:0:76:a74:b701:0
+INFO         | Ignore IPv6 address: 1099:a74:b701:0:76:a74:b701:0
 INFO         | Guest GLES Driver: Auto (ext controls)
 INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
@@ -26,7 +26,7 @@ INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
 INFO         |      Ok: Disk space requirements to run avd: `zx_link_test` are met
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 11540
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 33492
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -96,17 +96,55 @@ INFO         |   androidboot.vbmeta.hash_alg=sha256
 INFO         |   androidboot.vbmeta.size=6656
 INFO         |   androidboot.veritymode=enforcing
 AEHD is operational
+netsim I 10-28 16:39:31.363 netsimd.rs:375 - netsim startup
+netsim I 10-28 16:39:31.363 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
+netsim I 10-28 16:39:31.363 netsimd.rs:386 - Args {
+    fd_startup_str: None,
+    connector_instance: None,
+    instance: None,
+    logtostderr: false,
+    dev: false,
+    no_cli_ui: true,
+    no_web_ui: false,
+    http_proxy: Some(
+        "http://127.0.0.1:1749",
+    ),
+    no_shutdown: false,
+    idle_shutdown_timeout: None,
+    startup_timeout: None,
+    pcap: false,
+    disable_address_reuse: false,
+    verbose: false,
+    version: false,
+    grpc_port: None,
+    hci_port: None,
+    tcp_port: None,
+    ws_port: None,
+    host_dns: Some(
+        "172.18.0.2",
+    ),
+    forward_host_mdns: false,
+    test_beacons: false,
+    no_test_beacons: false,
+    wifi: WifiConfig {
+        wifi_ssid: None,
+        wifi_password: None,
+        wifi_channel: None,
+        wifi_beacon_interval: None,
+        wifi_mode: None,
+    },
+}
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 INFO         | Monitoring duration of emulator setup.
-INFO         | Successfully initialized netsim WiFi
+ERROR        | HTTP proxy handshake with [unknown] failed: UNAVAILABLE: GetOverlappedResult: WSA Error (The I/O operation has been aborted because of either a thread exit or an application request.
+ -- 995)
 INFO         | Activated packet streamer for bluetooth emulation
+INFO         | Successfully initialized netsim WiFi
 INFO         | Setting display: 0 configuration to: 1080x2340, dpi: 440x440 
 INFO         | setDisplayActiveConfig: id:0, 1080x2340
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
-WARNING      | UpdateCheck: Failure: Couldn't connect to server
-WARNING      | UpdateCheck: failed to get the latest version, skipping check (current version '37.2.12-16428233')
-INFO         | Boot completed in 37671 ms
+INFO         | Boot completed in 36697 ms

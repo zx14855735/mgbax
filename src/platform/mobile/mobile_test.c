@@ -336,6 +336,30 @@ static int collectAudio(struct MgbaMobile* emu, int16_t* out, int frames, int sp
 	return total;
 }
 
+/*
+ * Runs gameFrames emulated frames per pump but drives the resampler at
+ * audioSpeed. This is how the front end separates the fast-forward factor
+ * from the audio rate: tape style passes the same 4 for both, while 不变速
+ * runs the game at 4 and keeps the resampler at 1 so the music holds its own
+ * pitch and the surplus samples the fast game produces are dropped.
+ */
+static int collectAudioSplit(struct MgbaMobile* emu, int16_t* out, int frames, int gameFrames, double audioSpeed, float drift) {
+	int total = 0;
+	int guard = 0;
+	while (total < frames && guard++ < 8192) {
+		int rounds = 0;
+		mgbaMobileRunFrames(emu, gameFrames);
+		while (rounds++ < 16 && total < frames) {
+			int got = mgbaMobileReadAudioOut(emu, out + total * 2, frames - total, audioSpeed, drift);
+			if (got <= 0) {
+				break;
+			}
+			total += got;
+		}
+	}
+	return total;
+}
+
 static void testAudioOut(const char* dir) {
 	char path[512];
 	struct MgbaMobile* emu;
@@ -484,6 +508,53 @@ static void testAudioPitch(const char* dir) {
 	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
 	printf("pitch after reload %.1f Hz\n", pitch);
 	expect(pitch > base * 0.97 && pitch < base * 1.03, "reload drops a pending pace change");
+	free(out);
+	mgbaMobileDestroy(emu);
+}
+
+/*
+ * 不变速 (constant pitch) fast-forward. The game runs at 4x but the resampler
+ * is still driven at 1x: the music must keep its own pitch while the surplus
+ * samples the fast game produces are dropped. Tape style - the resampler
+ * following the game at 4x - must still pitch the music up by 4.
+ */
+static void testAudioConstPitch(const char* dir) {
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	double base;
+	double pitch;
+	expect(writeAudioRom(dir, path, sizeof(path)), "write const pitch rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load const pitch rom");
+	out = (int16_t*) calloc(PITCH_WINDOW_FRAMES * 2, sizeof(int16_t));
+	expect(out != NULL, "const pitch buffer");
+	if (!out) {
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, 48000), "const pitch resampler");
+	// The front end always paces at the console frame rate, no matter how
+	// many emulated frames each slice runs.
+	mgbaMobileSetAudioPaceFps(emu, 59.73);
+	expect(collectAudio(emu, out, PITCH_WINDOW_FRAMES, 1, 0.0f) == PITCH_WINDOW_FRAMES, "const pitch baseline collected");
+	base = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("const pitch baseline %.1f Hz\n", base);
+	expect(base > 480.0 && base < 545.0, "square wave at its own frequency");
+
+	// Tape style: game at 4x and the resampler following it -> 4x pitch.
+	mgbaMobileSetAudioPaceFps(emu, 59.73);
+	collectAudioSplit(emu, out, PITCH_WINDOW_FRAMES, 4, 4.0, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("tape 4x pitch %.1f Hz (base %.1f)\n", pitch, base);
+	expect(pitch > base * 3.2 && pitch < base * 4.8, "tape style pitches the music up 4x");
+
+	// 不变速: game at 4x, resampler held at 1x -> the music keeps its pitch.
+	mgbaMobileSetAudioPaceFps(emu, 59.73);
+	collectAudioSplit(emu, out, PITCH_WINDOW_FRAMES, 4, 1.0, 0.0f);
+	pitch = audioPitchHz(out + PITCH_SKIP_FRAMES * 2, PITCH_WINDOW_FRAMES - PITCH_SKIP_FRAMES, 48000);
+	printf("不变速 4x pitch %.1f Hz (base %.1f)\n", pitch, base);
+	expect(pitch > base * 0.85 && pitch < base * 1.15, "不变速 keeps the music at its own pitch at 4x");
 	free(out);
 	mgbaMobileDestroy(emu);
 }
@@ -900,6 +971,7 @@ int main(int argc, char** argv) {
 	testTurboB(dir);
 	testAudioOut(dir);
 	testAudioPitch(dir);
+	testAudioConstPitch(dir);
 	testLink();
 	testRelay();
 	if (g_failed) {
