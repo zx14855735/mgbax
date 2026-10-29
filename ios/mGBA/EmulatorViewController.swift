@@ -72,6 +72,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /** Fractional speeds (slow motion) accumulate whole frames in this debt. */
     private var frameDebt: Double = 0
     private var lastAudioSpeed: Double = 0
+    /** Game speed the audio queues were last flushed for: 音乐原速 holds
+     * audioSpeed at 1 across the 1x -> fast-forward switch, so the flush must
+     * key on the game speed too or the parked audio never restarts. */
+    private var lastGameSpeed: Double = 0
+    /** Whether the native hold (音乐原速) is currently published to the core. */
+    private var holdEngaged = false
+    /** Stretch the hold was published with; republished when the multiplier changes. */
+    private var lastHoldStretch: Double = 0
     /** Slice rate the device last sustained while fast-forwarding (slices per
      * second; eased toward the measured capability once per feedback window)
      * and the slice schedule derived from it; re-measured per speed. 0 =
@@ -476,17 +484,34 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         speedCustomButton = custom
         let soundToggle = UISwitch()
         soundToggle.isOn = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
-        soundToggle.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.defaults.set(soundToggle.isOn, forKey: "fast_audio")
-            self.audio.setSoundEnabled(soundToggle.isOn)
-        }, for: .valueChanged)
         let soundLabel = UILabel()
         soundLabel.text = "倍速声音"
         soundLabel.textColor = .white
         soundLabel.font = .systemFont(ofSize: 13)
+        let nativeToggle = UISwitch()
+        nativeToggle.isOn = defaults.object(forKey: "fast_audio_native") == nil ? true : defaults.bool(forKey: "fast_audio_native")
+        nativeToggle.isEnabled = soundToggle.isOn
+        nativeToggle.alpha = soundToggle.isOn ? 1.0 : 0.45
+        nativeToggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(nativeToggle.isOn, forKey: "fast_audio_native")
+        }, for: .valueChanged)
+        let nativeLabel = UILabel()
+        nativeLabel.text = "音乐原速"
+        nativeLabel.textColor = .white
+        nativeLabel.font = .systemFont(ofSize: 13)
+        // 不变速 only makes sense when sound is on during fast-forward.
+        soundToggle.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(soundToggle.isOn, forKey: "fast_audio")
+            self.audio.setSoundEnabled(soundToggle.isOn)
+            nativeToggle.isEnabled = soundToggle.isOn
+            nativeToggle.alpha = soundToggle.isOn ? 1.0 : 0.45
+        }, for: .valueChanged)
         speedStack.addArrangedSubview(soundLabel)
         speedStack.addArrangedSubview(soundToggle)
+        speedStack.addArrangedSubview(nativeLabel)
+        speedStack.addArrangedSubview(nativeToggle)
         refreshSpeedButtons()
         savePathView.textColor = UIColor(red: 183 / 255, green: 227 / 255, blue: 183 / 255, alpha: 1)
         savePathView.font = .systemFont(ofSize: 12)
@@ -934,11 +959,34 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let wantSound = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
             audio.setSoundEnabled(wantSound)
-            // Fast-forward keeps its sound unless it was switched off; the core's
-            // resampler plays that stream faster (tape style), so a change only
+            // 音乐原速: at fast-forward the score keeps its own tempo and pitch
+            // while the surplus is cut in whole sections on gaps between notes
+            // (native hold). The published stretch follows the multiplier even
+            // though audioSpeed stays at 1.
+            let musicNative = defaults.object(forKey: "fast_audio_native") == nil ? true : defaults.bool(forKey: "fast_audio_native")
+            let holdOn = wantSound && musicNative && mult > 1.01
+            if holdOn != holdEngaged || (holdOn && mult != lastHoldStretch) {
+                if holdOn {
+                    mgbaMobileSetAudioConstantPitch(core, true, mult)
+                    mgbaMobileSetAudioHoldMode(core, MOBILE_AUDIO_HOLD_NATIVE)
+                } else {
+                    mgbaMobileSetAudioConstantPitch(core, false, 1.0)
+                }
+                holdEngaged = holdOn
+                lastHoldStretch = mult
+            }
+            // Fast-forward keeps its sound unless it was switched off; with the
+            // hold engaged the resampler plays the 1x stream, so a change only
             // needs the queues dropped.
-            let audioSpeed: Double = wantSound ? mult : 1
-            if audioSpeed != lastAudioSpeed {
+            var audioSpeed: Double = wantSound ? mult : 1
+            if holdOn {
+                audioSpeed = 1
+            }
+            // The game speed keys the flush too: 音乐原速 holds audioSpeed at 1
+            // across the 1x -> 4x switch, and the parked audio, the pace estimate
+            // and the ff schedule all have to restart for the new rate.
+            if audioSpeed != lastAudioSpeed || mult != lastGameSpeed {
+                lastGameSpeed = mult
                 lastAudioSpeed = audioSpeed
                 audio.flush()
                 audio.resetRateControl()

@@ -958,14 +958,21 @@ static int audioMaxStep(const int16_t* buf, int frames) {
  */
 /* 音乐原速 hands audio out by elapsed real time, but this test runs emulation
  * as fast as it can - no wall time passes between reads. The synthetic clock
- * below advances one frame per read, which is exactly the cadence the Android
- * front end pumps audio at. */
+ * below advances one slice per deviceSlice() call site, so every read inside a
+ * slice sees the same timestamp and the hold's output budget accrues from real
+ * elapsed time only - exactly what the device does. (Advancing per readAudioOut
+ * call instead over-credits the budget once the harness pumps per 4-frame step:
+ * at 4x the credited budget then matches production, no surplus ever piles up,
+ * and the test cannot see the cutting policy at all.) */
 static double g_fakeAudioNow;
 
 static double fakeAudioClock(void) {
-	double now = g_fakeAudioNow;
+	return g_fakeAudioNow;
+}
+
+/* One slice of wall time, called where deviceSlice() models one front-end tick. */
+static void advanceFakeSlice(void) {
 	g_fakeAudioNow += 1.0 / 59.73;
-	return now;
 }
 
 static void testAudioNativeHold(const char* dir) {
@@ -1012,6 +1019,7 @@ static void testAudioNativeHold(const char* dir) {
 		int64_t delivered = 0;
 		int slice;
 		for (slice = 0; slice < SLICES; ++slice) {
+			advanceFakeSlice();
 			deviceSlice(emu, 1, baseline, &total, CAP, tmp, 1.0, &delivered);
 		}
 		baseFrames = total;
@@ -1030,6 +1038,7 @@ static void testAudioNativeHold(const char* dir) {
 		double pitch;
 		int step;
 		size_t dropped;
+		size_t cuts;
 		char what[128];
 
 		/* Leave the throughput memory holding a tape reading, as a user who
@@ -1043,6 +1052,7 @@ static void testAudioNativeHold(const char* dir) {
 			int throwaway = 0;
 			int64_t tapeDelivered = 0;
 			for (slice = 0; slice < 90; ++slice) {
+				advanceFakeSlice();
 				deviceSlice(emu, gameFrames, out, &throwaway, 0, tmp, stretch, &tapeDelivered);
 				if (slice == 0) {
 					mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
@@ -1058,6 +1068,7 @@ static void testAudioNativeHold(const char* dir) {
 		for (slice = 0; slice < SLICES; ++slice) {
 			/* syncFastAudio() republishes the mode on every slice. */
 			mgbaMobileSetAudioConstantPitch(emu, true, stretch);
+			advanceFakeSlice();
 			deviceSlice(emu, gameFrames, out, &total, CAP, tmp, 1.0, &delivered);
 			if (slice == 59) {
 				mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
@@ -1066,10 +1077,11 @@ static void testAudioNativeHold(const char* dir) {
 		pitch = audioPitchHz(out, total, OUT_RATE);
 		step = audioMaxStep(out, total);
 		dropped = mgbaMobileWsolaDropped(emu);
+		cuts = mgbaMobileNativeHoldCuts(emu);
 		printf("native hold 音乐原速 %.0fx: %d/%d frames (delivered %lld), %.1f Hz (%.2fx),"
-				" max step %d (1x %d), dropped %zu\n",
+				" max step %d (1x %d), dropped %zu, cuts %zu\n",
 				stretch, total, CAP, (long long) delivered, pitch,
-				base > 0.0 ? pitch / base : 0.0, step, baseStep, dropped);
+				base > 0.0 ? pitch / base : 0.0, step, baseStep, dropped, cuts);
 
 		snprintf(what, sizeof(what), "音乐原速 %.0fx plays at the 1x pitch", stretch);
 		expect(pitch > base * 0.85 && pitch < base * 1.15, what);
@@ -1077,6 +1089,12 @@ static void testAudioNativeHold(const char* dir) {
 		expect(total >= CAP * 0.85, what);
 		snprintf(what, sizeof(what), "音乐原速 %.0fx plays without a click", stretch);
 		expect(step < baseStep * 2 + 2000, what);
+		/* The surplus must leave in whole section cuts, a couple per second at
+		 * most - shaving it frame-by-frame (the first implementation) re-samples
+		 * the tune at 1/stretch and plays it back at the fast-forward rate, with
+		 * a cut after every pump. 4x expects ~2 cuts in 5 s, 16x ~15. */
+		snprintf(what, sizeof(what), "音乐原速 %.0fx cuts sections, not frames (%zu cuts)", stretch, cuts);
+		expect(cuts >= 1 && cuts <= (stretch > 8.0 ? 90 : 12), what);
 	}
 	(void) baseFrames;
 

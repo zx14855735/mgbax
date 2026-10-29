@@ -49,6 +49,17 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double stretch);
 /* 0 = keep pitch, tune runs at the fast-forward rate; 1 = keep tempo and pitch
  * by skipping sections. See MOBILE_AUDIO_HOLD_* in mgba_mobile.c. */
+/* How fast-forward audio is produced when the front end asks for it: the mode
+ * argument of mgbaMobileSetAudioHoldMode(). */
+enum {
+	/* Keep the tune at its own pitch but let it run at the fast-forward rate:
+	 * nothing is dropped, the whole score plays, just faster. */
+	MOBILE_AUDIO_HOLD_PITCH = 0,
+	/* Keep the tune at its own tempo *and* pitch - exactly as at 1x - by
+	 * skipping sections in between, cut on gaps between notes. */
+	MOBILE_AUDIO_HOLD_NATIVE = 1,
+};
+
 void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode);
 /*
  * Frames the time-stretcher had to discard because its staging buffer could not
@@ -56,6 +67,13 @@ void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode);
  * (the tests use it to prove the stretcher never eats input it cannot emit).
  */
 size_t mgbaMobileWsolaDropped(const struct MgbaMobile* emu);
+/*
+ * Section skips executed by the 音乐原速 native hold (see mobile_test.c).
+ * Grows by a couple per second of fast-forward at 4x - hundreds per second
+ * would mean the surplus is being shaved frame-by-frame again, which plays
+ * the tune at the fast-forward rate.
+ */
+size_t mgbaMobileNativeHoldCuts(const struct MgbaMobile* emu);
 /*
  * Frames per second the front end is actually pacing emulation at (measured,
  * not nominal). Call about once a second; the resampler follows it so audio
