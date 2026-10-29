@@ -47,6 +47,9 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
  * stretch is the fast-forward multiplier.
  */
 void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double stretch);
+/* 0 = keep pitch, tune runs at the fast-forward rate; 1 = keep tempo and pitch
+ * by skipping sections. See MOBILE_AUDIO_HOLD_* in mgba_mobile.c. */
+void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode);
 /*
  * Frames the time-stretcher had to discard because its staging buffer could not
  * take them. Should always be 0; a non-zero value means a hole in the music

@@ -119,6 +119,24 @@ public final class MgbaCore {
         }
     }
 
+    /** Music at its own tempo and pitch, skipping sections in between. */
+    public static final int HOLD_MODE_NATIVE = 1;
+    /** Music at its own pitch, running at the fast-forward rate (nothing skipped). */
+    public static final int HOLD_MODE_PITCH = 0;
+
+    /**
+     * Chooses how fast-forward audio is produced while {@link #setAudioConstantPitch}
+     * is on. HOLD_MODE_NATIVE plays the score at its own tempo and pitch, exactly
+     * as at 1x, and skips the sections in between (cut on the gaps between
+     * notes); HOLD_MODE_PITCH keeps every note but runs the score at the
+     * fast-forward rate.
+     */
+    public void setAudioHoldMode(int mode) {
+        if (handle != 0) {
+            nativeSetAudioHoldMode(handle, mode);
+        }
+    }
+
     /**
      * Drops the pace estimate so the resampler re-locks from the console's own
      * frame rate after a speed change, instead of carrying a stale reading that
@@ -361,6 +379,7 @@ public final class MgbaCore {
     private static native int nativeReadAudioOut(long handle, short[] out, double speed, float drift);
     private static native void nativeSetAudioPaceFps(long handle, float fps);
     private static native void nativeSetAudioConstantPitch(long handle, boolean on, float stretch);
+    private static native void nativeSetAudioHoldMode(long handle, int mode);
     private static native void nativeResetAudioPace(long handle);
     private static native boolean nativeIsAudioPaceSeeded(long handle);
 

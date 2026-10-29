@@ -23,6 +23,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -196,6 +197,34 @@ struct MgbaMobile {
 	int16_t* wsolaPrev;                  /* last ref2 emitted-domain samples (phase ref) */
 	int16_t* wsolaWindow;                /* Hann window, length wsolaN*2 */
 	int16_t* wsolaScratch;               /* discard scratch for the input queue */
+	/*
+	 * Native-rate hold (音乐原速): the game's audio is streamed out at its own
+	 * tempo and pitch - bit for bit what 1x would emit - and fast-forward is
+	 * absorbed as LAG, not as skips. At 4x the console makes four seconds of
+	 * music per real second, so only one of those four can be heard; instead
+	 * of cutting the track into sections and dropping the gaps (which sounds
+	 * like the music stuttering on and off), every frame that cannot be played
+	 * in time is simply the oldest unplayed frame, which the ring overwrites.
+	 * The output is one continuous, untransposed 1x stream that lags the game;
+	 * nothing is ever dropped from what does play, so there is no jump.
+	 *
+	 *   natRing       - the lag ring, holding up to natRingCap frames
+	 *   natRingCap    - ring capacity in frames (the lag ceiling)
+	 *   natW / natR   - absolute write / read frame counts
+	 *   natPrimed     - frames handed out since the hold began
+	 *   natPrimedTarget - fade-in length, frames (avoids a click at the start)
+	 *   natLagDrops   - frames overwritten off the oldest end (the lag)
+	 */
+	int16_t* natRing;
+	size_t natRingCap;                    /* capacity in frames */
+	size_t natW;                          /* absolute write frame count */
+	size_t natR;                          /* absolute read frame count */
+	size_t natPrimed;                     /* frames handed out since hold began */
+	size_t natPrimedTarget;               /* fade-in length, frames */
+	size_t natLagDrops;                   /* frames dropped off the oldest end */
+	double natOutAcc;                     /* fractional output carry */
+	double natLastTime;                   /* wall clock of the previous read */
+	int audioHoldMode;                   /* MOBILE_AUDIO_HOLD_* (set by UI) */
 	bool audioHoldOn;
 	bool audioHoldInited;
 	/* Set by the UI thread on every toggle; the audio thread clears the staged
@@ -291,6 +320,56 @@ enum {
 #define MOBILE_AUDIO_WSOLA_IN_SECONDS 6     /* input queue length, seconds */
 #define MOBILE_AUDIO_WSOLA_OUT_SECONDS 2    /* output staging buffer, seconds */
 #define MOBILE_AUDIO_WSOLA_SCRATCH 4096
+/*
+ * Native-rate hold (音乐原速). At 4x the console produces four seconds of music
+ * per second of real time while the speaker can emit one, so three of those
+ * seconds cannot be heard - the only choice is where the cut lands. Sections
+ * play at their own tempo and pitch, then the skipper jumps ahead, preferring
+ * to do it inside a gap between notes: GBA scores are short loops with plenty
+ * of them, so a cut placed on silence is inaudible. A short cross-fade at the
+ * seam covers whatever is left.
+ */
+#define MOBILE_AUDIO_NATIVE_RING_SECONDS 2.0 /* max music lag behind the game */
+/* Level the playback buffer is topped up to after every pull. Small enough
+ * that one front-end read is never satisfied twice in a row (which is what
+ * overfills the non-blocking AudioTrack), large enough to cover the mixer
+ * period: roughly 62 ms at the GBA's 65536 Hz. */
+#define MOBILE_AUDIO_NATIVE_LEVEL_FRAMES 4096
+
+/* Wall clock for pacing the 音乐原速 hand-out. The native test runs emulation
+ * as fast as it can, so no real time passes between its reads and a wall clock
+ * would hand out nothing; it installs a synthetic clock instead (one frame per
+ * read), which is exactly what the front end does on a device. */
+double (*mgbaMobileAudioClock)(void);
+
+static double audioNow(void) {
+	if (mgbaMobileAudioClock) {
+		return mgbaMobileAudioClock();
+	}
+#if defined(_WIN32)
+	struct timespec ts;
+	if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
+		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
+	}
+	return 0.0;
+#else
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
+	}
+	return 0.0;
+#endif
+}
+
+/* How fast-forward audio is produced when the front end asks for it. */
+enum {
+	/* Keep the tune at its own pitch but let it run at the fast-forward rate:
+	 * nothing is dropped, the whole score plays, just faster. */
+	MOBILE_AUDIO_HOLD_PITCH = 0,
+	/* Keep the tune at its own tempo *and* pitch - exactly as at 1x - by
+	 * skipping sections in between, cut on gaps between notes. */
+	MOBILE_AUDIO_HOLD_NATIVE = 1,
+};
 
 static void attachKeyCallback(struct MgbaMobile* emu);
 static void detachLink(struct MgbaMobile* emu);
@@ -333,11 +412,13 @@ static void deinitAudioHold(struct MgbaMobile* emu) {
 	free(emu->wsolaPrev);
 	free(emu->wsolaWindow);
 	free(emu->wsolaScratch);
+	free(emu->natRing);
 	emu->wsolaAcc = NULL;
 	emu->wsolaEmit = NULL;
 	emu->wsolaPrev = NULL;
 	emu->wsolaWindow = NULL;
 	emu->wsolaScratch = NULL;
+	emu->natRing = NULL;
 	emu->audioHoldInited = false;
 }
 
@@ -382,6 +463,26 @@ static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stre
 	emu->wsolaConfigured = stretch;
 	emu->wsolaAnaPos = 0;
 	emu->wsolaDropped = 0;
+	/* Native-rate hold geometry (音乐原速): a lag ring of a couple of seconds.
+	 * The game's audio is written into the ring at the fast-forward rate and
+	 * read out at the console's own rate; the oldest unplayed frames are
+	 * overwritten, so the output is one continuous, untransposed 1x stream that
+	 * lags the game - never a section skip. The lag ceiling only bounds how far
+	 * behind the game the music can fall; it does not cause any jump. */
+	emu->natRingCap = (size_t) (coreRate * MOBILE_AUDIO_NATIVE_RING_SECONDS + 0.5);
+	if (emu->natRingCap < 2048) {
+		emu->natRingCap = 2048;
+	}
+	emu->natW = 0;
+	emu->natR = 0;
+	emu->natPrimed = 0;
+	emu->natPrimedTarget = (size_t) (coreRate * 0.012 + 0.5);  /* 12 ms fade-in */
+	if (emu->natPrimedTarget < 16) {
+		emu->natPrimedTarget = 16;
+	}
+	emu->natLagDrops = 0;
+	emu->natOutAcc = 0.0;
+	emu->natLastTime = 0.0;
 	mAudioBufferInit(&emu->audioHold, (size_t) coreRate * MOBILE_AUDIO_WSOLA_OUT_SECONDS, 2);
 	mAudioBufferInit(&emu->wsolaIn, (size_t) coreRate * MOBILE_AUDIO_WSOLA_IN_SECONDS, 2);
 	/* Mark inited now so a failed allocation below is cleaned up by
@@ -392,7 +493,8 @@ static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stre
 	emu->wsolaPrev = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
 	emu->wsolaWindow = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
 	emu->wsolaScratch = (int16_t*) calloc(MOBILE_AUDIO_WSOLA_SCRATCH * 2, sizeof(int16_t));
-	if (!emu->wsolaAcc || !emu->wsolaEmit || !emu->wsolaPrev || !emu->wsolaWindow || !emu->wsolaScratch) {
+	emu->natRing = (int16_t*) calloc(emu->natRingCap * 2, sizeof(int16_t));
+	if (!emu->wsolaAcc || !emu->wsolaEmit || !emu->wsolaPrev || !emu->wsolaWindow || !emu->wsolaScratch || !emu->natRing) {
 		/* Out of memory: fall back to the plain (non-stretched) path rather
 		 * than dereferencing a NULL accumulator. */
 		deinitAudioHold(emu);
@@ -599,6 +701,121 @@ static size_t wsolaGenerate(struct MgbaMobile* emu, size_t want) {
 	return produced;
 }
 
+/*
+ * 音乐原速 playback.
+ *
+ * A section is played straight out of the core, at its own tempo and pitch -
+ * bit for bit what 1x would emit - and then a stretch-proportional amount of
+ * input is skipped before the next section starts. The skip is unavoidable:
+ * at 4x the console hands over four seconds of music per second of real time
+ * while the speaker can emit one. Everything here is about making it inaudible:
+ *
+ *  - the cut only happens after most of the nominal skip is used up, and then
+ *    it stops at the first quiet block - a gap between two notes - rather than
+ *    in the middle of one;
+ *  - whatever that costs or saves is carried into the next skip, so the tune
+ *    keeps its tempo instead of drifting;
+ *  - the tail of the outgoing section is cross-faded into the head of the
+ *    incoming one, so even a cut that lands on sound has no click.
+ */
+static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* source, size_t want) {
+	unsigned coreRate = emu->core ? emu->core->audioSampleRate(emu->core) : 0;
+	size_t cap = emu->natRingCap;
+	size_t holdCap = mAudioBufferCapacity(&emu->audioHold);
+	size_t holdAvail = mAudioBufferAvailable(&emu->audioHold);
+	size_t produced = 0;
+
+	if (!emu->natRing || !cap || !coreRate) {
+		return 0;
+	}
+
+	/* 1. Pull the core's audio into the lag ring. The game runs `stretch`
+	 * times faster than real time, so it produces `stretch` times more audio
+	 * than we hand out; the surplus is the oldest unplayed frames, which the
+	 * ring simply overwrites. What we do play is therefore one continuous,
+	 * untransposed 1x stream - it lags the game, but it never skips or jumps. */
+	size_t startR = emu->natR;
+	size_t avail = mAudioBufferAvailable(source);
+	while (avail) {
+		size_t n = avail > MOBILE_AUDIO_WSOLA_SCRATCH ? MOBILE_AUDIO_WSOLA_SCRATCH : avail;
+		n = mAudioBufferRead(source, emu->wsolaScratch, n);
+		if (!n) {
+			break;
+		}
+		if (emu->natW + n - emu->natR > cap) {
+			/* Drop oldest unplayed frames so the lag never exceeds `cap`. */
+			size_t drop = emu->natW + n - emu->natR - cap;
+			emu->natR += drop;
+			emu->natLagDrops += drop;
+		}
+		for (size_t k = 0; k < n; ++k) {
+			size_t widx = emu->natW % cap;
+			emu->natRing[widx * 2] = emu->wsolaScratch[k * 2];
+			emu->natRing[widx * 2 + 1] = emu->wsolaScratch[k * 2 + 1];
+			emu->natW++;
+		}
+		avail -= n;
+	}
+
+	/* 2. Hand out exactly what real time has advanced - one frame per core
+	 * sample of wall clock, independent of the multiplier and of how fast the
+	 * device can actually emulate. This is the only quantity that means the
+	 * same thing at every speed, so it is the one that keeps the music at the
+	 * console's own tempo. */
+	double now = audioNow();
+	double dt = now - emu->natLastTime;
+	emu->natLastTime = now;
+	if (dt > 0.0 && dt < 0.5) {
+		emu->natOutAcc += dt * (double) coreRate;
+	}
+	double acc = emu->natOutAcc;
+	size_t budget = (size_t) acc;
+	emu->natOutAcc = acc - (double) budget;
+
+	size_t have = emu->natW - emu->natR;   /* unread frames in the ring */
+	if (budget > have) {
+		budget = have;
+	}
+	if (budget > (size_t) want) {
+		budget = (size_t) want;
+	}
+	if (budget > holdCap - holdAvail) {
+		budget = holdCap - holdAvail;
+	}
+
+	/* 3. Copy `budget` frames out of the ring into the playback buffer. The
+	 * first few frames are faded in so re-entering the hold does not click
+	 * against silence; everything else is the original 1x sample, untouched. */
+	for (size_t done = 0; done < budget; ) {
+		size_t ridx = emu->natR % cap;
+		size_t room = cap - ridx;
+		size_t chunk = budget - done;
+		if (chunk > room) {
+			chunk = room;
+		}
+		for (size_t k = 0; k < chunk; ++k) {
+			int16_t l = emu->natRing[(ridx + k) * 2];
+			int16_t r = emu->natRing[(ridx + k) * 2 + 1];
+			size_t played = emu->natPrimed + k;
+			if (played < emu->natPrimedTarget) {
+				int a = (int) ((played * 256) / (emu->natPrimedTarget > 0 ? emu->natPrimedTarget : 1));
+				l = (int16_t) (((int) l * a) / 256);
+				r = (int16_t) (((int) r * a) / 256);
+			}
+			emu->wsolaScratch[(done + k) * 2] = l;
+			emu->wsolaScratch[(done + k) * 2 + 1] = r;
+		}
+		size_t wrote = mAudioBufferWrite(&emu->audioHold, emu->wsolaScratch + done * 2, chunk);
+		emu->natR += wrote;
+		emu->natPrimed += wrote;
+		done += wrote;
+		if (wrote < chunk) {
+			break;   /* playback buffer full; finish next call */
+		}
+	}
+	produced = emu->natR - startR;
+	return produced;
+}
 static void deinitAudioOutput(struct MgbaMobile* emu) {
 	deinitAudioHold(emu);
 	free(emu->audioWindow);
@@ -2321,6 +2538,28 @@ size_t mgbaMobileWsolaDropped(const struct MgbaMobile* emu) {
 }
 
 /*
+ * Picks how fast-forward audio is produced (see MOBILE_AUDIO_HOLD_*). Like the
+ * enable/stretch pair above this only publishes the request: the staging
+ * buffers belong to the audio thread, so the UI thread must not touch them.
+ */
+void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode) {
+	if (!emu) {
+		return;
+	}
+	if (mode != MOBILE_AUDIO_HOLD_NATIVE) {
+		mode = MOBILE_AUDIO_HOLD_PITCH;
+	}
+	if (emu->audioHoldMode == mode) {
+		return;
+	}
+	emu->audioHoldMode = mode;
+	emu->wsolaClearPending = true;
+	if (emu->audioResamplerInited) {
+		emu->audioResampler.timestamp = 0;
+	}
+}
+
+/*
  * Feeds back how many frames per second the front end is actually managing to
  * pace emulation at. The resampler scales its input rate by the emulated
  * console's frame rate over this pace, so a game the device cannot run at full
@@ -2555,30 +2794,6 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	if (!source || !coreRate) {
 		return 0;
 	}
-	size_t held = 0;
-	if (emu->audioHoldOn) {
-		// Time-stretch the surplus with WSOLA so the music stays continuous and
-		// at its own pitch, then resample the stretched output at the console
-		// rate. No section is ever dropped, so the tune never jumps.
-		//
-		// This runs on the emulation/audio thread, which owns every WSOLA
-		// buffer; the UI only ever sets audioHoldOn / wsolaStretch /
-		// wsolaClearPending (see mgbaMobileSetAudioConstantPitch).
-		initAudioHold(emu, coreRate, emu->wsolaStretch);
-		if (emu->audioHoldInited) {
-			if (emu->wsolaClearPending) {
-				// A toggle happened since last time: drop anything staged under
-				// the previous speed/mode so a re-enable never replays it.
-				mAudioBufferClear(&emu->audioHold);
-				mAudioBufferClear(&emu->wsolaIn);
-				emu->wsolaAnaPos = 0;
-				emu->wsolaClearPending = false;
-			}
-			wsolaFeed(emu, source);
-			held = wsolaGenerate(emu, (size_t) maxFrames);
-			source = &emu->audioHold;
-		}
-	}
 	if (speed < 0.05) {
 		speed = 0.05;
 	} else if (speed > 64) {
@@ -2622,7 +2837,65 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		// audio at the console's own frame rate.
 		fpsRatio = 1.0;
 	}
-	double inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
+	/* In 音乐原速 the staged audio is already at the console's own rate: the
+	 * stretching happened upstream, and the source no longer tracks how fast
+	 * the game is running. So it is consumed one for one, whatever the
+	 * multiplier or the front end's frame rate. Dividing by fpsRatio here (as
+	 * the pass-through path must, because there the source really does run
+	 * faster than real time) is what made 16x come out at a quarter speed on a
+	 * device that cannot reach 16x: the ratio said 4x, so the music was
+	 * stretched 4x longer. */
+	size_t held = 0;
+	if (emu->audioHoldOn) {
+		// Fast-forward audio, produced on the emulation/audio thread, which owns
+		// every staging buffer; the UI only ever sets audioHoldOn /
+		// wsolaStretch / audioHoldMode / wsolaClearPending (see
+		// mgbaMobileSetAudioConstantPitch).
+		initAudioHold(emu, coreRate, emu->wsolaStretch);
+		if (emu->audioHoldInited) {
+			if (emu->wsolaClearPending) {
+				// A toggle happened since last time: drop anything staged under
+				// the previous speed/mode so a re-enable never replays it.
+			mAudioBufferClear(&emu->audioHold);
+			mAudioBufferClear(&emu->wsolaIn);
+			emu->wsolaAnaPos = 0;
+			emu->natW = emu->natR;          /* discard whatever is staged */
+			emu->natPrimed = 0;
+			emu->natOutAcc = 0.0;
+			emu->natLastTime = 0.0;
+			emu->natLagDrops = 0;
+			emu->wsolaClearPending = false;
+			}
+			if (emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE) {
+				held = nativeHoldGenerate(emu, source, (size_t) maxFrames);
+			} else {
+				wsolaFeed(emu, source);
+				held = wsolaGenerate(emu, (size_t) maxFrames);
+			}
+			source = &emu->audioHold;
+		}
+	}
+
+	/* DIAGNOSTIC (remove after fix): while fast-forwarding, report whether the
+	 * 1x hold is actually engaged. holdOn=0 means the enable call never reached
+	 * here (engagement bug); holdInited=0 means the hold failed to allocate and
+	 * the pass-through fast path runs instead. */
+	if (speed > 1.01) {
+		static int diagTick;
+		if ((diagTick++ % 60) == 1) {
+			MOBILE_LOGI("audio diag: speed %.1f holdOn %d holdInited %d mode %s natRing %p",
+					speed, emu->audioHoldOn, emu->audioHoldInited,
+					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
+					(void*) emu->natRing);
+		}
+	}
+
+	double inRate;
+	if (emu->audioHoldOn) {
+		inRate = (double) coreRate * (1.0 + drift);
+	} else {
+		inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
+	}
 	if (emu->audioHoldOn) {
 		/* One line per second is enough to tell, from a device logcat, whether
 		 * the stretcher is running, at what ratio, and whether it is keeping
@@ -2630,10 +2903,11 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		 * means it produced nothing for this read. */
 		static int traceTick;
 		if ((traceTick++ % 60) == 1) {
-			MOBILE_LOGI("audio 不变速 on: stretch %.2f speed %.2f inRate %.0f coreRate %u held %zu hold %zu in %zu dropped %zu",
+			MOBILE_LOGI("audio ff: mode %s stretch %.2f speed %.2f inRate %.0f coreRate %u held %zu hold %zu in %zu lagDrops %zu",
+					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
 					emu->wsolaStretch, speed, inRate, coreRate, held,
 					mAudioBufferAvailable(&emu->audioHold), mAudioBufferAvailable(&emu->wsolaIn),
-					emu->wsolaDropped);
+					emu->natLagDrops);
 		}
 	}
 	size_t got = mAudioBufferRead(&emu->audioOut, out, (size_t) maxFrames);

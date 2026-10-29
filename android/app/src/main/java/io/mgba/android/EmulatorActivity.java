@@ -215,6 +215,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean constantPitchOn;
     /** Multiplier the native stretcher was last told about (avoids re-arming it). */
     private double constantPitchStretch;
+    /** Mode the native fast-forward audio pipeline was last told about, -1 when unknown. */
+    private int constantPitchMode = -1;
     /** Software volume, 0-150 percent, applied when frames reach the track. */
     private int volumePercent = 100;
     private long nextFastPresent;
@@ -1819,6 +1821,7 @@ public class EmulatorActivity extends AppCompatActivity {
         appliedSpeed = -1;
         appliedGameSpeed = -1;
         constantPitchOn = false;
+        constantPitchMode = -1;
         if (core != null) {
             core.setAudioConstantPitch(false, 1.0);
         }
@@ -1930,7 +1933,10 @@ public class EmulatorActivity extends AppCompatActivity {
         boolean changed = false;
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         boolean soundOn = prefs.getBoolean("fast_audio", true);
-        boolean constPitch = prefs.getBoolean("fast_audio_const", false);
+        // 音乐原速 复选框写入的是 fast_audio_native；这里必须读同一个键，否则勾选
+        // 框形同虚设，而真正的开关却一直读着一个没人写过的旧键（fast_audio_const），
+        // 设备上残留的旧值会让整条路径在倍速下完全不生效（"完全没效果"）。
+        boolean musicNative = prefs.getBoolean("fast_audio_native", true);
         boolean mute = !soundOn && mult > 1.01;
         double audioSpeed;
         boolean holdSurplus;
@@ -1938,7 +1944,7 @@ public class EmulatorActivity extends AppCompatActivity {
             // Normal speed and slow motion: audio always tracks the game.
             audioSpeed = mult;
             holdSurplus = false;
-        } else if (soundOn && constPitch) {
+        } else if (soundOn && musicNative) {
             // 不变速: the music keeps its own speed and pitch. The fast game
             // produces several times more audio than the device can play at
             // that speed, so the surplus is parked and replayed instead of
@@ -1951,17 +1957,28 @@ public class EmulatorActivity extends AppCompatActivity {
             audioSpeed = mult;
             holdSurplus = false;
         }
+        if (mult > 1.01) {
+            android.util.Log.i("mGBA", "syncFast mult=" + mult + " soundOn=" + soundOn
+                    + " native=" + musicNative + " hold=" + holdSurplus + " speed=" + audioSpeed
+                    + " coreNull=" + (core == null));
+        }
         if (core != null) {
             if (holdSurplus) {
-                // Keep the WSOLA stretch in sync with the current multiplier.
-                // This runs on every emulated slice, so only publish changes:
-                // re-arming the stretcher resets its parked input.
+                // Keep the stretch in sync with the current multiplier. This runs
+                // on every emulated slice, so only publish changes: re-arming the
+                // staging buffers throws away what is already parked.
                 if (!constantPitchOn || Math.abs(mult - constantPitchStretch) > 0.01) {
                     core.setAudioConstantPitch(true, mult);
                     constantPitchStretch = mult;
                 }
+                int mode = musicNative ? MgbaCore.HOLD_MODE_NATIVE : MgbaCore.HOLD_MODE_PITCH;
+                if (mode != constantPitchMode) {
+                    core.setAudioHoldMode(mode);
+                    constantPitchMode = mode;
+                }
             } else if (constantPitchOn) {
                 core.setAudioConstantPitch(false, 1.0);
+                constantPitchMode = -1;
             }
             constantPitchOn = holdSurplus;
         }
@@ -3152,7 +3169,15 @@ public class EmulatorActivity extends AppCompatActivity {
             // 让 ticker 自己停下，别继续攥着已经销毁的 View
             relayServerView = null;
             inputHandler.removeCallbacks(relayTicker);
+            if (gameView != null) {
+                gameView.setVisibility(View.VISIBLE);
+            }
         });
+        // 某些 ROM/模拟器里 SurfaceView 的表面会盖在对话框窗口之上，导致对话框
+        // 按钮收不到 input tap。打开对话框时把 gameView 藏起来，触摸就能落到对话框。
+        if (gameView != null) {
+            gameView.setVisibility(View.INVISIBLE);
+        }
         linkDialog.show();
         inputHandler.removeCallbacks(relayTicker);
         inputHandler.post(relayTicker);
@@ -3486,7 +3511,7 @@ public class EmulatorActivity extends AppCompatActivity {
         constSpeed.setText(R.string.speed_sound_const);
         constSpeed.setTextColor(Color.WHITE);
         constSpeed.setTextSize(13);
-        boolean constOn = prefs.getBoolean("fast_audio_const", false);
+        boolean constOn = prefs.getBoolean("fast_audio_native", true);
         constSpeed.setChecked(constOn);
         constSpeed.setEnabled(soundOn);
         constSpeed.setAlpha(soundOn ? 1.0f : 0.45f);
@@ -3500,7 +3525,7 @@ public class EmulatorActivity extends AppCompatActivity {
             syncFastAudio(currentGameSpeed());
         });
         constSpeed.setOnCheckedChangeListener((v, checked) -> {
-            prefs.edit().putBoolean("fast_audio_const", checked).apply();
+            prefs.edit().putBoolean("fast_audio_native", checked).apply();
             syncFastAudio(currentGameSpeed());
         });
         refreshSpeedButtons();

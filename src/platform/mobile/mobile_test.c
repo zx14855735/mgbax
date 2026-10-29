@@ -5,6 +5,10 @@
 #include "mgba_mobile.h"
 #include "remote_link.h"
 
+/* Synthetic clock hook owned by mgba_mobile.c: 音乐原速 paces its output by
+ * elapsed real time, and this test runs emulation as fast as it can. */
+extern double (*mgbaMobileAudioClock)(void);
+
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -740,6 +744,7 @@ static void testAudioConstPitchRealtime(const char* dir) {
 	expect(total >= CAP * 0.8, "WSOLA 不变速 4x plays the whole track (no 3/4 dropped)");
 	expect(held < 0.10 && held < shredded * 0.7,
 			"WSOLA 不变速 4x is far more continuous than the shredded path (no section jump)");
+	mgbaMobileAudioClock = NULL;
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	free(out);
 	mgbaMobileDestroy(emu);
@@ -918,6 +923,168 @@ static void testAudioConstPitchDevicePump(const char* dir) {
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	free(out);
 	free(tmp);
+	mgbaMobileDestroy(emu);
+}
+
+/* Largest single-sample step in a stream. A hard splice between two unrelated
+ * sections of music lands as a near full-scale step - the click; a cross-fade
+ * does not. */
+static int audioMaxStep(const int16_t* buf, int frames) {
+	int worst = 0;
+	int i;
+	for (i = 1; i < frames; ++i) {
+		int c;
+		for (c = 0; c < 2; ++c) {
+			int d = (int) buf[i * 2 + c] - (int) buf[(i - 1) * 2 + c];
+			if (d < 0) {
+				d = -d;
+			}
+			if (d > worst) {
+				worst = d;
+			}
+		}
+	}
+	return worst;
+}
+
+/*
+ * 音乐原速 (MOBILE_AUDIO_HOLD_NATIVE): the score plays at its own tempo and
+ * pitch - exactly what 1x emits - and the sections in between are skipped.
+ *
+ * The skip is not optional: at 4x the console hands over four seconds of music
+ * per second of real time while the speaker can emit one. What can be checked
+ * without ears is that the pitch is the 1x pitch, that the stream never breaks
+ * up, and that the splices do not step the waveform hard enough to click.
+ */
+/* 音乐原速 hands audio out by elapsed real time, but this test runs emulation
+ * as fast as it can - no wall time passes between reads. The synthetic clock
+ * below advances one frame per read, which is exactly the cadence the Android
+ * front end pumps audio at. */
+static double g_fakeAudioNow;
+
+static double fakeAudioClock(void) {
+	double now = g_fakeAudioNow;
+	g_fakeAudioNow += 1.0 / 59.73;
+	return now;
+}
+
+static void testAudioNativeHold(const char* dir) {
+	const int OUT_RATE = 48000;
+	const double SLICES_PER_SEC = 59.73;
+	const int SLICES = 300;
+	const int PER_SLICE = (int) (OUT_RATE / SLICES_PER_SEC) + 1;
+	const int CAP = SLICES * PER_SLICE;
+	const int BLOCK = 8192;
+	static const double STRETCHES[] = { 4.0, 16.0 };
+	char path[512];
+	struct MgbaMobile* emu;
+	int16_t* out;
+	int16_t* tmp;
+	int16_t* baseline;
+	double base;
+	int baseStep = 0;
+	int baseFrames = 0;
+	int s;
+
+	expect(writeAudioRom(dir, path, sizeof(path)), "write native-hold rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load native-hold rom");
+	out = (int16_t*) calloc((size_t) CAP * 2 + 2, sizeof(int16_t));
+	tmp = (int16_t*) calloc((size_t) BLOCK * 2, sizeof(int16_t));
+	baseline = (int16_t*) calloc((size_t) CAP * 2 + 2, sizeof(int16_t));
+	expect(out != NULL && tmp != NULL && baseline != NULL, "native-hold buffers");
+	if (!out || !tmp || !baseline) {
+		free(out);
+		free(tmp);
+		free(baseline);
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	expect(mgbaMobileSetAudioOutput(emu, OUT_RATE), "native-hold resampler");
+	g_fakeAudioNow = 0.0;
+	mgbaMobileAudioClock = fakeAudioClock;
+
+	mgbaMobileResetAudioPace(emu);
+	mgbaMobileClearAudio(emu);
+	mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+	{
+		int total = 0;
+		int64_t delivered = 0;
+		int slice;
+		for (slice = 0; slice < SLICES; ++slice) {
+			deviceSlice(emu, 1, baseline, &total, CAP, tmp, 1.0, &delivered);
+		}
+		baseFrames = total;
+		base = audioPitchHz(baseline, total, OUT_RATE);
+		baseStep = audioMaxStep(baseline, total);
+		printf("native hold 1x baseline: %d/%d frames, %.1f Hz, max step %d\n",
+				total, CAP, base, baseStep);
+	}
+
+	for (s = 0; s < (int) (sizeof(STRETCHES) / sizeof(STRETCHES[0])); ++s) {
+		double stretch = STRETCHES[s];
+		int gameFrames = (int) stretch;
+		int total = 0;
+		int64_t delivered = 0;
+		int slice;
+		double pitch;
+		int step;
+		size_t dropped;
+		char what[128];
+
+		/* Leave the throughput memory holding a tape reading, as a user who
+		 * fast-forwards first and then ticks 音乐原速 would. */
+		mgbaMobileSetAudioHoldMode(emu, 0);
+		mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
+		mgbaMobileResetAudioPace(emu);
+		mgbaMobileClearAudio(emu);
+		mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+		{
+			int throwaway = 0;
+			int64_t tapeDelivered = 0;
+			for (slice = 0; slice < 90; ++slice) {
+				deviceSlice(emu, gameFrames, out, &throwaway, 0, tmp, stretch, &tapeDelivered);
+				if (slice == 0) {
+					mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+				}
+			}
+		}
+
+		mgbaMobileSetAudioHoldMode(emu, 1);
+		mgbaMobileSetAudioConstantPitch(emu, true, stretch);
+		mgbaMobileResetAudioPace(emu);
+		mgbaMobileClearAudio(emu);
+		memset(out, 0, ((size_t) CAP * 2 + 2) * sizeof(int16_t));
+		for (slice = 0; slice < SLICES; ++slice) {
+			/* syncFastAudio() republishes the mode on every slice. */
+			mgbaMobileSetAudioConstantPitch(emu, true, stretch);
+			deviceSlice(emu, gameFrames, out, &total, CAP, tmp, 1.0, &delivered);
+			if (slice == 59) {
+				mgbaMobileSetAudioPaceFps(emu, SLICES_PER_SEC);
+			}
+		}
+		pitch = audioPitchHz(out, total, OUT_RATE);
+		step = audioMaxStep(out, total);
+		dropped = mgbaMobileWsolaDropped(emu);
+		printf("native hold 音乐原速 %.0fx: %d/%d frames (delivered %lld), %.1f Hz (%.2fx),"
+				" max step %d (1x %d), dropped %zu\n",
+				stretch, total, CAP, (long long) delivered, pitch,
+				base > 0.0 ? pitch / base : 0.0, step, baseStep, dropped);
+
+		snprintf(what, sizeof(what), "音乐原速 %.0fx plays at the 1x pitch", stretch);
+		expect(pitch > base * 0.85 && pitch < base * 1.15, what);
+		snprintf(what, sizeof(what), "音乐原速 %.0fx keeps up with the device", stretch);
+		expect(total >= CAP * 0.85, what);
+		snprintf(what, sizeof(what), "音乐原速 %.0fx plays without a click", stretch);
+		expect(step < baseStep * 2 + 2000, what);
+	}
+	(void) baseFrames;
+
+	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
+	mgbaMobileSetAudioHoldMode(emu, 0);
+	free(out);
+	free(tmp);
+	free(baseline);
 	mgbaMobileDestroy(emu);
 }
 
@@ -1336,6 +1503,7 @@ int main(int argc, char** argv) {
 	testAudioConstPitch(dir);
 	testAudioConstPitchRealtime(dir);
 	testAudioConstPitchDevicePump(dir);
+	testAudioNativeHold(dir);
 	testLink();
 	testRelay();
 	if (g_failed) {

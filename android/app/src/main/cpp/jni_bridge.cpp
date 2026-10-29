@@ -125,6 +125,11 @@ Java_io_mgba_android_MgbaCore_nativeSetAudioConstantPitch(JNIEnv*, jobject, jlon
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetAudioHoldMode(JNIEnv*, jobject, jlong handle, jint mode) {
+	mgbaMobileSetAudioHoldMode((struct MgbaMobile*) handle, (int) mode);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeClearAudio(JNIEnv*, jobject, jlong handle) {
 	mgbaMobileClearAudio((struct MgbaMobile*) handle);
 }
