@@ -45,6 +45,7 @@ import android.content.SharedPreferences;
 import android.text.InputType;
 import android.text.format.DateFormat;
 import android.util.Log;
+import android.util.Patterns;
 import android.view.Gravity;
 import android.view.GestureDetector;
 import android.view.KeyEvent;
@@ -73,6 +74,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Inet4Address;
@@ -89,6 +91,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -3731,16 +3734,23 @@ public class EmulatorActivity extends AppCompatActivity {
                     getPreferences(MODE_PRIVATE).edit().putString("gboy_ip", ip).putInt("gboy_port", p).apply();
                     ensureGboy().join(ip, p);
                 })));
-        // ---- gboy.top 云端房间：不用 IP，也不用自己架中继 ----
+        // ---- gboy.top 云端房间：邮箱 + 验证码，与官方客户端同一套账号体系 ----
         TextView cloudHelp = new TextView(this);
         cloudHelp.setText(R.string.link_cloud_help);
         cloudHelp.setTextColor(0xFF222222);
         cloudHelp.setPadding(0, pad, 0, 0);
         box.addView(cloudHelp);
-        EditText cloudUser = new EditText(this);
-        cloudUser.setHint(R.string.link_cloud_user_hint);
-        cloudUser.setSingleLine(true);
-        cloudUser.setText(getPreferences(MODE_PRIVATE).getString("cloud_user", ""));
+        EditText cloudEmail = new EditText(this);
+        cloudEmail.setHint(R.string.link_cloud_email_hint);
+        cloudEmail.setSingleLine(true);
+        cloudEmail.setText(getPreferences(MODE_PRIVATE).getString("cloud_email", ""));
+        box.addView(cloudEmail);
+        EditText cloudCode = new EditText(this);
+        cloudCode.setHint(R.string.link_cloud_code_hint);
+        cloudCode.setSingleLine(true);
+        Button getCode = linkButton(getString(R.string.link_cloud_get_code), v ->
+                sendCloudCode(cloudEmail, (Button) v, status));
+        box.addView(buttonRow(getCode, cloudCode));
         EditText cloudPass = new EditText(this);
         cloudPass.setHint(R.string.link_cloud_pass_hint);
         cloudPass.setSingleLine(true);
@@ -3749,46 +3759,13 @@ public class EmulatorActivity extends AppCompatActivity {
         cloudRoom.setHint(R.string.link_cloud_room_hint);
         cloudRoom.setSingleLine(true);
         cloudRoom.setText(getPreferences(MODE_PRIVATE).getString("cloud_room", ""));
-        box.addView(cloudUser);
         box.addView(cloudPass);
         box.addView(cloudRoom);
         box.addView(buttonRow(
-                linkButton(getString(R.string.link_cloud_create), v -> {
-                    if (core == null || !core.isLoaded()) {
-                        status.setText(R.string.link_gboy_no_rom);
-                        return;
-                    }
-                    String user = cloudUser.getText().toString().trim();
-                    String pass = cloudPass.getText().toString();
-                    if (user.isEmpty() || pass.isEmpty()) {
-                        status.setText(R.string.link_cloud_need_account);
-                        return;
-                    }
-                    getPreferences(MODE_PRIVATE).edit().putString("cloud_user", user).apply();
-                    ensureCloud().start(user, pass, "");
-                }),
-                linkButton(getString(R.string.link_cloud_join), v -> {
-                    if (core == null || !core.isLoaded()) {
-                        status.setText(R.string.link_gboy_no_rom);
-                        return;
-                    }
-                    String user = cloudUser.getText().toString().trim();
-                    String pass = cloudPass.getText().toString();
-                    String cloudCode = cloudRoom.getText().toString().trim();
-                    if (user.isEmpty() || pass.isEmpty()) {
-                        status.setText(R.string.link_cloud_need_account);
-                        return;
-                    }
-                    if (cloudCode.isEmpty()) {
-                        status.setText(R.string.link_cloud_need_room);
-                        return;
-                    }
-                    getPreferences(MODE_PRIVATE).edit()
-                            .putString("cloud_user", user)
-                            .putString("cloud_room", cloudCode)
-                            .apply();
-                    ensureCloud().start(user, pass, cloudCode);
-                })));
+                linkButton(getString(R.string.link_cloud_create), v ->
+                        cloudEnter(true, cloudEmail, cloudCode, cloudPass, cloudRoom, status)),
+                linkButton(getString(R.string.link_cloud_join), v ->
+                        cloudEnter(false, cloudEmail, cloudCode, cloudPass, cloudRoom, status))));
         box.addView(linkButton(getString(R.string.link_close), v -> {
             if (remoteLink != null) {
                 remoteLink.close();
@@ -3945,6 +3922,203 @@ public class EmulatorActivity extends AppCompatActivity {
             });
         }
         return cloudLink;
+    }
+
+    /**
+     * Mails a registration/login code to the address, the same
+     * {@code send_verification_code} call the official client makes. The
+     * server allows one mail per address every five minutes; the button
+     * counts down for a minute and any server-side rate limit surfaces in the
+     * status line verbatim.
+     */
+    private void sendCloudCode(EditText emailBox, Button button, TextView status) {
+        final String email = emailBox.getText().toString().trim();
+        if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            status.setText(R.string.link_cloud_need_email);
+            return;
+        }
+        getPreferences(MODE_PRIVATE).edit().putString("cloud_email", email).apply();
+        button.setEnabled(false);
+        button.setText(R.string.link_cloud_sending);
+        new Thread(() -> {
+            String failure = null;
+            try {
+                GbCloud.sendVerificationCode(email);
+            } catch (Exception e) {
+                failure = e.getMessage();
+            }
+            final String error = failure == null || failure.isEmpty() ? null : failure;
+            runOnUiThread(() -> {
+                if (error != null) {
+                    status.setText(error);
+                    button.setEnabled(true);
+                    button.setText(R.string.link_cloud_get_code);
+                    return;
+                }
+                status.setText(R.string.link_cloud_sent);
+                startCodeCooldown(button);
+            });
+        }, "cloud-code").start();
+    }
+
+    /** One-minute re-send countdown so the button cannot spam the mailer. */
+    private void startCodeCooldown(Button button) {
+        final int[] seconds = {60};
+        final Runnable[] tick = new Runnable[1];
+        tick[0] = new Runnable() {
+            @Override
+            public void run() {
+                seconds[0]--;
+                if (seconds[0] > 0) {
+                    button.setText(getString(R.string.link_cloud_resend_in, seconds[0]));
+                    inputHandler.postDelayed(tick[0], 1000);
+                } else {
+                    button.setEnabled(true);
+                    button.setText(R.string.link_cloud_get_code);
+                }
+            }
+        };
+        button.setText(getString(R.string.link_cloud_resend_in, seconds[0]));
+        inputHandler.postDelayed(tick[0], 1000);
+    }
+
+    /**
+     * Signs into gboy.top with the email+code scheme and then opens the room.
+     *
+     * The server has no code-only login (its register action doubles as the
+     * first login; its login action needs a password), so the flow is: a fresh
+     * address registers with the mailed code — username/password are generated
+     * and stored so later sessions can log in on their own — and an address
+     * that already has an account falls back to password login, either the one
+     * typed into the optional password box or the stored one.
+     */
+    private void cloudEnter(boolean asHost, EditText emailBox, EditText codeBox,
+                            EditText passBox, EditText roomBox, TextView status) {
+        if (core == null || !core.isLoaded()) {
+            status.setText(R.string.link_gboy_no_rom);
+            return;
+        }
+        final String email = emailBox.getText().toString().trim();
+        final String code = codeBox.getText().toString().trim();
+        final String manualPass = passBox.getText().toString();
+        final String room = roomBox.getText().toString().trim();
+        if (!Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+            status.setText(R.string.link_cloud_need_email);
+            return;
+        }
+        if (!asHost && room.isEmpty()) {
+            status.setText(R.string.link_cloud_need_room);
+            return;
+        }
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        boolean sameAccount = email.equalsIgnoreCase(prefs.getString("cloud_email", ""));
+        String savedUser = sameAccount ? prefs.getString("cloud_user", "") : "";
+        String savedPass = sameAccount ? prefs.getString("cloud_pass", "") : "";
+        if (code.isEmpty() && manualPass.isEmpty() && savedPass.isEmpty()) {
+            status.setText(R.string.link_cloud_need_code);
+            return;
+        }
+        status.setText(R.string.link_cloud_auth);
+        prefs.edit().putString("cloud_email", email).apply();
+        final String password = !manualPass.isEmpty() ? manualPass : savedPass;
+        new Thread(() -> {
+            try {
+                final String[] creds = cloudAuth(email, code, password, savedUser);
+                runOnUiThread(() -> ensureCloud().start(creds[0], creds[1], room));
+            } catch (Exception e) {
+                final String text = e.getMessage();
+                runOnUiThread(() -> status.setText(
+                        text == null || text.isEmpty() ? "登录失败" : text));
+            }
+        }, "cloud-auth").start();
+    }
+
+    /** Runs the register-or-login dance; returns {email_or_username, password}. */
+    private String[] cloudAuth(String email, String code, String password, String savedUser)
+            throws IOException {
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        if (!code.isEmpty()) {
+            String username = savedUser.isEmpty() ? deriveUsername(email) : savedUser;
+            String generated = password.isEmpty() ? randomCloudPassword() : password;
+            try {
+                username = registerCloudUser(username, email, generated, code);
+                prefs.edit()
+                        .putString("cloud_user", username)
+                        .putString("cloud_pass", generated)
+                        .apply();
+                return new String[]{email, generated};
+            } catch (IOException first) {
+                String text = String.valueOf(first.getMessage());
+                if (!looksAlreadyRegistered(text) || password.isEmpty()) {
+                    throw first;
+                }
+                // The address already has an account: fall through to password login.
+            }
+        }
+        if (password.isEmpty()) {
+            throw new IOException("该邮箱已注册过，请在密码框输入原密码");
+        }
+        prefs.edit().putString("cloud_pass", password).apply();
+        return new String[]{email, password};
+    }
+
+    /** Registers with one retry under a throwaway username; returns the name used. */
+    private static String registerCloudUser(String username, String email, String password,
+                                            String code) throws IOException {
+        try {
+            GbCloud.register(username, email, password, code);
+            return username;
+        } catch (IOException e) {
+            String text = String.valueOf(e.getMessage());
+            if (!text.contains("用户名")) {
+                throw e;
+            }
+            // Username taken: codes stay valid, so retry under a fresh name.
+            String fallback = "u" + (100000 + new Random().nextInt(900000));
+            GbCloud.register(fallback, email, password, code);
+            return fallback;
+        }
+    }
+
+    /** Server phrasing for "this address already has an account". */
+    private static boolean looksAlreadyRegistered(String message) {
+        return message.contains("已注册") || message.contains("已被注册")
+                || message.contains("已存在") || message.contains("已使用")
+                || message.contains("已绑定");
+    }
+
+    /** Builds a 2-10 char username candidate out of the mailbox name. */
+    private static String deriveUsername(String email) {
+        String prefix = email;
+        int at = prefix.indexOf('@');
+        if (at > 0) {
+            prefix = prefix.substring(0, at);
+        }
+        StringBuilder out = new StringBuilder();
+        for (char c : prefix.toCharArray()) {
+            if (Character.isLetterOrDigit(c) || c == '_') {
+                out.append(c);
+            }
+            if (out.length() >= 10) {
+                break;
+            }
+        }
+        if (out.length() < 2) {
+            out.append('u').append(100000 + new Random().nextInt(900000));
+        }
+        return out.substring(0, Math.min(out.length(), 10));
+    }
+
+    private static String randomCloudPassword() {
+        // No lookalike characters (l/1, O/0): the generated password is shown
+        // nowhere, but it is stored and re-used for logins, so keep it typable.
+        String alphabet = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789";
+        StringBuilder out = new StringBuilder(12);
+        Random random = new Random();
+        for (int i = 0; i < 12; i++) {
+            out.append(alphabet.charAt(random.nextInt(alphabet.length())));
+        }
+        return out.toString();
     }
 
     private RemoteLink ensureRemote() {

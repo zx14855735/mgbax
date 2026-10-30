@@ -82,6 +82,52 @@ final class GbCloud {
         return token;
     }
 
+    /**
+     * Asks gboy.top to mail a verification code to the address (the same
+     * {@code send_verification_code} action the official client sends from its
+     * register dialog). The server rate-limits one mail per address per five
+     * minutes and says so in the message; the caller surfaces that text.
+     */
+    static String sendVerificationCode(String email) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("action", "send_verification_code");
+            body.put("email", email);
+        } catch (Exception e) {
+            throw new IOException("参数错误");
+        }
+        JSONObject reply = lastJsonObject(post(body.toString()));
+        if (!reply.optBoolean("success", false)) {
+            String message = reply.optString("message", null);
+            throw new IOException(message == null || message.isEmpty() ? "验证码发送失败" : message);
+        }
+        return reply.optString("message", "验证码已发送。");
+    }
+
+    /**
+     * Registers a new account from an emailed code and returns the token the
+     * reply carries straight away (register doubles as the first login).
+     */
+    static String register(String username, String email, String password, String code) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("action", "register");
+            body.put("username", username);
+            body.put("email", email);
+            body.put("password", password);
+            body.put("verification_code", code);
+        } catch (Exception e) {
+            throw new IOException("参数错误");
+        }
+        JSONObject reply = lastJsonObject(post(body.toString()));
+        String token = reply.optString("token", null);
+        if (token == null || token.isEmpty()) {
+            String message = reply.optString("message", null);
+            throw new IOException(message == null || message.isEmpty() ? "注册失败" : message);
+        }
+        return token;
+    }
+
     private static String post(String body) throws IOException {
         HttpURLConnection conn = (HttpURLConnection) new URL(API).openConnection();
         try {
