@@ -1424,5 +1424,7 @@ if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS" OR BUILD_MOBILE_TEST)
 	if(BUILD_MOBILE_TEST AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
 		add_executable(mgba_mobile_test src/platform/mobile/mobile_test.c)
 		target_link_libraries(mgba_mobile_test PRIVATE mgba_mobile)
+		# The rom bus tests load images straight off disk through VFile.
+		target_compile_definitions(mgba_mobile_test PRIVATE ENABLE_VFS ENABLE_DIRECTORIES)
 	endif()
 endif()

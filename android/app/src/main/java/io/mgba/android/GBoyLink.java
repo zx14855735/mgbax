@@ -43,15 +43,14 @@ public final class GBoyLink {
         android.util.Log.i("GBoyLink", text);
     }
 
-    private static final int MSG_HELLO = 1;
-    private static final int MSG_ROM_INFO = 2;
-    private static final int MSG_READY = 3;
-    private static final int MSG_KEYS = 4;
-    private static final int MSG_RESET = 5;
-    private static final int MSG_STATE = 6;
-
-    /** Zero-filled body appended to the synthesized state image, in bytes. */
-    private static final int STATE_PAD = 900 * 1024;
+    // The frame layout lives in GBoyFrames so the gboy.top cloud link can
+    // build the very same packets inside KCP.
+    private static final int MSG_HELLO = GBoyFrames.MSG_HELLO;
+    private static final int MSG_ROM_INFO = GBoyFrames.MSG_ROM_INFO;
+    private static final int MSG_READY = GBoyFrames.MSG_READY;
+    private static final int MSG_KEYS = GBoyFrames.MSG_KEYS;
+    private static final int MSG_RESET = GBoyFrames.MSG_RESET;
+    private static final int MSG_STATE = GBoyFrames.MSG_STATE;
 
     public interface Hooks {
         /** Absolute path of the currently loaded ROM, or null. */
@@ -323,14 +322,7 @@ public final class GBoyLink {
     }
 
     private static byte[] frameHello() {
-        byte[] frame = new byte[6];
-        frame[0] = 0;
-        frame[1] = MSG_HELLO;
-        frame[2] = 0;
-        frame[3] = 0;
-        frame[4] = 0;
-        frame[5] = 6;
-        return frame;
+        return GBoyFrames.frameHello();
     }
 
     private static void expectHello(Socket current, boolean asHost) throws IOException {
@@ -371,28 +363,15 @@ public final class GBoyLink {
     }
 
     private static int type(byte[] frame) {
-        if (frame.length < 2) {
-            return -1;
-        }
-        return ((frame[0] & 0xFF) << 8) | (frame[1] & 0xFF);
+        return GBoyFrames.typeOf(frame);
     }
 
     private static byte[] frame(int messageType) {
-        byte[] frame = new byte[2];
-        frame[0] = (byte) (messageType >> 8);
-        frame[1] = (byte) messageType;
-        return frame;
+        return GBoyFrames.frame(messageType);
     }
 
     private static byte[] frameKeys(int keys) {
-        byte[] frame = new byte[6];
-        frame[0] = 0;
-        frame[1] = MSG_KEYS;
-        frame[2] = (byte) (keys >> 24);
-        frame[3] = (byte) (keys >> 16);
-        frame[4] = (byte) (keys >> 8);
-        frame[5] = (byte) keys;
-        return frame;
+        return GBoyFrames.frameKeys(keys);
     }
 
     private static byte[] readFrame(Socket current) throws IOException {
@@ -431,131 +410,11 @@ public final class GBoyLink {
      * title+code it validates savestates against.
      */
     private byte[] romInfo() throws IOException {
-        String path = hooks.romPath();
-        File rom = path == null ? null : new File(path);
-        if (rom == null || !rom.isFile()) {
-            throw new IOException("找不到当前游戏文件");
-        }
-        byte[] identity = new byte[16];
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            InputStream in = new java.io.FileInputStream(rom);
-            try {
-                byte[] buf = new byte[65536];
-                int n;
-                long pos = 0;
-                while ((n = in.read(buf)) >= 0) {
-                    md.update(buf, 0, n);
-                    if (pos < 0xB0 && pos + n > 0xA0) {
-                        for (int i = 0; i < n; i++) {
-                            long abs = pos + i;
-                            if (abs >= 0xA0 && abs < 0xB0) {
-                                identity[(int) (abs - 0xA0)] = buf[i];
-                            }
-                        }
-                    }
-                    pos += n;
-                }
-            } finally {
-                in.close();
-            }
-            StringBuilder hex = new StringBuilder(32);
-            for (byte b : md.digest()) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
-                hex.append(Character.forDigit(b & 0xF, 16));
-            }
-            byte[] hash = hex.toString().getBytes(StandardCharsets.US_ASCII);
-            byte[] name = rom.getName().getBytes(StandardCharsets.UTF_8);
-            byte[] frame = new byte[2 + 32 + 2 + name.length];
-            frame[0] = 0;
-            frame[1] = MSG_ROM_INFO;
-            System.arraycopy(hash, 0, frame, 2, 32);
-            frame[34] = (byte) (name.length >> 8);
-            frame[35] = (byte) name.length;
-            System.arraycopy(name, 0, frame, 36, name.length);
-            return frame;
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException("读取游戏失败");
-        }
+        return GBoyFrames.romInfo(hooks.romPath());
     }
 
-    /**
-     * Synthesizes a GBASTATE v4 image the peer will accept: the header GBoy
-     * validates (magic, version 4, the 16 ROM identity bytes from offset 0xA0,
-     * BIOS flag zero) followed by a zero-filled body, zlib compressed the way
-     * GBoy's loadStateFromMemory expects. The peer's link console loads it and
-     * that game then simply starts from a fresh boot.
-     */
-    private byte[] frameState() throws IOException {
-        byte[] raw = new byte[32 + STATE_PAD];
-        raw[0] = 'G';
-        raw[1] = 'B';
-        raw[2] = 'A';
-        raw[3] = 'S';
-        raw[4] = 'T';
-        raw[5] = 'A';
-        raw[6] = 'T';
-        raw[7] = 'E';
-        raw[11] = 4;
-        try {
-            String path = hooks.romPath();
-            File rom = path == null ? null : new File(path);
-            if (rom != null && rom.isFile()) {
-                InputStream in = new java.io.FileInputStream(rom);
-                try {
-                    byte[] head = new byte[16];
-                    long skipped = 0;
-                    while (skipped < 0xA0) {
-                        long step = in.skip(0xA0 - skipped);
-                        if (step <= 0) {
-                            break;
-                        }
-                        skipped += step;
-                    }
-                    int got = 0;
-                    while (got < 16) {
-                        int n = in.read(head, got, 16 - got);
-                        if (n < 0) {
-                            break;
-                        }
-                        got += n;
-                    }
-                    System.arraycopy(head, 0, raw, 12, 16);
-                } finally {
-                    in.close();
-                }
-            }
-        } catch (IOException ignored) {
-        }
-        Deflater deflater = new Deflater();
-        try {
-            deflater.setInput(raw, 0, raw.length);
-            deflater.finish();
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream(raw.length / 8 + 64);
-            byte[] chunk = new byte[8192];
-            int n;
-            while ((n = deflater.deflate(chunk)) > 0) {
-                buffer.write(chunk, 0, n);
-            }
-            byte[] compressed = buffer.toByteArray();
-            // The u32 after the type is the on-the-wire byte count of the
-            // compressed blob (GBoy's h.a() reads exactly that many bytes),
-            // not the uncompressed size.
-            byte[] frame = new byte[6 + compressed.length];
-            frame[0] = 0;
-            frame[1] = MSG_STATE;
-            int size = compressed.length;
-            frame[2] = (byte) (size >> 24);
-            frame[3] = (byte) (size >> 16);
-            frame[4] = (byte) (size >> 8);
-            frame[5] = (byte) size;
-            System.arraycopy(compressed, 0, frame, 6, compressed.length);
-            return frame;
-        } finally {
-            deflater.end();
-        }
+    private byte[] frameState() {
+        return GBoyFrames.frameState(hooks.romPath());
     }
 
     private void status(final String text) {

@@ -356,6 +356,34 @@ public final class MgbaCore {
         return handle != 0 && nativeCheatRemove(handle, index);
     }
 
+    /**
+     * Debug memory access against the live core (memory viewer, cheat search,
+     * PPU viewers). width is 8, 16 or 32; values are unsigned and the GBA bus
+     * mirrors open regions exactly like hardware.
+     */
+    public int busRead(int width, int address) {
+        return handle == 0 ? 0 : nativeBusRead(handle, width, address);
+    }
+
+    public boolean busWrite(int width, int address, int value) {
+        return handle != 0 && nativeBusWrite(handle, width, address, value);
+    }
+
+    /** Byte-wise bulk read (capped at 1 MiB); empty array when unreadable. */
+    public byte[] busReadBlock(int address, int size) {
+        if (handle == 0) {
+            return new byte[0];
+        }
+        byte[] out = nativeBusReadBlock(handle, address, size);
+        return out == null ? new byte[0] : out;
+    }
+
+    private static native int nativeBusRead(long handle, int width, int address);
+
+    private static native boolean nativeBusWrite(long handle, int width, int address, int value);
+
+    private static native byte[] nativeBusReadBlock(long handle, int address, int size);
+
     private static native long nativeCreate(String saveDir, String stateDir);
 
     private static native void nativeDestroy(long handle);

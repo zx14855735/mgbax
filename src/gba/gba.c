@@ -27,6 +27,12 @@
 
 #define GBA_IRQ_DELAY 7
 
+/* TEMP PROBE: IRQ 派发链路三段计数器（TestIRQ 调度 / irqEvent 执行 / 向量派发）。 */
+uint32_t mgbaStatTestIrq;
+uint32_t mgbaStatIrqEvent;
+uint32_t mgbaStatRaiseIrq;
+uint32_t mgbaStatIrqSkipSched;
+
 mLOG_DEFINE_CATEGORY(GBA, "GBA", "gba");
 mLOG_DEFINE_CATEGORY(GBA_DEBUG, "GBA Debug", "gba.debug");
 
@@ -147,7 +153,11 @@ void GBAUnloadROM(struct GBA* gba) {
 			gba->yankedRomSize = 0;
 		}
 #ifndef FIXED_ROM_BUFFER
-		mappedMemoryFree(gba->memory.rom, GBA_SIZE_ROM0);
+		size_t allocSize = gba->memory.romAllocSize;
+		if (!allocSize) {
+			allocSize = GBA_SIZE_ROM0;
+		}
+		mappedMemoryFree(gba->memory.rom, allocSize);
 #endif
 	}
 
@@ -162,6 +172,7 @@ void GBAUnloadROM(struct GBA* gba) {
 	}
 	gba->memory.rom = NULL;
 	gba->memory.romSize = 0;
+	gba->memory.romAllocSize = 0;
 	gba->memory.romMask = 0;
 	gba->isPristine = false;
 
@@ -294,7 +305,10 @@ void GBAReset(struct ARMCore* cpu) {
 	memset(gba->debugString, 0, sizeof(gba->debugString));
 
 
-	if (gba->romVf && gba->romVf->size(gba->romVf) > GBA_SIZE_ROM0) {
+	// Only a ROM the loader clipped back to the 32 MiB window can be a
+	// Classic NES/Matrix image; an oversized romhack keeps its whole image
+	// mapped (see GBALoadROM) and must not be remapped as a Matrix cart.
+	if (gba->romVf && gba->memory.romSize <= GBA_SIZE_ROM0 && gba->romVf->size(gba->romVf) > GBA_SIZE_ROM0) {
 		char ident;
 		gba->romVf->seek(gba->romVf, 0xAC, SEEK_SET);
 		gba->romVf->read(gba->romVf, &ident, 1);
@@ -383,6 +397,7 @@ bool GBALoadNull(struct GBA* gba) {
 	gba->pristineRomSize = 0;
 #ifndef FIXED_ROM_BUFFER
 	gba->memory.rom = anonymousMemoryMap(GBA_SIZE_ROM0);
+	gba->memory.romAllocSize = GBA_SIZE_ROM0;
 #else
 	gba->memory.rom = romBuffer;
 #endif
@@ -442,12 +457,16 @@ bool GBALoadROM(struct GBA* gba, struct VFile* vf) {
 			gba->memory.rom = romBuffer;
 #else
 			gba->memory.rom = anonymousMemoryMap(GBA_SIZE_ROM0);
+			gba->memory.romAllocSize = GBA_SIZE_ROM0;
 #endif
 		} else {
-			gba->memory.rom = vf->map(vf, GBA_SIZE_ROM0, MAP_READ);
-			gba->memory.romSize = GBA_SIZE_ROM0;
+			// Oversized romhacks (up to 64 MiB) keep the whole image mapped:
+			// the bus then reaches the upper half through address bit 24
+			// (the WS1 window) via romMask, the way My Boy and the 64M hack
+			// scene expect.
+			gba->memory.rom = vf->map(vf, gba->pristineRomSize, MAP_READ);
+			gba->memory.romSize = gba->pristineRomSize;
 		}
-		gba->pristineRomSize = GBA_SIZE_ROM0;
 	} else if (gba->pristineRomSize == 0x00100000) {
 		// 1 MiB ROMs (e.g. Classic NES) all appear as 4x mirrored, but not more
 		gba->isPristine = false;
@@ -456,6 +475,7 @@ bool GBALoadROM(struct GBA* gba, struct VFile* vf) {
 		gba->memory.rom = romBuffer;
 #else
 		gba->memory.rom = anonymousMemoryMap(GBA_SIZE_ROM0);
+		gba->memory.romAllocSize = GBA_SIZE_ROM0;
 #endif
 		vf->read(vf, gba->memory.rom, gba->pristineRomSize);
 		memcpy(&gba->memory.rom[0x40000], gba->memory.rom, 0x00100000);
@@ -475,13 +495,31 @@ bool GBALoadROM(struct GBA* gba, struct VFile* vf) {
 	gba->romCrc32 = doCrc32(gba->memory.rom, gba->pristineRomSize);
 	if (popcount32(gba->memory.romSize) != 1) {
 		// This ROM is either a bad dump or homebrew. Emulate flash cart behavior.
+		// An oversized romhack is padded up to the next power of two rather than
+		// clipped to 32 MiB: dropping the top of the image would throw away the
+		// very data the hack is built around (and its WS1 pointers).
+		size_t allocSize = toPow2(gba->memory.romSize);
+		if (allocSize < GBA_SIZE_ROM0) {
+			allocSize = GBA_SIZE_ROM0;
+		}
 #ifndef FIXED_ROM_BUFFER
-		void* newRom = anonymousMemoryMap(GBA_SIZE_ROM0);
-		memcpy(newRom, gba->memory.rom, gba->pristineRomSize);
+		size_t copySize = gba->pristineRomSize;
+		if (copySize > allocSize) {
+			copySize = allocSize;
+		}
+		void* newRom = anonymousMemoryMap(allocSize);
+		gba->memory.romAllocSize = allocSize;
+		memcpy(newRom, gba->memory.rom, copySize);
+		memset(((uint8_t*) newRom) + copySize, 0xFF, allocSize - copySize);
+		if (gba->isPristine && gba->romVf && gba->memory.rom) {
+			// The file mapping this copy replaces must not leak; its size is
+			// the pristine size, not the flash-cart window.
+			gba->romVf->unmap(gba->romVf, gba->memory.rom, gba->pristineRomSize);
+		}
 		gba->memory.rom = newRom;
 #endif
-		gba->memory.romSize = GBA_SIZE_ROM0;
-		gba->memory.romMask = GBA_SIZE_ROM0 - 1;
+		gba->memory.romSize = allocSize;
+		gba->memory.romMask = allocSize - 1;
 		gba->isPristine = false;
 	}
 	if (gba->cpu && gba->memory.activeRegion >= GBA_REGION_ROM0) {
@@ -553,18 +591,25 @@ void GBALoadBIOS(struct GBA* gba, struct VFile* vf) {
 
 void GBAApplyPatch(struct GBA* gba, struct Patch* patch) {
 	size_t patchedSize = patch->outputSize(patch, gba->memory.romSize);
-	if (!patchedSize || patchedSize > GBA_SIZE_ROM0) {
+	if (!patchedSize || patchedSize > GBA_SIZE_ROM0 * 2) {
+		// Patches may grow the image up to the 64 MiB the oversized romhack
+		// mapping supports; anything larger is refused.
 		return;
 	}
-	void* newRom = anonymousMemoryMap(GBA_SIZE_ROM0);
+	size_t allocSize = patchedSize > GBA_SIZE_ROM0 ? patchedSize : GBA_SIZE_ROM0;
+	void* newRom = anonymousMemoryMap(allocSize);
 	if (!patch->applyPatch(patch, gba->memory.rom, gba->pristineRomSize, newRom, patchedSize)) {
-		mappedMemoryFree(newRom, GBA_SIZE_ROM0);
+		mappedMemoryFree(newRom, allocSize);
 		return;
 	}
 	if (gba->memory.rom) {
 #ifndef FIXED_ROM_BUFFER
 		if (!gba->isPristine) {
-			mappedMemoryFree(gba->memory.rom, gba->memory.romSize);
+			size_t oldAlloc = gba->memory.romAllocSize;
+			if (!oldAlloc) {
+				oldAlloc = GBA_SIZE_ROM0;
+			}
+			mappedMemoryFree(gba->memory.rom, oldAlloc);
 		} else {
 			gba->romVf->unmap(gba->romVf, gba->memory.rom, gba->pristineRomSize);
 		}
@@ -572,6 +617,7 @@ void GBAApplyPatch(struct GBA* gba, struct Patch* patch) {
 	}
 	gba->isPristine = false;
 	gba->memory.rom = newRom;
+	gba->memory.romAllocSize = allocSize;
 	gba->memory.hw.gpioBase = &((uint16_t*) gba->memory.rom)[GPIO_REG_DATA >> 1];
 	gba->memory.romSize = patchedSize;
 	gba->memory.romMask = toPow2(patchedSize) - 1;
@@ -590,8 +636,11 @@ void GBATestIRQNoDelay(struct ARMCore* cpu) {
 
 void GBATestIRQ(struct GBA* gba, uint32_t cyclesLate) {
 	if (gba->memory.io[GBA_REG(IE)] & gba->memory.io[GBA_REG(IF)]) {
+		++mgbaStatTestIrq;
 		if (!mTimingIsScheduled(&gba->timing, &gba->irqEvent)) {
 			mTimingSchedule(&gba->timing, &gba->irqEvent, GBA_IRQ_DELAY - cyclesLate);
+		} else {
+			++mgbaStatIrqSkipSched;
 		}
 	}
 }
@@ -1036,6 +1085,7 @@ static void _triggerIRQ(struct mTiming* timing, void* user, uint32_t cyclesLate)
 	UNUSED(timing);
 	UNUSED(cyclesLate);
 	struct GBA* gba = user;
+	++mgbaStatIrqEvent;
 	gba->cpu->halted = 0;
 	if (!(gba->memory.io[GBA_REG(IE)] & gba->memory.io[GBA_REG(IF)])) {
 		return;

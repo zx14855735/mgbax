@@ -151,7 +151,7 @@ bool GBADeserialize(struct GBA* gba, const struct GBASerializedState* state) {
 	}
 	LOAD_32(check, ARM_PC * sizeof(state->cpu.gprs[0]), state->cpu.gprs);
 	int region = (check >> BASE_OFFSET);
-	if ((region == GBA_REGION_ROM0 || region == GBA_REGION_ROM1 || region == GBA_REGION_ROM2) && ((check - WORD_SIZE_ARM) & GBA_SIZE_ROM0) >= gba->memory.romSize - WORD_SIZE_ARM) {
+	if ((region == GBA_REGION_ROM0 || region == GBA_REGION_ROM1 || region == GBA_REGION_ROM2) && ((check - WORD_SIZE_ARM) & gba->memory.romMask) >= gba->memory.romSize - WORD_SIZE_ARM) {
 		mLOG(GBA_STATE, WARN, "Savestate created using a differently sized version of the ROM");
 		error = true;
 	}

@@ -103,6 +103,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_BIOS = 2;
     private static final int REQ_STORAGE = 3;
     private static final int REQ_SAVDIR = 4;
+    private static final int REQ_SHADER = 9;
     private static final int CMD_SAVE = 1;
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
@@ -154,6 +155,25 @@ public class EmulatorActivity extends AppCompatActivity {
             noteUserKeys(touchKeys, prev);
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
+     *  --es pass P --es room R` start the gboy.top cloud link without touching the
+     *  menu bar (its buttons sit under the game SurfaceView in some emulators, so
+     *  headless tests cannot tap 联机). Room may use the DBG:host:port shortcut. */
+    private final BroadcastReceiver cloudReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "cloud broadcast ignored: no rom loaded");
+                return;
+            }
+            String user = intent.getStringExtra("user");
+            String pass = intent.getStringExtra("pass");
+            String room = intent.getStringExtra("room");
+            Log.i(TAG, "cloud broadcast user=" + user + " room=" + room);
+            ensureCloud().start(user == null ? "" : user, pass == null ? "" : pass,
+                    room == null ? "" : room);
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -188,6 +208,12 @@ public class EmulatorActivity extends AppCompatActivity {
     private Thread emuThread;
     private Vibrator vibrator;
     private long lastRumbleAt;
+    /** Draggable GIF recording ball floating over the game (悠GBA port). */
+    private GifBall gifBall;
+    /** Device light sensor driving the Boktai solar level (悠GBA port). */
+    private boolean solarListening;
+    /** The "hide vkeypad?" offer has been shown for this session. */
+    private boolean hwKeyPromptShown;
     /** GIF recording state; the queue hands frames to the encoder thread. */
     private volatile boolean gifRecording;
     private Button gifButton;
@@ -273,6 +299,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private RemoteLink remoteLink;
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
     private GBoyLink gboyLink;
+    /** gboy.top cloud room session (KCP relay), same key mask delivery. */
+    private GBoyCloudLink cloudLink;
     private volatile int gboyRemoteKeys;
     /** Tilt cartridge input: device posture fed to the core when enabled. */
     private SensorManager sensorManager;
@@ -353,6 +381,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(keysReceiver, keysFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(keysReceiver, keysFilter);
+        }
+        IntentFilter cloudFilter = new IntentFilter("io.mgba.android.action.CLOUD");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(cloudReceiver, cloudFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(cloudReceiver, cloudFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
@@ -450,6 +484,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (cheatsButton != null) {
             cheatsButton.setOnClickListener(v -> showCheatsDialog());
         }
+        View debugButton = findViewById(R.id.btn_debug);
+        if (debugButton != null) {
+            debugButton.setOnClickListener(v -> DebugViewers.showHub(this, core));
+        }
         View shotButton = findViewById(R.id.btn_shot);
         if (shotButton != null) {
             shotButton.setOnClickListener(v -> takeScreenshot());
@@ -532,6 +570,12 @@ public class EmulatorActivity extends AppCompatActivity {
             translateButton.setOnClickListener(v -> showTranslateDialog());
         }
         applySkin();
+        // External GLSL shader must be re-adapted from disk before the video
+        // settings select it as the active filter.
+        loadInstalledShader();
+        applyVideo();
+        gameView.post(this::applyVideoScene);
+        setupGifBall();
 
         menuBar = findViewById(R.id.menu_bar);
         menuButton = findViewById(R.id.btn_menu);
@@ -745,6 +789,21 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Pushes the peer's key mask into the core.
+     *
+     * The native side only latches what setKeys() handed it and re-applies it
+     * every frame, so the merged mask has to be published whenever it changes.
+     * Without this the peer's key press never reaches the game: the local
+     * side holds no key of its own, so no local input event ever fires and
+     * publishKeys() is never called - the remote mask sat in gboyRemoteKeys
+     * while the core kept seeing "nothing pressed".
+     */
+    private void publishRemoteKeys() {
+        publishKeys();
+        wakeInput();
+    }
+
     private void wakeInput() {
         if (emuThread != null) {
             emuThread.interrupt();
@@ -947,6 +1006,8 @@ public class EmulatorActivity extends AppCompatActivity {
             importRom(uri);
         } else if (requestCode == REQ_BIOS) {
             new Thread(() -> importBios(uri), "bios-copy").start();
+        } else if (requestCode == REQ_SHADER) {
+            installShaderFrom(uri);
         }
     }
 
@@ -1625,7 +1686,11 @@ public class EmulatorActivity extends AppCompatActivity {
             showSaveLocation();
             setTitle(title == null || title.trim().isEmpty() ? getString(R.string.app_name) : title.trim());
             autoHideMenu();
+            refreshGifBall();
+            startNoticeIfWanted(title == null || title.trim().isEmpty()
+                    ? getString(R.string.app_name) : title.trim());
         });
+        autoSyncOnLoad();
         startTimedSave();
     }
 
@@ -1764,6 +1829,9 @@ public class EmulatorActivity extends AppCompatActivity {
             core.clearAudio();
             if (gboyLink != null) {
                 gboyLink.sendReset();
+            }
+            if (cloudLink != null) {
+                cloudLink.sendReset();
             }
             toast(getString(R.string.reset_done));
         } else if (cmd == CMD_AUTOSAVE) {
@@ -2806,12 +2874,22 @@ public class EmulatorActivity extends AppCompatActivity {
         filter.setOnClickListener(v -> new AlertDialog.Builder(this)
                 .setTitle(R.string.video_filter)
                 .setSingleChoiceItems(filterNames(), filterPref(), (dialog, which) -> {
-                    getPreferences(MODE_PRIVATE).edit().putInt("vf_filter", which).apply();
-                    filter.setText(getString(R.string.video_filter_value, filterName(which)));
-                    applyVideo();
+                    pickFilter(which);
+                    filter.setText(getString(R.string.video_filter_value, filterName(filterPref())));
                     dialog.dismiss();
                 })
                 .show());
+        final Button shaderManager = new Button(this);
+        shaderManager.setAllCaps(false);
+        shaderManager.setText(getString(R.string.shader_external_value,
+                getPreferences(MODE_PRIVATE).getString("ext_shader", "").isEmpty()
+                        ? getString(R.string.shader_external_none)
+                        : getPreferences(MODE_PRIVATE).getString("ext_shader", "")));
+        shaderManager.setOnClickListener(v -> showShaderDialog());
+        final Button scene = new Button(this);
+        scene.setAllCaps(false);
+        scene.setText(R.string.video_scene);
+        scene.setOnClickListener(v -> showSceneDialog());
         CheckBox skipAuto = check(R.string.video_skip_auto, getPreferences(MODE_PRIVATE).getBoolean("vf_skip_auto", false));
         TextView skipLabel = new TextView(this);
         skipLabel.setText(getString(R.string.video_skip, skipNow));
@@ -2845,6 +2923,8 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(integer);
         box.addView(scan);
         box.addView(filter);
+        box.addView(shaderManager);
+        box.addView(scene);
         box.addView(skipAuto);
         box.addView(skipLabel);
         box.addView(skipBar);
@@ -2948,8 +3028,25 @@ public class EmulatorActivity extends AppCompatActivity {
             case Shaders.FILTER_LCD3X: return "LCD3x";
             case Shaders.FILTER_SCANLINES: return getString(R.string.filter_scanlines);
             case Shaders.FILTER_QUILEZ: return getString(R.string.filter_quilez);
+            case Shaders.FILTER_EXTERNAL: return externalShaderLabel();
             default: return getString(R.string.filter_none);
         }
+    }
+
+    private String externalShaderLabel() {
+        String name = getPreferences(MODE_PRIVATE).getString("ext_shader", "");
+        return getString(R.string.shader_external_value, name.isEmpty()
+                ? getString(R.string.shader_external_none) : name);
+    }
+
+    /** Selecting 外部渲染器 with nothing installed jumps straight to the installer. */
+    private void pickFilter(int which) {
+        if (which == Shaders.FILTER_EXTERNAL && Shaders.externalSource() == null) {
+            showShaderDialog();
+            return;
+        }
+        getPreferences(MODE_PRIVATE).edit().putInt("vf_filter", which).apply();
+        applyVideo();
     }
 
     private CharSequence[] filterNames() {
@@ -2958,6 +3055,497 @@ public class EmulatorActivity extends AppCompatActivity {
             names[i] = filterName(i);
         }
         return names;
+    }
+
+    // == External GLSL shaders (悠GBA 安装渲染器 port) =====================
+
+    private File shaderDir() {
+        File dir = new File(getFilesDir(), "shaders");
+        dir.mkdirs();
+        return dir;
+    }
+
+    /** Re-adapts the installed shader from disk at startup. */
+    private void loadInstalledShader() {
+        String name = getPreferences(MODE_PRIVATE).getString("ext_shader", "");
+        if (name.isEmpty()) {
+            return;
+        }
+        File file = new File(shaderDir(), name);
+        if (!file.isFile()) {
+            getPreferences(MODE_PRIVATE).edit().putString("ext_shader", "").apply();
+            Shaders.setExternalSource(null);
+            return;
+        }
+        try {
+            String source = readTextFile(file);
+            String adapted = Shaders.adaptExternal(source);
+            Shaders.setExternalSource(adapted);
+            if (adapted == null) {
+                getPreferences(MODE_PRIVATE).edit().putString("ext_shader", "").apply();
+            }
+        } catch (Exception e) {
+            Shaders.setExternalSource(null);
+        }
+    }
+
+    private String readTextFile(File file) throws java.io.IOException {
+        StringBuilder out = new StringBuilder();
+        try (InputStream in = new java.io.FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int n;
+            while ((n = in.read(buffer)) > 0) {
+                out.append(new String(buffer, 0, n, java.nio.charset.StandardCharsets.UTF_8));
+            }
+        }
+        return out.toString();
+    }
+
+    private void installShaderFrom(Uri uri) {
+        String name = sanitize(displayName(uri)).toLowerCase(Locale.ROOT);
+        if (name.endsWith(".zip")) {
+            toast(getString(R.string.shader_bad));
+            return;
+        }
+        if (!name.endsWith(".glsl")) {
+            name += ".glsl";
+        }
+        final String fileName = name;
+        final Uri source = uri;
+        new Thread(() -> {
+            String copied = copyTo(source, shaderDir(), fileName);
+            String adapted = null;
+            if (copied != null) {
+                try {
+                    adapted = Shaders.adaptExternal(readTextFile(new File(copied)));
+                } catch (Exception ignored) {
+                }
+            }
+            final String result = adapted;
+            runOnUiThread(() -> {
+                if (result == null) {
+                    toast(getString(R.string.shader_bad));
+                    return;
+                }
+                Shaders.setExternalSource(result);
+                getPreferences(MODE_PRIVATE).edit()
+                        .putString("ext_shader", fileName)
+                        .putInt("vf_filter", Shaders.FILTER_EXTERNAL)
+                        .apply();
+                applyVideo();
+                toast(getString(R.string.shader_installed, fileName));
+            });
+        }, "shader-install").start();
+    }
+
+    /** 安装渲染器 dialog: pick installed, install new, clear, help. */
+    private void showShaderDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        TextView help = new TextView(this);
+        help.setText(R.string.shader_help);
+        help.setTextSize(12);
+        help.setTextColor(0xFF666666);
+        box.addView(help);
+        Button install = new Button(this);
+        install.setAllCaps(false);
+        install.setText(R.string.shader_install);
+        install.setOnClickListener(v -> openDocument(REQ_SHADER));
+        box.addView(install);
+        Button pick = new Button(this);
+        pick.setAllCaps(false);
+        pick.setText(R.string.shader_pick);
+        pick.setOnClickListener(v -> {
+            File[] shaderFiles = shaderDir().listFiles((dir, n) -> n.toLowerCase(Locale.ROOT).endsWith(".glsl"));
+            List<String> shaderNames = new ArrayList<>();
+            if (shaderFiles != null) {
+                for (File file : shaderFiles) {
+                    shaderNames.add(file.getName());
+                }
+            }
+            if (shaderNames.isEmpty()) {
+                toast(getString(R.string.shader_external_none));
+                return;
+            }
+            String active = getPreferences(MODE_PRIVATE).getString("ext_shader", "");
+            int checked = shaderNames.indexOf(active);
+            String[] items = shaderNames.toArray(new String[0]);
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.shader_pick)
+                    .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                        String picked = items[which];
+                        try {
+                            Shaders.setExternalSource(Shaders.adaptExternal(readTextFile(new File(shaderDir(), picked))));
+                            getPreferences(MODE_PRIVATE).edit()
+                                    .putString("ext_shader", picked)
+                                    .putInt("vf_filter", Shaders.FILTER_EXTERNAL)
+                                    .apply();
+                            applyVideo();
+                            toast(getString(R.string.shader_installed, picked));
+                        } catch (Exception e) {
+                            toast(getString(R.string.shader_bad));
+                        }
+                        dialog.dismiss();
+                    })
+                    .show();
+        });
+        box.addView(pick);
+        Button clear = new Button(this);
+        clear.setAllCaps(false);
+        clear.setText(R.string.shader_removed);
+        clear.setOnClickListener(v -> {
+            getPreferences(MODE_PRIVATE).edit().putString("ext_shader", "").apply();
+            Shaders.setExternalSource(null);
+            if (filterPref() == Shaders.FILTER_EXTERNAL) {
+                getPreferences(MODE_PRIVATE).edit().putInt("vf_filter", Shaders.FILTER_NONE).apply();
+            }
+            applyVideo();
+            toast(getString(R.string.shader_removed));
+        });
+        box.addView(clear);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.shader_external)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    // == Video scene editor (悠GBA 画面场景 port) ==========================
+
+    private void showSceneDialog() {
+        int xNow = getPreferences(MODE_PRIVATE).getInt("scene_x", 0);
+        int yNow = getPreferences(MODE_PRIVATE).getInt("scene_y", 0);
+        int scaleNow = getPreferences(MODE_PRIVATE).getInt("scene_scale", 100);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        TextView xLabel = new TextView(this);
+        xLabel.setText(getString(R.string.scene_x, xNow));
+        xLabel.setTextColor(0xFF222222);
+        SeekBar xBar = new SeekBar(this);
+        xBar.setMax(200);
+        xBar.setProgress(xNow + 100);
+        TextView yLabel = new TextView(this);
+        yLabel.setText(getString(R.string.scene_y, yNow));
+        yLabel.setTextColor(0xFF222222);
+        SeekBar yBar = new SeekBar(this);
+        yBar.setMax(200);
+        yBar.setProgress(yNow + 100);
+        TextView sLabel = new TextView(this);
+        sLabel.setText(getString(R.string.scene_scale, scaleNow));
+        sLabel.setTextColor(0xFF222222);
+        SeekBar sBar = new SeekBar(this);
+        sBar.setMax(375);
+        sBar.setProgress(scaleNow - 25);
+        Button reset = new Button(this);
+        reset.setAllCaps(false);
+        reset.setText(R.string.scene_reset);
+        reset.setOnClickListener(v -> {
+            xBar.setProgress(100);
+            yBar.setProgress(100);
+            sBar.setProgress(75);
+        });
+        SeekBar.OnSeekBarChangeListener listener = new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                int x = xBar.getProgress() - 100;
+                int y = yBar.getProgress() - 100;
+                int scale = sBar.getProgress() + 25;
+                xLabel.setText(getString(R.string.scene_x, x));
+                yLabel.setText(getString(R.string.scene_y, y));
+                sLabel.setText(getString(R.string.scene_scale, scale));
+                if (fromUser) {
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putInt("scene_x", x)
+                            .putInt("scene_y", y)
+                            .putInt("scene_scale", scale)
+                            .apply();
+                    applyVideoScene();
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+            }
+        };
+        xBar.setOnSeekBarChangeListener(listener);
+        yBar.setOnSeekBarChangeListener(listener);
+        sBar.setOnSeekBarChangeListener(listener);
+        box.addView(xLabel);
+        box.addView(xBar);
+        box.addView(yLabel);
+        box.addView(yBar);
+        box.addView(sLabel);
+        box.addView(sBar);
+        box.addView(reset);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.video_scene)
+                .setView(box)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    /**
+     * Freely moves and scales the game picture over its stage. Offsets are
+     * percentages of the view's own size (which is the aspect-locked picture
+     * rect), so the same value works in both orientations.
+     */
+    private void applyVideoScene() {
+        if (gameView == null) {
+            return;
+        }
+        int x = getPreferences(MODE_PRIVATE).getInt("scene_x", 0);
+        int y = getPreferences(MODE_PRIVATE).getInt("scene_y", 0);
+        int scale = getPreferences(MODE_PRIVATE).getInt("scene_scale", 100);
+        gameView.setPivotX(gameView.getWidth() / 2f);
+        gameView.setPivotY(gameView.getHeight() / 2f);
+        gameView.setTranslationX(gameView.getWidth() * x / 100f);
+        gameView.setTranslationY(gameView.getHeight() * y / 100f);
+        gameView.setScaleX(scale / 100f);
+        gameView.setScaleY(scale / 100f);
+    }
+
+    // == WebDAV save sync (悠GBA 坚果云同步 port) ==========================
+
+    private void showSyncDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        TextView help = new TextView(this);
+        help.setText(R.string.sync_help);
+        help.setTextSize(12);
+        help.setTextColor(0xFF666666);
+        box.addView(help);
+        CheckBox enable = check(R.string.sync_enable, getPreferences(MODE_PRIVATE).getBoolean("sync_enable", false));
+        EditText url = input(this, R.string.sync_url, getPreferences(MODE_PRIVATE).getString("sync_url", WebDavSync.DEFAULT_URL));
+        EditText user = input(this, R.string.sync_account, getPreferences(MODE_PRIVATE).getString("sync_user", ""));
+        EditText pass = input(this, R.string.sync_password, getPreferences(MODE_PRIVATE).getString("sync_pass", ""));
+        EditText dir = input(this, R.string.sync_dir, getPreferences(MODE_PRIVATE).getString("sync_dir", WebDavSync.DEFAULT_DIR));
+        CheckBox auto = check(R.string.sync_auto, getPreferences(MODE_PRIVATE).getBoolean("sync_auto", true));
+        box.addView(enable);
+        box.addView(url);
+        box.addView(user);
+        box.addView(pass);
+        box.addView(dir);
+        box.addView(auto);
+        Button save = new Button(this);
+        save.setAllCaps(false);
+        save.setText(android.R.string.ok);
+        save.setOnClickListener(v -> {
+            getPreferences(MODE_PRIVATE).edit()
+                    .putString("sync_url", url.getText().toString().trim())
+                    .putString("sync_user", user.getText().toString().trim())
+                    .putString("sync_pass", pass.getText().toString().trim())
+                    .putString("sync_dir", dir.getText().toString().trim())
+                    .putBoolean("sync_auto", auto.isChecked())
+                    .putBoolean("sync_enable", enable.isChecked())
+                    .apply();
+            toast(getString(R.string.sync_config_saved));
+        });
+        box.addView(save);
+        Button syncNow = new Button(this);
+        syncNow.setAllCaps(false);
+        syncNow.setText(R.string.sync_now);
+        syncNow.setOnClickListener(v -> runSyncNow());
+        box.addView(syncNow);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.sync_title)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    private EditText input(Context context, int hintRes, String value) {
+        EditText view = new EditText(context);
+        view.setHint(hintRes);
+        view.setText(value);
+        view.setSingleLine();
+        return view;
+    }
+
+    /** Manual 立即同步: runs one pass and reports the outcome. */
+    private void runSyncNow() {
+        if (!WebDavSync.configured(getPreferences(MODE_PRIVATE))) {
+            toast(getString(R.string.sync_need_config));
+            return;
+        }
+        toast(getString(R.string.sync_running));
+        new Thread(() -> {
+            try {
+                WebDavSync.Result result = WebDavSync.run(this, getPreferences(MODE_PRIVATE));
+                runOnUiThread(() -> {
+                    if (!result.errors.isEmpty()) {
+                        toast(getString(R.string.sync_failed, result.errors.get(0)));
+                    } else {
+                        toast(getString(R.string.sync_done, result.uploaded, result.downloaded));
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(getString(R.string.sync_failed, WebDavSync.describe(e))));
+            }
+        }, "webdav-sync").start();
+    }
+
+    /** Auto sync on entering a game: pull remote saves that are newer. */
+    private void autoSyncOnLoad() {
+        if (!getPreferences(MODE_PRIVATE).getBoolean("sync_enable", false)
+                || !getPreferences(MODE_PRIVATE).getBoolean("sync_auto", true)
+                || !WebDavSync.configured(getPreferences(MODE_PRIVATE))) {
+            return;
+        }
+        new Thread(() -> {
+            try {
+                WebDavSync.run(this, getPreferences(MODE_PRIVATE));
+            } catch (Exception ignored) {
+                // A failed background sync never blocks play.
+            }
+        }, "webdav-sync-auto").start();
+    }
+
+    // == GIF float ball (悠GBA 录制浮球 port) ==============================
+
+    private void setupGifBall() {
+        if (!getPreferences(MODE_PRIVATE).getBoolean("gif_ball", false) || gifBall != null) {
+            return;
+        }
+        GifBall ball = new GifBall(this, () -> {
+            if (gifRecording) {
+                stopGif();
+            } else {
+                startGif();
+            }
+        });
+        gifBall = ball;
+        FrameLayout root = (FrameLayout) findViewById(R.id.root);
+        root.addView(ball, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        int[] pos = getPreferences(MODE_PRIVATE).getString("gif_ball_pos", "80,120") == null
+                ? new int[]{80, 120} : parseBallPos();
+        ball.restore(pos[0], pos[1]);
+        ball.setVisibility(View.GONE);
+        ball.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                int[] after = ball.position();
+                getPreferences(MODE_PRIVATE).edit()
+                        .putString("gif_ball_pos", after[0] + "," + after[1]).apply();
+            }
+            return false;
+        });
+    }
+
+    private int[] parseBallPos() {
+        String raw = getPreferences(MODE_PRIVATE).getString("gif_ball_pos", "80,120");
+        int[] out = {80, 120};
+        if (raw != null) {
+            String[] parts = raw.split(",");
+            try {
+                if (parts.length == 2) {
+                    out[0] = Integer.parseInt(parts[0].trim());
+                    out[1] = Integer.parseInt(parts[1].trim());
+                }
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return out;
+    }
+
+    private void refreshGifBall() {
+        if (gifBall == null) {
+            return;
+        }
+        boolean show = getPreferences(MODE_PRIVATE).getBoolean("gif_ball", false)
+                && core != null && core.isLoaded();
+        gifBall.setVisibility(show ? View.VISIBLE : View.GONE);
+        gifBall.setRecording(gifRecording);
+    }
+
+    // == Solar via light sensor (悠GBA 设备感光器 port) ====================
+
+    private final SensorEventListener solarListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            float lux = event.values[0];
+            int level = luxToSolar(lux);
+            if (core != null && core.isLoaded()) {
+                core.setSolar(level);
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
+
+    /** Maps ambient lux onto the console's 0-10 sunlight scale. */
+    private static int luxToSolar(float lux) {
+        float[] thresholds = {10f, 30f, 60f, 100f, 200f, 400f, 800f, 1500f, 3000f, 8000f};
+        int level = 0;
+        for (float threshold : thresholds) {
+            if (lux >= threshold) {
+                level++;
+            }
+        }
+        return level;
+    }
+
+    /** Registers or releases the light sensor per the 阳光来源 preference. */
+    private void updateSolarSource() {
+        boolean wanted = getPreferences(MODE_PRIVATE).getBoolean("solar_on", false)
+                && "sensor".equals(getPreferences(MODE_PRIVATE).getString("solar_source", "keys"));
+        if (wanted && !solarListening) {
+            if (sensorManager == null) {
+                sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+            }
+            Sensor light = sensorManager == null ? null : sensorManager.getDefaultSensor(Sensor.TYPE_LIGHT);
+            if (light != null) {
+                sensorManager.registerListener(solarListener, light, SensorManager.SENSOR_DELAY_NORMAL);
+                solarListening = true;
+            }
+        } else if (!wanted && solarListening) {
+            sensorManager.unregisterListener(solarListener);
+            solarListening = false;
+        }
+    }
+
+    // == Keep-alive notice (悠GBA 游戏运行通知 port) =======================
+
+    private void startNoticeIfWanted(String title) {
+        if (getPreferences(MODE_PRIVATE).getBoolean("keep_notice", true)) {
+            NoticeService.start(this, title);
+        }
+    }
+
+    /** One-time offer to hide the vkeypad after hardware keys appear. */
+    private void maybeOfferKeypadHide() {
+        if (hwKeyPromptShown
+                || !getPreferences(MODE_PRIVATE).getBoolean("keypad_detect", false)
+                || controls == null || !controls.isShown()) {
+            return;
+        }
+        hwKeyPromptShown = true;
+        new AlertDialog.Builder(this)
+                .setMessage(R.string.keypad_hide_ask)
+                .setPositiveButton(R.string.keypad_hide, (d, w) -> {
+                    getPreferences(MODE_PRIVATE).edit().putBoolean("vkeypad_hidden", true).apply();
+                    applyInputSettings();
+                })
+                .setNegativeButton(R.string.keypad_keep, null)
+                .show();
+    }
+
+    private String solarSourceName() {
+        return "sensor".equals(getPreferences(MODE_PRIVATE).getString("solar_source", "keys"))
+                ? getString(R.string.solar_source_sensor) : getString(R.string.solar_source_keys);
     }
 
     private int palettePref() {
@@ -2991,6 +3579,7 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void showLinkDialog() {
+        Log.d("GBOYLINK", "showLinkDialog INVOKED");
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
@@ -3142,6 +3731,64 @@ public class EmulatorActivity extends AppCompatActivity {
                     getPreferences(MODE_PRIVATE).edit().putString("gboy_ip", ip).putInt("gboy_port", p).apply();
                     ensureGboy().join(ip, p);
                 })));
+        // ---- gboy.top 云端房间：不用 IP，也不用自己架中继 ----
+        TextView cloudHelp = new TextView(this);
+        cloudHelp.setText(R.string.link_cloud_help);
+        cloudHelp.setTextColor(0xFF222222);
+        cloudHelp.setPadding(0, pad, 0, 0);
+        box.addView(cloudHelp);
+        EditText cloudUser = new EditText(this);
+        cloudUser.setHint(R.string.link_cloud_user_hint);
+        cloudUser.setSingleLine(true);
+        cloudUser.setText(getPreferences(MODE_PRIVATE).getString("cloud_user", ""));
+        EditText cloudPass = new EditText(this);
+        cloudPass.setHint(R.string.link_cloud_pass_hint);
+        cloudPass.setSingleLine(true);
+        cloudPass.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        EditText cloudRoom = new EditText(this);
+        cloudRoom.setHint(R.string.link_cloud_room_hint);
+        cloudRoom.setSingleLine(true);
+        cloudRoom.setText(getPreferences(MODE_PRIVATE).getString("cloud_room", ""));
+        box.addView(cloudUser);
+        box.addView(cloudPass);
+        box.addView(cloudRoom);
+        box.addView(buttonRow(
+                linkButton(getString(R.string.link_cloud_create), v -> {
+                    if (core == null || !core.isLoaded()) {
+                        status.setText(R.string.link_gboy_no_rom);
+                        return;
+                    }
+                    String user = cloudUser.getText().toString().trim();
+                    String pass = cloudPass.getText().toString();
+                    if (user.isEmpty() || pass.isEmpty()) {
+                        status.setText(R.string.link_cloud_need_account);
+                        return;
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putString("cloud_user", user).apply();
+                    ensureCloud().start(user, pass, "");
+                }),
+                linkButton(getString(R.string.link_cloud_join), v -> {
+                    if (core == null || !core.isLoaded()) {
+                        status.setText(R.string.link_gboy_no_rom);
+                        return;
+                    }
+                    String user = cloudUser.getText().toString().trim();
+                    String pass = cloudPass.getText().toString();
+                    String cloudCode = cloudRoom.getText().toString().trim();
+                    if (user.isEmpty() || pass.isEmpty()) {
+                        status.setText(R.string.link_cloud_need_account);
+                        return;
+                    }
+                    if (cloudCode.isEmpty()) {
+                        status.setText(R.string.link_cloud_need_room);
+                        return;
+                    }
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putString("cloud_user", user)
+                            .putString("cloud_room", cloudCode)
+                            .apply();
+                    ensureCloud().start(user, pass, cloudCode);
+                })));
         box.addView(linkButton(getString(R.string.link_close), v -> {
             if (remoteLink != null) {
                 remoteLink.close();
@@ -3150,6 +3797,9 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             if (gboyLink != null) {
                 gboyLink.close();
+            }
+            if (cloudLink != null) {
+                cloudLink.close();
             }
             gboyRemoteKeys = 0;
             publishKeys();
@@ -3198,7 +3848,14 @@ public class EmulatorActivity extends AppCompatActivity {
 
                 @Override
                 public void onRemoteKeys(final int keys) {
-                    runOnUiThread(() -> gboyRemoteKeys = keys);
+                    // KEYS arrives ~12x/s; only the transitions matter.
+                    if (keys != gboyRemoteKeys) {
+                        Log.i(TAG, "remote keys mask=0x" + Integer.toHexString(keys));
+                    }
+                    runOnUiThread(() -> {
+                        gboyRemoteKeys = keys;
+                        publishRemoteKeys();
+                    });
                 }
 
                 @Override
@@ -3228,6 +3885,66 @@ public class EmulatorActivity extends AppCompatActivity {
             });
         }
         return gboyLink;
+    }
+
+    private GBoyCloudLink ensureCloud() {
+        if (cloudLink == null) {
+            cloudLink = new GBoyCloudLink(new GBoyLink.Hooks() {
+                @Override
+                public String romPath() {
+                    return getPreferences(MODE_PRIVATE).getString("lastRom", null);
+                }
+
+                @Override
+                public int localKeys() {
+                    return touchKeys | hwKeys;
+                }
+
+                @Override
+                public void onRemoteKeys(final int keys) {
+                    // KEYS arrives ~12x/s; only the transitions matter.
+                    if (keys != gboyRemoteKeys) {
+                        Log.i(TAG, "remote keys mask=0x" + Integer.toHexString(keys));
+                    }
+                    runOnUiThread(() -> {
+                        gboyRemoteKeys = keys;
+                        publishRemoteKeys();
+                    });
+                }
+
+                @Override
+                public void onStatus(final String text) {
+                    runOnUiThread(() -> {
+                        if (linkStatusView != null) {
+                            linkStatusView.setText(text);
+                        }
+                        // The room code and relay address only live inside the
+                        // 联机 dialog; surface them even after it is dismissed.
+                        if (text.contains("房号") || text.contains("超时")
+                                || text.contains("失败") || text.contains("证书")) {
+                            toast(text);
+                        }
+                    });
+                }
+
+                @Override
+                public void onConnected(boolean asHost, String note) {
+                    // The session status lands through onStatus right after.
+                }
+
+                @Override
+                public void onRemoteReset() {
+                    runOnUiThread(() -> {
+                        if (core != null && core.isLoaded()) {
+                            core.reset();
+                            core.clearAudio();
+                            toast(getString(R.string.reset_done));
+                        }
+                    });
+                }
+            });
+        }
+        return cloudLink;
     }
 
     private RemoteLink ensureRemote() {
@@ -3647,7 +4364,9 @@ public class EmulatorActivity extends AppCompatActivity {
         String mode = getPreferences(MODE_PRIVATE).getString("orientation", "landscape");
         int checked = "portrait".equals(mode) ? 2
                 : "portrait_rev".equals(mode) ? 3
-                : "landscape_rev".equals(mode) ? 1 : 0;
+                : "landscape_rev".equals(mode) ? 1
+                : "auto".equals(mode) ? 4
+                : "system".equals(mode) ? 5 : 0;
         new AlertDialog.Builder(this)
                 .setTitle(R.string.orientation_title)
                 .setSingleChoiceItems(new CharSequence[] {
@@ -3655,10 +4374,14 @@ public class EmulatorActivity extends AppCompatActivity {
                         getString(R.string.orientation_landscape_rev),
                         getString(R.string.orientation_portrait),
                         getString(R.string.orientation_portrait_rev),
+                        getString(R.string.orientation_auto),
+                        getString(R.string.orientation_system),
                 }, checked, (dialog, which) -> {
                     String next = which == 2 ? "portrait"
                             : which == 3 ? "portrait_rev"
-                            : which == 1 ? "landscape_rev" : "landscape";
+                            : which == 1 ? "landscape_rev"
+                            : which == 4 ? "auto"
+                            : which == 5 ? "system" : "landscape";
                     getPreferences(MODE_PRIVATE).edit()
                             .putString("orientation", next)
                             .apply();
@@ -3845,6 +4568,19 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox doubleShot = check(R.string.double_click_shot, getPreferences(MODE_PRIVATE).getBoolean("double_click_shot", false));
         doubleShot.setOnCheckedChangeListener((v, checked) ->
                 getPreferences(MODE_PRIVATE).edit().putBoolean("double_click_shot", checked).apply());
+        CheckBox keypadDetect = check(R.string.keypad_detect, getPreferences(MODE_PRIVATE).getBoolean("keypad_detect", false));
+        keypadDetect.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("keypad_detect", checked).apply();
+            if (checked) {
+                hwKeyPromptShown = false;
+            }
+        });
+        CheckBox vkeypadVisible = check(R.string.vkeypad_visible,
+                !getPreferences(MODE_PRIVATE).getBoolean("vkeypad_hidden", false));
+        vkeypadVisible.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("vkeypad_hidden", !checked).apply();
+            applyInputSettings();
+        });
         box.addView(vibe);
         box.addView(turboMode);
         box.addView(rateLabel);
@@ -3857,6 +4593,8 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(c2Key);
         box.addView(shotFormat);
         box.addView(doubleShot);
+        box.addView(keypadDetect);
+        box.addView(vkeypadVisible);
         rateBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -4032,6 +4770,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 toast(getString(R.string.load_failed));
             }
         });
+        Button sync = new Button(this);
+        sync.setAllCaps(false);
+        sync.setText(R.string.sync_title);
+        sync.setOnClickListener(v -> showSyncDialog());
         box.addView(saveType);
         box.addView(autoLoad);
         box.addView(autoSave);
@@ -4042,6 +4784,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(timedSave);
         box.addView(deleteSav);
         box.addView(importSav);
+        box.addView(sync);
         autoLoad.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_load_state", checked).apply());
         autoSave.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_save_state", checked).apply());
         confirmClose.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_close", checked).apply());
@@ -4081,8 +4824,27 @@ public class EmulatorActivity extends AppCompatActivity {
         solarBar.setMax(10);
         solarBar.setProgress(solarNow);
         CheckBox solarKeys = check(R.string.adv_solar_keys, getPreferences(MODE_PRIVATE).getBoolean("solar_volkeys", false));
+        final Button solarSource = new Button(this);
+        solarSource.setAllCaps(false);
+        solarSource.setText(getString(R.string.solar_source, solarSourceName()));
+        solarSource.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle(R.string.solar_source)
+                .setSingleChoiceItems(new CharSequence[]{
+                        getString(R.string.solar_source_keys),
+                        getString(R.string.solar_source_sensor)
+                }, "sensor".equals(getPreferences(MODE_PRIVATE).getString("solar_source", "keys")) ? 1 : 0,
+                        (dialog, which) -> {
+                            getPreferences(MODE_PRIVATE).edit()
+                                    .putString("solar_source", which == 1 ? "sensor" : "keys").apply();
+                            solarSource.setText(getString(R.string.solar_source, solarSourceName()));
+                            updateSolarSource();
+                            dialog.dismiss();
+                        })
+                .show());
         CheckBox sgbBorders = check(R.string.adv_sgb_border, getPreferences(MODE_PRIVATE).getBoolean("sgb_borders", false));
         CheckBox tiltSensor = check(R.string.adv_tilt, getPreferences(MODE_PRIVATE).getBoolean("tilt_sensor", false));
+        CheckBox gifBallCheck = check(R.string.adv_gif_ball, getPreferences(MODE_PRIVATE).getBoolean("gif_ball", false));
+        CheckBox noticeCheck = check(R.string.adv_notice, getPreferences(MODE_PRIVATE).getBoolean("keep_notice", true));
         final Button palette = new Button(this);
         palette.setAllCaps(false);
         palette.setText(getString(R.string.adv_palette, paletteName(palettePref())));
@@ -4110,8 +4872,11 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(solarLabel);
         box.addView(solarBar);
         box.addView(solarKeys);
+        box.addView(solarSource);
         box.addView(sgbBorders);
         box.addView(tiltSensor);
+        box.addView(gifBallCheck);
+        box.addView(noticeCheck);
         box.addView(palette);
         box.addView(fastLabel);
         box.addView(fastBar);
@@ -4150,6 +4915,19 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         });
         solarKeys.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("solar_volkeys", checked).apply());
+        gifBallCheck.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("gif_ball", checked).apply();
+            setupGifBall();
+            refreshGifBall();
+        });
+        noticeCheck.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("keep_notice", checked).apply();
+            if (!checked) {
+                NoticeService.stop(this);
+            } else if (core != null && core.isLoaded()) {
+                startNoticeIfWanted(core.title());
+            }
+        });
         sgbBorders.setOnCheckedChangeListener((v, checked) -> {
             getPreferences(MODE_PRIVATE).edit().putBoolean("sgb_borders", checked).apply();
             applyCoreOptions();
@@ -4395,6 +5173,7 @@ public class EmulatorActivity extends AppCompatActivity {
         core.setRtc(mode, epoch, offset);
         core.setSolar(getPreferences(MODE_PRIVATE).getBoolean("solar_on", false)
                 ? getPreferences(MODE_PRIVATE).getInt("solar_level", 5) : -1);
+        updateSolarSource();
         core.setCartRumble(getPreferences(MODE_PRIVATE).getBoolean("cart_rumble", false));
         int[] palette = gbPaletteColors();
         core.setGbPalette(palette);
@@ -4462,6 +5241,8 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Pushes the input-related preferences into the on-screen controls. */
     private void applyInputSettings() {
         if (controls != null) {
+            controls.setVisibility(getPreferences(MODE_PRIVATE).getBoolean("vkeypad_hidden", false)
+                    ? View.GONE : View.VISIBLE);
             controls.setDiagonalLock(getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
             controls.setTurboRate(getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25));
             controls.setVisibleExtras(extraKeys());
@@ -4774,11 +5555,17 @@ public class EmulatorActivity extends AppCompatActivity {
         if (gifButton != null) {
             gifButton.setText(R.string.gif_stop);
         }
+        if (gifBall != null) {
+            gifBall.setRecording(true);
+        }
         toast(getString(R.string.gif_started));
     }
 
     private void stopGif() {
         gifRecording = false;
+        if (gifBall != null) {
+            gifBall.setRecording(false);
+        }
     }
 
     /** Encoder loop: drains the queue into the GIF file, then publishes it. */
@@ -5983,6 +6770,12 @@ public class EmulatorActivity extends AppCompatActivity {
             case "landscape_rev":
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE);
                 break;
+            case "auto":
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+                break;
+            case "system":
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                break;
             default:
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 break;
@@ -5994,6 +6787,9 @@ public class EmulatorActivity extends AppCompatActivity {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         applyScreenMode();
+        // The picture rect is re-measured for the new orientation; re-apply
+        // the scene transform once the view has its new size.
+        gameView.post(this::applyVideoScene);
     }
 
     /**
@@ -6094,6 +6890,7 @@ public class EmulatorActivity extends AppCompatActivity {
         noteUserKeys(touchKeys, prev);
         if ((bit & ~prev) != 0) {
             wakeInput();
+            maybeOfferKeypadHide();
         }
         return true;
     }
@@ -6228,6 +7025,10 @@ public class EmulatorActivity extends AppCompatActivity {
             sensorManager.unregisterListener(tiltListener);
             tiltListening = false;
         }
+        if (solarListening) {
+            sensorManager.unregisterListener(solarListener);
+            solarListening = false;
+        }
         // Do not stay held at 16x (raised pitch) or with A/B latched when the
         // key-up never arrives because the app went to the background under
         // a held key.
@@ -6264,6 +7065,7 @@ public class EmulatorActivity extends AppCompatActivity {
             paused = false;
         }
         updateTiltSensor();
+        updateSolarSource();
         hideSystemUi();
         autoHideMenu();
     }
@@ -6271,12 +7073,21 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        NoticeService.stop(this);
+        if (solarListening && sensorManager != null) {
+            sensorManager.unregisterListener(solarListener);
+            solarListening = false;
+        }
         try {
             unregisterReceiver(screenshotReceiver);
         } catch (Exception ignored) {
         }
         try {
             unregisterReceiver(keysReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(cloudReceiver);
         } catch (Exception ignored) {
         }
         stopTimedSave();
@@ -6286,6 +7097,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (gboyLink != null) {
             gboyLink.close();
             gboyLink = null;
+        }
+        if (cloudLink != null) {
+            cloudLink.close();
+            cloudLink = null;
         }
         gboyRemoteKeys = 0;
         inputHandler.removeCallbacksAndMessages(null);

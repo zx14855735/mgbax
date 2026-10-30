@@ -18,6 +18,29 @@
 #include <mgba-util/memory.h>
 #include <mgba-util/vfs.h>
 
+/* TEMP PROBE (rom64): log writes inside the game's task table (gTasks). */
+int mgbaTaskLogOn = 0;
+int mgbaSidLogOn = 0;
+int mgbaProbeFrame = 0;
+
+static void _probeStore(struct ARMCore* cpu, uint32_t address, uint32_t value, int width) {
+	uint32_t v = width == 32 ? value : (width == 16 ? (value & 0xFFFFu) : (value & 0xFFu));
+	/* NOTE: the game reaches this struct through both the 0x0204951C alias and the
+	 * real 0x0200951C offset, so match on the EWRAM offset, not the raw address. */
+	uint32_t eoff = address & 0x3FFFF;
+	if (mgbaSidLogOn && address >= 0x02000000 && address < 0x02080000 && eoff >= 0x9500 && eoff <= 0x9540) {
+		fprintf(stderr, "f%03d sid w%d [%08X]=%0*X pc=%08X lr=%08X\n", mgbaProbeFrame, width, address, width / 4, v,
+		        cpu->gprs[15], cpu->gprs[14]);
+	}
+	if (mgbaTaskLogOn && address >= 0x03005B54 && address < 0x03005DD4) {
+		int tid = (int) ((address - 0x03005B54) / 40);
+		int off = (int) ((address - 0x03005B54) % 40);
+		fprintf(stderr, "f%03d tsk w%d [%08X]=%08X tid=%d off=%02X pc=%08X lr=%08X\n", mgbaProbeFrame, width, address,
+		        v, tid, off, cpu->gprs[15], cpu->gprs[14]);
+	}
+}
+
+
 #define IDLE_LOOP_THRESHOLD 10000
 
 mLOG_DEFINE_CATEGORY(GBA_MEM, "GBA Memory", "gba.memory");
@@ -27,6 +50,83 @@ static void _agbPrintStore(struct GBA* gba, uint32_t address, int16_t value);
 static int16_t  _agbPrintLoad(struct GBA* gba, uint32_t address);
 static uint8_t _deadbeef[4] = { 0x10, 0xB7, 0x10, 0xE7 }; // Illegal instruction on both ARM and Thumb
 static const uint32_t _agbPrintFunc = 0x4770DFFA; // swi 0xFA; bx lr
+
+/* TEMP PROBE (rom64): profile reads through the WS1 window.
+ *
+ * Two numbers matter for an oversized ROM: how often the game touches WS1 at
+ * all, and how often that touch lands inside the *low* 32 MiB (address bit 24
+ * set but offset < romSize).  On real hardware WS1 aliases WS0 because the
+ * cartridge bus only decodes 25 address lines, so those reads are supposed to
+ * return genuine ROM data; with a 64 MiB mask they instead return the upper
+ * half (0xFF padding for a ROM that was merely padded). */
+#ifdef __ANDROID__
+#include <android/log.h>
+#define ROM64_LOG(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
+#else
+#define ROM64_LOG(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
+#endif
+uint32_t mgbaFlashWrites;
+uint32_t mgbaFlashLastAddr;
+uint32_t mgbaFlashLastValue;
+static uint32_t _rom64Ws1Reads;
+static uint32_t _rom64Ws1Upper;
+static uint32_t _rom64Ws1Last;
+static uint32_t _rom64Ws1LastPc;
+static uint32_t _rom64Ws1Phases[16];
+static int _rom64Ws1Phase;
+/* 同一地址被反复重读的次数：用于区分“顺序解压”与“原地空转等标志”。 */
+uint32_t mgbaRom64Ws1Same;
+static uint32_t _rom64Ws1Prev;
+static uint32_t _rom64Ws1Min = 0xFFFFFFFF;
+static uint32_t _rom64Ws1Max;
+static void _rom64TraceWs1(uint32_t address, size_t romSize, uint32_t pc) {
+	uint32_t n = ++_rom64Ws1Reads;
+	_rom64Ws1Last = address;
+	_rom64Ws1LastPc = pc;
+	if (n > 1 && (address & 0x3FFFFFF) == (_rom64Ws1Prev & 0x3FFFFFF)) {
+		++mgbaRom64Ws1Same;
+	}
+	_rom64Ws1Prev = address;
+	uint32_t off = address & 0x3FFFFFF;
+	if (off < _rom64Ws1Min) {
+		_rom64Ws1Min = off;
+	}
+	if (off > _rom64Ws1Max) {
+		_rom64Ws1Max = off;
+	}
+	if ((address & 0x3FFFFFF) >= 0x2000000) {
+		++_rom64Ws1Upper;
+	}
+	++_rom64Ws1Phases[_rom64Ws1Phase];
+	if (n <= 12) {
+		ROM64_LOG("rom64: WS1 read %08X off %07X pc %08X n=%u", address, address & 0x3FFFFFF, pc, n);
+	} else if ((n % 50000) == 0) {
+		ROM64_LOG("rom64: WS1 #%u %08X off %07X pc %08X", n, address, address & 0x3FFFFFF, pc);
+	}
+	(void) romSize;
+}
+
+void GBARom64ProbeReset(void) {
+	if (_rom64Ws1Phase < 15) {
+		++_rom64Ws1Phase;
+	}
+	_rom64Ws1Phases[_rom64Ws1Phase] = 0;
+	(void) _rom64Ws1Phases;
+}
+
+uint32_t GBARom64ProbePhaseCount(void) {
+	return _rom64Ws1Phases[_rom64Ws1Phase];
+}
+
+void GBARom64ProbeDump(void) {
+	ROM64_LOG("rom64: WS1 total=%u upper=%u last=%08X pc=%08X same=%u min=%07X max=%07X",
+	          _rom64Ws1Reads, _rom64Ws1Upper, _rom64Ws1Last, _rom64Ws1LastPc, mgbaRom64Ws1Same,
+	          _rom64Ws1Min, _rom64Ws1Max);
+	int i;
+	for (i = 1; i <= _rom64Ws1Phase; ++i) {
+		ROM64_LOG("rom64:   phase %d : %u", i, _rom64Ws1Phases[i]);
+	}
+}
 
 static void GBASetActiveRegion(struct ARMCore* cpu, uint32_t region);
 static int32_t GBAMemoryStall(struct ARMCore* cpu, int32_t wait);
@@ -290,7 +390,7 @@ static void GBASetActiveRegion(struct ARMCore* cpu, uint32_t address) {
 		} else {
 			cpu->memory.activeMask &= -WORD_SIZE_ARM;
 		}
-		if (newRegion < GBA_REGION_ROM0 || (address & (GBA_SIZE_ROM0 - 1)) < memory->romSize) {
+		if (newRegion < GBA_REGION_ROM0 || (address & memory->romMask) < memory->romSize) {
 			return;
 		}
 	}
@@ -344,7 +444,7 @@ static void GBASetActiveRegion(struct ARMCore* cpu, uint32_t address) {
 		cpu->memory.accessSource = mACCESS_PROGRAM;
 		cpu->memory.activeRegion = memory->rom;
 		cpu->memory.activeMask = memory->romMask;
-		if ((address & (GBA_SIZE_ROM0 - 1)) < memory->romSize) {
+		if ((address & memory->romMask) < memory->romSize) {
 			break;
 		}
 		if ((address & 0x00FFFFFE) == AGB_PRINT_FLUSH_ADDR && memory->agbPrintProtect == 0x20) {
@@ -423,9 +523,10 @@ static void GBASetActiveRegion(struct ARMCore* cpu, uint32_t address) {
 #define LOAD_OAM LOAD_32(value, address & (GBA_SIZE_OAM - 4), gba->video.oam.raw);
 
 #define LOAD_CART \
+	if (((address >> 24) & 0xFE) == 0x0A) { _rom64TraceWs1(address, memory->romSize, gba->cpu ? gba->cpu->gprs[15] : 0); } \
 	wait += waitstatesRegion[address >> BASE_OFFSET]; \
-	if ((address & (GBA_SIZE_ROM0 - 4)) < memory->romSize) { \
-		LOAD_32(value, address & (GBA_SIZE_ROM0 - 4), memory->rom); \
+	if ((address & (memory->romMask - 3)) < memory->romSize) { \
+		LOAD_32(value, address & (memory->romMask - 3), memory->rom); \
 	} else if (memory->unl.type == GBA_UNL_CART_VFAME) { \
 		value = GBAVFameGetPatternValue(address, 32); \
 	} else { \
@@ -589,8 +690,9 @@ uint32_t GBALoad16(struct ARMCore* cpu, uint32_t address, int* cycleCounter) {
 	case GBA_REGION_ROM1_EX:
 	case GBA_REGION_ROM2:
 		wait = memory->waitstatesNonseq16[address >> BASE_OFFSET];
-		if ((address & (GBA_SIZE_ROM0 - 2)) < memory->romSize) {
-			LOAD_16(value, address & (GBA_SIZE_ROM0 - 2), memory->rom);
+		if (((address >> 24) & 0xFE) == 0x0A) { _rom64TraceWs1(address, memory->romSize, gba->cpu ? gba->cpu->gprs[15] : 0); }
+		if ((address & (memory->romMask - 1)) < memory->romSize) {
+			LOAD_16(value, address & (memory->romMask - 1), memory->rom);
 		} else if (memory->unl.type == GBA_UNL_CART_VFAME) {
 			value = GBAVFameGetPatternValue(address, 16);
 		} else if ((address & (GBA_SIZE_ROM0 - 2)) >= AGB_PRINT_BASE) {
@@ -614,8 +716,8 @@ uint32_t GBALoad16(struct ARMCore* cpu, uint32_t address, int* cycleCounter) {
 			value = GBASavedataReadEEPROM(&memory->savedata);
 		} else if ((address & 0x0DFC0000) >= 0x0DF80000 && memory->hw.devices & HW_EREADER) {
 			value = GBACartEReaderRead(&memory->ereader, address);
-		} else if ((address & (GBA_SIZE_ROM0 - 2)) < memory->romSize) {
-			LOAD_16(value, address & (GBA_SIZE_ROM0 - 2), memory->rom);
+		} else if ((address & (memory->romMask - 1)) < memory->romSize) {
+			LOAD_16(value, address & (memory->romMask - 1), memory->rom);
 		} else if (memory->unl.type == GBA_UNL_CART_VFAME) {
 			value = GBAVFameGetPatternValue(address, 16);
 		} else {
@@ -652,6 +754,13 @@ uint32_t GBALoad8(struct ARMCore* cpu, uint32_t address, int* cycleCounter) {
 	struct GBAMemory* memory = &gba->memory;
 	uint32_t value = 0;
 	int wait = 0;
+
+	if (mgbaSidLogOn && address >= 0x02000000 && address < 0x02080000 &&
+	    ((address & 0x3FFFF) == 0x9531 || (address & 0x3FFFF) == 0x9532)) {
+		uint8_t v = ((const uint8_t*) memory->wram)[address & (GBA_SIZE_EWRAM - 1)];
+		fprintf(stderr, "f%03d sid r8 [%08X]=%02X pc=%08X lr=%08X\n", mgbaProbeFrame, address, v, cpu->gprs[15],
+		        cpu->gprs[14]);
+	}
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_BIOS:
@@ -705,8 +814,9 @@ uint32_t GBALoad8(struct ARMCore* cpu, uint32_t address, int* cycleCounter) {
 	case GBA_REGION_ROM2:
 	case GBA_REGION_ROM2_EX:
 		wait = memory->waitstatesNonseq16[address >> BASE_OFFSET];
-		if ((address & (GBA_SIZE_ROM0 - 1)) < memory->romSize) {
-			value = ((uint8_t*) memory->rom)[address & (GBA_SIZE_ROM0 - 1)];
+		if (((address >> 24) & 0xFE) == 0x0A) { _rom64TraceWs1(address, memory->romSize, gba->cpu ? gba->cpu->gprs[15] : 0); }
+		if ((address & memory->romMask) < memory->romSize) {
+			value = ((uint8_t*) memory->rom)[address & memory->romMask];
 		} else if (memory->unl.type == GBA_UNL_CART_VFAME) {
 			value = GBAVFameGetPatternValue(address, 8);
 		} else {
@@ -828,6 +938,7 @@ void GBAStore32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycle
 	int wait = 0;
 	int32_t oldValue;
 	char* waitstatesRegion = memory->waitstatesNonseq32;
+	_probeStore(cpu, address, (uint32_t) value, 32);
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:
@@ -879,6 +990,7 @@ void GBAStore16(struct ARMCore* cpu, uint32_t address, int16_t value, int* cycle
 	struct GBAMemory* memory = &gba->memory;
 	int wait = 0;
 	int16_t oldValue;
+	_probeStore(cpu, address, (uint32_t) (uint16_t) value, 16);
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:
@@ -1024,6 +1136,7 @@ void GBAStore8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycleCo
 	struct GBAMemory* memory = &gba->memory;
 	int wait = 0;
 	uint16_t oldValue;
+	_probeStore(cpu, address, (uint32_t) (uint8_t) value, 8);
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:
@@ -1073,6 +1186,9 @@ void GBAStore8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycleCo
 		if (memory->hw.devices & HW_EREADER && (address & 0xE00FF80) >= 0xE00FF80) {
 			GBACartEReaderWriteFlash(&memory->ereader, address, value);
 		} else if (memory->savedata.type == GBA_SAVEDATA_FLASH512 || memory->savedata.type == GBA_SAVEDATA_FLASH1M) {
+			++mgbaFlashWrites;
+			mgbaFlashLastAddr = address;
+			mgbaFlashLastValue = value;
 			GBASavedataWriteFlash(&memory->savedata, address, value);
 		} else if (memory->savedata.type == GBA_SAVEDATA_SRAM) {
 			if (memory->unl.type) {
@@ -1266,12 +1382,12 @@ void GBAPatch32(struct ARMCore* cpu, uint32_t address, int32_t value, int32_t* o
 	case GBA_REGION_ROM2:
 	case GBA_REGION_ROM2_EX:
 		_pristineCow(gba);
-		if ((address & (GBA_SIZE_ROM0 - 4)) >= gba->memory.romSize) {
-			gba->memory.romSize = (address & (GBA_SIZE_ROM0 - 4)) + 4;
+		if ((address & (gba->memory.romMask - 3)) >= gba->memory.romSize) {
+			gba->memory.romSize = (address & (gba->memory.romMask - 3)) + 4;
 			gba->memory.romMask = toPow2(gba->memory.romSize) - 1;
 		}
-		LOAD_32(oldValue, address & (GBA_SIZE_ROM0 - 4), gba->memory.rom);
-		STORE_32(value, address & (GBA_SIZE_ROM0 - 4), gba->memory.rom);
+		LOAD_32(oldValue, address & (gba->memory.romMask - 3), gba->memory.rom);
+		STORE_32(value, address & (gba->memory.romMask - 3), gba->memory.rom);
 		break;
 	case GBA_REGION_SRAM:
 	case GBA_REGION_SRAM_MIRROR:
@@ -1336,12 +1452,12 @@ void GBAPatch16(struct ARMCore* cpu, uint32_t address, int16_t value, int16_t* o
 	case GBA_REGION_ROM2:
 	case GBA_REGION_ROM2_EX:
 		_pristineCow(gba);
-		if ((address & (GBA_SIZE_ROM0 - 2)) >= gba->memory.romSize) {
-			gba->memory.romSize = (address & (GBA_SIZE_ROM0 - 2)) + 2;
+		if ((address & (gba->memory.romMask - 1)) >= gba->memory.romSize) {
+			gba->memory.romSize = (address & (gba->memory.romMask - 1)) + 2;
 			gba->memory.romMask = toPow2(gba->memory.romSize) - 1;
 		}
-		LOAD_16(oldValue, address & (GBA_SIZE_ROM0 - 2), gba->memory.rom);
-		STORE_16(value, address & (GBA_SIZE_ROM0 - 2), gba->memory.rom);
+		LOAD_16(oldValue, address & (gba->memory.romMask - 1), gba->memory.rom);
+		STORE_16(value, address & (gba->memory.romMask - 1), gba->memory.rom);
 		break;
 	case GBA_REGION_SRAM:
 	case GBA_REGION_SRAM_MIRROR:
@@ -1422,12 +1538,12 @@ void GBAPatch8(struct ARMCore* cpu, uint32_t address, int8_t value, int8_t* old)
 	case GBA_REGION_ROM2:
 	case GBA_REGION_ROM2_EX:
 		_pristineCow(gba);
-		if ((address & (GBA_SIZE_ROM0 - 1)) >= gba->memory.romSize) {
-			gba->memory.romSize = (address & (GBA_SIZE_ROM0 - 2)) + 2;
+		if ((address & memory->romMask) >= gba->memory.romSize) {
+			gba->memory.romSize = (address & (gba->memory.romMask - 1)) + 2;
 			gba->memory.romMask = toPow2(gba->memory.romSize) - 1;
 		}
-		oldValue = ((int8_t*) memory->rom)[address & (GBA_SIZE_ROM0 - 1)];
-		((int8_t*) memory->rom)[address & (GBA_SIZE_ROM0 - 1)] = value;
+		oldValue = ((int8_t*) memory->rom)[address & memory->romMask];
+		((int8_t*) memory->rom)[address & memory->romMask] = value;
 		break;
 	case GBA_REGION_SRAM:
 	case GBA_REGION_SRAM_MIRROR:
@@ -1902,9 +2018,10 @@ void _pristineCow(struct GBA* gba) {
 		return;
 	}
 #if !defined(FIXED_ROM_BUFFER) && !defined(__wii__)
-	void* newRom = anonymousMemoryMap(GBA_SIZE_ROM0);
+	size_t allocSize = gba->memory.romSize > GBA_SIZE_ROM0 ? gba->memory.romSize : GBA_SIZE_ROM0;
+	void* newRom = anonymousMemoryMap(allocSize);
 	memcpy(newRom, gba->memory.rom, gba->memory.romSize);
-	memset(((uint8_t*) newRom) + gba->memory.romSize, 0xFF, GBA_SIZE_ROM0 - gba->memory.romSize);
+	memset(((uint8_t*) newRom) + gba->memory.romSize, 0xFF, allocSize - gba->memory.romSize);
 	if (gba->cpu->memory.activeRegion == gba->memory.rom) {
 		gba->cpu->memory.activeRegion = newRom;
 	}
@@ -1912,6 +2029,7 @@ void _pristineCow(struct GBA* gba) {
 		gba->romVf->unmap(gba->romVf, gba->memory.rom, gba->memory.romSize);
 	}
 	gba->memory.rom = newRom;
+	gba->memory.romAllocSize = allocSize;
 	gba->memory.hw.gpioBase = &((uint16_t*) gba->memory.rom)[GPIO_REG_DATA >> 1];
 #endif
 	gba->isPristine = false;

@@ -135,6 +135,11 @@
                     android:text="@string/cheats_short" />
 
                 <Button
+                    android:id="@+id/btn_debug"
+                    style="@style/MgbaButton"
+                    android:text="@string/debug_short" />
+
+                <Button
                     android:id="@+id/btn_library"
                     style="@style/MgbaButton"
                     android:text="@string/library" />

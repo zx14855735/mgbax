@@ -94,6 +94,14 @@
     <string name="link_gboy_join">大厅加入</string>
     <string name="link_gboy_ip_hint">对方（或本机）IP，例如 192.168.1.8</string>
     <string name="link_gboy_no_rom">请先打开一个游戏再联机</string>
+    <string name="link_cloud_help">云端房间（gboy.top）：不用 IP，也不用自己架中继。两边填同一个 gboy.top 账号，一边点云端创建拿到房间号，另一边填房间号点云端加入。创建方是 1P。两边要打开同一个游戏、保持 1 倍速。</string>
+    <string name="link_cloud_user_hint">gboy.top 账号（邮箱或用户名）</string>
+    <string name="link_cloud_pass_hint">密码</string>
+    <string name="link_cloud_room_hint">房间号，加入时填，创建时留空</string>
+    <string name="link_cloud_create">云端创建</string>
+    <string name="link_cloud_join">云端加入</string>
+    <string name="link_cloud_need_account">请填写 gboy.top 账号和密码</string>
+    <string name="link_cloud_need_room">加入时请填写房间号</string>
     <string name="loading">正在读取游戏…</string>
     <string name="load_failed">无法加载这个游戏</string>
     <string name="no_rom">请先打开一个游戏</string>
@@ -116,7 +124,7 @@
     <string name="settings_save">存档</string>
     <string name="settings_advanced">高级</string>
     <string name="settings_help">帮助</string>
-    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBAx。</string>
+    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存），最大支持 64MB 扩容 ROM。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），「外部渲染器」可安装第三方 .glsl，「画面场景」可自由移动/缩放游戏画面；配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n调试：菜单「调试」里有内存查看器（搜索/编辑内存做金手指）、图层/贴图/调色板查看器。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n存档同步：设置-存档里可配置坚果云 WebDAV，多台设备间自动同步电池存档。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBAx。</string>
     <string name="settings_immersive">沉浸模式（隐藏状态栏/导航栏）</string>
 
     <!-- Sound -->
@@ -350,4 +358,95 @@
     <string name="full_skin_scan">从 mGBAx/skins 目录导入</string>
     <string name="full_skin_scan_done">已从目录导入 %1$d 个皮肤包</string>
     <string name="full_skin_scan_empty">mGBAx/skins 目录没有新的皮肤包</string>
+
+    <!-- Debug toolkit (ported from 悠GBA模拟器) -->
+    <string name="debug_tools">调试工具</string>
+    <string name="debug_short">调试</string>
+    <string name="memory_view">内存查看器</string>
+    <string name="bg_view">图层查看器</string>
+    <string name="oam_view">贴图查看器</string>
+    <string name="palette_view">调色板查看器</string>
+    <string name="debug_gba_only">PPU 查看器仅支持 GBA 游戏</string>
+    <string name="close">关闭</string>
+    <string name="save">保存</string>
+    <string name="export">导出</string>
+    <string name="image_export_">已导出图片 %1$s</string>
+    <string name="input_data_invalid">数据输入有误</string>
+    <string name="search">搜索</string>
+    <string name="search_width">位宽</string>
+    <string name="search_value_hint">数值(十进制或 0x 十六进制)</string>
+    <string name="search_hits">搜索结果</string>
+    <string name="search_hits_n">%1$d 个结果</string>
+    <string name="search_reset">重置</string>
+    <string name="search_first_eq">首次搜索请选 = 并输入要找的数值</string>
+    <string name="search_more">还有更多结果未显示</string>
+    <string name="memory_tap_edit">点击十六进制区可编辑该字节(改值建议先暂停游戏)</string>
+    <string name="edit_value_title">修改 %08X</string>
+    <string name="edit_value_hint">%1$d 位值(十进制或 0x 十六进制)</string>
+    <string name="memory_written">已写入内存</string>
+    <string name="bg_palette">背景调色板</string>
+    <string name="obj_palette">贴图调色板</string>
+    <string name="bg_info">大小:%1$s\n优先级:%2$d\n图层地址:0x%3$X\n映射地址:0x%4$X</string>
+    <string name="bg_info_mode3">模式3:240x160 16位位图</string>
+    <string name="bg_info_mode4">模式4:240x160 8位位图(当前帧)</string>
+    <string name="bg_info_mode5">模式5:160x128 16位位图</string>
+    <string name="oam_info">编号:%1$d\n坐标:%2$d,%3$d\n尺寸:%4$s\n图块:%5$d\n调色板:%6$d\n翻转:%7$s\n优先级:%8$d</string>
+    <string name="oam_n">贴图 %1$d</string>
+    <string name="oam_empty">画面上没有可见贴图</string>
+    <string name="palette_info">编号:%1$d\n红:%2$d 绿:%3$d 蓝:%4$d\n内存地址:0x%5$s</string>
+
+    <!-- External shaders -->
+    <string name="shader_external">外部渲染器</string>
+    <string name="shader_external_value">外部渲染器:%1$s</string>
+    <string name="shader_external_none">无</string>
+    <string name="shader_install">安装渲染器(.glsl)</string>
+    <string name="shader_pick">选择已安装的渲染器</string>
+    <string name="shader_installed">已安装渲染器:%1$s</string>
+    <string name="shader_removed">已清除外部渲染器</string>
+    <string name="shader_bad">渲染器无效或编译失败</string>
+    <string name="shader_help">支持单通道 GLSL ES 片段着色器。可用变量:uTex(游戏画面)、vTexCoord(坐标)、uTexSize、uOutSize、uBrightness;常见 RetroArch 命名(TEXTURE/TextureSize/OutputSize/vTexCoord/COMPAT_TEXTURE)会自动适配。</string>
+
+    <!-- Video scene editor -->
+    <string name="video_scene">画面场景(移动/缩放)</string>
+    <string name="scene_x">水平位置 %1$d%%</string>
+    <string name="scene_y">垂直位置 %1$d%%</string>
+    <string name="scene_scale">缩放 %1$d%%</string>
+    <string name="scene_reset">恢复居中</string>
+    <string name="scene_applied">画面场景已应用</string>
+
+    <!-- WebDAV save sync -->
+    <string name="sync_title">存档同步(WebDAV)</string>
+    <string name="sync_enable">开启存档同步</string>
+    <string name="sync_url">服务器地址</string>
+    <string name="sync_url_hint">https://dav.jianguoyun.com/dav/</string>
+    <string name="sync_account">账号</string>
+    <string name="sync_password">应用密码(坚果云为16位应用密码)</string>
+    <string name="sync_dir">远端目录</string>
+    <string name="sync_dir_hint">mGBAx</string>
+    <string name="sync_auto">进出游戏时自动同步</string>
+    <string name="sync_now">立即同步</string>
+    <string name="sync_config_saved">同步配置保存成功</string>
+    <string name="sync_running">正在同步存档…</string>
+    <string name="sync_done">同步完成:上传 %1$d,下载 %2$d</string>
+    <string name="sync_failed">同步失败:%1$s</string>
+    <string name="sync_need_config">请先填写服务器地址和账号</string>
+    <string name="sync_help">用坚果云:注册后到「账户信息→安全选项→添加应用密码」生成16位应用密码,账号填注册邮箱,密码填应用密码。服务器地址保持默认即可。同步规则:两边按修改时间取较新的电池存档(.sav)。</string>
+
+    <!-- Small items -->
+    <string name="solar_source">阳光来源:%1$s</string>
+    <string name="solar_source_keys">音量键</string>
+    <string name="solar_source_sensor">设备感光器</string>
+    <string name="adv_gif_ball">GIF 浮球(录制开关悬浮在画面上)</string>
+    <string name="adv_notice">游戏运行通知(防后台清理)</string>
+    <string name="orientation_auto">自动旋转</string>
+    <string name="orientation_system">系统默认</string>
+    <string name="keypad_hide_ask">检测到实体按键,要隐藏虚拟按键吗?</string>
+    <string name="keypad_hide">隐藏</string>
+    <string name="keypad_keep">保持</string>
+    <string name="keypad_detect">识别到实体按键时提示隐藏虚拟按键</string>
+    <string name="vkeypad_visible">显示虚拟按键</string>
+
+    <!-- Notice service -->
+    <string name="notice_title">游戏运行中</string>
+    <string name="notice_running">%1$s 正在运行</string>
 </resources>

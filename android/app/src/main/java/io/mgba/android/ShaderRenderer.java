@@ -55,6 +55,8 @@ final class ShaderRenderer {
 
     private int filterId = Shaders.FILTER_NONE;
     private final Set<Integer> broken = new HashSet<>();
+    /** Source version the 外部渲染器 was last marked broken for. */
+    private int externalBrokenVersion;
     private final Map<Integer, Program> programs = new HashMap<>();
     /** Plain blit used when no filter is active or the filter program failed. */
     private Program passthrough;
@@ -350,6 +352,20 @@ final class ShaderRenderer {
 
     private Program ensureProgram(int filter) {
         Program program = programs.get(filter);
+        if (filter == Shaders.FILTER_EXTERNAL) {
+            // Reinstalled shaders share the filter id; rebuild when the
+            // source version moved on.
+            int version = Shaders.externalVersion();
+            if (program != null && program.builtVersion == version) {
+                return program;
+            }
+            programs.remove(filter);
+            program = null;
+            if (externalBrokenVersion != version) {
+                broken.remove(filter);
+                externalBrokenVersion = version;
+            }
+        }
         if (program != null) {
             return program;
         }
@@ -361,6 +377,9 @@ final class ShaderRenderer {
         if (program == null) {
             broken.add(filter);
             return null;
+        }
+        if (filter == Shaders.FILTER_EXTERNAL) {
+            program.builtVersion = Shaders.externalVersion();
         }
         programs.put(filter, program);
         return program;
@@ -433,6 +452,8 @@ final class ShaderRenderer {
         int uOutSize;
         int uBrightness;
         int uContrast;
+        /** 外部渲染器 source version this program was built from. */
+        int builtVersion;
         /** Passthrough-only: the Canvas scanline overlay flag, -1 elsewhere. */
         int uScanlines = -1;
         final int[] uHistory = new int[MAX_HISTORY];

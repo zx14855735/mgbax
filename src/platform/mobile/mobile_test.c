@@ -5,9 +5,30 @@
 #include "mgba_mobile.h"
 #include "remote_link.h"
 
+#include <mgba/core/core.h>
+#include <mgba/internal/arm/arm.h>
+#include <mgba/internal/gba/gba.h>
+#include <mgba/internal/gba/io.h>
+#include <mgba/internal/gba/memory.h>
+#include <mgba/internal/gba/video.h>
+#include <mgba-util/vfs.h>
+#include <mgba-util/image.h>
+
+#include <fcntl.h>
+
 /* Synthetic clock hook owned by mgba_mobile.c: 音乐原速 paces its output by
  * elapsed real time, and this test runs emulation as fast as it can. */
 extern double (*mgbaMobileAudioClock)(void);
+
+/* TEMP PROBE: IRQ 派发链路计数器（gba.c / arm.c）。 */
+extern uint32_t mgbaStatTestIrq;
+extern uint32_t mgbaStatIrqEvent;
+extern uint32_t mgbaStatRaiseIrq;
+extern uint32_t mgbaStatIrqSkipSched;
+extern uint32_t mgbaStatRaiseIrqMasked;
+extern uint32_t mgbaStatKeyReads;
+extern uint32_t mgbaStatKeyLast;
+extern uint32_t mgbaRom64Ws1Same;
 
 #include <pthread.h>
 #include <stdio.h>
@@ -1495,12 +1516,1002 @@ static void testTurboB(const char* dir) {
 	mgbaMobileDestroy(emu);
 }
 
+/*
+ * Oversized romhacks (64 MiB) reach their second half through the WS1 window
+ * at 0x0A000000, which is what the 64M hack scene and My Boy both do. A plain
+ * 32 MiB image has to keep mirroring WS0 there, so the two cases are checked
+ * side by side: the window is only "the second half" when the file really is
+ * bigger than the 32 MiB the GBA bus maps through WS0.
+ */
+static unsigned char rom64Byte(size_t offset) {
+	return (unsigned char) (0x5A ^ ((offset >> 16) & 0xFF) ^ (offset & 0xFF));
+}
+
+static int writePatternedRom(const char* path, size_t size) {
+	unsigned char* img = (unsigned char*) malloc(size);
+	int ok;
+	size_t i;
+	if (!img) {
+		return 0;
+	}
+	for (i = 0; i < size; ++i) {
+		img[i] = rom64Byte(i);
+	}
+	/* A minimal GBA header so the loader treats the image as a cartridge. */
+	memset(img, 0, 0x200);
+	img[0] = 0x04;
+	img[3] = 0xEA; /* b 0x10 */
+	memcpy(img + 0xA0, "MGBAROM64", 9);
+	memcpy(img + 0xAC, "ATST", 4); /* not 'M': not a Classic NES/Matrix image */
+	ok = writeFile(path, img, size);
+	free(img);
+	return ok;
+}
+
+/* Loads an image through the real core so every init path runs, and hands
+ * back the GBA board so the bus can be probed directly. */
+static struct GBA* loadRomForBusTest(const char* path, struct mCore** outCore) {
+	struct mCore* core = mCoreCreate(mPLATFORM_GBA);
+	if (!core) {
+		return NULL;
+	}
+	core->init(core);
+	if (!mCoreLoadFile(core, path)) {
+		core->deinit(core);
+		return NULL;
+	}
+	*outCore = core;
+	return (struct GBA*) core->board;
+}
+
+static void unloadRomForBusTest(struct mCore* core) {
+	core->deinit(core);
+}
+
+static void testRom64(const char* dir) {
+	char path[512];
+	struct mCore* core = NULL;
+	struct GBA* gba;
+	int cycles = 0;
+	uint32_t lo, hi, mirror, word, wantWord;
+
+	/* 64 MiB: WS0 is the first half, WS1 the second, WS2 mirrors WS0. */
+	snprintf(path, sizeof(path), "%s/rom64.gba", dir);
+	expect(writePatternedRom(path, 0x04000000), "write 64MB rom");
+	gba = loadRomForBusTest(path, &core);
+	expect(gba != NULL, "load 64MB rom");
+	if (!gba) {
+		return;
+	}
+	expect(gba->memory.romSize == 0x04000000u, "64MB rom keeps its whole image");
+	expect(gba->memory.romMask == 0x03FFFFFFu, "64MB rom mask spans both halves");
+	if (gba->cpu) {
+		lo = GBALoad8(gba->cpu, 0x08001234u, &cycles);
+		hi = GBALoad8(gba->cpu, 0x0A001234u, &cycles);
+		mirror = GBALoad8(gba->cpu, 0x0C001234u, &cycles);
+		expect(lo == rom64Byte(0x1234), "WS0 reads the first 32 MiB");
+		expect(hi == rom64Byte(0x02000000u + 0x1234u), "WS1 reads the second 32 MiB");
+		expect(mirror == lo, "WS2 still mirrors WS0");
+		word = GBALoad32(gba->cpu, 0x0A001000u, &cycles);
+		wantWord = rom64Byte(0x02001000u) | (rom64Byte(0x02001001u) << 8) |
+		           (rom64Byte(0x02001002u) << 16) | ((uint32_t) rom64Byte(0x02001003u) << 24);
+		expect(word == wantWord, "a WS1 word lands in the second 32 MiB");
+	}
+	unloadRomForBusTest(core);
+	core = NULL;
+	remove(path);
+
+	/* An oversized image that is not a power of two is padded up, not clipped. */
+	snprintf(path, sizeof(path), "%s/rom33.gba", dir);
+	expect(writePatternedRom(path, 0x02100000), "write 33MB rom");
+	gba = loadRomForBusTest(path, &core);
+	expect(gba != NULL, "load 33MB rom");
+	if (!gba) {
+		return;
+	}
+	expect(gba->memory.romSize == 0x04000000u, "33MB rom is padded up to 64 MiB");
+	expect(gba->memory.romMask == 0x03FFFFFFu, "33MB rom mask covers the padded image");
+	if (gba->cpu) {
+		expect(GBALoad8(gba->cpu, 0x0A001234u, &cycles) == rom64Byte(0x02000000u + 0x1234u),
+		       "the padded 33MB rom still reads through WS1");
+		expect(GBALoad8(gba->cpu, 0x0B000000u, &cycles) == 0xFF,
+		       "past the end of a padded rom reads as open bus 0xFF");
+	}
+	unloadRomForBusTest(core);
+	core = NULL;
+	remove(path);
+
+	/* 32 MiB: unchanged behaviour, WS1 mirrors WS0. */
+	snprintf(path, sizeof(path), "%s/rom32.gba", dir);
+	expect(writePatternedRom(path, 0x02000000), "write 32MB rom");
+	gba = loadRomForBusTest(path, &core);
+	expect(gba != NULL, "load 32MB rom");
+	if (!gba) {
+		return;
+	}
+	expect(gba->memory.romSize == 0x02000000u, "32MB rom size");
+	expect(gba->memory.romMask == 0x01FFFFFFu, "32MB rom mask");
+	if (gba->cpu) {
+		lo = GBALoad8(gba->cpu, 0x08001234u, &cycles);
+		hi = GBALoad8(gba->cpu, 0x0A001234u, &cycles);
+		expect(lo == rom64Byte(0x1234), "32MB WS0 reads the rom");
+		expect(hi == lo, "32MB WS1 mirrors WS0");
+	}
+	unloadRomForBusTest(core);
+	core = NULL;
+	remove(path);
+}
+
+/* TEMP RENDER PROBE (rom64): deterministically run a real ROM for many frames
+ * and report how many framebuffer pixels are non-black at the title and after
+ * pressing START then A. Used to settle whether "black screen" is a mapping
+ * regression or just an animation/cut-scene timing issue on-device. */
+static int _rom64NonBlack(mColor* b) {
+	int c = 0;
+	for (int i = 0; i < 240 * 160; ++i) {
+		uint32_t p = b[i];
+		if ((p & 0xFFFFFFu) != 0) {
+			++c;
+		}
+	}
+	return c;
+}
+
+static int _rom64Diff(mColor* a, mColor* b) {
+	int c = 0;
+	for (int i = 0; i < 240 * 160; ++i) {
+		if (a[i] != b[i]) {
+			++c;
+		}
+	}
+	return c;
+}
+
+static void _rom64Run(struct mCore* core, uint32_t keys, int frames) {
+	core->setKeys(core, keys);
+	for (int i = 0; i < frames; ++i) {
+		core->runFrame(core);
+	}
+	core->setKeys(core, 0);
+}
+
+static void testRom64Render(const char* rompath) {
+	struct mCore* core = mCoreCreate(mPLATFORM_GBA);
+	if (!core) {
+		fprintf(stderr, "render: no core\n");
+		return;
+	}
+	if (!core->init(core)) {
+		fprintf(stderr, "render: init failed\n");
+		return;
+	}
+	mCoreInitConfig(core, "probe");
+	mCoreConfigSetOverrideIntValue(&core->config, "skipBios", 1);
+	mCoreConfigSetOverrideIntValue(&core->config, "useBios", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "audioSync", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "videoSync", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "frameskip", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "volume", 0x100);
+	if (!mCoreLoadFile(core, rompath)) {
+		fprintf(stderr, "render: load failed: %s\n", rompath);
+		core->deinit(core);
+		return;
+	}
+	mColor* buf = (mColor*) calloc((size_t) 240 * 160, sizeof(mColor));
+	mColor* prev = (mColor*) calloc((size_t) 240 * 160, sizeof(mColor));
+	core->setVideoBuffer(core, buf, 240);
+	core->reset(core);
+
+	struct GBA* g = (struct GBA*) core->board;
+	/* P_MIRROR=1: 让 WS1 退回 32MB 镜像语义，用于判断上半段数据是否相关。 */
+	if (getenv("P_MIRROR")) {
+		g->memory.romMask = 0x01FFFFFF;
+		fprintf(stderr, "render: forcing 32MB mirror mask\n");
+	}
+	fprintf(stderr, "render: %s romSize=%08zX romMask=%08X savedata=%d hwdev=%02X unl=%d matrix=%zu vba=%d idle=%d\n", rompath,
+	        g->memory.romSize, g->memory.romMask, (int) g->memory.savedata.type, g->memory.hw.devices,
+	        (int) g->memory.unl.type, g->memory.matrix.size, (int) g->vbaBugCompat, (int) g->idleOptimization);
+
+	FILE* fp;
+#define DUMPFB(name) do { if ((fp = fopen(name, "wb"))) { fwrite(buf, sizeof(mColor), 240 * 160, fp); fclose(fp); } } while (0)
+
+	/* 1) 跑到标题画面 */
+	_rom64Run(core, 0, 800);
+	fprintf(stderr, "render: TITLE nonblack=%d/38400\n", _rom64NonBlack(buf));
+	DUMPFB("fb_title.raw");
+
+	/* 2) START 进入自制主菜单 */
+	_rom64Run(core, 1u << 3, 2);
+	_rom64Run(core, 0, 60);
+	fprintf(stderr, "render: MENU nonblack=%d/38400\n", _rom64NonBlack(buf));
+	DUMPFB("fb_menu.raw");
+
+	/* 3) A 选中第一项「从头开始」 */
+	mgbaPcSampleMask = 0;
+	mgbaPcSampleReset();
+	mgbaIrqHandlerHits = 0;
+	mgbaPcSampleOn = 1;
+	_rom64Run(core, 1u << 0, 2);
+	for (int i = 0; i < 40; ++i) {
+		core->runFrame(core);
+	}
+	mgbaPcSampleOn = 0;
+	fprintf(stderr, "render: --- PC profile right after NEW GAME ---\n");
+	mgbaPcSampleDump(30);
+	fprintf(stderr, "render: --- selected NEW GAME, observing ---\n");
+
+	/* 4) 观察 30 秒游戏时间，期间不按键（让过场自己走） */
+	for (int s = 0; s < 30; ++s) {
+		memcpy(prev, buf, (size_t) 240 * 160 * sizeof(mColor));
+		_rom64Run(core, 0, 60);
+		int nb = _rom64NonBlack(buf);
+		int dl = _rom64Diff(buf, prev);
+		uint32_t pc = g->cpu->gprs[15];
+		if (s < 8 || s % 5 == 4) {
+			fprintf(stderr, "render: t=%2ds nonblack=%5d delta=%5d pc=%08X gpio=%u/%04X\n", s + 1, nb, dl, pc,
+			        mgbaGpioWrites, mgbaGpioLastValue);
+		}
+		if (s == 0 || s == 1 || s == 2 || s == 4 || s == 9 || s == 19 || s == 29) {
+			char nm[64];
+			snprintf(nm, sizeof(nm), "fb_t%02d.raw", s + 1);
+			DUMPFB(nm);
+		}
+		if (s == 4) {
+			GBARom64ProbeDump();
+			/* 校验启动时从 0x0B132D7C 拷进 IWRAM 的 IRQ 处理器是否与 ROM 一致。 */
+			{
+				int bad = 0;
+				int k;
+				fprintf(stderr, "state: romptr=%p romSize=%zX alloc=%zX\n", (void*) g->memory.rom,
+				        g->memory.romSize, g->memory.romAllocSize);
+				fflush(stderr);
+				for (k = 0; k < 0x198; ++k) {
+					if (((const uint8_t*) g->memory.iwram)[k] != ((const uint8_t*) g->memory.rom)[0x3132D7C + k]) {
+						++bad;
+					}
+				}
+				fprintf(stderr, "state: iwram-irq-copy mismatches=%d\n", bad);
+			}
+			/* 在 EWRAM/IWRAM 中搜索 ROM 上半段的特征数据，验证 ROM->RAM 搬运是否正确。 */
+			{
+				static const uint32_t probes[] = {0x2F20000, 0x2F4B650, 0x2F1A780, 0x3132D7C};
+				const uint8_t* rp = (const uint8_t*) g->memory.rom;
+				int pi2;
+				for (pi2 = 0; pi2 < 4; ++pi2) {
+					const uint8_t* pat = rp + probes[pi2];
+					int foundW = 0;
+					int foundI = 0;
+					size_t o;
+					for (o = 0; o + 16 <= GBA_SIZE_EWRAM; ++o) {
+						if (!memcmp(((const uint8_t*) g->memory.wram) + o, pat, 16)) {
+							++foundW;
+							if (foundW == 1) {
+								fprintf(stderr, "state: rom[%07X] found in EWRAM @%05zX\n", probes[pi2], o);
+							}
+						}
+					}
+					for (o = 0; o + 16 <= GBA_SIZE_IWRAM; ++o) {
+						if (!memcmp(((const uint8_t*) g->memory.iwram) + o, pat, 16)) {
+							++foundI;
+						}
+					}
+					if (!foundW && !foundI) {
+						fprintf(stderr, "state: rom[%07X] data NOT found in RAM (%02X %02X %02X %02X)\n",
+						        probes[pi2], pat[0], pat[1], pat[2], pat[3]);
+					} else {
+						fprintf(stderr, "state: rom[%07X] hits ewram=%d iwram=%d\n", probes[pi2], foundW, foundI);
+					}
+				}
+			}
+			if ((fp = fopen("iwram_black.bin", "wb"))) {
+				fwrite(g->memory.iwram, 1, GBA_SIZE_IWRAM, fp);
+				fclose(fp);
+			}
+			if ((fp = fopen("ewram_black.bin", "wb"))) {
+				fwrite(g->memory.wram, 1, GBA_SIZE_EWRAM, fp);
+				fclose(fp);
+			}
+		}
+	}
+
+	/* 5) 每秒敲一次 A，看能否推进（区分「等输入」与「真挂起」） */
+	for (int s = 0; s < 10; ++s) {
+		memcpy(prev, buf, (size_t) 240 * 160 * sizeof(mColor));
+		_rom64Run(core, 1u << 0, 2);
+		_rom64Run(core, 0, 58);
+		fprintf(stderr, "render: A-tap %2d nonblack=%5d delta=%5d pc=%08X gpio=%u/%04X\n", s + 1,
+		        _rom64NonBlack(buf), _rom64Diff(buf, prev), g->cpu->gprs[15], mgbaGpioWrites, mgbaGpioLastValue);
+	}
+	DUMPFB("fb_end.raw");
+	/* 黑屏状态快照：显示寄存器 / 调色板 / VRAM / IWRAM 代码。 */
+	{
+		fprintf(stderr, "state: dispcnt=%04X bg0=%04X bg1=%04X bg2=%04X bg3=%04X bldcnt=%04X bldy=%02X\n",
+		        g->memory.io[0x00], g->memory.io[0x08], g->memory.io[0x0A], g->memory.io[0x0C], g->memory.io[0x0E],
+		        g->memory.io[0x50], g->memory.io[0x54]);
+		fprintf(stderr, "state: pal:");
+		int pi;
+		for (pi = 0; pi < 16; ++pi) {
+			fprintf(stderr, " %04X", g->video.palette[pi]);
+		}
+		fprintf(stderr, "\nstate: vram:");
+		for (pi = 0; pi < 16; ++pi) {
+			fprintf(stderr, " %04X", ((uint16_t*) g->video.vram)[pi]);
+		}
+		fprintf(stderr, "\nstate: io4x=%04X%04X%04X%04X\n", g->memory.io[0x40 >> 1], g->memory.io[0x42 >> 1],
+		        g->memory.io[0x44 >> 1], g->memory.io[0x46 >> 1]);
+		if ((fp = fopen("iwram.bin", "wb"))) {
+			fwrite(g->memory.iwram, 1, GBA_SIZE_IWRAM, fp);
+			fclose(fp);
+		}
+	}
+	GBARom64ProbeDump();
+#undef DUMPFB
+
+	free(buf);
+	free(prev);
+	core->deinit(core);
+}
+
+static void dbgTasks(struct GBA* g, const char* tag) {
+	if (!g) {
+		return;
+	}
+	const uint8_t* iw = (const uint8_t*) g->memory.iwram;
+	fprintf(stderr, "mobile: tasks[%s] base=%08X (func@+0 isActive@+4)\n", tag, 0x03005B54);
+	for (int t = 0; t < 16; ++t) {
+		const uint8_t* p = iw + 0x5B54 + t * 40;
+		if (p[0] || p[1] || p[2] || p[3] || p[4]) {
+			const int16_t* d = (const int16_t*) (p + 8);
+			fprintf(stderr, "  t%02d func=%08X act=%d m5=%02X next=%02X prio=%02X d0=%d d1=%d d2=%d d3=%d\n", t,
+			        (unsigned) (p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t) p[3] << 24)), p[4], p[5], p[6], p[7],
+			        d[0], d[1], d[2], d[3]);
+		}
+	}
+}
+
+/* MOBILE-LAYER PROBE (rom64): replays the exact user flow
+ * "标题 -> 主菜单 -> 从头开始" and logs per-frame game state, so the black-screen
+ * hang can be pinned to a concrete frame and task function. */
+static void testNewGame(const char* dir, const char* rompath) {
+	struct MgbaMobile* emu = mgbaMobileCreate(dir, dir, "probe");
+	if (!emu) {
+		fprintf(stderr, "ng: create failed\n");
+		return;
+	}
+	mgbaMobileSetRtc(emu, 0, (int64_t) time(NULL), 0);
+	if (!mgbaMobileLoad(emu, rompath)) {
+		fprintf(stderr, "ng: load failed\n");
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	struct mCore* mcore = mgbaMobileDebugCore(emu);
+	struct GBA* mg = mcore ? (struct GBA*) mcore->board : NULL;
+	if (!mg) {
+		fprintf(stderr, "ng: no board\n");
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	uint32_t* buf = (uint32_t*) calloc(240 * 160, sizeof(uint32_t));
+	const uint8_t* iw = (const uint8_t*) mg->memory.iwram;
+
+#define NG_STATE(f, tag) do { \
+		int _act = 0; \
+		int _first = -1; \
+		for (int _t = 0; _t < 16; ++_t) { \
+			if (iw[0x5B58 + _t * 40]) { \
+				if (_first < 0) { \
+					_first = _t; \
+				} \
+				++_act; \
+			} \
+		} \
+		int _pnz = 0; \
+		for (int _k = 0; _k < 512; ++_k) { \
+			if (mg->video.palette[_k]) { \
+				++_pnz; \
+			} \
+		} \
+		const uint16_t* _g = (const uint16_t*) (iw + 0x5608); \
+		fprintf(stderr, "ng: %s f%03d cb2=%08X tasks=%2d cnt=%04X pnz=%3d hk=%04X nk=%04X key=%04X s15=%02X s16=%02X", \
+		        tag, f, ((const uint32_t*) iw)[(0x030055E4 - 0x03000000) >> 2], _act, \
+		        mg->memory.io[GBA_REG_DISPCNT >> 1], _pnz, _g[2], _g[3], \
+		        mg->memory.io[GBA_REG_KEYINPUT >> 1], \
+		        ((const uint8_t*) mg->memory.wram)[0x951C + 0x15], ((const uint8_t*) mg->memory.wram)[0x951C + 0x16]); \
+		if (_first >= 0) { \
+			const uint8_t* _tp = iw + 0x5B54 + _first * 40; \
+			const int16_t* _d = (const int16_t*) (_tp + 8); \
+			fprintf(stderr, " t%d.fn=%08X d0=%d d1=%d d2=%d d3=%d d4=%d d5=%d", _first, \
+			        (unsigned) (_tp[0] | (_tp[1] << 8) | (_tp[2] << 16) | ((uint32_t) _tp[3] << 24)), \
+			        _d[0], _d[1], _d[2], _d[3], _d[4], _d[5]); \
+		} \
+		fprintf(stderr, "\n"); \
+		if (getenv("P_DUMPF")) { \
+			char _nm[64]; \
+			mgbaMobileCopyVideo(emu, buf, 240); \
+			snprintf(_nm, sizeof(_nm), "ng_%s_%03d.raw", tag, f); \
+			FILE* _fp = fopen(_nm, "wb"); \
+			if (_fp) { \
+				fwrite(buf, 4, 240 * 160, _fp); \
+				fclose(_fp); \
+			} \
+		} \
+	} while (0)
+
+#define NG_RUN(n) do { \
+		for (int _i = 0; _i < (n); ++_i) { \
+			mgbaMobileRunFrames(emu, 1); \
+		} \
+	} while (0)
+#define NG_TAP(k) do { \
+		mgbaMobileSetKeys(emu, (k)); \
+		NG_RUN(2); \
+		mgbaMobileSetKeys(emu, 0); \
+		NG_RUN(30); \
+	} while (0)
+
+	if (getenv("P_TASK")) {
+		extern int mgbaSidLogOn;
+		mgbaSidLogOn = 1; /* 从开机开始记录该 EWRAM 结构的所有写入 */
+	}
+	NG_RUN(800);
+	NG_STATE(0, "boot");
+	NG_TAP(1u << 0); /* 标题上按 A -> 进入主菜单 */
+	NG_STATE(31, "menu");
+	if (getenv("P_GGAME")) {
+		/* 自适应导航：标题->主菜单（按 A），等菜单稳定后反复按 A，直到场景离开主菜单（确认「从头开始」生效）。 */
+		const uint32_t MAINMENU_CB2 = 0x081B21CD;
+		NG_TAP(1u << 0); /* 标题 -> 主菜单 */
+		int atMenu = 0;
+		for (int w = 0; w < 80; ++w) {
+			NG_RUN(20);
+			uint32_t cb2 = ((const uint32_t*) iw)[(0x030055E4 - 0x03000000) >> 2];
+			if (cb2 == MAINMENU_CB2) { atMenu = 1; break; }
+		}
+		fprintf(stderr, "ng: atMenu=%d\n", atMenu);
+		int started = 0;
+		if (atMenu) {
+			/* 在主菜单上逐个条目尝试：按 A，若没离开菜单则下移光标再试。 */
+			for (int item = 0; item < 6 && !started; ++item) {
+				mgbaMobileSetKeys(emu, 1u << 0);
+				NG_RUN(3);
+				mgbaMobileSetKeys(emu, 0);
+				NG_RUN(25);
+				uint32_t cb2 = ((const uint32_t*) iw)[(0x030055E4 - 0x03000000) >> 2];
+				if (cb2 != MAINMENU_CB2) {
+					fprintf(stderr, "ng: newgame started at item %d cb2=%08X\n", item, cb2);
+					started = 1;
+					break;
+				}
+				/* 下移光标，准备试下一个条目 */
+				mgbaMobileSetKeys(emu, 1u << 4);
+				NG_RUN(3);
+				mgbaMobileSetKeys(emu, 0);
+				NG_RUN(15);
+			}
+		}
+		if (!started) fprintf(stderr, "ng: !! newgame did NOT start !!\n");
+	} else {
+		NG_TAP(1u << 0); /* 主菜单「从头开始」上按 A */
+	}
+	{
+		extern int mgbaProbeFrame;
+		extern int mgbaTaskLogOn;
+		extern int mgbaSidLogOn;
+		/* 只要 P_TASK 打开，就从这一帧起全程记录（之前窗口太窄导致漏写）。 */
+		mgbaTaskLogOn = !!getenv("P_TASK");
+		mgbaSidLogOn = !!getenv("P_TASK");
+		mgbaProbeFrame = 0;
+		fprintf(stderr, "ng: --- probe armed (task+sid, full run) ---\n");
+	}
+	int ngMax = 300;
+	{ const char* nm = getenv("P_NMAX"); if (nm) { int v = atoi(nm); if (v > 0) ngMax = v; } }
+	for (int f = 0; f < ngMax; ++f) {
+		static int ringLo = -1, ringHi = -1;
+		if (ringLo < 0) {
+			const char* rs = getenv("P_RINGF");
+			ringLo = 126;
+			ringHi = 140;
+			if (rs) {
+				int a = 0, b = 0;
+				if (sscanf(rs, "%d,%d", &a, &b) == 2) {
+					ringLo = a;
+					ringHi = b;
+				}
+			}
+		}
+		int ringThis = getenv("P_RING3") && f >= ringLo && f <= ringHi;
+		{
+			extern int mgbaProbeFrame;
+			mgbaProbeFrame = f;
+		}
+		if (ringThis) {
+			mgbaPcRingReset();
+			mgbaPcRingOn = 1;
+		}
+		if (getenv("P_MASH") && (f % 30) == 29) {
+			mgbaMobileSetKeys(emu, 1u << 0);
+			mgbaMobileRunFrames(emu, 2);
+			mgbaMobileSetKeys(emu, 0);
+		}
+		NG_RUN(1);
+		if (getenv("P_FORCE")) {
+			/* 实验：若任务 0 的 func 指向 ROM 但 isActive 被清 0，强制复活。 */
+			uint8_t* t0 = (uint8_t*) iw + 0x5B54;
+			uint32_t fn = (uint32_t) t0[0] | (t0[1] << 8) | (t0[2] << 16) | ((uint32_t) t0[3] << 24);
+			if (t0[4] == 0 && fn >= 0x08000000 && fn < 0x0C000000) {
+				t0[4] = 1;
+				fprintf(stderr, "ng: *** revived task0 func=%08X at f%d ***\n", fn, f);
+			}
+		}
+		if (ringThis) {
+			mgbaPcRingOn = 0;
+			fprintf(stderr, "ng: --- RING3 f%03d ---\n", f);
+			mgbaPcRingDump(16384);
+			fprintf(stderr, "ng: --- RING3 f%03d end ---\n", f);
+		}
+		if (getenv("P_EDUMP") && f >= 11 && f <= 17) {
+			char _nm[64];
+			snprintf(_nm, sizeof(_nm), "wram_%03d.bin", f);
+			FILE* _fp = fopen(_nm, "wb");
+			if (_fp) {
+				fwrite(mg->memory.wram, 1, 0x40000, _fp);
+				fclose(_fp);
+			}
+		}
+		NG_STATE(f, "ng");
+		{
+			static int _sceneDumped = 0;
+			if (!_sceneDumped) {
+				uint32_t _cb2 = ((const uint32_t*) iw)[(0x030055E4 - 0x03000000) >> 2];
+				if (_cb2 != 0x081B21CD && _cb2 != 0x08272389) {
+					int _pnz = 0;
+					for (int _k = 0; _k < 512; ++_k) {
+						if (mg->video.palette[_k]) ++_pnz;
+					}
+					if (_pnz > 100) {
+						mgbaMobileCopyVideo(emu, buf, 240);
+						FILE* _fp = fopen("ng_scene.raw", "wb");
+						if (_fp) {
+							fwrite(buf, 4, 240 * 160, _fp);
+							fclose(_fp);
+						}
+						fprintf(stderr, "ng: scene dump at f%d cb2=%08X pnz=%d\n", f, _cb2, _pnz);
+						_sceneDumped = 1;
+					}
+				}
+			}
+		}
+		if (getenv("P_FINALF") && f == ngMax - 1) {
+			mgbaMobileCopyVideo(emu, buf, 240);
+			FILE* _fp = fopen("ng_final.raw", "wb");
+			if (_fp) {
+				fwrite(buf, 4, 240 * 160, _fp);
+				fclose(_fp);
+			}
+		}
+	}
+#undef NG_STATE
+#undef NG_RUN
+#undef NG_TAP
+	{
+		extern uint32_t mgbaDispcntLogPc[32];
+		extern uint32_t mgbaDispcntLogVal[32];
+		extern uint32_t mgbaDispcntLogN;
+		uint32_t n = mgbaDispcntLogN < 32 ? mgbaDispcntLogN : 32;
+		fprintf(stderr, "ng: --- DISPCNT writes (last %u of %u) ---\n", n, mgbaDispcntLogN);
+		for (uint32_t i = 0; i < n; ++i) {
+			uint32_t s = (mgbaDispcntLogN - n + i) & 31;
+			fprintf(stderr, "ng:   DISPCNT=%04X pc=%08X\n", mgbaDispcntLogVal[s], mgbaDispcntLogPc[s]);
+		}
+	}
+	free(buf);
+	mgbaMobileDestroy(emu);
+}
+
+/* MOBILE-LAYER PROBE (rom64): drive the exact code path the Android app uses
+ * (mgbaMobileLoad/RunFrames/CopyVideo) so a device-only regression can be
+ * reproduced and bisected on the desktop. */
+static void testRom64Mobile(const char* dir, const char* rompath) {
+	struct MgbaMobile* emu = mgbaMobileCreate(dir, dir, "probe");
+	if (!emu) {
+		fprintf(stderr, "mobile: create failed\n");
+		return;
+	}
+	/* 与 EmulatorActivity 默认一致：RTC 用真实时间（mode 0）。 */
+	mgbaMobileSetRtc(emu, 0, (int64_t) time(NULL), 0);
+	const char* saveEnv = getenv("P_SAVE");
+	if (saveEnv) {
+		mgbaMobileSetSaveType(emu, atoi(saveEnv));
+		fprintf(stderr, "mobile: forcing save type %d\n", atoi(saveEnv));
+	}
+	if (!mgbaMobileLoad(emu, rompath)) {
+		fprintf(stderr, "mobile: load failed\n");
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	fprintf(stderr, "mobile: %s width=%d height=%d frameNanos=%lld\n", rompath,
+	        mgbaMobileWidth(emu), mgbaMobileHeight(emu), (long long) mgbaMobileFrameNanos(emu));
+	struct mCore* mcore = mgbaMobileDebugCore(emu);
+	struct GBA* mg = mcore ? (struct GBA*) mcore->board : NULL;
+	if (mg && getenv("P_IDLE")) {
+		mg->idleOptimization = IDLE_LOOP_IGNORE;
+		mg->idleLoop = 0;
+		fprintf(stderr, "mobile: idle loop optimization disabled (was %08X)\n", mg->idleLoop);
+	}
+
+	uint32_t* buf = (uint32_t*) calloc(240 * 160, sizeof(uint32_t));
+	uint32_t* prev = (uint32_t*) calloc(240 * 160, sizeof(uint32_t));
+	FILE* fp;
+#define DUMPMB(name) do { if ((fp = fopen(name, "wb"))) { fwrite(buf, 4, 240 * 160, fp); fclose(fp); } } while (0)
+
+#define RUNMB(k, n) do { mgbaMobileSetKeys(emu, (k)); for (int _i = 0; _i < (n); ++_i) { mgbaMobileRunFrames(emu, 1); } mgbaMobileSetKeys(emu, 0); mgbaMobileCopyVideo(emu, buf, 240); } while (0)
+
+	RUNMB(0, 800);
+	{
+		int nb = 0;
+		for (int i = 0; i < 240 * 160; ++i) {
+			if ((buf[i] & 0xFFFFFFu) != 0) {
+				++nb;
+			}
+		}
+		fprintf(stderr, "mobile: TITLE nonblack=%d/38400\n", nb);
+		DUMPMB("mfb_title.raw");
+		dbgTasks(mg, "title");
+		if (mg) {
+			fprintf(stderr, "mobile: TITLE cb2=%08X vbl=%08X\n",
+			        ((const uint32_t*) mg->memory.iwram)[(0x030055E4 - 0x03000000) >> 2],
+			        ((const uint32_t*) mg->memory.iwram)[(0x030055EC - 0x03000000) >> 2]);
+		}
+	}
+	if (getenv("P_CONTACT")) {
+		/* 时间轴缩略图：每 60 帧一帧，共 30 帧（30 秒）。 */
+		FILE* cf = fopen("contact.bin", "wb");
+		for (int i = 0; i < 30 * 60; ++i) {
+			if (mgbaMobileRunFrames(emu, 1)) {
+				mgbaMobileCopyVideo(emu, buf, 240);
+				if ((i % 60) == 59 && cf) {
+					int nb = 0;
+					for (int k = 0; k < 240 * 160; ++k) {
+						if ((buf[k] & 0xFFFFFFu) != 0) {
+							++nb;
+						}
+					}
+					fprintf(stderr, "mobile: contact t=%02ds nb=%d\n", (i + 1) / 60, nb);
+					fwrite(buf, 4, 240 * 160, cf);
+				}
+			}
+		}
+		if (cf) {
+			fclose(cf);
+		}
+		DUMPMB("mfb_contact_end.raw");
+	}
+
+	GBARom64ProbeReset(); /* phase 1: 标题 */
+	RUNMB(1u << 3, 2);
+	RUNMB(0, 60);
+	DUMPMB("mfb_menu.raw");
+	if (mg) {
+		dbgTasks(mg, "menu");
+		fprintf(stderr, "mobile: MENU gMain.cb2=%08X gMain.cb1=%08X gMain+0C=%08X\n",
+		        ((const uint32_t*) mg->memory.iwram)[(0x030055E4 - 0x03000000) >> 2],
+		        ((const uint32_t*) mg->memory.iwram)[(0x030055E0 - 0x03000000) >> 2],
+		        ((const uint32_t*) mg->memory.iwram)[(0x030055EC - 0x03000000) >> 2]);
+	}
+	GBARom64ProbeReset(); /* phase 2: 菜单 -> 选中新游戏 */
+	RUNMB(1u << 0, 2);
+	fprintf(stderr, "mobile: --- selected NEW GAME ---\n");
+	/* 逐帧追踪过渡：cb2 / 活跃任务数 / DISPCNT / 调色板非零数。 */
+	if (mg) {
+		for (int f = 0; f < 240; ++f) {
+			int ringThis = getenv("P_RING2") && f >= 30 && f <= 39;
+			if (ringThis) {
+				mgbaPcRingReset();
+				mgbaPcRingOn = 1;
+			}
+			if (getenv("P_AAT") && (f == 100 || f == 180)) {
+				mgbaMobileSetKeys(emu, 1u << 0);
+			}
+			mgbaMobileRunFrames(emu, 1);
+			if (getenv("P_AAT") && (f == 101 || f == 181)) {
+				mgbaMobileSetKeys(emu, 0);
+			}
+			if (ringThis) {
+				mgbaPcRingOn = 0;
+				fprintf(stderr, "mobile: --- RING2 f%02d ---\n", f);
+				mgbaPcRingDump(16384);
+				fprintf(stderr, "mobile: --- RING2 f%02d end ---\n", f);
+			}
+			int act = 0;
+			int firstT = -1;
+			const uint8_t* iw = (const uint8_t*) mg->memory.iwram;
+			for (int t = 0; t < 16; ++t) {
+				if (iw[0x5B58 + t * 40]) {
+					if (firstT < 0) {
+						firstT = t;
+					}
+					++act;
+				}
+			}
+			int pnz = 0;
+			for (int k = 0; k < 512; ++k) {
+				if (mg->video.palette[k]) {
+					++pnz;
+				}
+			}
+			fprintf(stderr, "mobile: f%03d cb2=%08X tasks=%2d cnt=%04X pnz=%3d state=%d", f,
+			        ((const uint32_t*) iw)[(0x030055E4 - 0x03000000) >> 2], act,
+			        mg->memory.io[GBA_REG_DISPCNT >> 1], pnz, iw[0x5A18 - 0x0000]);
+			{
+				const uint16_t* g = (const uint16_t*) (iw + 0x5608);
+				fprintf(stderr, " hkraw=%04X nkraw=%04X hk=%04X nk=%04X keyio=%04X",
+				        g[0], g[1], g[2], g[3], mg->memory.io[GBA_REG_KEYINPUT >> 1]);
+			}
+			if (firstT >= 0) {
+				const uint8_t* tp = iw + 0x5B54 + firstT * 40;
+				const int16_t* d = (const int16_t*) (tp + 8);
+				fprintf(stderr, " t%d.func=%08X d0=%d d1=%d d2=%d d3=%d d4=%d",
+				        firstT, (unsigned) (tp[0] | (tp[1] << 8) | (tp[2] << 16) | ((uint32_t) tp[3] << 24)),
+				        d[0], d[1], d[2], d[3], d[4]);
+			}
+			fprintf(stderr, "\n");
+			if (getenv("P_DUMPF")) {
+				char nm[64];
+				mgbaMobileCopyVideo(emu, buf, 240);
+				snprintf(nm, sizeof(nm), "mfd_f%03d.raw", f);
+				DUMPMB(nm);
+			}
+		}
+	}
+	for (int s = 0, sN = getenv("P_FAST") ? 0 : 180; s < sN; ++s) {
+		memcpy(prev, buf, 240 * 160 * 4);
+		GBARom64ProbeReset();
+		mgbaIoLogOn = s < 6 ? 2 : 0;
+		fprintf(stderr, "mobile: === sec %d ===\n", s + 1);
+		if (getenv("P_MASH")) {
+			/* 交替连按 A / B：判断“冻结”是否只是卡在等按键。 */
+			const char* mk = getenv("P_MASH");
+			for (int sub = 0; sub < 10; ++sub) {
+				uint32_t k = mk[0] == 'A' ? (1u << 0) : (mk[0] == 'B' ? (1u << 1) : ((sub & 1) ? (1u << 1) : (1u << 0)));
+				mgbaMobileSetKeys(emu, k);
+				mgbaMobileRunFrames(emu, 2);
+				mgbaMobileSetKeys(emu, 0);
+				mgbaMobileRunFrames(emu, 4);
+			}
+		} else {
+			mgbaMobileRunFrames(emu, 60);
+		}
+		mgbaIoLogOn = 0;
+		mgbaMobileCopyVideo(emu, buf, 240);
+		int nb = 0;
+		int dl = 0;
+		for (int i = 0; i < 240 * 160; ++i) {
+			if ((buf[i] & 0xFFFFFFu) != 0) {
+				++nb;
+			}
+			if (buf[i] != prev[i]) {
+				++dl;
+			}
+		}
+		if (s < 10 || s % 10 == 9) {
+			fprintf(stderr, "mobile: t=%3ds nonblack=%5d delta=%5d ws1=%u irq=%u\n", s + 1, nb, dl, GBARom64ProbePhaseCount(), mgbaIrqHandlerHits);
+		}
+		if (mg && (s < 12 || s == 29 || s == 59)) {
+			int pnz = 0;
+			for (int k = 0; k < 512; ++k) {
+				if (mg->video.palette[k]) {
+					++pnz;
+				}
+			}
+			fprintf(stderr, "mobile:   st pc=%08X cpsr=%08X hlt=%d ime=%04X ie=%04X if=%04X dst=%04X cnt=%04X fc=%u vc=%3d pnz=%3d p0=%04X p1=%04X romsz=%08X rmask=%08X\n",
+			        mg->cpu->gprs[15], (uint32_t) mg->cpu->cpsr.packed, mg->cpu->halted,
+			        mg->memory.io[GBA_REG_IME >> 1], mg->memory.io[GBA_REG_IE >> 1],
+			        mg->memory.io[GBA_REG_IF >> 1], mg->memory.io[GBA_REG_DISPSTAT >> 1],
+			        mg->memory.io[GBA_REG_DISPCNT >> 1], mg->video.frameCounter, mg->video.vcount,
+			        pnz, mg->video.palette[0], mg->video.palette[1],
+			        mg->memory.romSize, mg->memory.romMask);
+			fprintf(stderr, "mobile:   cb2=%08X cbc=%08X\n",
+			        ((const uint32_t*) mg->memory.iwram)[(0x030055E4 - 0x03000000) >> 2],
+			        ((const uint32_t*) mg->memory.iwram)[(0x030055EC - 0x03000000) >> 2]);
+			fprintf(stderr, "mobile:   irqchain testIrq=%u sched=%u evt=%u skip=%u raise=%u masked=%u key=%u@%08X\n",
+			        mgbaStatTestIrq, mgbaStatTestIrq - mgbaStatIrqSkipSched, mgbaStatIrqEvent,
+			        mgbaStatIrqSkipSched, mgbaStatRaiseIrq, mgbaStatRaiseIrqMasked,
+			        mgbaStatKeyReads, mgbaStatKeyLast);
+		}
+		if (s == 0 || s == 4 || s == 9 || s == 29) {
+			char nm[64];
+			snprintf(nm, sizeof(nm), "mfb_t%02d.raw", s + 1);
+			DUMPMB(nm);
+		}
+	}
+	/* 逐帧观察：黑屏状态是否在循环（白/黑闪烁）。 */
+	{
+		int run = 0;
+		int lastNb = -1;
+		for (int i = 0; i < 400; ++i) {
+			mgbaMobileRunFrames(emu, 1);
+			mgbaMobileCopyVideo(emu, buf, 240);
+			int nb = 0;
+			for (int k = 0; k < 240 * 160; ++k) {
+				if ((buf[k] & 0xFFFFFFu) != 0) {
+					++nb;
+				}
+			}
+			if (nb != lastNb) {
+				if (run) {
+					fprintf(stderr, "mobile: frame-run len=%d nb=%d\n", run, lastNb);
+				}
+				run = 0;
+				lastNb = nb;
+			}
+			++run;
+		}
+		fprintf(stderr, "mobile: frame-run len=%d nb=%d (end)\n", run, lastNb);
+	}
+
+	/* 按键扫描：黑屏时各按键是否有任何反应。 */
+	{
+		static const char* names[] = {"A", "B", "START", "SELECT", "UP", "DOWN", "LEFT", "RIGHT", "L", "R"};
+		static const uint32_t bits[] = {1u << 0, 1u << 1, 1u << 3, 1u << 2, 1u << 6, 1u << 7, 1u << 5, 1u << 4, 1u << 9, 1u << 8};
+		for (int b = 0; b < 10; ++b) {
+			memcpy(prev, buf, 240 * 160 * 4);
+			mgbaMobileSetKeys(emu, bits[b]);
+			mgbaMobileRunFrames(emu, 8);
+			uint16_t keyReg = mg ? mg->memory.io[GBA_REG_KEYINPUT >> 1] : 0;
+			mgbaMobileSetKeys(emu, 0);
+			mgbaMobileRunFrames(emu, 40);
+			mgbaMobileCopyVideo(emu, buf, 240);
+			int nb = 0;
+			int dl = 0;
+			for (int i = 0; i < 240 * 160; ++i) {
+				if ((buf[i] & 0xFFFFFFu) != 0) {
+					++nb;
+				}
+				if (buf[i] != prev[i]) {
+					++dl;
+				}
+			}
+			fprintf(stderr, "mobile: key %-6s nonblack=%5d delta=%5d ws1=%u same=%u keyreg=%04X\n", names[b], nb, dl,
+			        GBARom64ProbePhaseCount(), mgbaRom64Ws1Same, keyReg);
+		}
+		GBARom64ProbeDump();
+	}
+
+	/* 黑屏期：抓一帧的 IO 写序列。 */
+	mgbaIoLogOn = 1;
+	mgbaMobileRunFrames(emu, 1);
+	mgbaIoLogOn = 0;
+
+	/* 黑屏期 PC 采样：找出卡住的循环。 */
+	mgbaPcSampleMask = 3;
+	mgbaPcSampleReset();
+	mgbaPcSampleOn = 1;
+	for (int i = 0; i < 30; ++i) {
+		mgbaMobileRunFrames(emu, 1);
+	}
+	mgbaPcSampleOn = 0;
+	dbgTasks(mg, "black");
+	fprintf(stderr, "mobile: --- black-phase PC profile ---\n");
+	mgbaPcSampleDump(24);
+
+	/* 顺序执行轨迹：抓一帧的完整 PC 流，用于还原卡死的循环体。 */
+	if (getenv("P_RING")) {
+		mgbaPcRingReset();
+		mgbaPcRingOn = 1;
+		mgbaMobileRunFrames(emu, 1);
+		mgbaPcRingOn = 0;
+		fprintf(stderr, "mobile: --- RING trace (last frame, %u insns) ---\n", mgbaPcRingTotal);
+		mgbaPcRingDump(16384);
+		fprintf(stderr, "mobile: --- RING end ---\n");
+	}
+
+	if (mg) {
+		FILE* df = fopen("miwram.bin", "wb");
+		if (df) {
+			fwrite(mg->memory.iwram, 1, 0x8000, df);
+			fclose(df);
+		}
+		df = fopen("mewram.bin", "wb");
+		if (df) {
+			fwrite(mg->memory.wram, 1, 0x40000, df);
+			fclose(df);
+		}
+		df = fopen("mvram.bin", "wb");
+		if (df) {
+			fwrite(mg->video.vram, 1, 0x18000, df);
+			fclose(df);
+		}
+		fprintf(stderr, "mobile: dumped miwram/mewram/mvram\n");
+	}
+
+	if (mg) {
+		/* ROM 完整性：内存中的 ROM 副本是否被游戏写坏（bank 切换常用写 ROM 地址）。 */
+		FILE* rf = fopen("C:/Users/lenovo/Desktop/soulgold.gba", "rb");
+		if (rf && mg->memory.rom) {
+			uint8_t* file = (uint8_t*) malloc(0x4000000);
+			size_t got = fread(file, 1, 0x4000000, rf);
+			fclose(rf);
+			const uint8_t* mem = (const uint8_t*) mg->memory.rom;
+			size_t diff = 0;
+			int shown = 0;
+			fprintf(stderr, "mobile: --- ROM integrity (file=%u) ---\n", (unsigned) got);
+			for (size_t off = 0; off + 2 <= got; off += 2) {
+				if (file[off] != mem[off] || file[off + 1] != mem[off + 1]) {
+					++diff;
+					if (shown < 24) {
+						fprintf(stderr, "  dif %08X file=%02X%02X mem=%02X%02X\n", (unsigned) off,
+						        file[off + 1], file[off], mem[off + 1], mem[off]);
+						++shown;
+					}
+				}
+			}
+			fprintf(stderr, "mobile: ROM differing halfwords = %u\n", (unsigned) diff);
+			free(file);
+		}
+	}
+
+	if (mg) {
+		uint32_t sp = mg->cpu->gprs[13];
+		fprintf(stderr, "mobile: --- stack @ %08X (ROM return addrs marked) ---\n", sp);
+		for (int i = 0; i < 96; ++i) {
+			uint32_t a = sp + i * 4;
+			uint32_t v = 0;
+			if (a >= 0x03000000 && a < 0x03008000) {
+				v = ((const uint32_t*) mg->memory.iwram)[(a - 0x03000000) >> 2];
+			} else if (a >= 0x02000000 && a < 0x02040000) {
+				v = ((const uint32_t*) mg->memory.wram)[(a - 0x02000000) >> 2];
+			}
+			if (v) {
+				fprintf(stderr, "  [%08X] %08X%s\n", a, v,
+				        (v >= 0x08000000 && v < 0x0E000000) ? "   <== ROM" : "");
+			}
+		}
+	}
+
+	for (int s = 0; s < 10; ++s) {
+		memcpy(prev, buf, 240 * 160 * 4);
+		RUNMB(1u << 0, 2);
+		mgbaMobileRunFrames(emu, 58);
+		mgbaMobileCopyVideo(emu, buf, 240);
+		int nb = 0;
+		int dl = 0;
+		for (int i = 0; i < 240 * 160; ++i) {
+			if ((buf[i] & 0xFFFFFFu) != 0) {
+				++nb;
+			}
+			if (buf[i] != prev[i]) {
+				++dl;
+			}
+		}
+		fprintf(stderr, "mobile: A-tap %2d nonblack=%5d delta=%5d\n", s + 1, nb, dl);
+	}
+	DUMPMB("mfb_end.raw");
+#undef DUMPMB
+#undef RUNMB
+	GBARom64ProbeDump();
+	free(buf);
+	free(prev);
+	mgbaMobileDestroy(emu);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 #ifdef _WIN32
 	WSADATA data;
 	WSAStartup(MAKEWORD(2, 2), &data);
 #endif
+	if (argc >= 2 && strcmp(argv[1], "--render") == 0) {
+		testRom64Render(argc > 2 ? argv[2] : "C:/Users/lenovo/Desktop/soulgold.gba");
+		return 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--ng") == 0) {
+		testNewGame(argc > 3 ? argv[3] : ".", argc > 2 ? argv[2] : "rom.gba");
+		return 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--mobile") == 0) {
+		testRom64Mobile(argc > 3 ? argv[3] : ".", argc > 2 ? argv[2] : "rom.gba");
+		return 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--join-relay") == 0) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
@@ -1515,6 +2526,7 @@ int main(int argc, char** argv) {
 	testResample();
 	testGb(dir);
 	testGba(dir);
+	testRom64(dir);
 	testTurboB(dir);
 	testAudioOut(dir);
 	testAudioPitch(dir);

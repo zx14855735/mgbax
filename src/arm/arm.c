@@ -121,10 +121,15 @@ void ARMReset(struct ARMCore* cpu) {
 	cpu->irqh.reset(cpu);
 }
 
+uint32_t mgbaStatRaiseIrqMasked;
+extern uint32_t mgbaStatRaiseIrq;
+
 void ARMRaiseIRQ(struct ARMCore* cpu) {
 	if (cpu->cpsr.i) {
+		++mgbaStatRaiseIrqMasked;
 		return;
 	}
+	++mgbaStatRaiseIrq;
 	union PSR cpsr = cpu->cpsr;
 	int instructionWidth;
 	if (cpu->executionMode == MODE_THUMB) {
@@ -198,12 +203,89 @@ static const uint16_t conditionLut[16] = {
 	0x0000 // NV
 };
 
+
+/* TEMP PROBE (rom64): flat PC sampler used to locate a stuck game loop.
+ * Bins by 32-byte page; disabled unless mgbaPcSampleOn is set. */
+int mgbaPcSampleOn = 0;
+uint32_t mgbaIrqHandlerHits;
+uint32_t mgbaPcSampleMask = 7;
+static uint32_t _pcSampleCounter;
+static uint32_t _pcHist[4096];
+static uint32_t _pcTag[4096];
+
+/* TEMP PROBE (rom64): sequential PC ring buffer, so a stuck loop can be
+ * replayed instruction-by-instruction instead of only histogrammed. */
+int mgbaPcRingOn = 0;
+uint32_t mgbaPcRingTotal;
+static uint32_t _pcRing[16384];
+static uint32_t _pcRingPos;
+void mgbaPcRingReset(void) {
+	memset(_pcRing, 0, sizeof(_pcRing));
+	_pcRingPos = 0;
+	mgbaPcRingTotal = 0;
+}
+void mgbaPcRingDump(int lastN) {
+	uint32_t n = mgbaPcRingTotal < 16384 ? mgbaPcRingTotal : 16384;
+	if ((uint32_t) lastN > n) {
+		lastN = n;
+	}
+	uint32_t start = (mgbaPcRingTotal - lastN) & 16383;
+	for (int i = 0; i < lastN; ++i) {
+		fprintf(stderr, "ring %04d %08X\n", i, _pcRing[(start + i) & 16383]);
+	}
+}
+
+static inline void _pcSample(uint32_t pc) {
+	if (mgbaPcRingOn) {
+		_pcRing[_pcRingPos++ & 16383] = pc;
+		++mgbaPcRingTotal;
+	}
+	if (!mgbaPcSampleOn || (++_pcSampleCounter & mgbaPcSampleMask)) {
+		return;
+	}
+	if (pc >= 0x03000000 && pc < 0x030001A0) {
+		++mgbaIrqHandlerHits;
+	}
+	uint32_t tag = pc & ~0x1F;
+	uint32_t slot = (pc >> 5) & 0xFFF;
+	if (_pcTag[slot] != tag) {
+		_pcTag[slot] = tag;
+		_pcHist[slot] = 0;
+	}
+	++_pcHist[slot];
+}
+void mgbaPcSampleReset(void) {
+	memset(_pcHist, 0, sizeof(_pcHist));
+	memset(_pcTag, 0, sizeof(_pcTag));
+	_pcSampleCounter = 0;
+}
+void mgbaPcSampleDump(int topN) {
+	int shown;
+	for (shown = 0; shown < topN; ++shown) {
+		uint32_t best = 0;
+		int bestSlot = -1;
+		int i;
+		for (i = 0; i < 4096; ++i) {
+			if (_pcHist[i] > best) {
+				best = _pcHist[i];
+				bestSlot = i;
+			}
+		}
+		if (bestSlot < 0) {
+			break;
+		}
+		fprintf(stderr, "pc: %08X cnt=%u\n", _pcTag[bestSlot], best);
+		_pcHist[bestSlot] = 0;
+	}
+}
+
 static inline void ARMStep(struct ARMCore* cpu) {
 	uint32_t opcode = cpu->prefetch[0];
 	cpu->prefetch[0] = cpu->prefetch[1];
 	cpu->gprs[ARM_PC] += WORD_SIZE_ARM;
 	LOAD_32(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
 
+	_pcSample(cpu->gprs[ARM_PC]);
 	unsigned condition = opcode >> 28;
 	if (condition != 0xE) {
 		unsigned flags = cpu->cpsr.flags >> 4;
@@ -222,6 +304,7 @@ static inline void ThumbStep(struct ARMCore* cpu) {
 	cpu->prefetch[0] = cpu->prefetch[1];
 	cpu->gprs[ARM_PC] += WORD_SIZE_THUMB;
 	LOAD_16(cpu->prefetch[1], cpu->gprs[ARM_PC] & cpu->memory.activeMask, cpu->memory.activeRegion);
+	_pcSample(cpu->gprs[ARM_PC]);
 	ThumbInstruction instruction = _thumbTable[opcode >> 6];
 	instruction(cpu, opcode);
 }

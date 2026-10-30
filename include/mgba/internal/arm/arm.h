@@ -10,6 +10,19 @@
 
 CXX_GUARD_START
 
+/* TEMP PROBE (rom64): flat PC sampler. */
+extern int mgbaPcSampleOn;
+extern uint32_t mgbaIrqHandlerHits;
+extern uint32_t mgbaPcSampleMask;
+void mgbaPcSampleReset(void);
+void mgbaPcSampleDump(int topN);
+
+/* TEMP PROBE (rom64): sequential PC ring buffer. */
+extern int mgbaPcRingOn;
+extern uint32_t mgbaPcRingTotal;
+void mgbaPcRingReset(void);
+void mgbaPcRingDump(int lastN);
+
 #include <mgba/core/cpu.h>
 
 enum {

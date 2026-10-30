@@ -493,7 +493,7 @@ struct GBASerializedState {
 	uint8_t wram[GBA_SIZE_EWRAM];
 };
 
-static_assert(sizeof(struct GBASerializedState) == 0x61000, "GBA savestate struct sized wrong");
+static_assert(sizeof(struct GBASerializedState) == 0xA1000, "GBA savestate struct sized wrong");
 
 struct VDir;
 

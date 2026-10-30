@@ -297,7 +297,22 @@ void GBAIOInit(struct GBA* gba) {
 	}
 }
 
+/* TEMP PROBE (rom64): trace IO writes for a couple of frames. */
+int mgbaIoLogOn = 0;
+/* TEMP PROBE (rom64): remember who wrote DISPCNT, so a stuck screen can be
+ * traced back to the ROM routine that configured it. */
+uint32_t mgbaDispcntLogPc[32];
+uint32_t mgbaDispcntLogVal[32];
+uint32_t mgbaDispcntLogN;
 void GBAIOWrite(struct GBA* gba, uint32_t address, uint16_t value) {
+	if (address == 0x000) {
+		uint32_t i = mgbaDispcntLogN++ & 31;
+		mgbaDispcntLogPc[i] = gba->cpu ? gba->cpu->gprs[15] : 0;
+		mgbaDispcntLogVal[i] = value;
+	}
+	if (mgbaIoLogOn && (mgbaIoLogOn < 2 || address <= 0x00E || (address >= 0x060 && address <= 0x0DE) || address == 0x130 || address == 0x132 || address == 0x134)) {
+		fprintf(stderr, "iow %03X=%04X pc=%08X\n", address, value, gba->cpu ? gba->cpu->gprs[15] : 0);
+	}
 	if (address < GBA_REG_SOUND1CNT_LO && (address > GBA_REG_VCOUNT || address < GBA_REG_DISPSTAT)) {
 		gba->memory.io[address >> 1] = gba->video.renderer->writeVideoRegister(gba->video.renderer, address, value);
 		return;
@@ -766,7 +781,15 @@ bool GBAIOIsReadConstant(uint32_t address) {
 	}
 }
 
+/* TEMP PROBE (rom64): KEYINPUT 读取计数，用于判断游戏是否在轮询输入。 */
+uint32_t mgbaStatKeyReads;
+uint32_t mgbaStatKeyLast;
+
 uint16_t GBAIORead(struct GBA* gba, uint32_t address) {
+	if (address == 0x130) {
+		++mgbaStatKeyReads;
+		mgbaStatKeyLast = gba->cpu ? gba->cpu->gprs[15] : 0;
+	}
 	if (!GBAIOIsReadConstant(address)) {
 		// Most IO reads need to disable idle removal
 		gba->haltPending = false;

@@ -65,5 +65,10 @@
             android:name=".RelayService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- 游戏运行中前台通知：把进程从后台清理里保下来（悠GBA的保活服务） -->
+        <service
+            android:name=".NoticeService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

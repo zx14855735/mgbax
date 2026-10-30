@@ -58,7 +58,11 @@ enum GBAMemoryBase {
 
 enum {
 	GBA_SIZE_BIOS = 0x00004000,
-	GBA_SIZE_EWRAM = 0x00040000,
+	/* Expanded to 512 KiB so ROM hacks linked against a 512 KiB EWRAM window
+	 * (pointers in 0x02040000..0x0207FFFF) get distinct RAM instead of the
+	 * real-hardware 256 KiB mirror that overlays 0x02000000..0x0203FFFF.
+	 * Commercial games never touch 0x02040000+, so this is harmless for them. */
+	GBA_SIZE_EWRAM = 0x00080000,
 	GBA_SIZE_IWRAM = 0x00008000,
 	GBA_SIZE_IO = 0x00000400,
 	GBA_SIZE_PALETTE_RAM = 0x00000400,
@@ -112,6 +116,9 @@ struct GBAMemory {
 	struct GBAUnlCart unl;
 	struct GBACartEReader ereader;
 	size_t romSize;
+	/* Bytes behind the rom pointer (0 = the plain 32 MiB window). Oversized
+	 * romhack images and their patched/COW copies allocate more. */
+	size_t romAllocSize;
 	uint32_t romMask;
 	uint16_t romID;
 	int fullBios;
@@ -142,6 +149,18 @@ struct GBAMemory {
 struct GBA;
 void GBAMemoryInit(struct GBA* gba);
 void GBAMemoryDeinit(struct GBA* gba);
+
+/* TEMP PROBE (rom64): print the WS1 window access profile. */
+void GBARom64ProbeDump(void);
+extern int mgbaIoLogOn;
+extern uint32_t mgbaGpioWrites;
+extern uint32_t mgbaFlashWrites;
+extern uint32_t mgbaFlashLastAddr;
+extern uint32_t mgbaFlashLastValue;
+extern uint32_t mgbaGpioReads;
+extern uint32_t mgbaGpioLastValue;
+void GBARom64ProbeReset(void);
+uint32_t GBARom64ProbePhaseCount(void);
 
 void GBAMemoryReset(struct GBA* gba);
 void GBAMemoryClearAGBPrint(struct GBA* gba);

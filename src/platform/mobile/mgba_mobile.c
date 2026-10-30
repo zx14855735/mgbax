@@ -1234,6 +1234,12 @@ void mgbaMobileSetSaveType(struct MgbaMobile* emu, int type) {
 	}
 }
 
+/* TEMP PROBE: expose the running core so the desktop harness can inspect the
+ * GBA board state while a frame has frozen. */
+struct mCore* mgbaMobileDebugCore(struct MgbaMobile* emu) {
+	return emu ? emu->core : NULL;
+}
+
 void mgbaMobileSetPatches(struct MgbaMobile* emu, bool enabled) {
 	if (emu) {
 		emu->patches = enabled;
@@ -3146,6 +3152,58 @@ void mgbaMobileTitle(const struct MgbaMobile* emu, char* out, size_t outLen) {
 		out[i] = (c >= 32 && c < 127) ? (char) c : ' ';
 	}
 	out[i] = '\0';
+}
+
+uint32_t mgbaMobileBusRead(const struct MgbaMobile* emu, int width, uint32_t address) {
+	struct mCore* core;
+	if (!emu || !emu->core || width <= 0) {
+		return 0;
+	}
+	core = emu->core;
+	switch (width) {
+	case 16:
+		return core->busRead16(core, address);
+	case 32:
+		return core->busRead32(core, address);
+	default:
+		return core->busRead8(core, address);
+	}
+}
+
+bool mgbaMobileBusWrite(struct MgbaMobile* emu, int width, uint32_t address, uint32_t value) {
+	struct mCore* core;
+	if (!emu || !emu->core) {
+		return false;
+	}
+	core = emu->core;
+	switch (width) {
+	case 16:
+		core->busWrite16(core, address, (uint16_t) value);
+		break;
+	case 32:
+		core->busWrite32(core, address, value);
+		break;
+	default:
+		core->busWrite8(core, address, (uint8_t) value);
+		break;
+	}
+	return true;
+}
+
+int mgbaMobileBusReadBlock(const struct MgbaMobile* emu, uint32_t address, int size, uint8_t* out) {
+	struct mCore* core;
+	int i;
+	if (!emu || !emu->core || !out || size <= 0) {
+		return 0;
+	}
+	if (size > 0x100000) {
+		size = 0x100000;
+	}
+	core = emu->core;
+	for (i = 0; i < size; ++i) {
+		out[i] = (uint8_t) core->busRead8(core, address + i);
+	}
+	return size;
 }
 
 void mgbaMobileSetInterframe(struct MgbaMobile* emu, bool enabled) {

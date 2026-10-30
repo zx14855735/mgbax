@@ -3,6 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * GLSL ES 1.00 sources for the screen filters. Every filter is a single
  * fragment pass over the native frame evaluated at screen resolution; the
@@ -32,8 +37,28 @@ final class Shaders {
     static final int FILTER_LCD3X = 9;
     static final int FILTER_SCANLINES = 10;
     static final int FILTER_QUILEZ = 11;
+    /** User-installed single-pass GLSL; source set via {@link #setExternalSource}. */
+    static final int FILTER_EXTERNAL = 12;
 
-    static final int FILTER_COUNT = 12;
+    static final int FILTER_COUNT = 13;
+
+    /** Adapted source of the installed external shader; null when none. */
+    private static volatile String externalSource;
+    /** Bumped on every install so the GL program cache knows to rebuild. */
+    private static volatile int externalVersion;
+
+    static void setExternalSource(String adapted) {
+        externalSource = adapted;
+        externalVersion++;
+    }
+
+    static String externalSource() {
+        return externalSource;
+    }
+
+    static int externalVersion() {
+        return externalVersion;
+    }
 
     static final String VERTEX = ""
             + "attribute vec2 aPos;\n"
@@ -58,6 +83,7 @@ final class Shaders {
             case FILTER_LCD3X: return LCD3X;
             case FILTER_SCANLINES: return SCANLINES;
             case FILTER_QUILEZ: return QUILEZ;
+            case FILTER_EXTERNAL: return externalSource;
             default: return null;
         }
     }
@@ -68,7 +94,7 @@ final class Shaders {
      * need nearest sampling to stay sharp; the rest read linear.
      */
     static boolean linearSampling(int filter) {
-        return filter == FILTER_QUILEZ;
+        return filter == FILTER_QUILEZ || filter == FILTER_EXTERNAL;
     }
 
     /** True when the filter needs previous frames bound as history textures. */
@@ -348,4 +374,139 @@ final class Shaders {
             + "    vec3 c = texture2D(uTex, (p - 0.5) / uTexSize).rgb;\n"
             + "    gl_FragColor = vec4(contrast(c * uBrightness), 1.0);\n"
             + "}\n";
+
+    // == External shader adaptation ========================================
+
+    /**
+     * Contract prelude for user-installed shaders: declares the uniforms and
+     * varying the renderer feeds, ahead of the user's own body.
+     */
+    private static final String EXTERNAL_PRELUDE = ""
+            + "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+            + "precision highp float;\n"
+            + "#else\n"
+            + "precision mediump float;\n"
+            + "#endif\n"
+            + "uniform sampler2D uTex;\n"
+            + "uniform vec2 uTexSize;\n"
+            + "uniform vec2 uOutSize;\n"
+            + "uniform float uBrightness;\n"
+            + "uniform float uContrast;\n"
+            + "varying vec2 vTexCoord;\n";
+
+    private static final Pattern P_VERSION = Pattern.compile("^\\s*#version.*");
+    private static final Pattern P_ATTRIBUTE = Pattern.compile("^\\s*attribute\\b.*");
+    private static final Pattern P_VARYING_TEX = Pattern.compile("^\\s*varying\\b.*\\bvTexCoord\\b.*");
+    private static final Pattern P_UNIFORM = Pattern.compile("^\\s*uniform\\b.*");
+    private static final Pattern P_UNIFORM_NAME = Pattern.compile("^\\s*uniform\\s+\\w+\\s+(\\w+)\\s*.*");
+    private static final Pattern P_SAMPLER = Pattern.compile("^\\s*uniform\\s+sampler2D\\s+(\\w+)\\s*;");
+    private static final Pattern P_DEFINE = Pattern.compile("^\\s*#define\\s+(\\w+)");
+
+    /** Uniforms the renderer feeds itself; user declarations of them are dropped. */
+    private static final String[] OUR_UNIFORMS = {"uTex", "uTexSize", "uOutSize", "uBrightness", "uContrast", "uScanlines"};
+
+    /**
+     * Adapts a user-provided single-pass GLSL fragment shader to the renderer's
+     * uniform/varying contract. Duplicate declarations of our symbols and
+     * desktop-only lines are dropped, and the common RetroArch identifiers
+     * (TEXTURE/TextureSize/OutputSize/InputSize/vTexCoord/COMPAT_TEXTURE) are
+     * aliased with #defines so stock single-pass shaders compile as-is. The
+     * result compiles like any built-in filter; failure falls back to the
+     * plain blit.
+     */
+    static String adaptExternal(String source) {
+        if (source == null || source.trim().isEmpty()) {
+            return null;
+        }
+        String[] lines = source.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        StringBuilder body = new StringBuilder();
+        List<String> aliases = new ArrayList<>();
+        for (String line : lines) {
+            if (P_VERSION.matcher(line).matches() || P_ATTRIBUTE.matcher(line).matches()
+                    || P_VARYING_TEX.matcher(line).matches()) {
+                continue;
+            }
+            if (P_UNIFORM.matcher(line).matches()) {
+                String name = null;
+                Matcher nameMatch = P_UNIFORM_NAME.matcher(line);
+                if (nameMatch.matches()) {
+                    name = nameMatch.group(1);
+                }
+                if (name == null) {
+                    body.append(line).append('\n');
+                    continue;
+                }
+                if (isOurs(name)) {
+                    continue; // ours wins; the renderer sets the same value
+                }
+                Matcher sampler = P_SAMPLER.matcher(line);
+                if (sampler.matches() && !sampler.group(1).equals("uTex")) {
+                    // Their sampler is never bound; point the name at ours.
+                    aliases.add("#define " + sampler.group(1) + " uTex");
+                    continue;
+                }
+                String target = vec2Alias(name);
+                if (target != null) {
+                    aliases.add("#define " + name + " " + target);
+                    continue;
+                }
+                body.append(line).append('\n');
+                continue;
+            }
+            body.append(line).append('\n');
+        }
+        String rest = body.toString();
+        StringBuilder defines = new StringBuilder();
+        for (String alias : aliases) {
+            String name = alias.substring(8, alias.indexOf(' ', 8));
+            if (!rest.contains("#define " + name) && usesIdentifier(rest, name)) {
+                defines.append(alias).append('\n');
+            }
+        }
+        // RetroArch compat macro, aliased only when the body uses it.
+        if (usesIdentifier(rest, "COMPAT_TEXTURE") && !rest.contains("#define COMPAT_TEXTURE")) {
+            defines.append("#define COMPAT_TEXTURE(a,b) texture2D(a,b)\n");
+        }
+        if (usesCall(rest, "texture") && !rest.contains("#define texture")) {
+            defines.append("#define texture texture2D\n");
+        }
+        return EXTERNAL_PRELUDE + defines + rest;
+    }
+
+    private static boolean isOurs(String name) {
+        for (String ours : OUR_UNIFORMS) {
+            if (ours.equals(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Maps RetroArch size uniforms onto ours; null keeps the declaration. */
+    private static String vec2Alias(String name) {
+        switch (name) {
+            case "TextureSize":
+            case "InputSize":
+            case "uInputSize":
+            case "textureSize":
+                return "uTexSize";
+            case "OutputSize":
+            case "uOutputSize":
+            case "OutSize":
+                return "uOutSize";
+            default:
+                return null;
+        }
+    }
+
+    /** Word-boundary search so COMPAT_TEXTURE never counts as TEXTURE. */
+    private static boolean usesIdentifier(String source, String name) {
+        Matcher matcher = Pattern.compile("\\b" + Pattern.quote(name) + "\\b").matcher(source);
+        return matcher.find();
+    }
+
+    private static boolean usesCall(String source, String name) {
+        Matcher matcher = Pattern.compile("\\b" + Pattern.quote(name) + "\\s*\\(").matcher(source);
+        return matcher.find();
+    }
 }

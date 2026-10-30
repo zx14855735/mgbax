@@ -71,10 +71,16 @@ void GBAHardwareClear(struct GBACartridgeHardware* hw) {
 	hw->direction = 0;
 }
 
+/* TEMP PROBE (rom64): count GPIO traffic (RTC pin chatter). */
+uint32_t mgbaGpioWrites;
+uint32_t mgbaGpioReads;
+uint32_t mgbaGpioLastValue;
 void GBAHardwareGPIOWrite(struct GBACartridgeHardware* hw, uint32_t address, uint16_t value) {
 	if (!hw->gpioBase) {
 		return;
 	}
+	++mgbaGpioWrites;
+	mgbaGpioLastValue = value;
 	switch (address) {
 	case GPIO_REG_DATA:
 		hw->writeLatch = value & 0xF;

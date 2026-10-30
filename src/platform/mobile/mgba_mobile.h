@@ -128,6 +128,8 @@ void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen
  * 3 FLASH1M, 4 EEPROM, 5 EEPROM512, 6 SRAM512).
  */
 void mgbaMobileSetSaveType(struct MgbaMobile* emu, int type);
+/* TEMP PROBE */
+struct mCore* mgbaMobileDebugCore(struct MgbaMobile* emu);
 /* Auto-apply IPS/UPS/BPS patches found next to the ROM (default on). */
 void mgbaMobileSetPatches(struct MgbaMobile* emu, bool enabled);
 /* useBios/skipBios applied on the next load. */
@@ -180,6 +182,18 @@ bool mgbaMobileCheatEnabled(const struct MgbaMobile* emu, int index);
 void mgbaMobileCheatSetEnabled(struct MgbaMobile* emu, int index, bool enabled);
 bool mgbaMobileCheatAdd(struct MgbaMobile* emu, const char* name, const char* lines, int type);
 bool mgbaMobileCheatRemove(struct MgbaMobile* emu, int index);
+
+/*
+ * Debug memory access for the memory viewer, cheat search and the PPU
+ * viewers (they read PAL/VRAM/OAM straight off the bus). width is 8, 16 or
+ * 32 bits. Reads run against the live core, the same way a debugger does;
+ * callers that need stable values pause the game first.
+ */
+uint32_t mgbaMobileBusRead(const struct MgbaMobile* emu, int width, uint32_t address);
+bool mgbaMobileBusWrite(struct MgbaMobile* emu, int width, uint32_t address, uint32_t value);
+/* Byte-wise bulk read of up to size bytes starting at address; returns the
+ * number of bytes written into out (capped at 1 MiB per call). */
+int mgbaMobileBusReadBlock(const struct MgbaMobile* emu, uint32_t address, int size, uint8_t* out);
 
 /* Linear resample used by the iOS audio path. pos is carried between calls. */
 int mgbaMobileResample(const int16_t* in, int inFrames, int inRate, int outRate, int16_t* out, int maxOutFrames, double* pos);

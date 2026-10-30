@@ -357,3 +357,35 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeCheatRemove(JNIEnv*, jobject, jlong handle, jint index) {
 	return mgbaMobileCheatRemove((struct MgbaMobile*) handle, index) ? JNI_TRUE : JNI_FALSE;
 }
+
+extern "C" JNIEXPORT jint JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusRead(JNIEnv*, jobject, jlong handle, jint width, jint address) {
+	return (jint) mgbaMobileBusRead((struct MgbaMobile*) handle, width, (uint32_t) address);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusWrite(JNIEnv*, jobject, jlong handle, jint width, jint address, jint value) {
+	return mgbaMobileBusWrite((struct MgbaMobile*) handle, width, (uint32_t) address, (uint32_t) value)
+			? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusReadBlock(JNIEnv* env, jobject, jlong handle, jint address, jint size) {
+	if (size <= 0 || size > 0x100000) {
+		return NULL;
+	}
+	jbyteArray result = env->NewByteArray(size);
+	if (!result) {
+		return NULL;
+	}
+	uint8_t* buffer = (uint8_t*) malloc((size_t) size);
+	if (!buffer) {
+		return NULL;
+	}
+	int copied = mgbaMobileBusReadBlock((struct MgbaMobile*) handle, (uint32_t) address, size, buffer);
+	if (copied > 0) {
+		env->SetByteArrayRegion(result, 0, copied, (jbyte*) buffer);
+	}
+	free(buffer);
+	return result;
+}
