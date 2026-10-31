@@ -1,30 +1,35 @@
-import json, sys
-from ws import WS, fmt
+import sys, json, time
+sys.path.insert(0, '.')
+from ws import WS
 
-KEYS = ['room_id', 'roomId', 'room', 'code', 'room_code', 'roomCode', 'id', 'rid',
-        'name', 'nickname', 'player', 'player_name', 'playerName', 'user', 'username',
-        'uid', 'user_id', 'userId', 'token', 'password', 'pwd', 'game', 'game_id',
-        'rom', 'rom_name', 'version', 'type', 'count', 'max', 'players', 'open']
-
-def call(payload, t=2.5, path='/'):
+def attempt(payload, t=3.0):
     try:
-        w = WS(path=path, timeout=6)
-    except Exception as e:
-        return f'CONN ERR {e}'
-    try:
+        w = WS(path='/', timeout=6)
+        w.recv(0.8)
         w.send(json.dumps(payload))
         r = w.recv(t)
-        return fmt(*r) if r else 'no reply'
+        w.close()
+        if not r: return 'no reply / closed'
+        try: return r[1].decode('utf-8')
+        except: return 'BIN len=%d' % len(r[1])
     except Exception as e:
-        return f'ERR {type(e).__name__} {e}'
-    finally:
-        try: w.close()
-        except Exception: pass
+        return 'ERR %s' % e
 
-if __name__ == '__main__':
-    action = sys.argv[1] if len(sys.argv) > 1 else 'join_room'
-    # shotgun: all keys at once
-    full = {'action': action}
-    for k in KEYS:
-        full[k] = '1234' if 'room' in k or k in ('code', 'id', 'rid', 'roomId') else 'tester'
-    print('SHOTGUN =>', call(full))
+keys = ['game_name','game','rom_name','name','room_name','title','max_players',
+        'players','token','rom_md5','md5','game_id','type','mode','rom_hash']
+base = {'action':'create_game_room'}
+for k in keys:
+    v = 2 if k in ('max_players','players') else ('x' if k in ('token','game_id','uid') else 'POKEMON')
+    res = attempt({**base, k:v})
+    print(f'{k:12s} => {res[:140]}', flush=True)
+    time.sleep(0.2)
+
+combos = [
+  {'action':'create_game_room','game_name':'POKEMON','rom_name':'POKEMON','max_players':2},
+  {'action':'create_game_room','name':'POKEMON','game_name':'POKEMON'},
+  {'action':'create_game_room','rom_name':'POKEMON'},
+]
+for c in combos:
+    print('COMBO', c, '=>', attempt(c), flush=True)
+    time.sleep(0.2)
+print('DONE')

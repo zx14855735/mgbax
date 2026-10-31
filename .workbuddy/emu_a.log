@@ -3,18 +3,18 @@ INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
 INFO         | IPv4 server found: 172.18.0.2
-INFO         | Ignore IPv6 address: 583d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: 583d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: 583d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: 4843:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: 4843:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: 4843:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f84d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f84d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f84d:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f053:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f053:d66e:2002:0:e030:d66e:2002:0
-INFO         | Ignore IPv6 address: f053:d66e:2002:0:e030:d66e:2002:0
+INFO         | Ignore IPv6 address: 58f4:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: 58f4:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: 58f4:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: 48fa:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: 48fa:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: 48fa:6492:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f804:6592:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f804:6592:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f804:6592:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f00a:6592:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f00a:6592:5901:0:e0e7:6492:5901:0
+INFO         | Ignore IPv6 address: f00a:6592:5901:0:e0e7:6492:5901:0
 INFO         | Guest GLES Driver: Auto (ext controls)
 INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
@@ -26,7 +26,8 @@ INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
 INFO         |      Ok: Disk space requirements to run avd: `mgba_test` are met
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 43988
+ERROR        | Unable to connect to adb daemon on port: 5037
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 60944
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -96,9 +97,9 @@ INFO         |   androidboot.vbmeta.hash_alg=sha256
 INFO         |   androidboot.vbmeta.size=6656
 INFO         |   androidboot.veritymode=enforcing
 AEHD is operational
-netsim I 10-28 18:58:07.525 netsimd.rs:375 - netsim startup
-netsim I 10-28 18:58:07.525 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
-netsim I 10-28 18:58:07.525 netsimd.rs:386 - Args {
+netsim I 10-29 01:08:25.517 netsimd.rs:375 - netsim startup
+netsim I 10-29 01:08:25.517 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
+netsim I 10-29 01:08:25.517 netsimd.rs:386 - Args {
     fd_startup_str: None,
     connector_instance: None,
     instance: None,
@@ -107,7 +108,7 @@ netsim I 10-28 18:58:07.525 netsimd.rs:386 - Args {
     no_cli_ui: true,
     no_web_ui: false,
     http_proxy: Some(
-        "http://127.0.0.1:7912",
+        "http://127.0.0.1:11281",
     ),
     no_shutdown: false,
     idle_shutdown_timeout: None,
@@ -147,4 +148,4 @@ INFO         | Setting display: 0 configuration to: 1080x2400, dpi: 420x420
 INFO         | setDisplayActiveConfig: id:0, 1080x2400
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
-INFO         | Boot completed in 34956 ms
+INFO         | Boot completed in 40169 ms

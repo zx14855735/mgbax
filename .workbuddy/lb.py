@@ -101,6 +101,25 @@ def _find_edit(serial, pred):
     return None
 
 
+def hide_kb(serial):
+    """收起输入法。
+
+    不能用 ESC/BACK：这个对话框是 Dialog，按键会把它整个 dismiss 掉，
+    之后所有点击都落到游戏画面上（曾经因此误触「打开」弹出文件选择器、
+    进程被重启，表现为游戏莫名其妙回到标题）。点一下对话框标题最安全。
+    """
+    for t, n in _items(serial):
+        if t.strip() == '联机':
+            _tap(serial, n, 0.4)
+            return True
+    b = scroll_view_bounds(serial)
+    if b:
+        x0, y0, x1, y1 = b
+        lt.tap(serial, (x0 + x1) // 2, y0 + 8, 0.4)
+        return True
+    return False
+
+
 def set_relay(serial, value):
     """中继地址框：填过之后 hint 就没了，只能按「像 ip:port 的内容」去找。"""
     def is_relay(t):
@@ -119,8 +138,8 @@ def set_relay(serial, value):
                 lt.sh(serial, 'input', 'keyevent', '67')
             lt.sh(serial, 'input', 'text', value)
             time.sleep(0.5)
-            lt.sh(serial, 'input', 'keyevent', '111')
-            time.sleep(0.5)
+            hide_kb(serial)
+            time.sleep(0.4)
             return True
         scroll(serial, down=True, steps=1)
     return False
@@ -176,8 +195,8 @@ def fill_hint(serial, hint, value):
                 lt.sh(serial, 'input', 'keyevent', '67')
             lt.sh(serial, 'input', 'text', value)
             time.sleep(0.5)
-            lt.sh(serial, 'input', 'keyevent', '111')
-            time.sleep(0.5)
+            hide_kb(serial)
+            time.sleep(0.4)
             return True
         scroll(serial, down=False, steps=1)
     print(serial, 'input not found:', hint, flush=True)

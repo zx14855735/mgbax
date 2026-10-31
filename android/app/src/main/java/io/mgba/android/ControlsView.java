@@ -6,10 +6,12 @@ package io.mgba.android;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.os.Build;
 import android.util.AttributeSet;
 import android.util.SparseIntArray;
@@ -178,6 +180,29 @@ public class ControlsView extends View {
     private final RectF toggle = new RectF();
     /** Decorative speaker holes, recomputed per size. */
     private final RectF[] speakerDots = new RectF[15];
+
+    /* Console-red key caps: a near-black ring, a red face, maroon lettering.
+     * Every colour goes through fade(), so the keys keep the opacity
+     * setting's translucency instead of becoming opaque stickers. */
+    private static final int KEY_RING = 0xFF14100F;
+    private static final int KEY_FACE_TOP = 0xFFCF3A40;
+    private static final int KEY_FACE_BOT = 0xFF9C1F24;
+    private static final int KEY_FACE_DIM = 0xFFB02C31;
+    private static final int KEY_FACE_DEEP = 0xFF7C171B;
+    private static final int KEY_INK = 0xFF671115;
+    /** Deeper print ink for the word under the SELECT / START caps. */
+    private static final int KEY_INK_DEEP = 0xFF3C0A0C;
+    private static final int KEY_HUB = 0xFF8B1C21;
+    private static final int KEY_HILIGHT = 0xFFFFFFFF;
+    private static final int KEY_SHADOW = 0xFF000000;
+    /** Scratch boxes/paths for the caps, so drawing allocates nothing. */
+    private final RectF faceBox = new RectF();
+    private final RectF capBox = new RectF();
+    private final RectF rimOval = new RectF();
+    private final Path crossPath = new Path();
+    private final Path crossEdge = new Path();
+    private final Paint capStroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Map<Long, Shader> shadeCache = new HashMap<>();
 
     public ControlsView(Context context) {
         this(context, null);
@@ -421,6 +446,27 @@ public class ControlsView extends View {
     /** Alpha over a full color value, scaled by the opacity setting. */
     private int fade(int alpha, int color) {
         return (Math.min(255, alpha * opacity / 100) << 24) | (color & 0xFFFFFF);
+    }
+
+    /**
+     * Top-to-bottom gradient for a key face, cached by box size and colour
+     * pair. The keys redraw every frame and the same sizes recur (A and B,
+     * the two shoulders), so this keeps the draw path allocation free.
+     */
+    private Shader verticalShade(RectF box, int top, int bottom) {
+        long key = ((long) Math.round(box.width()) << 40)
+                ^ ((long) Math.round(box.height()) << 20)
+                ^ ((long) (top & 0xFFFFFF) << 2)
+                ^ (bottom & 0xFFFFFF);
+        Shader cached = shadeCache.get(key);
+        if (cached == null) {
+            if (shadeCache.size() > 24) {
+                shadeCache.clear();
+            }
+            cached = new LinearGradient(box.left, box.top, box.left, box.bottom, top, bottom, Shader.TileMode.CLAMP);
+            shadeCache.put(key, cached);
+        }
+        return cached;
     }
 
     private boolean handheld() {
@@ -785,8 +831,8 @@ public class ControlsView extends View {
         }
     }
 
-    /** White shell button: pill or circle with an accent letter. The fill
-     * starts translucent; raising the opacity control brings it to white. */
+    /** Shell button: a red cap in a dark ring with maroon lettering. The cap
+     * keeps the opacity control's translucency, so the shell shows through. */
     private void drawShellKey(Canvas canvas, RectF rect, String label, boolean down, boolean selected, boolean round) {
         String key = labelToKey(label);
         if (key != null && skinBitmaps.containsKey(down ? key + "_p" : key)) {
@@ -809,29 +855,118 @@ public class ControlsView extends View {
         }
     }
 
+    /**
+     * One key cap: a soft drop shadow, the dark ring, the red face with a top
+     * highlight and an inner rim light, then the letter. Pressing darkens the
+     * face and pulls it inside the ring, so the cap reads as sunk.
+     */
     private void drawShellButton(Canvas canvas, RectF rect, String label, boolean down, boolean selected, boolean round) {
-        float r = round ? Math.min(rect.width(), rect.height()) / 2f : rect.height() / 2.4f;
-        fill.setColor(down ? Color.argb(fade(150), skin.accentDeep >> 16 & 0xFF, skin.accentDeep >> 8 & 0xFF, skin.accentDeep & 0xFF)
-                : Color.argb(fade(150), 255, 255, 255));
-        if (round) {
-            canvas.drawCircle(rect.centerX(), rect.centerY(), r, fill);
-        } else {
-            canvas.drawRoundRect(rect, r, r, fill);
+        // SELECT / START print their word under a small cap, as on the
+        // reference faceplate. In landscape those two pills land on the black
+        // screen plate, where a dark word would vanish, so they keep it inside.
+        boolean underText = portrait && ("SELECT".equals(label) || "START".equals(label));
+        faceBox.set(rect);
+        if (underText) {
+            faceBox.bottom = rect.top + rect.height() * 0.64f;
         }
+        float shortSide = Math.min(faceBox.width(), faceBox.height());
+        boolean circle = round;
+        float radius = circle ? shortSide / 2f : Math.min(faceBox.height() / 2f, faceBox.width() / 2f);
+        // L / R read as rounded tabs on the faceplate; the small SELECT /
+        // START caps keep the full pill curve.
+        if (!circle && ("L".equals(label) || "R".equals(label))) {
+            radius = faceBox.height() * 0.34f;
+        }
+        float ring = Math.max(1.3f * density, shortSide * 0.055f);
+
+        // Released caps sit a hair above the shell: a soft shadow below them.
+        if (!down) {
+            fill.setShader(null);
+            fill.setColor(fade(55, KEY_SHADOW));
+            if (circle) {
+                canvas.drawCircle(faceBox.centerX(), faceBox.centerY() + ring * 0.8f, radius, fill);
+            } else {
+                canvas.save();
+                canvas.translate(0, ring * 0.8f);
+                canvas.drawRoundRect(faceBox, radius, radius, fill);
+                canvas.restore();
+            }
+        }
+
+        // Dark ring around the cap.
+        fill.setShader(null);
+        fill.setColor(fade(225, KEY_RING));
+        if (circle) {
+            canvas.drawCircle(faceBox.centerX(), faceBox.centerY(), radius, fill);
+        } else {
+            canvas.drawRoundRect(faceBox, radius, radius, fill);
+        }
+
+        // Red face; a pressed cap shrinks a little inside its ring.
+        float inset = down ? ring * 1.7f : ring;
+        capBox.set(faceBox.left + inset, faceBox.top + inset, faceBox.right - inset, faceBox.bottom - inset);
+        float faceRadius = Math.max(1f, radius - inset);
+        fill.setShader(verticalShade(capBox,
+                fade(226, down ? KEY_FACE_DIM : KEY_FACE_TOP),
+                fade(226, down ? KEY_FACE_DEEP : KEY_FACE_BOT)));
+        if (circle) {
+            canvas.drawCircle(capBox.centerX(), capBox.centerY(), faceRadius, fill);
+        } else {
+            canvas.drawRoundRect(capBox, faceRadius, faceRadius, fill);
+        }
+        fill.setShader(null);
+
+        // Rim light along the top inner edge, shadow along the bottom; the
+        // pair is what makes the flat fill read as a moulded cap.
+        capStroke.setStyle(Paint.Style.STROKE);
+        capStroke.setStrokeWidth(Math.max(1f, ring * 0.85f));
+        rimOval.set(capBox);
+        rimOval.inset(capStroke.getStrokeWidth() / 2f, capStroke.getStrokeWidth() / 2f);
+        float rimRadius = Math.max(1f, faceRadius - capStroke.getStrokeWidth() / 2f);
+        if (circle) {
+            capStroke.setColor(fade(down ? 22 : 44, KEY_HILIGHT));
+            canvas.drawArc(rimOval, 190, 160, false, capStroke);
+            capStroke.setColor(fade(40, KEY_SHADOW));
+            canvas.drawArc(rimOval, 20, 140, false, capStroke);
+        } else {
+            capStroke.setColor(fade(down ? 22 : 44, KEY_HILIGHT));
+            canvas.drawRoundRect(rimOval, rimRadius, rimRadius, capStroke);
+        }
+
+        // Outline again while the player is dragging this key around.
         if (selected) {
             stroke.setColor(Color.argb(240, 255, 214, 64));
             stroke.setStrokeWidth(Math.max(2.5f, 2f * density));
-            if (round) {
-                canvas.drawCircle(rect.centerX(), rect.centerY(), r - stroke.getStrokeWidth() / 2f, stroke);
+            if (circle) {
+                canvas.drawCircle(faceBox.centerX(), faceBox.centerY(), radius - stroke.getStrokeWidth() / 2f, stroke);
             } else {
-                canvas.drawRoundRect(rect, r, r, stroke);
+                canvas.drawRoundRect(faceBox, radius, radius, stroke);
             }
             stroke.setStrokeWidth(Math.max(2f, 1.5f * density));
         }
-        float size = label.length() > 2 ? 11 * density : label.length() > 1 ? 13 * density : 17 * density;
+
+        if (underText) {
+            // Word under the cap, matched to the key's own box.
+            float labelH = rect.bottom - faceBox.bottom;
+            drawCapText(canvas, label, rect.centerX(), faceBox.bottom + labelH * 0.62f,
+                    rect.width() * 0.96f, labelH * 1.0f, KEY_INK_DEEP, 250);
+        } else {
+            drawCapText(canvas, label, capBox.centerX(), capBox.centerY(),
+                    capBox.width() * 0.66f, capBox.height() * 0.86f, KEY_INK, down ? 240 : 225);
+        }
+    }
+
+    /** Draws a key label, shrunk until it fits the box it was given. */
+    private void drawCapText(Canvas canvas, String label, float cx, float cy,
+                             float maxW, float maxH, int ink, int alpha) {
+        float size = maxH * 0.72f;
         text.setTextSize(size);
-        text.setColor(down ? Color.argb(fade(240), 255, 255, 255) : fade(255, skin.accent));
-        canvas.drawText(label, rect.centerX(), rect.centerY() - (text.descent() + text.ascent()) / 2f, text);
+        float wide = text.measureText(label);
+        if (wide > maxW && wide > 0f) {
+            text.setTextSize(size * maxW / wide);
+        }
+        text.setColor(fade(alpha, ink));
+        canvas.drawText(label, cx, cy - (text.descent() + text.ascent()) / 2f, text);
     }
 
     private void drawBitmapKey(Canvas canvas, RectF rect, android.graphics.Bitmap bitmap) {
@@ -879,7 +1014,11 @@ public class ControlsView extends View {
         }
     }
 
-    /** White cross with a center mark; a pressed arm glows in the accent. */
+    /**
+     * Red cross in a dark ring, with a recessed hub and a maroon arrow in each
+     * arm. The two bars go into one path so the translucent red is filled
+     * once and the overlap at the centre never doubles up into a dark square.
+     */
     private void drawShellDpad(Canvas canvas) {
         layoutDpadArms();
         android.graphics.Bitmap dpadBitmap = skinBitmaps.containsKey("dpad") ? skinBitmaps.get("dpad") : null;
@@ -894,29 +1033,109 @@ public class ControlsView extends View {
             }
             return;
         }
-        float r = dpadUp.width() / 2.4f;
-        // The cross reads as two overlapping rounded bars.
-        RectF bar = new RectF(dpad.left, dpad.centerY() - dpadUp.width() / 2f,
-                dpad.right, dpad.centerY() + dpadUp.width() / 2f);
-        RectF barV = new RectF(dpad.centerX() - dpadLeft.height() / 2f, dpad.top,
-                dpad.centerX() + dpadLeft.height() / 2f, dpad.bottom);
-        fill.setColor(Color.argb(fade(150), 255, 255, 255));
+        float thick = dpadUp.width();
+        float r = thick * 0.34f;
+        float ring = Math.max(1.4f * density, dpad.width() * 0.022f);
+        RectF bar = new RectF(dpad.left, dpad.centerY() - thick / 2f,
+                dpad.right, dpad.centerY() + thick / 2f);
+        RectF barV = new RectF(dpad.centerX() - thick / 2f, dpad.top,
+                dpad.centerX() + thick / 2f, dpad.bottom);
+
+        // Soft shadow under the whole cross.
+        fill.setShader(null);
+        fill.setColor(fade(55, KEY_SHADOW));
+        canvas.save();
+        canvas.translate(0, ring * 0.9f);
         canvas.drawRoundRect(bar, r, r, fill);
         canvas.drawRoundRect(barV, r, r, fill);
-        // Pressed arms light up in the accent color.
-        drawArmGlow(canvas, dpadUp, UP, r);
-        drawArmGlow(canvas, dpadDown, DOWN, r);
-        drawArmGlow(canvas, dpadLeft, LEFT, r);
-        drawArmGlow(canvas, dpadRight, RIGHT, r);
-        // Center hub with a small accent mark.
-        float hub = dpadUp.width() * 0.92f;
-        fill.setColor(Color.argb(fade(170), 255, 255, 255));
-        canvas.drawCircle(dpad.centerX(), dpad.centerY(), hub / 2f, fill);
-        fill.setColor(fade(150, skin.dpadMark));
-        canvas.drawCircle(dpad.centerX(), dpad.centerY(), hub / 5f, fill);
+        canvas.restore();
+
+        // Dark ring: both bars grown by the ring width, filled as one path.
+        crossEdge.reset();
+        crossEdge.addRoundRect(new RectF(bar.left - ring, bar.top - ring, bar.right + ring, bar.bottom + ring),
+                r + ring, r + ring, Path.Direction.CW);
+        crossEdge.addRoundRect(new RectF(barV.left - ring, barV.top - ring, barV.right + ring, barV.bottom + ring),
+                r + ring, r + ring, Path.Direction.CW);
+        fill.setColor(fade(225, KEY_RING));
+        canvas.drawPath(crossEdge, fill);
+
+        // Red face.
+        crossPath.reset();
+        crossPath.addRoundRect(bar, r, r, Path.Direction.CW);
+        crossPath.addRoundRect(barV, r, r, Path.Direction.CW);
+        fill.setShader(verticalShade(dpad, fade(226, KEY_FACE_TOP), fade(226, KEY_FACE_BOT)));
+        canvas.drawPath(crossPath, fill);
+        fill.setShader(null);
+
+        // A pressed arm darkens inside the face outline.
+        if ((pressed & (UP | DOWN | LEFT | RIGHT)) != 0) {
+            canvas.save();
+            canvas.clipPath(crossPath);
+            fill.setColor(fade(70, KEY_SHADOW));
+            if ((pressed & UP) != 0) {
+                canvas.drawRect(dpad.left, dpad.top, dpad.right, dpad.centerY(), fill);
+            }
+            if ((pressed & DOWN) != 0) {
+                canvas.drawRect(dpad.left, dpad.centerY(), dpad.right, dpad.bottom, fill);
+            }
+            if ((pressed & LEFT) != 0) {
+                canvas.drawRect(dpad.left, dpad.top, dpad.centerX(), dpad.bottom, fill);
+            }
+            if ((pressed & RIGHT) != 0) {
+                canvas.drawRect(dpad.centerX(), dpad.top, dpad.right, dpad.bottom, fill);
+            }
+            canvas.restore();
+        }
+
+        // Recessed hub: one darker disc, with a faint shadow on its upper edge.
+        fill.setColor(fade(205, KEY_HUB));
+        canvas.drawCircle(dpad.centerX(), dpad.centerY(), thick * 0.44f, fill);
+        capStroke.setStyle(Paint.Style.STROKE);
+        capStroke.setStrokeWidth(Math.max(1f, thick * 0.05f));
+        rimOval.set(dpad.centerX() - thick * 0.44f, dpad.centerY() - thick * 0.44f,
+                dpad.centerX() + thick * 0.44f, dpad.centerY() + thick * 0.44f);
+        rimOval.inset(capStroke.getStrokeWidth() / 2f, capStroke.getStrokeWidth() / 2f);
+        capStroke.setColor(fade(50, KEY_SHADOW));
+        canvas.drawArc(rimOval, 200, 140, false, capStroke);
+
+        // Arrows: maroon triangles pointing out of each arm.
+        drawCapArrow(canvas, dpadUp, UP, thick);
+        drawCapArrow(canvas, dpadDown, DOWN, thick);
+        drawCapArrow(canvas, dpadLeft, LEFT, thick);
+        drawCapArrow(canvas, dpadRight, RIGHT, thick);
         if (editing) {
             drawCursor(canvas, dpad);
         }
+    }
+
+    /** Filled maroon triangle inside one d-pad arm. */
+    private void drawCapArrow(Canvas canvas, RectF arm, int bit, float thick) {
+        float cx = arm.centerX();
+        float cy = arm.centerY();
+        float half = thick * 0.25f;
+        float tall = thick * 0.20f;
+        arrow.reset();
+        if (bit == UP) {
+            arrow.moveTo(cx, cy - tall);
+            arrow.lineTo(cx + half, cy + tall);
+            arrow.lineTo(cx - half, cy + tall);
+        } else if (bit == DOWN) {
+            arrow.moveTo(cx, cy + tall);
+            arrow.lineTo(cx + half, cy - tall);
+            arrow.lineTo(cx - half, cy - tall);
+        } else if (bit == LEFT) {
+            arrow.moveTo(cx - tall, cy);
+            arrow.lineTo(cx + tall, cy - half);
+            arrow.lineTo(cx + tall, cy + half);
+        } else {
+            arrow.moveTo(cx + tall, cy);
+            arrow.lineTo(cx - tall, cy - half);
+            arrow.lineTo(cx - tall, cy + half);
+        }
+        arrow.close();
+        fill.setShader(null);
+        fill.setColor(fade((pressed & bit) != 0 ? 235 : 200, KEY_INK));
+        canvas.drawPath(arrow, fill);
     }
 
     private void drawArmGlow(Canvas canvas, RectF arm, int bit, float r) {
