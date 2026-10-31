@@ -1766,7 +1766,7 @@ static void serviceLink(struct MgbaMobile* emu) {
 			uint16_t want = (uint16_t) (emu->sioIndex + 1);
 			uint16_t got = 0;
 			uint32_t remote = 0;
-			if (netLinkTakePeerWord(emu->link, want, 2, &remote, &got)) {
+			if (netLinkTakePeerWord(emu->link, want, 0, &remote, &got)) {
 				if (got != want) {
 					/* 中间丢了一轮（对端超时收尾过），轮次已经对不上，但接着跑
 					 * 比卡死强：游戏自己会靠 checksum 发现并断开重来。 */
@@ -1824,17 +1824,29 @@ static void serviceLink(struct MgbaMobile* emu) {
 		finishIncoming(emu, mode, value, player);
 	}
 	/* 看门狗：从机 Busy 立起来后如果主机迟迟不发这一轮的字（主机卡住、或者
-	 * 已经掉线），5 帧之后按「没有对端数据」收尾，让游戏自己报通信错误，
-	 * 而不是永久卡在 Busy 上。同样不用旧值。 */
+	 * 已经掉线），按「没有对端数据」收尾，让游戏自己报通信错误，而不是永久
+	 * 卡在 Busy 上。
+	 *
+	 * 关键：收尾的同时**也要把本轮的字推出去**。原来这里只收尾不推送，一旦
+	 * 触发，主机的 takePeerWord 就永远等不到这一轮的应答（只能超时用 0xFFFF
+	 * 收尾 → checksum 对不上 → 游戏当场报「连接发生了错误」），而且从机的
+	 * 轮次索引停在原地，之后每一轮都会被主机甩开一格，属于不可恢复的错位。
+	 * 补推之后晚到的主机推送会被当成过期条目丢掉，下一轮自动对齐。
+	 * 窗口也从 5 帧放宽到 120 帧：客机偶发上百毫秒的卡顿不该被当成掉线。 */
 	if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
 	    emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
 		struct mTiming* timing = coreTiming(emu);
 		if (gba->sio.mode == GBA_SIO_MULTI && (gba->sio.siocnt & 0x0080) && timing && emu->sioBusyCycle) {
 			uint32_t now = mTimingCurrentTime(timing);
-			if (now - emu->sioBusyCycle > 5 * 280896) {
-				emu->sioBusyCycle = now;
-				emu->sioTimeouts++;
+			if (now - emu->sioBusyCycle > 120 * 280896) {
+				emu->sioBusyCycle = 0;
+				uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+				++emu->sioIndex;
+				netLinkPush(emu->link, GBA_SIO_MULTI, own, emu->sioIndex);
+				emu->sioPushValue = own;
+				emu->sioPushIndex = emu->sioIndex;
+				emu->sioPushed = true;
 				completeMultiTransfer(emu, 0, false, 0);
 			}
 		}
@@ -1926,8 +1938,19 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
-	 * 一帧就只剩下一次传输，必然被判掉线。 */
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 400, &remote, &got);
+	 * 一帧就只剩下一次传输，必然被判掉线。
+	 *
+	 * 等待窗口给到 2500ms：本机阻塞期间模拟时钟不动，所以拉长窗口只花真实
+	 * 时间、不会让游戏的 LAG 计数变差；但对端（客机）只要有一次真的卡了
+	 * 几十毫秒——比如渲染通路挤了、被系统调度走了——400ms 就会误判成
+	 * 「对端没回」而用 0xFFFF 收尾，游戏当场报「连接发生了错误」。实测客机
+	 * 卡顿是偶发上百毫秒的，窗口必须留够。 */
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 2500, &remote, &got);
+	if (!haveRemote && emu->link && netLinkState(emu->link) == 2) {
+		/* 真的等到超时才记一次：这是「客机没回字」的唯一现场证据。 */
+		MOBILE_LOGI("SIO peer-timeout idx=%u me=%d to=%u",
+		            (unsigned) emu->sioIndex, netLinkPlayer(emu->link), emu->sioTimeouts + 1);
+	}
 	if (haveRemote) {
 		if (got != emu->sioIndex) {
 			++emu->sioMisorder;
