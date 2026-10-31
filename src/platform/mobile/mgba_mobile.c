@@ -130,9 +130,6 @@ struct MgbaMobile {
 	uint32_t sioPushValue;
 	uint16_t sioPushIndex;
 	bool sioPushed;
-	/* 从机用：下一轮要推的轮号。收尾之后隔一次轮询才推，中间这段时间正好让
-	 * 游戏的 SIO 中断处理把本轮真正要发的字写进 SIOMLT_SEND。 */
-	uint16_t sioPushPending;
 	/* 取到的对端轮次和本机期望的不一致（丢了一轮）的次数。 */
 	uint32_t sioMisorder;
 	/* 联机排查：逐轮打印（有上限，不会刷爆 logcat）。 */
@@ -143,6 +140,9 @@ struct MgbaMobile {
 	uint32_t hsDbg;
 	uint32_t hsPushDbg;
 	uint32_t hsStartDbg;
+	/* gen8 联机命令队列探针：看 gLink 的收发队列到底有没有东西，
+	 * 用来区分「链路没送到」和「游戏根本没入队」。 */
+	uint32_t lkqFrames;
 	uint32_t heldKeys;
 	uint32_t latchedKeys;
 	uint32_t frameKeys;
@@ -1721,6 +1721,13 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 #define PEEK_LINK_STATUS 0x03002A90u
 #define PEEK_LINK_STATE  0x03002ACCu
 #define PEEK_LINK        0x03002AE8u
+/* struct Link 内部偏移（include/link.h）：sendQueue 在 +0x18，
+ * u16 data[8][50] 之后是 pos/count；recvQueue 在 +0x33C，
+ * u16 data[4][8][50] 之后是 pos/count。 */
+#define PEEK_LK_SENDQ_POS 0x0338
+#define PEEK_LK_SENDQ_CNT 0x0339
+#define PEEK_LK_RECVQ_POS 0x0FBC
+#define PEEK_LK_RECVQ_CNT 0x0FBD
 #endif
 
 static void serviceLink(struct MgbaMobile* emu) {
@@ -1740,47 +1747,16 @@ static void serviceLink(struct MgbaMobile* emu) {
 	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
 		int player = netLinkPlayer(emu->link);
-		if (gba->sio.mode == GBA_SIO_MULTI && player != 0) {
-			/* 从机推字的时机是本文件里最容易踩错的一处。
-			 *
-			 * 真机里从机不产生时钟，它本轮发什么，取决于主的时钟扫过来那一
-			 * 瞬间 SIOMLT_SEND 里是什么。而在 gen8 里，SIOMLT_SEND 是在 SIO
-			 * 中断处理（DoSend）里写的 —— 也就是说，第 R 轮的字要等第 R-1 轮
-			 * 收尾、中断处理跑完之后才存在。
-			 *
-			 * 所以：收尾的那一次轮询里绝对不能推（那时中断还没跑，SIOMLT_SEND
-			 * 还是上一轮的值），必须等下一次轮询再推。这里就是「下一次」：
-			 * 收尾时把轮号记进 sioPushPending，下一轮轮询到这儿才真正发出去。
-			 * 早一步推旧值，对端就会把上一轮的数据当成这一轮，握手能过、
-			 * checksum 必挂。 */
-			if (!emu->sioPushed && !emu->sioPushPending) {
-				/* 第一次进入 MULTI：第 1 轮的字就是此刻 SIOMLT_SEND 里的值
-				 * （游戏初始化时写的 0），和真机一致。 */
-				emu->sioPushPending = 1;
-			}
-			if (emu->sioPushPending) {
-					uint16_t round = emu->sioPushPending;
-					emu->sioPushPending = 0;
-					netLinkPush(emu->link, GBA_SIO_MULTI, local, round);
-					if (local != 0xB9A0 && emu->hsPushDbg < 70) {
-						++emu->hsPushDbg;
-						MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X send=%04X",
-						            emu->hsPushDbg, player, (unsigned) round,
-						            (unsigned) local, (unsigned) local);
-					}
-					if (emu->pushDbg < 80) {
-					++emu->pushDbg;
-					MOBILE_LOGI("PUSH #%u me=%d idx=%u val=%04X",
-					            emu->pushDbg, player, (unsigned) round, (unsigned) local);
-				}
-				emu->sioPushValue = local;
-				emu->sioPushIndex = round;
-				emu->sioPushed = true;
-			}
-		}
 		/* 从机不自己起传输：真机里 MULTI 的时钟是 1P 产生的，从机只是在自己的
 		 * SIO 被时钟扫过时收尾。1P 每轮开始时把本轮的字推过来，收到就把这次
-		 * 传输收掉（写 SIOMULTI + 发 SIO 中断），从机自己的游戏才会往下走。 */
+		 * 传输收掉（写 SIOMULTI + 发 SIO 中断），从机自己的游戏才会往下走。
+		 *
+		 * 回给 1P 的那个字，就用「本轮收尾时游戏自己用的那一个」（SIOMLT_SEND），
+		 * 也就是 completeMultiTransfer 写进 SIOMULTI 的那个值 —— 收发天然一致。
+		 *
+		 * 千万不要「提前把下一轮推出去」：gen8 的字是在上一轮收尾的 SIO 中断处理
+		 * 里写的，提前推要赌中断已经跑完 —— 实测 93 轮赌输 1 轮（推出去 0000、
+		 * 游戏随后才写 AABB），对端把旧值记进本轮，checksum 当场 ck=1。 */
 		if (gba->sio.mode == GBA_SIO_MULTI && player != 0 && !emu->sioWaiting) {
 			uint16_t want = (uint16_t) (emu->sioIndex + 1);
 			uint16_t got = 0;
@@ -1795,14 +1771,22 @@ static void serviceLink(struct MgbaMobile* emu) {
 						            player, (unsigned) want, (unsigned) got, emu->sioMisorder);
 					}
 				}
+				uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
 				emu->sioIndex = want;
 				emu->sioHasRemote = true;
 				emu->sioRemote = remote;
-				/* 本轮收尾之后游戏才会写下一轮的字，所以下一轮的推送留到
-				 * 下一次轮询，见上面的 PUSH 分支。 */
-				emu->sioPushPending = (uint16_t) (emu->sioIndex + 1);
 				completeMultiTransfer(emu, remote, true, 0);
+				netLinkPush(emu->link, GBA_SIO_MULTI, own, emu->sioIndex);
+				emu->sioPushValue = own;
+				emu->sioPushIndex = emu->sioIndex;
+				emu->sioPushed = true;
+				if (own != 0xB9A0 && emu->hsPushDbg < 70) {
+					++emu->hsPushDbg;
+					MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X reply=1",
+					            emu->hsPushDbg, player, (unsigned) emu->sioIndex, own);
+				}
 			}
+
 		}
 	}
 	/* 先收主机的传输请求：从机的这一次传输应当由它来收尾。做完再考虑看门狗，
@@ -1897,13 +1881,13 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 	/* 握手/数据阶段定向日志：B9A0 等待轮安静，其余（8FFF/数据字/空轮/超时）全记，
 	 * 两边逐轮对比就能看出错位在哪一轮。 */
 	if (((data[0] != 0xB9A0 && data[0] != 0xFFFF) || (data[1] != 0xB9A0 && data[1] != 0xFFFF))
-	    && emu->hsDbg < 150) {
+	    && emu->hsDbg < 900) {
 		++emu->hsDbg;
 		MOBILE_LOGI("HSX #%u me=%d idx=%u m0=%04X m1=%04X have=%d to=%u mis=%u",
 		            emu->hsDbg, me, (unsigned) emu->sioIndex, data[0], data[1],
 		            haveRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
 	}
-	if (emu->xferDbg < 150) {
+	if (emu->xferDbg < 900) {
 		++emu->xferDbg;
 		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
 		            emu->xferDbg, me, (unsigned) emu->sioIndex,
@@ -2360,7 +2344,6 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->sioPushed = false;
 		emu->sioPushValue = 0;
 		emu->sioPushIndex = 0;
-		emu->sioPushPending = 0;
 		emu->sioMisorder = 0;
 		emu->sioHasRemote = false;
 		emu->sioEvtDbg = 0;
@@ -2371,6 +2354,7 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->hsDbg = 0;
 		emu->hsPushDbg = 0;
 		emu->hsStartDbg = 0;
+		emu->lkqFrames = 0;
 		MOBILE_LOGI("Link attached as P%d", netLinkPlayer(emu->link) + 1);
 	}
 }
@@ -2504,6 +2488,23 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		            (int) GBAView8(g->cpu, PEEK_LINK + 0x0D),
 		            (int) GBAView8(g->cpu, PEEK_LINK + 0x12));
 #endif
+		}
+		/* 命令队列探针：每 30 帧打一行，看游戏自己有没有在入队/出队。
+		 * sendQ 一直 0 => 应用层没东西要发（不是链路没送到）；
+		 * recvQ 一直 0 => 收到的字没被组装成命令（多半是轮次/槽位错位）。 */
+		if (emu->linkAttached && emu->lkqFrames < 6000 && (++emu->lkqFrames % 30) == 0) {
+			uint16_t lkck = (uint16_t) GBAView16(g->cpu, PEEK_LINK + 0x14);
+			MOBILE_LOGI("LKQ f=%u me=%d st=%08X st2=%08X gst=%d ck=%04X sci=%u rci=%u sq=%u/%u rq=%u/%u ok=%u idx=%u",
+			            emu->lkqFrames, netLinkPlayer(emu->link), stNow,
+			            (uint32_t) GBAView32(g->cpu, PEEK_LINK_STATUS + 0x0C),
+			            (int) GBAView8(g->cpu, PEEK_LINK + 0x01), lkck,
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + 0x16),
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + 0x17),
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_POS),
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_CNT),
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_POS),
+			            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT),
+			            emu->sioOk, (unsigned) emu->sioIndex);
 		}
 		/* 检测到 gLinkStatus 由非零掉到 0（CloseLink 复位）：把复位前那帧的状态
 		 * 和当时的 SIO 现场打出来，定位到底是哪条路径触发了断链。 */

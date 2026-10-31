@@ -177,6 +177,37 @@ public class EmulatorActivity extends AppCompatActivity {
                     room == null ? "" : room);
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.LINK --es mode host|join
+     *  [--es ip 10.0.2.2] [--ei port 8765]` start the plain LAN link without the
+     *  menu bar dialog. Same path as the 局域网创建/局域网加入 buttons; the dialog's
+     *  buttons sit under the game SurfaceView in headless emulators and cannot be
+     *  tapped reliably, which is exactly what the联机链路 tests need. */
+    private final BroadcastReceiver linkReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "link broadcast ignored: no rom loaded");
+                return;
+            }
+            String mode = intent.getStringExtra("mode");
+            String ip = intent.getStringExtra("ip");
+            int port = intent.getIntExtra("port", 8765);
+            if (remoteLink != null) {
+                remoteLink.close();
+            }
+            boolean ok;
+            if ("host".equalsIgnoreCase(mode)) {
+                ok = core.linkHost(port);
+            } else if ("join".equalsIgnoreCase(mode)) {
+                ok = core.linkJoin(ip == null ? "10.0.2.2" : ip.trim(), port);
+            } else {
+                Log.i(TAG, "link broadcast ignored: bad mode " + mode);
+                return;
+            }
+            Log.i(TAG, "link broadcast mode=" + mode + " ip=" + ip + " port=" + port + " ok=" + ok);
+            startLinkWatch();
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -390,6 +421,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(cloudReceiver, cloudFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(cloudReceiver, cloudFilter);
+        }
+        IntentFilter linkFilter = new IntentFilter("io.mgba.android.action.LINK");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(linkReceiver, linkFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(linkReceiver, linkFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
