@@ -139,6 +139,10 @@ struct MgbaMobile {
 	uint32_t xferDbg;
 	uint32_t pushDbg;
 	uint32_t toDbg;
+	/* 握手窗口定向日志：只打 8FFF/全零/超时轮，跳过几千轮 B9A0 等待。 */
+	uint32_t hsDbg;
+	uint32_t hsPushDbg;
+	uint32_t hsStartDbg;
 	uint32_t heldKeys;
 	uint32_t latchedKeys;
 	uint32_t frameKeys;
@@ -1755,10 +1759,16 @@ static void serviceLink(struct MgbaMobile* emu) {
 				emu->sioPushPending = 1;
 			}
 			if (emu->sioPushPending) {
-				uint16_t round = emu->sioPushPending;
-				emu->sioPushPending = 0;
-				netLinkPush(emu->link, GBA_SIO_MULTI, local, round);
-				if (emu->pushDbg < 80) {
+					uint16_t round = emu->sioPushPending;
+					emu->sioPushPending = 0;
+					netLinkPush(emu->link, GBA_SIO_MULTI, local, round);
+					if (local != 0xB9A0 && emu->hsPushDbg < 70) {
+						++emu->hsPushDbg;
+						MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X send=%04X",
+						            emu->hsPushDbg, player, (unsigned) round,
+						            (unsigned) local, (unsigned) local);
+					}
+					if (emu->pushDbg < 80) {
 					++emu->pushDbg;
 					MOBILE_LOGI("PUSH #%u me=%d idx=%u val=%04X",
 					            emu->pushDbg, player, (unsigned) round, (unsigned) local);
@@ -1884,6 +1894,15 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 	emu->sioOk++;
 	emu->sioBusyCycle = 0;
 	emu->sioStashValid = false;
+	/* 握手/数据阶段定向日志：B9A0 等待轮安静，其余（8FFF/数据字/空轮/超时）全记，
+	 * 两边逐轮对比就能看出错位在哪一轮。 */
+	if (((data[0] != 0xB9A0 && data[0] != 0xFFFF) || (data[1] != 0xB9A0 && data[1] != 0xFFFF))
+	    && emu->hsDbg < 150) {
+		++emu->hsDbg;
+		MOBILE_LOGI("HSX #%u me=%d idx=%u m0=%04X m1=%04X have=%d to=%u mis=%u",
+		            emu->hsDbg, me, (unsigned) emu->sioIndex, data[0], data[1],
+		            haveRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
+	}
 	if (emu->xferDbg < 150) {
 		++emu->xferDbg;
 		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
@@ -2161,10 +2180,12 @@ static uint16_t gbaLinkWriteRcnt(struct GBASIODriver* driver, uint16_t value) {
 
 static bool gbaLinkStart(struct GBASIODriver* driver) {
 	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
-	if (emu->sioDbg < 60) {
-		++emu->sioDbg;
-		MOBILE_LOGI("SIO start (mode %d, id %d)", driver->p ? (int) driver->p->mode : -1,
-		            netLinkPlayer(emu->link));
+	if (emu->hsStartDbg < 24) {
+		/* 数据阶段的 SIO_START 就是 Timer3 驱动链的心跳，跟着 HSX 一起看。 */
+		++emu->hsStartDbg;
+		MOBILE_LOGI("HSS me=%d start (mode %d) waiting=%d idx=%u",
+		            netLinkPlayer(emu->link), driver->p ? (int) driver->p->mode : -1,
+		            emu->sioWaiting, (unsigned) emu->sioIndex);
 	}
 	if (!emu->link || !emu->core || !driver->p || driver->p->mode != GBA_SIO_MULTI) {
 		return true;
@@ -2307,8 +2328,21 @@ static void attachLink(struct MgbaMobile* emu) {
 		return;
 	}
 	if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
+		struct GBA* gba = (struct GBA*) emu->core->board;
+		int me = netLinkPlayer(emu->link);
+		uint16_t siocnt;
 		prepareGbaDriver(emu);
-		GBASIOSetDriver(&((struct GBA*) emu->core->board)->sio, &emu->gbaLink.d);
+		GBASIOSetDriver(&gba->sio, &emu->gbaLink.d);
+		/* 游戏可能在挂载之前就已进入 HANDSHAKE，CheckMasterOrSlave 读到的还是
+		 * 「无驱动」时代的 SIOCNT（Slave=1）——两边都当从机，谁也不起传输，
+		 * 而握手态又没有新的 SIOCNT 写入来纠正，永远卡死。挂载这一刻把
+		 * Slave/Ready/ID 位改写成联机线会话的真值，游戏下一帧重新判定。 */
+		siocnt = GBASIOMultiplayerSetId(gba->sio.siocnt, me);
+		siocnt = GBASIOMultiplayerSetSlave(siocnt, me != 0);
+		siocnt = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(siocnt));
+		MOBILE_LOGI("SIOCNT patched at attach: id=%d %04X -> %04X",
+		            me, gba->sio.siocnt, siocnt);
+		gba->sio.siocnt = siocnt;
 		emu->linkAttached = true;
 	} else if (emu->core->platform(emu->core) == mPLATFORM_GB) {
 		prepareGbDriver(emu);
@@ -2334,6 +2368,9 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->sioInDbg = 0;
 		emu->sioSkipDbg = 0;
 		emu->sioSlaveDoneDbg = 0;
+		emu->hsDbg = 0;
+		emu->hsPushDbg = 0;
+		emu->hsStartDbg = 0;
 		MOBILE_LOGI("Link attached as P%d", netLinkPlayer(emu->link) + 1);
 	}
 }
@@ -2343,7 +2380,19 @@ static void pollLink(struct MgbaMobile* emu) {
 		return;
 	}
 	bool up = netLinkState(emu->link) == 2;
-	if (up && !emu->linkAttached) {
+	/* 复位（core.reset）会把 GBA 结构里的 sio.driver 清空，但 linkAttached 还
+	 * 留着 true —— 不补这个检查的话，复位后永远不会重新挂载驱动，游戏在
+	 * 联机等待画面卡死（SIO poll 永远 drv=0）。 */
+	bool drvOk = false;
+	if (up && emu->core) {
+		if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
+			drvOk = ((struct GBA*) emu->core->board)->sio.driver == &emu->gbaLink.d;
+		} else if (emu->core->platform(emu->core) == mPLATFORM_GB) {
+			drvOk = ((struct GB*) emu->core->board)->sio.driver == &emu->gbLink.d;
+		}
+	}
+	if (up && (!emu->linkAttached || !drvOk)) {
+		emu->linkAttached = false;
 		attachLink(emu);
 	} else if (!up && emu->linkAttached) {
 		detachLink(emu);
@@ -2466,7 +2515,13 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		}
 		emu->sioPrevStatus = stNow;
 	}
-	if (count == 1 && emu->link && netLinkState(emu->link) == 2) {
+	/* 帧屏障只在没挂 SIO 驱动时做（镜像模式用它对齐两边帧钟）。联机线会话里
+	 * 这 400ms 的互相等是毒药：主机卡在 SIO 轮的 takePeerWord 里等从机推送，
+	 * 从机卡在 barrier 里等主机下一条 TICK，两边恰好互相耗尽 400ms —— 数据
+	 * 阶段跑到几十轮后必有一轮 takePeerWord 超时，游戏立刻报「连接发生了
+	 * 错误」。轮本身的阻塞（等对端推送）已经是背压，帧对齐交给两边的 60fps
+	 * 节拍就够了。 */
+	if (count == 1 && emu->link && netLinkState(emu->link) == 2 && !emu->linkAttached) {
 		netLinkBarrier(emu->link, 400);
 	}
 	applyFrameskip(emu->core, count > 1 ? count - 1 : emu->userSkip);
