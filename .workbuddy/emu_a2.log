@@ -2,19 +2,19 @@ INFO         | Android emulator version 37.2.12.0 (build_id 16428233) (CL:N/A)
 INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
-INFO         | IPv4 server found: 114.114.114.114
-INFO         | Ignore IPv6 address: 2069:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: 2069:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: 2069:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: 106f:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: 106f:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: 106f:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: c079:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: c079:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: c079:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: b87f:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: b87f:e061:3802:0:d063:e061:3802:0
-INFO         | Ignore IPv6 address: b87f:e061:3802:0:d063:e061:3802:0
+INFO         | IPv4 server found: 172.18.0.2
+INFO         | Ignore IPv6 address: e8c2:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: e8c2:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: e8c2:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: d8c8:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: d8c8:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: d8c8:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 88d3:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 88d3:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 88d3:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 80d9:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 80d9:2963:2f02:0:70b6:2963:2f02:0
+INFO         | Ignore IPv6 address: 80d9:2963:2f02:0:70b6:2963:2f02:0
 INFO         | Guest GLES Driver: Auto (ext controls)
 INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
@@ -26,7 +26,8 @@ INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
 INFO         |      Ok: Disk space requirements to run avd: `mgba_test` are met
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 15760
+ERROR        | Unable to connect to adb daemon on port: 5037
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 36816
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -36,10 +37,10 @@ INFO         | GPU #1
 
 INFO         | Disabling implicit Vulkan layers to avoid compatibility issues. Set VK_LOADER_LAYERS_DISABLE manually to disable this behavior.
 INFO         | initIcdPaths: ICD set to 'swiftshader', using Swiftshader ICD
-INFO         | Setting ICD filenames for the loader = D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader_icd.json
-INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\qemu\windows-x86_64\lib64\vulkan\vulkan-1.dll]
-INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\vulkan-1.dll]
-INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\vulkan-1.dll
+INFO         | initIcdPaths: Resolved SwiftShader driver DLL path for direct loading: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
+INFO         | getPossibleLoaderPaths: Bypassing Vulkan Loader, using direct driver path: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
+INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll]
+INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
 INFO         | Selecting Vulkan device: SwiftShader Device (LLVM 10.0.0), Version: 1.2.0
 INFO         | Using Vulkan externalMemoryMode: HostAllocation for VkEmulation
 INFO         | Format VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 does not support YCbCr sampler conversion
@@ -96,6 +97,48 @@ INFO         |   androidboot.vbmeta.hash_alg=sha256
 INFO         |   androidboot.vbmeta.size=6656
 INFO         |   androidboot.veritymode=enforcing
 AEHD is operational
+netsim I 10-31 17:26:06.465 netsimd.rs:375 - netsim startup
+netsim I 10-31 17:26:06.466 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
+netsim I 10-31 17:26:06.466 netsimd.rs:386 - Args {
+    fd_startup_str: None,
+    connector_instance: None,
+    instance: None,
+    logtostderr: false,
+    dev: false,
+    no_cli_ui: true,
+    no_web_ui: false,
+    http_proxy: Some(
+        "http://127.0.0.1:3361",
+    ),
+    no_shutdown: false,
+    idle_shutdown_timeout: None,
+    startup_timeout: None,
+    pcap: false,
+    disable_address_reuse: false,
+    verbose: false,
+    version: false,
+    grpc_port: None,
+    hci_port: None,
+    tcp_port: None,
+    ws_port: None,
+    host_dns: Some(
+        "172.18.0.2",
+    ),
+    forward_host_mdns: false,
+    test_beacons: false,
+    no_test_beacons: false,
+    wifi: WifiConfig {
+        wifi_ssid: None,
+        wifi_password: None,
+        wifi_channel: None,
+        wifi_beacon_interval: None,
+        wifi_mode: None,
+    },
+}
+host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
+host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
+host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
+host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
@@ -107,4 +150,4 @@ INFO         | Setting display: 0 configuration to: 1080x2400, dpi: 420x420
 INFO         | setDisplayActiveConfig: id:0, 1080x2400
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
-INFO         | Boot completed in 56679 ms
+INFO         | Boot completed in 42434 ms

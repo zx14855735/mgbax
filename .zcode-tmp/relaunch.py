@@ -1,18 +1,20 @@
-import subprocess, time, io, sys
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-ADB = r'D:\Android\Sdk\platform-tools\adb.exe'
-SER = {'A': 'emulator-5554', 'B': 'emulator-5556'}
+"""Relaunch both emulators' app in lockstep and snapshot.
 
-for k, s in SER.items():
-    subprocess.run([ADB, '-s', s, 'shell', 'am', 'start', '-n', 'io.mgba.android/.EmulatorActivity',
-                    '-a', 'android.intent.action.VIEW',
-                    '-d', 'file:///sdcard/Android/data/io.mgba.android/files/quetzal.gba'],
-                   capture_output=True, timeout=60)
-print('both launched, waiting 22s')
-time.sleep(22)
-from PIL import Image
-for k, s in SER.items():
-    path = r'D:\mgba-android-version\.workbuddy' + '\\' + k + '_v2.png'
-    with open(path, 'wb') as f:
-        subprocess.run([ADB, '-s', s, 'exec-out', 'screencap', '-p'], stdout=f, timeout=120)
-    print(k, Image.open(path).size)
+Usage: python relaunch.py [wait_seconds]
+"""
+import sys, time
+import drv
+
+wait = int(sys.argv[1]) if len(sys.argv) > 1 else 25
+
+for d in (1, 2):
+    drv.sh(d, 'am force-stop io.mgba.android')
+time.sleep(1.5)
+for d in (1, 2):
+    drv.sh(d, 'am start -n io.mgba.android/.EmulatorActivity -d file:///sdcard/rom.gba')
+print('launched, waiting %ds' % wait)
+time.sleep(wait)
+for d in (1, 2):
+    p = drv.shot(d, 'r_%d.png' % d)
+    print('shot', p)
+print('done')

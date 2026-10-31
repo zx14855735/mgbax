@@ -208,6 +208,32 @@ public class EmulatorActivity extends AppCompatActivity {
             startLinkWatch();
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.STATE --es cmd save|load
+     *  [--ei slot N]` snapshot/restore a savestate without the toolbar buttons, so a
+     *  known club state can be cloned from one emulator to the other for a
+     *  deterministic link-battle harness. Mirrors quickState() but headless-safe. */
+    private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "state broadcast ignored: no rom loaded");
+                return;
+            }
+            String cmd = intent.getStringExtra("cmd");
+            int s = intent.getIntExtra("slot", slot);
+            if ("save".equalsIgnoreCase(cmd)) {
+                slot = s;
+                command.set(CMD_SAVE);
+                Log.i(TAG, "state broadcast save slot=" + s);
+            } else if ("load".equalsIgnoreCase(cmd)) {
+                slot = s;
+                command.set(CMD_LOAD);
+                Log.i(TAG, "state broadcast load slot=" + s);
+            } else {
+                Log.i(TAG, "state broadcast ignored: bad cmd " + cmd);
+            }
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -427,6 +453,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(linkReceiver, linkFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(linkReceiver, linkFilter);
+        }
+        IntentFilter stateFilter = new IntentFilter("io.mgba.android.action.STATE");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(stateReceiver, stateFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(stateReceiver, stateFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
@@ -7299,6 +7331,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(cloudReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(stateReceiver);
         } catch (Exception ignored) {
         }
         stopTimedSave();

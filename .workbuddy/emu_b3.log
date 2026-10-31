@@ -3,31 +3,31 @@ INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
 INFO         | IPv4 server found: 172.18.0.2
-INFO         | Ignore IPv6 address: c87b:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: c87b:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: c87b:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: b881:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: b881:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: b881:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 688c:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 688c:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 688c:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 6092:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 6092:8df8:3702:0:d06e:8df8:3702:0
-INFO         | Ignore IPv6 address: 6092:8df8:3702:0:d06e:8df8:3702:0
+INFO         | Ignore IPv6 address: 183a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: 183a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: 183a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: 840:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: 840:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: 840:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b84a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b84a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b84a:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b050:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b050:c63:502:0:a02d:c63:502:0
+INFO         | Ignore IPv6 address: b050:c63:502:0:a02d:c63:502:0
 INFO         | Guest GLES Driver: Auto (ext controls)
 INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
 INFO         |   Checking: hasCompatibleHypervisor
-INFO         |      Ok: Hypervisor compatibility to run avd: `zx_link_test` are met
+INFO         |      Ok: Hypervisor compatibility to run avd: `mgba_test` are met
 INFO         |   Checking: hasSufficientSystem
-INFO         |      Ok: System requirements to run avd: `zx_link_test` are met
+INFO         |      Ok: System requirements to run avd: `mgba_test` are met
 INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
-INFO         |      Ok: Disk space requirements to run avd: `zx_link_test` are met
+INFO         |      Ok: Disk space requirements to run avd: `mgba_test` are met
 ERROR        | Unable to connect to adb daemon on port: 5037
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 31844
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 44144
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -37,10 +37,10 @@ INFO         | GPU #1
 
 INFO         | Disabling implicit Vulkan layers to avoid compatibility issues. Set VK_LOADER_LAYERS_DISABLE manually to disable this behavior.
 INFO         | initIcdPaths: ICD set to 'swiftshader', using Swiftshader ICD
-INFO         | Setting ICD filenames for the loader = D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader_icd.json
-INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\qemu\windows-x86_64\lib64\vulkan\vulkan-1.dll]
-INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\vulkan-1.dll]
-INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\vulkan-1.dll
+INFO         | initIcdPaths: Resolved SwiftShader driver DLL path for direct loading: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
+INFO         | getPossibleLoaderPaths: Bypassing Vulkan Loader, using direct driver path: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
+INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll]
+INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
 INFO         | Selecting Vulkan device: SwiftShader Device (LLVM 10.0.0), Version: 1.2.0
 INFO         | Using Vulkan externalMemoryMode: HostAllocation for VkEmulation
 INFO         | Format VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 does not support YCbCr sampler conversion
@@ -78,7 +78,7 @@ INFO         |   androidboot.logcat=*:V
 INFO         |   androidboot.opengles.version=196608
 INFO         |   androidboot.qemu=1
 INFO         |   androidboot.qemu.adb.pubkey=QAAAAM3EFVD7N+ACHrgV+35Y5wa6iCjbTt2DzMDNBxH0rOLD8Oortbui5x+7nBna4Vet37Sk2ZDQZ5I4C/UdP6jmlKHUMWCZhdu+24iLtddLIl4At1o3m8IIVOT0tHSdmVOzQZx3gHb4yg9SYQAe2kD+7iH/BLPYeTGJ5HXEpclLZ3PPda9yNo8zablRvf6hqTozcXc1VVjkxg9wRNgQppODsOIrAUnRFFErSI254k44p5cWAgL3MGgIYWF3dFWhzQRpkkH476b8yLWfr8T3knyQXBMWlwot+RKHN10+iDC5QcYdlIL6oTV02i27XgcVjMMfrioPq6Vop9pZMireyCwIZnY+N37Phu9Q4n0+shXjZKXVJTMis0x9h2VJMh3KuIrbxh6qy0Rz6GAzwxq9pRszBzOtm40YS342SOeKpVDYuvpRWIjYGVp7o4VOHKCF/QmNJrjTMYO4x+aL+EYe8dkPJ47zOSaTSrOeQMo27nFhFePUTXVZ5UHPY8m0wniflif6qT0FmrDcQZbaKktii8+fn7cINsk6NJ+rA3dyjklcfB1c8apt667VnaqTwhDG/HlziIa0Zjvry0VcEnY2IiHbQeCMcaAalUAT/QZ43koPm9mbtiucu6fCKFvwFc9U6sBwE4qr8HDwCqk3BmXsfVD0iJo/APTdIrW7JzntOVz+/3m7kRhTKwEAAQA= @unknown
-INFO         |   androidboot.qemu.avd_name=zx_link_test
+INFO         |   androidboot.qemu.avd_name=mgba_test
 INFO         |   androidboot.qemu.camera_hq_edge_processing=0
 INFO         |   androidboot.qemu.camera_protocol_ver=1
 INFO         |   androidboot.qemu.cpuvulkan.version=4206592
@@ -88,7 +88,7 @@ INFO         |   androidboot.qemu.hwcodec.avcdec=2
 INFO         |   androidboot.qemu.hwcodec.hevcdec=2
 INFO         |   androidboot.qemu.hwcodec.vpxdec=2
 INFO         |   androidboot.qemu.settings.system.screen_off_timeout=2147483647
-INFO         |   androidboot.qemu.skin=1080x2340
+INFO         |   androidboot.qemu.skin=1080x2400
 INFO         |   androidboot.qemu.virtiowifi=1
 INFO         |   androidboot.qemu.vsync=60
 INFO         |   androidboot.serialno=EMULATOR37X2X12X0
@@ -101,15 +101,15 @@ host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
+host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
+host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
+host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
+host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 INFO         | Monitoring duration of emulator setup.
 INFO         | Successfully initialized netsim WiFi
 INFO         | Activated packet streamer for bluetooth emulation
-INFO         | Setting display: 0 configuration to: 1080x2340, dpi: 440x440 
-INFO         | setDisplayActiveConfig: id:0, 1080x2340
+INFO         | Setting display: 0 configuration to: 1080x2400, dpi: 420x420 
+INFO         | setDisplayActiveConfig: id:0, 1080x2400
 INFO         | emulatorSetupEnvironment: Environment scene is not required
-INFO         | Loading snapshot 'default_boot'...
-WARNING      | Device 'cache' does not have the requested snapshot 'default_boot'
-
-WARNING      | Failed to load snapshot 'default_boot'
-USER_INFO    | The emulator is performing a cold boot without a saved state because there's no snapshot and you have configured it not to save on exit.
-INFO         | Boot completed in 175045 ms
+USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
+INFO         | Boot completed in 45639 ms

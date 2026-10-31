@@ -143,6 +143,11 @@ struct MgbaMobile {
 	/* gen8 联机命令队列探针：看 gLink 的收发队列到底有没有东西，
 	 * 用来区分「链路没送到」和「游戏根本没入队」。 */
 	uint32_t lkqFrames;
+	/* 一次性内存扫描：握手卡住时把「连续两个 0xB9A0」的位置全找出来，
+	 * 那就是游戏自己的 link 数据区。之前 PEEK_LINK 是照别的 ROM 定的地址，
+	 * 读出来正好落在数据缓冲上（err/ck 读到的是 B9A0 的两个字节），
+	 * 所以 hs/pc/adv 一直不可信。扫描只做一次，不常驻。 */
+	uint32_t memScan;
 	uint32_t heldKeys;
 	uint32_t latchedKeys;
 	uint32_t frameKeys;
@@ -1761,7 +1766,7 @@ static void serviceLink(struct MgbaMobile* emu) {
 			uint16_t want = (uint16_t) (emu->sioIndex + 1);
 			uint16_t got = 0;
 			uint32_t remote = 0;
-			if (netLinkTakePeerWord(emu->link, want, 0, &remote, &got)) {
+			if (netLinkTakePeerWord(emu->link, want, 2, &remote, &got)) {
 				if (got != want) {
 					/* 中间丢了一轮（对端超时收尾过），轮次已经对不上，但接着跑
 					 * 比卡死强：游戏自己会靠 checksum 发现并断开重来。 */
@@ -2431,6 +2436,39 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 			            (int)((stNow >> 12) & 1), (int)((stNow >> 13) & 1),
 			            (int)((stNow >> 16) & 1), (int)((stNow >> 18) & 1),
 			            g->sio.siocnt, emu->sioWaiting, netLinkPlayer(emu->link));
+		}
+		/* 握手卡住时扫一次内存，定位游戏真实的 link 数据区（只做一次）。 */
+		if (!emu->memScan && emu->sioOk > 150 && g->sio.mode == GBA_SIO_MULTI) {
+			emu->memScan = 1;
+			int found = 0;
+			static const uint32_t SPANS[2][2] = {
+				{ 0x02000000u, 0x02040000u },  /* EWRAM 256K */
+				{ 0x03000000u, 0x03008000u }   /* IWRAM 32K  */
+			};
+			for (int s = 0; s < 2 && found < 8; ++s) {
+				for (uint32_t a = SPANS[s][0]; a + 4 < SPANS[s][1] && found < 8; a += 2) {
+					if ((uint16_t) GBAView16(g->cpu, a) != 0xB9A0u) {
+						continue;
+					}
+					if ((uint16_t) GBAView16(g->cpu, a + 2) != 0xB9A0u) {
+						continue;
+					}
+					++found;
+					char buf[320];
+					int n = snprintf(buf, sizeof(buf), "MEMF %08X:", a);
+					for (int k = -12; k < 28; k += 2) {
+						n += snprintf(buf + n, sizeof(buf) - n, " %04X",
+						              (unsigned)(uint16_t) GBAView16(g->cpu, a + k));
+					}
+					MOBILE_LOGI("%s", buf);
+				}
+			}
+			MOBILE_LOGI("MEMS found=%d IME=%d IE=%04X IF=%04X siocnt=%04X mode=%d me=%d ok=%u",
+			            found, (int) g->memory.io[GBA_REG(IME)],
+			            (unsigned) g->memory.io[GBA_REG(IE)],
+			            (unsigned) g->memory.io[GBA_REG(IF)],
+			            g->sio.siocnt, (int) g->sio.mode,
+			            netLinkPlayer(emu->link), emu->sioOk);
 		}
 		/* 逐帧盯着握手推进的几个关键量，只在变化时打点：
 		 * adv = gShouldAdvanceLinkState（游戏推进联机的旗标，LinkMain1 每帧会清零）
