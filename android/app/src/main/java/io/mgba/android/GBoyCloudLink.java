@@ -22,14 +22,23 @@ public final class GBoyCloudLink {
     private static final long PEER_WAIT_MS = 120000;
     private static final long STEP_WAIT_MS = 20000;
 
-    private final GBoyLink.Hooks hooks;
+    public interface Hooks {
+        String romPath();
+        int localKeys();
+        void onRemoteKeys(int keys);
+        void onStatus(String text);
+        void onConnected(boolean asHost, String note);
+        void onRemoteReset();
+    }
+
+    private final Hooks hooks;
     private final Object sendLock = new Object();
     private volatile boolean closed;
     private volatile KcpChannel channel;
     private volatile GbCloud.Session session;
     private Thread worker;
 
-    public GBoyCloudLink(GBoyLink.Hooks hooks) {
+    public GBoyCloudLink(Hooks hooks) {
         this.hooks = hooks;
     }
 

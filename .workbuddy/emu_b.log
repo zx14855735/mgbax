@@ -3,20 +3,21 @@ INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
 INFO         | IPv4 server found: 172.18.0.2
-INFO         | Ignore IPv6 address: 84e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: 84e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: 84e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: f853:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: f853:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: f853:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a85e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a85e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a85e:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a064:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a064:7e45:9f02:0:9041:7e45:9f02:0
-INFO         | Ignore IPv6 address: a064:7e45:9f02:0:9041:7e45:9f02:0
+INFO         | Ignore IPv6 address: a87d:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: a87d:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: a87d:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 9883:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 9883:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 9883:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 488e:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 488e:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 488e:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 4094:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 4094:5e8d:c101:0:3071:5e8d:c101:0
+INFO         | Ignore IPv6 address: 4094:5e8d:c101:0:3071:5e8d:c101:0
 INFO         | Guest GLES Driver: Auto (ext controls)
-INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
+ERROR        | gpuChoiceBasedOnGpuOptions: Selected GPU option 'angle_indirect' is not valid, switching to 'auto' mode.
+INFO         | emuglConfig_init: vulkan_mode_selected:lavapipe gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
 INFO         |   Checking: hasCompatibleHypervisor
 INFO         |      Ok: Hypervisor compatibility to run avd: `zx_link_test` are met
@@ -26,7 +27,7 @@ INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
 INFO         |      Ok: Disk space requirements to run avd: `zx_link_test` are met
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 53412
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 50748
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -35,14 +36,13 @@ INFO         | GPU #1
   Device ID: 28e0
 
 INFO         | Disabling implicit Vulkan layers to avoid compatibility issues. Set VK_LOADER_LAYERS_DISABLE manually to disable this behavior.
-INFO         | initIcdPaths: ICD set to 'swiftshader', using Swiftshader ICD
-INFO         | initIcdPaths: Resolved SwiftShader driver DLL path for direct loading: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
-INFO         | getPossibleLoaderPaths: Bypassing Vulkan Loader, using direct driver path: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
-INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll]
-INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\vk_swiftshader.dll
-INFO         | Selecting Vulkan device: SwiftShader Device (LLVM 10.0.0), Version: 1.2.0
+INFO         | initIcdPaths: ICD set to 'lavapipe', using Lavapipe ICD
+INFO         | initIcdPaths: Resolved Lavapipe driver DLL path for direct loading: D:\Android\Sdk\emulator\lib64\vulkan\libvulkan_lvp.dll
+INFO         | getPossibleLoaderPaths: Bypassing Vulkan Loader, using direct driver path: D:\Android\Sdk\emulator\lib64\vulkan\libvulkan_lvp.dll
+INFO         | SharedLibrary::open for [D:\Android\Sdk\emulator\lib64\vulkan\libvulkan_lvp.dll]
+INFO         | Added library: D:\Android\Sdk\emulator\lib64\vulkan\libvulkan_lvp.dll
+INFO         | Selecting Vulkan device: llvmpipe (LLVM 21.1.2, 256 bits), Version: 1.4.318
 INFO         | Using Vulkan externalMemoryMode: HostAllocation for VkEmulation
-INFO         | Format VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 does not support YCbCr sampler conversion
 INFO         | Format VK_FORMAT_G10X6_B10X6R10X6_2PLANE_422_UNORM_3PACK16 does not support YCbCr sampler conversion
 INFO         | Initializing VkEmulation features:
 INFO         |     glInteropSupported: false
@@ -96,9 +96,9 @@ INFO         |   androidboot.vbmeta.hash_alg=sha256
 INFO         |   androidboot.vbmeta.size=6656
 INFO         |   androidboot.veritymode=enforcing
 AEHD is operational
-netsim I 11-01 00:31:50.881 netsimd.rs:375 - netsim startup
-netsim I 11-01 00:31:50.881 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
-netsim I 11-01 00:31:50.881 netsimd.rs:386 - Args {
+netsim I 11-01 02:12:20.937 netsimd.rs:375 - netsim startup
+netsim I 11-01 02:12:20.937 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
+netsim I 11-01 02:12:20.938 netsimd.rs:386 - Args {
     fd_startup_str: None,
     connector_instance: None,
     instance: None,
@@ -107,7 +107,7 @@ netsim I 11-01 00:31:50.881 netsimd.rs:386 - Args {
     no_cli_ui: true,
     no_web_ui: false,
     http_proxy: Some(
-        "http://127.0.0.1:12987",
+        "http://127.0.0.1:14750",
     ),
     no_shutdown: false,
     idle_shutdown_timeout: None,
@@ -138,15 +138,13 @@ host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
-host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
-host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
-host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
-host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 INFO         | Monitoring duration of emulator setup.
+ERROR        | HTTP proxy handshake with [unknown] failed: UNAVAILABLE: GetOverlappedResult: WSA Error (The I/O operation has been aborted because of either a thread exit or an application request.
+ -- 995)
 INFO         | Successfully initialized netsim WiFi
 INFO         | Activated packet streamer for bluetooth emulation
 INFO         | Setting display: 0 configuration to: 480x800, dpi: 240x240 
 INFO         | setDisplayActiveConfig: id:0, 480x800
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
-INFO         | Boot completed in 41574 ms
+INFO         | Boot completed in 87776 ms

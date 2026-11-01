@@ -177,41 +177,6 @@ public class EmulatorActivity extends AppCompatActivity {
                     room == null ? "" : room);
         }
     };
-    /** Lets `adb shell am broadcast -a io.mgba.android.action.LINK --es mode host|join
-     *  [--es ip 10.0.2.2] [--ei port 8765]` start the plain LAN link without the
-     *  menu bar dialog. Same path as the 局域网创建/局域网加入 buttons; the dialog's
-     *  buttons sit under the game SurfaceView in headless emulators and cannot be
-     *  tapped reliably, which is exactly what the联机链路 tests need. */
-    private final BroadcastReceiver linkReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (core == null) {
-                Log.i(TAG, "link broadcast ignored: no core");
-                return;
-            }
-            /* 这里刻意不要求「已经加载 ROM」：联机时游戏要在开机那一刻就读
-             * SIOCNT 来判定主从，而这个值只有 SIO 驱动挂上之后才是对的。驱动
-             * 要在 ROM 加载之前挂上，链路就必须能在没有 ROM 的时候先建起来，
-             * 之后再用 .ROM 广播把游戏请进来。 */
-            String mode = intent.getStringExtra("mode");
-            String ip = intent.getStringExtra("ip");
-            int port = intent.getIntExtra("port", 8765);
-            if (remoteLink != null) {
-                remoteLink.close();
-            }
-            boolean ok;
-            if ("host".equalsIgnoreCase(mode)) {
-                ok = core.linkHost(port);
-            } else if ("join".equalsIgnoreCase(mode)) {
-                ok = core.linkJoin(ip == null ? "10.0.2.2" : ip.trim(), port);
-            } else {
-                Log.i(TAG, "link broadcast ignored: bad mode " + mode);
-                return;
-            }
-            Log.i(TAG, "link broadcast mode=" + mode + " ip=" + ip + " port=" + port + " ok=" + ok);
-            startLinkWatch();
-        }
-    };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.STATE --es cmd save|load
      *  [--ei slot N]` snapshot/restore a savestate without the toolbar buttons, so a
      *  known club state can be cloned from one emulator to the other for a
@@ -238,44 +203,8 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         }
     };
-    /** Lets `adb shell am broadcast -a io.mgba.android.action.ROM --es path /path/to.gba`
-     *  load a ROM after the fact.
-     *
-     *  This exists for the link harness: the SIO driver has to be attached BEFORE the
-     *  game boots, because the game caches its master/slave role from SIOCNT during
-     *  its own init. `lastRom` auto-load races that (the ROM boots within a second of
-     *  the activity starting), so the harness starts the app with no ROM, brings the
-     *  link up, and only then asks for the ROM to be loaded. */
-    /** Lets `adb shell am broadcast -a io.mgba.android.action.ROOM --es mode create|join
-     *  [--es relay host:port] [--es room CODE] drive the 联机大厅's remote room.
-     *
-     *  This is the lobby path that actually carries GBA SIO bytes: the room relays the
-     *  raw link-cable stream (RemoteLink -> core.linkHost/linkJoin -> mgbaMobileLink*),
-     *  unlike the cloud room, which only mirrors key masks and savestates.
-     *  A room is required for a 宝可梦有线俱乐部 battle, so the headless harness
-     *  needs a way in without tapping the dialog (its buttons sit under the game
-     *  SurfaceView). */
-    private final BroadcastReceiver roomReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            String mode = intent.getStringExtra("mode");
-            String relay = intent.getStringExtra("relay");
-            String room = intent.getStringExtra("room");
-            Log.i(TAG, "room broadcast mode=" + mode + " relay=" + relay + " room=" + room);
-            if (remoteLink != null) {
-                remoteLink.close();
-            }
-            if ("create".equalsIgnoreCase(mode)) {
-                ensureRemote().create(relay == null ? "" : relay.trim(), localIpv4());
-            } else if ("join".equalsIgnoreCase(mode)) {
-                ensureRemote().join(relay == null ? "" : relay.trim(), room == null ? "" : room.trim());
-            } else {
-                Log.i(TAG, "room broadcast ignored: bad mode " + mode);
-                return;
-            }
-            startLinkWatch();
-        }
-    };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.ROM --es path <file>` load a
+     *  ROM from the command line / headless harness without tapping the file picker. */
     private final BroadcastReceiver romReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -402,7 +331,6 @@ public class EmulatorActivity extends AppCompatActivity {
     private Bitmap frame;
     private final AtomicBoolean presentQueued = new AtomicBoolean();
     private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
-    private int lastLinkState = -1;
     private boolean emulatorStarted;
     private boolean awaitingStorage;
     private boolean leftForStorage;
@@ -413,11 +341,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private TextView scaleLabel;
     private SeekBar scaleBar;
     private TextView linkStatusView;
-    private EditText linkRoomView;
-    private TextView relayServerView;
-    private RemoteLink remoteLink;
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
-    private GBoyLink gboyLink;
     /** gboy.top cloud room session (KCP relay), same key mask delivery. */
     private GBoyCloudLink cloudLink;
     private volatile int gboyRemoteKeys;
@@ -507,12 +431,6 @@ public class EmulatorActivity extends AppCompatActivity {
         } else {
             registerReceiver(cloudReceiver, cloudFilter);
         }
-        IntentFilter linkFilter = new IntentFilter("io.mgba.android.action.LINK");
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(linkReceiver, linkFilter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(linkReceiver, linkFilter);
-        }
         IntentFilter stateFilter = new IntentFilter("io.mgba.android.action.STATE");
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(stateReceiver, stateFilter, Context.RECEIVER_EXPORTED);
@@ -524,12 +442,6 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(romReceiver, romFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(romReceiver, romFilter);
-        }
-        IntentFilter roomFilter = new IntentFilter("io.mgba.android.action.ROOM");
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(roomReceiver, roomFilter, Context.RECEIVER_EXPORTED);
-        } else {
-            registerReceiver(roomReceiver, roomFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
@@ -1970,9 +1882,6 @@ public class EmulatorActivity extends AppCompatActivity {
         } else if (cmd == CMD_RESET) {
             core.reset();
             core.clearAudio();
-            if (gboyLink != null) {
-                gboyLink.sendReset();
-            }
             if (cloudLink != null) {
                 cloudLink.sendReset();
             }
@@ -3727,153 +3636,10 @@ public class EmulatorActivity extends AppCompatActivity {
         box.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         box.setPadding(pad, pad, pad, pad);
-        TextView help = new TextView(this);
-        help.setText(R.string.link_help);
-        help.setTextColor(0xFF222222);
-        EditText host = new EditText(this);
-        host.setHint(R.string.link_ip_hint);
-        host.setSingleLine(true);
-        host.setText(getPreferences(MODE_PRIVATE).getString("link_host", ""));
-        EditText port = new EditText(this);
-        port.setInputType(InputType.TYPE_CLASS_NUMBER);
-        port.setSingleLine(true);
-        port.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("link_port", 8765)));
-        EditText relay = new EditText(this);
-        relay.setHint(R.string.link_relay_hint);
-        relay.setSingleLine(true);
-        relay.setText(getPreferences(MODE_PRIVATE).getString("link_relay", ""));
-        EditText room = new EditText(this);
-        room.setHint(R.string.link_room_hint);
-        room.setSingleLine(true);
-        room.setText(getPreferences(MODE_PRIVATE).getString("link_room", ""));
-        linkRoomView = room;
         TextView status = new TextView(this);
         status.setTextColor(0xFF1B5E20);
         status.setPadding(0, pad, 0, 0);
-        status.setText(linkMessage());
         linkStatusView = status;
-        box.addView(help);
-        box.addView(host);
-        box.addView(port);
-        box.addView(buttonRow(
-                linkButton(getString(R.string.link_host), v -> {
-                    int p = parsePort(port.getText().toString());
-                    if (p < 0) {
-                        status.setText(R.string.link_bad_port);
-                        return;
-                    }
-                    if (remoteLink != null) {
-                        remoteLink.close();
-                    }
-                    if (core.linkHost(p)) {
-                        getPreferences(MODE_PRIVATE).edit().putInt("link_port", p).apply();
-                        status.setText(getString(R.string.link_waiting_multi, localIpv4Hint(p)));
-                        startLinkWatch();
-                    } else {
-                        status.setText(linkMessage());
-                    }
-                }),
-                linkButton(getString(R.string.link_join), v -> {
-                    String ip = host.getText().toString().trim();
-                    int p = parsePort(port.getText().toString());
-                    if (ip.isEmpty() || p < 0) {
-                        status.setText(R.string.link_bad_port);
-                        return;
-                    }
-                    if (remoteLink != null) {
-                        remoteLink.close();
-                    }
-                    getPreferences(MODE_PRIVATE).edit().putString("link_host", ip).putInt("link_port", p).apply();
-                    if (core.linkJoin(ip, p)) {
-                        status.setText(linkMessage());
-                        startLinkWatch();
-                    } else {
-                        status.setText(linkMessage());
-                    }
-                })));
-        box.addView(relay);
-        box.addView(room);
-        box.addView(buttonRow(
-                linkButton(getString(R.string.link_remote_create), v -> {
-                    String relayText = relay.getText().toString().trim();
-                    getPreferences(MODE_PRIVATE).edit().putString("link_relay", relayText).apply();
-                    ensureRemote().create(relayText, localIpv4());
-                    startLinkWatch();
-                }),
-                linkButton(getString(R.string.link_remote_join), v -> {
-                    String relayText = relay.getText().toString().trim();
-                    String code = room.getText().toString().trim();
-                    getPreferences(MODE_PRIVATE).edit().putString("link_relay", relayText).putString("link_room", code).apply();
-                    ensureRemote().join(relayText, code);
-                    startLinkWatch();
-                })));
-        // ---- 本机作为中继服务器：原来要另跑 relay.py，现在直接装在 APK 里 ----
-        TextView serverHelp = new TextView(this);
-        serverHelp.setText(R.string.link_server_help);
-        serverHelp.setTextColor(0xFF222222);
-        serverHelp.setPadding(0, pad, 0, 0);
-        box.addView(serverHelp);
-        TextView serverState = new TextView(this);
-        serverState.setTextColor(0xFF1B5E20);
-        serverState.setPadding(0, pad, 0, 0);
-        serverState.setText(relayServerText());
-        relayServerView = serverState;
-        box.addView(buttonRow(
-                linkButton(getString(R.string.link_server_start), v -> {
-                    requestNotificationPermission();
-                    RelayService.start(this, RemoteLink.RELAY_PORT);
-                    inputHandler.removeCallbacks(relayTicker);
-                    inputHandler.postDelayed(relayTicker, 400);
-                }),
-                linkButton(getString(R.string.link_server_stop), v -> {
-                    RelayService.stop(this);
-                    inputHandler.removeCallbacks(relayTicker);
-                    inputHandler.postDelayed(relayTicker, 200);
-                })));
-        box.addView(serverState);
-        // ---- GBoy (My Boy) Wi-Fi link ----
-        TextView gboyHelp = new TextView(this);
-        gboyHelp.setText(R.string.link_gboy_help);
-        gboyHelp.setTextColor(0xFF222222);
-        box.addView(gboyHelp);
-        EditText gboyIp = new EditText(this);
-        gboyIp.setHint(R.string.link_gboy_ip_hint);
-        gboyIp.setSingleLine(true);
-        gboyIp.setText(getPreferences(MODE_PRIVATE).getString("gboy_ip", ""));
-        EditText gboyPort = new EditText(this);
-        gboyPort.setInputType(InputType.TYPE_CLASS_NUMBER);
-        gboyPort.setSingleLine(true);
-        gboyPort.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("gboy_port", GBoyLink.DEFAULT_PORT)));
-        box.addView(gboyIp);
-        box.addView(gboyPort);
-        box.addView(buttonRow(
-                linkButton(getString(R.string.link_gboy_host), v -> {
-                    int p = parsePort(gboyPort.getText().toString());
-                    if (p < 0) {
-                        status.setText(R.string.link_bad_port);
-                        return;
-                    }
-                    if (core == null || !core.isLoaded()) {
-                        status.setText(R.string.link_gboy_no_rom);
-                        return;
-                    }
-                    getPreferences(MODE_PRIVATE).edit().putInt("gboy_port", p).apply();
-                    ensureGboy().host(p);
-                }),
-                linkButton(getString(R.string.link_gboy_join), v -> {
-                    String ip = gboyIp.getText().toString().trim();
-                    int p = parsePort(gboyPort.getText().toString());
-                    if (ip.isEmpty() || p < 0) {
-                        status.setText(R.string.link_bad_port);
-                        return;
-                    }
-                    if (core == null || !core.isLoaded()) {
-                        status.setText(R.string.link_gboy_no_rom);
-                        return;
-                    }
-                    getPreferences(MODE_PRIVATE).edit().putString("gboy_ip", ip).putInt("gboy_port", p).apply();
-                    ensureGboy().join(ip, p);
-                })));
         // ---- gboy.top 云端房间：邮箱 + 验证码，与官方客户端同一套账号体系 ----
         TextView cloudHelp = new TextView(this);
         cloudHelp.setText(R.string.link_cloud_help);
@@ -3907,21 +3673,11 @@ public class EmulatorActivity extends AppCompatActivity {
                 linkButton(getString(R.string.link_cloud_join), v ->
                         cloudEnter(false, cloudEmail, cloudCode, cloudPass, cloudRoom, status))));
         box.addView(linkButton(getString(R.string.link_close), v -> {
-            if (remoteLink != null) {
-                remoteLink.close();
-            } else if (core != null) {
-                core.linkClose();
-            }
-            if (gboyLink != null) {
-                gboyLink.close();
-            }
             if (cloudLink != null) {
                 cloudLink.close();
             }
             gboyRemoteKeys = 0;
             publishKeys();
-            inputHandler.removeCallbacks(linkWatch);
-            lastLinkState = 0;
             status.setText(R.string.link_close);
         }));
         box.addView(status);
@@ -3933,9 +3689,6 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setNegativeButton(android.R.string.cancel, null)
                 .create();
         linkDialog.setOnDismissListener(d -> {
-            // 让 ticker 自己停下，别继续攥着已经销毁的 View
-            relayServerView = null;
-            inputHandler.removeCallbacks(relayTicker);
             if (gameView != null) {
                 gameView.setVisibility(View.VISIBLE);
             }
@@ -3946,67 +3699,12 @@ public class EmulatorActivity extends AppCompatActivity {
             gameView.setVisibility(View.INVISIBLE);
         }
         linkDialog.show();
-        inputHandler.removeCallbacks(relayTicker);
-        inputHandler.post(relayTicker);
     }
 
-    private GBoyLink ensureGboy() {
-        if (gboyLink == null) {
-            gboyLink = new GBoyLink(new GBoyLink.Hooks() {
-                @Override
-                public String romPath() {
-                    return getPreferences(MODE_PRIVATE).getString("lastRom", null);
-                }
-
-                @Override
-                public int localKeys() {
-                    return touchKeys | hwKeys;
-                }
-
-                @Override
-                public void onRemoteKeys(final int keys) {
-                    // KEYS arrives ~12x/s; only the transitions matter.
-                    if (keys != gboyRemoteKeys) {
-                        Log.i(TAG, "remote keys mask=0x" + Integer.toHexString(keys));
-                    }
-                    runOnUiThread(() -> {
-                        gboyRemoteKeys = keys;
-                        publishRemoteKeys();
-                    });
-                }
-
-                @Override
-                public void onStatus(final String text) {
-                    runOnUiThread(() -> {
-                        if (linkStatusView != null) {
-                            linkStatusView.setText(text);
-                        }
-                    });
-                }
-
-                @Override
-                public void onConnected(boolean asHost, String note) {
-                    // The session status lands through onStatus right after.
-                }
-
-                @Override
-                public void onRemoteReset() {
-                    runOnUiThread(() -> {
-                        if (core != null && core.isLoaded()) {
-                            core.reset();
-                            core.clearAudio();
-                            toast(getString(R.string.reset_done));
-                        }
-                    });
-                }
-            });
-        }
-        return gboyLink;
-    }
 
     private GBoyCloudLink ensureCloud() {
         if (cloudLink == null) {
-            cloudLink = new GBoyCloudLink(new GBoyLink.Hooks() {
+            cloudLink = new GBoyCloudLink(new GBoyCloudLink.Hooks() {
                 @Override
                 public String romPath() {
                     return getPreferences(MODE_PRIVATE).getString("lastRom", null);
@@ -4261,56 +3959,6 @@ public class EmulatorActivity extends AppCompatActivity {
         return out.toString();
     }
 
-    private RemoteLink ensureRemote() {
-        if (remoteLink == null) {
-            remoteLink = new RemoteLink(new RemoteLink.Hooks() {
-                @Override
-                public void onStatus(String text) {
-                    inputHandler.post(() -> {
-                        if (linkStatusView != null) {
-                            linkStatusView.setText(text);
-                        }
-                    });
-                }
-
-                @Override
-                public void onRoom(String code, String relayForPeer) {
-                    inputHandler.post(() -> {
-                        if (isFinishing() || isDestroyed()) {
-                            return;
-                        }
-                        if (linkRoomView != null) {
-                            linkRoomView.setText(code);
-                        }
-                        getPreferences(MODE_PRIVATE).edit().putString("link_room", code).apply();
-                        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-                        if (clipboard != null) {
-                            clipboard.setPrimaryClip(ClipData.newPlainText("room", code));
-                        }
-                        toast(getString(R.string.link_room_copied, code, relayForPeer));
-                    });
-                }
-
-                @Override
-                public boolean hostLink(int port) {
-                    return core != null && core.linkHost(port);
-                }
-
-                @Override
-                public boolean joinLink(String host, int port) {
-                    return core != null && core.linkJoin(host, port);
-                }
-
-                @Override
-                public void closeLink() {
-                    if (core != null) {
-                        core.linkClose();
-                    }
-                }
-            });
-        }
-        return remoteLink;
-    }
 
     private Button linkButton(String text, View.OnClickListener listener) {
         Button button = new Button(this);
@@ -4330,48 +3978,9 @@ public class EmulatorActivity extends AppCompatActivity {
         return row;
     }
 
-    private final Runnable linkWatch = new Runnable() {
-        @Override
-        public void run() {
-            String status = core == null ? "" : core.linkStatus();
-            int state = linkState(status);
-            if (state != lastLinkState && state == 3) {
-                toast(linkMessage());
-            }
-            lastLinkState = state;
-            if (state == 1 || state == 2) {
-                inputHandler.postDelayed(this, 700);
-            }
-        }
-    };
 
-    private void startLinkWatch() {
-        inputHandler.removeCallbacks(linkWatch);
-        inputHandler.post(linkWatch);
-    }
 
-    /** 每秒刷一次中继状态；对话框关掉（relayServerView 置空）就自然停。 */
-    private final Runnable relayTicker = new Runnable() {
-        @Override
-        public void run() {
-            TextView view = relayServerView;
-            if (view == null) {
-                return;
-            }
-            view.setText(relayServerText());
-            inputHandler.postDelayed(this, 1000);
-        }
-    };
-
-    private String relayServerText() {
-        RelayServer server = RelayService.server();
-        if (server == null || !server.isRunning()) {
-            return getString(R.string.link_server_idle);
-        }
-        return getString(R.string.link_server_running, localIpv4Hint(server.port()), server.statusText());
-    }
-
-    /** Android 13+ 的通知权限只为前台服务那张常驻通知，拒绝也不影响中继本身。 */
+    /** Android 13+ 的通知权限只为前台服务那张常驻通知，拒绝也不影响联机本身。 */
     private void requestNotificationPermission() {
         if (Build.VERSION.SDK_INT < 33) {
             return;
@@ -4385,30 +3994,7 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
-    private static int linkState(String status) {
-        if (status == null || status.isEmpty()) {
-            return 0;
-        }
-        int space = status.indexOf(' ');
-        try {
-            return Integer.parseInt(space < 0 ? status : status.substring(0, space));
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
 
-    private String linkMessage() {
-        String status = core == null ? "" : core.linkStatus();
-        if (status == null) {
-            return "";
-        }
-        int first = status.indexOf(' ');
-        int second = first < 0 ? -1 : status.indexOf(' ', first + 1);
-        if (second < 0 || second + 1 >= status.length()) {
-            return status;
-        }
-        return status.substring(second + 1);
-    }
 
     private int parsePort(String text) {
         try {
@@ -7409,13 +6995,6 @@ public class EmulatorActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         stopTimedSave();
-        if (remoteLink != null) {
-            remoteLink.close();
-        }
-        if (gboyLink != null) {
-            gboyLink.close();
-            gboyLink = null;
-        }
         if (cloudLink != null) {
             cloudLink.close();
             cloudLink = null;
