@@ -75,11 +75,9 @@ final class KcpChannel {
     private volatile boolean dead;
     private final Thread thread;
 
-    private KcpChannel(InetAddress address, int port) throws IOException {
+    private KcpChannel(InetAddress address, int port, int conv) throws IOException {
         this.address = address;
         this.port = port;
-        // GBoy picks the conversation id the same way: a random positive int.
-        int conv = java.util.UUID.randomUUID().hashCode() & Integer.MAX_VALUE;
         this.kcp = new Kcp(conv, MTU, INTERVAL_MS);
         this.socket = new DatagramSocket();
         this.socket.setSoTimeout(5);
@@ -88,9 +86,22 @@ final class KcpChannel {
         this.thread.start();
     }
 
-    /** Opens a session and completes the HS/HK handshake. */
+    private KcpChannel(InetAddress address, int port) throws IOException {
+        // GBoy picks the conversation id the same way: a random positive int.
+        this(address, port, java.util.UUID.randomUUID().hashCode() & Integer.MAX_VALUE);
+    }
+
+    /** Opens a session with an explicit conversation id and completes HS/HK. */
+    static KcpChannel connect(InetAddress address, int port, int conv) throws IOException {
+        return connect(new KcpChannel(address, port, conv));
+    }
+
+    /** Opens a session with a random conversation id and completes HS/HK. */
     static KcpChannel connect(InetAddress address, int port) throws IOException {
-        KcpChannel channel = new KcpChannel(address, port);
+        return connect(new KcpChannel(address, port));
+    }
+
+    private static KcpChannel connect(KcpChannel channel) throws IOException {
         try {
             boolean ok = false;
             for (int attempt = 0; attempt < HANDSHAKE_TRIES && !ok; attempt++) {

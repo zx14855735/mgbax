@@ -69,6 +69,8 @@ public final class GBoyCloudLink {
     private volatile KcpChannel channel;
     private volatile GbCloud.Session session;
     private final GBoyFrames.Reader reader = new GBoyFrames.Reader();
+    /** Last key state received from the peer; only transitions are logged. */
+    private int lastRxKeys = Integer.MIN_VALUE;
     private Thread worker;
 
     public GBoyCloudLink(Hooks hooks) {
@@ -163,21 +165,29 @@ public final class GBoyCloudLink {
 
         Room room = new Room();
         if (asHost) {
-            // Drop a stale room first - an account owns exactly one room and the
-            // server would answer with that old one instead of creating a new.
+            // Order matters and was verified against the live server: the relay
+            // node is NOT part of the first create_game_room answer. It only
+            // shows up once the room has been joined, marked ready and switched
+            // to multiplayer by update_room_settings - from then on every
+            // create_game_room call replies with "您已有房间" plus node_address.
             send(sig, json("leave_room", token, null), 1200);
             send(sig, createJson(token), 2500);
-            // The second call answers with the room that already exists plus
-            // the relay node it was assigned.
-            send(sig, createJson(token), 2500);
-            waitForRoom(sig, room, ROOM_WAIT_MS);
+            waitForRoomId(sig, room, 5000);
+            if (room.roomId == null || room.roomId.isEmpty()) {
+                throw new IOException("服务器没有创建房间");
+            }
+            send(sig, json("join_room", token, room.roomId), 1500);
+            send(sig, json("ready", token, null), 1200);
+            send(sig, settingsJson(token, room.roomId), 1500);
+            if (room.nodeAddress == null || room.nodePort <= 0) {
+                // Ask again: the server now answers with the existing room and
+                // the node it assigned to it.
+                send(sig, createJson(token), 2500);
+                waitForRoom(sig, room, ROOM_WAIT_MS);
+            }
             if (room.nodeAddress == null || room.nodePort <= 0) {
                 throw new IOException("服务器没有返回中继节点");
             }
-            if (room.roomId != null && !room.roomId.isEmpty()) {
-                send(sig, json("join_room", token, room.roomId), 1500);
-            }
-            send(sig, json("ready", token, null), 1200);
         } else {
             status("正在加入房间 " + roomId.trim() + "…");
             send(sig, json("join_room", token, roomId.trim()), 1800);
@@ -191,12 +201,6 @@ public final class GBoyCloudLink {
                         + "请让对方把界面上的「中继 地址:端口」发给你，"
                         + "再用 NODE2:地址:端口 进入");
             }
-        }
-
-        // A room only becomes a real multiplayer room once the settings say so;
-        // the lobby then reports multiGame:1 / started:1.
-        if (room.roomId != null && !room.roomId.isEmpty()) {
-            send(sig, settingsJson(token, room.roomId), 1500);
         }
 
         status("正在连接中继节点 " + room.nodeAddress + ":" + room.nodePort + "…");
@@ -226,14 +230,24 @@ public final class GBoyCloudLink {
 
     /** Skips signalling and connects straight to a hand-supplied relay. */
     private void runManual(String nodeSpec, boolean asHost) throws Exception {
+        Integer explicitConv = null;
+        int hash = nodeSpec.indexOf('#');
+        if (hash > 0) {
+            explicitConv = Integer.decode(nodeSpec.substring(hash + 1).trim());
+            nodeSpec = nodeSpec.substring(0, hash);
+        }
         int colon = nodeSpec.lastIndexOf(':');
         if (colon < 1) {
             throw new IOException("中继地址格式应为 地址:端口");
         }
         String host = nodeSpec.substring(0, colon);
         int port = Integer.parseInt(nodeSpec.substring(colon + 1));
-        status("手动中继：直连 " + host + ":" + port + (asHost ? "（1P）" : "（2P）"));
-        KcpChannel link = KcpChannel.connect(InetAddress.getByName(host), port);
+        status("手动中继：直连 " + host + ":" + port
+                + (explicitConv == null ? "" : " conv=" + explicitConv)
+                + (asHost ? "（1P）" : "（2P）"));
+        KcpChannel link = explicitConv == null
+                ? KcpChannel.connect(InetAddress.getByName(host), port)
+                : KcpChannel.connect(InetAddress.getByName(host), port, explicitConv);
         channel = link;
         if (closed) {
             link.close();
@@ -311,6 +325,91 @@ public final class GBoyCloudLink {
         return reader.next();
     }
 
+    // ---- signalling diagnostic ----
+
+    /**
+     * Drives the room signalling from outside the UI so the gboy.top room
+     * protocol can be mapped without guessing: mode {@code host} creates a room,
+     * mode {@code join} joins {@code roomId}, and both then fire every candidate
+     * action in {@code probes} and log whatever the server answers. Reached via
+     * {@code am broadcast -a io.mgba.android.action.SIGNAL ...}.
+     */
+    void probe(final String mode, final String user, final String password,
+               final String roomId, final String probes) {
+        new Thread(() -> {
+            GbCloud.Session sig = null;
+            try {
+                String token = GbCloud.login(user, password);
+                GbCloud.trace("probe login ok");
+                sig = new GbCloud.Session();
+                session = sig;
+                GbCloud.trace("probe ws ok tls=" + (sig.insecureTls() ? "loose" : "strict"));
+                sig.send(sendMessage(token, gameUuid(), "go"));
+                drain(sig, 1500);
+                String room = roomId == null ? "" : roomId.trim();
+                if ("host".equals(mode)) {
+                    sig.send(json("leave_room", token, null));
+                    drain(sig, 1200);
+                    sig.send(createJson(token));
+                    drain(sig, 2500);
+                    sig.send(createJson(token));
+                    drain(sig, 2500);
+                } else {
+                    sig.send(json("join_room", token, room));
+                    drain(sig, 2000);
+                    sig.send(json("ready", token, null));
+                    drain(sig, 2000);
+                }
+                for (String raw : probes.split(",")) {
+                    String action = raw.trim();
+                    if (action.isEmpty()) {
+                        continue;
+                    }
+                    JSONObject object = new JSONObject();
+                    object.put("action", action);
+                    object.put("token", token);
+                    if (!room.isEmpty()) {
+                        object.put("room_id", room);
+                    }
+                    if ("create_game_room".equals(action)) {
+                        object.put("room_name", gameName());
+                    } else if ("update_room_settings".equals(action)) {
+                        object.put("multi_game", 1);
+                        object.put("is_udp", 1);
+                        object.put("sync_modes", 1);
+                        object.put("game_speed", 100);
+                        object.put("network_buffer", 100);
+                    }
+                    GbCloud.trace("probe >> " + object);
+                    sig.send(object.toString());
+                    drain(sig, 2500);
+                }
+                GbCloud.trace("probe done");
+            } catch (Exception e) {
+                GbCloud.trace("probe failed: " + e);
+            } finally {
+                if (sig != null) {
+                    try {
+                        sig.close();
+                    } catch (Exception ignored) {
+                        // best effort
+                    }
+                }
+            }
+        }, "gboy-signal-probe").start();
+    }
+
+    /** Logs everything the room server pushes for the next {@code ms}. */
+    private void drain(GbCloud.Session sig, long ms) throws IOException {
+        long end = System.currentTimeMillis() + ms;
+        while (System.currentTimeMillis() < end) {
+            String text = sig.recv(Math.max(200, Math.min(1000, end - System.currentTimeMillis())));
+            if (text != null) {
+                GbCloud.trace("ws " + text);
+            }
+        }
+    }
+
     // ---- game loop ----
 
     private void serve(KcpChannel link) {
@@ -322,9 +421,13 @@ public final class GBoyCloudLink {
             if (now - lastKey >= KEY_INTERVAL_MS) {
                 int keys = hooks.localKeys();
                 if (keys != sentKeys || now - lastKey >= 500) {
+                    boolean changed = keys != sentKeys;
                     sentKeys = keys;
                     lastKey = now;
                     link.send(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, keys));
+                    if (changed) {
+                        Log.i(TAG, "tx keys=0x" + Integer.toHexString(keys));
+                    }
                 }
             }
             if (now - lastFps >= 1000) {
@@ -347,11 +450,15 @@ public final class GBoyCloudLink {
         int type = GBoyFrames.typeOf(body);
         switch (type) {
             case GBoyFrames.TYPE_KEYS:
-                hooks.onRemoteKeys(GBoyFrames.intOf(body));
+            case GBoyFrames.TYPE_KEYS_LOCAL: {
+                int keys = GBoyFrames.intOf(body);
+                if (keys != lastRxKeys) {
+                    lastRxKeys = keys;
+                    Log.i(TAG, "rx keys=0x" + Integer.toHexString(keys));
+                }
+                hooks.onRemoteKeys(keys);
                 break;
-            case GBoyFrames.TYPE_KEYS_LOCAL:
-                hooks.onRemoteKeys(GBoyFrames.intOf(body));
-                break;
+            }
             case GBoyFrames.TYPE_RESET:
                 hooks.onRemoteReset();
                 break;
@@ -359,6 +466,7 @@ public final class GBoyCloudLink {
                 Log.i(TAG, "event " + GBoyFrames.intOf(body));
                 break;
             default:
+                Log.i(TAG, "rx type=" + type + " len=" + body.length);
                 break;
         }
     }
@@ -447,6 +555,40 @@ public final class GBoyCloudLink {
                 }
             }
             if (room.nodeAddress != null && room.nodePort > 0) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Reads until the room id is known (the relay node normally is not part of
+     * that first answer). Used before join_room, which needs the id.
+     */
+    private void waitForRoomId(GbCloud.Session sig, Room room, long timeoutMs) throws IOException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline && !closed) {
+            String text = sig.recv(1200);
+            if (text == null) {
+                continue;
+            }
+            GbCloud.trace("ws " + text);
+            JSONObject object = GbCloud.lastJsonObject(text);
+            if (object == null) {
+                continue;
+            }
+            if ("create_game_room".equals(object.optString("type", ""))) {
+                String roomId = object.optString("room_id", null);
+                if (roomId != null && !roomId.isEmpty()) {
+                    room.roomId = roomId;
+                }
+                String address = object.optString("node_address", null);
+                int port = object.optInt("node_port", 0);
+                if (address != null && !address.isEmpty() && port > 0) {
+                    room.nodeAddress = address;
+                    room.nodePort = port;
+                }
+            }
+            if (room.roomId != null && !room.roomId.isEmpty()) {
                 return;
             }
         }

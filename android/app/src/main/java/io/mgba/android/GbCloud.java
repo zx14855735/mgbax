@@ -36,6 +36,31 @@ final class GbCloud {
     static final String WS_HOST = "gboy.top";
     static final int WS_PORT = 23459;
 
+    /**
+     * Trust any certificate. gboy.top serves a certificate issued for
+     * gameboyfrp.top (and the chain it sends is sometimes incomplete), so a
+     * strictly-validating client can never finish the handshake. The official
+     * client tolerates this; we mirror that by falling back to this manager for
+     * both the HTTPS signalling and the WebSocket room link.
+     */
+    private static final javax.net.ssl.X509TrustManager TRUST_ANY =
+            new javax.net.ssl.X509TrustManager() {
+                @Override
+                public void checkClientTrusted(java.security.cert.X509Certificate[] chain,
+                                               String authType) {
+                }
+
+                @Override
+                public void checkServerTrusted(java.security.cert.X509Certificate[] chain,
+                                               String authType) {
+                }
+
+                @Override
+                public java.security.cert.X509Certificate[] getAcceptedIssuers() {
+                    return new java.security.cert.X509Certificate[0];
+                }
+            };
+
     private GbCloud() {
     }
 
@@ -128,29 +153,65 @@ final class GbCloud {
         return token;
     }
 
+    /**
+     * POSTs to the API. Tries a strictly-validating TLS connection first and,
+     * if that fails (gboy.top still presents a certificate issued for
+     * gameboyfrp.top, so the handshake can never validate), falls back to a
+     * connection that trusts any certificate - the same degradation the
+     * WebSocket {@link Session} already applies.
+     */
     private static String post(String body) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(API).openConnection();
-        try {
-            conn.setRequestMethod("POST");
-            conn.setDoInput(true);
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(15000);
-            conn.setRequestProperty("Content-Type", "application/json");
-            OutputStream os = conn.getOutputStream();
+        IOException last = null;
+        for (boolean strict : new boolean[]{true, false}) {
+            HttpURLConnection conn = null;
             try {
-                os.write(body.getBytes(StandardCharsets.UTF_8));
+                conn = openConnection(strict);
+                conn.setRequestMethod("POST");
+                conn.setDoInput(true);
+                conn.setDoOutput(true);
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
+                conn.setRequestProperty("Content-Type", "application/json");
+                OutputStream os = conn.getOutputStream();
+                try {
+                    os.write(body.getBytes(StandardCharsets.UTF_8));
+                } finally {
+                    os.close();
+                }
+                int code = conn.getResponseCode();
+                if (code < 200 || code >= 300) {
+                    throw new IOException("服务器返回 " + code);
+                }
+                return readAll(conn.getInputStream());
+            } catch (IOException e) {
+                last = e;
+                if (strict) {
+                    Log.w(TAG, "HTTPS 严格校验失败，回退到信任任意证书: " + e.getMessage());
+                    continue;
+                }
+                throw e;
             } finally {
-                os.close();
+                if (conn != null) {
+                    conn.disconnect();
+                }
             }
-            int code = conn.getResponseCode();
-            if (code < 200 || code >= 300) {
-                throw new IOException("服务器返回 " + code);
-            }
-            return readAll(conn.getInputStream());
-        } finally {
-            conn.disconnect();
         }
+        throw last;
+    }
+
+    private static HttpURLConnection openConnection(boolean strict) throws IOException {
+        HttpURLConnection conn = (HttpURLConnection) new URL(API).openConnection();
+        if (!strict && conn instanceof javax.net.ssl.HttpsURLConnection) {
+            try {
+                javax.net.ssl.SSLContext context = javax.net.ssl.SSLContext.getInstance("TLS");
+                context.init(null, new javax.net.ssl.TrustManager[]{TRUST_ANY},
+                        new java.security.SecureRandom());
+                ((javax.net.ssl.HttpsURLConnection) conn).setSSLSocketFactory(context.getSocketFactory());
+            } catch (Exception e) {
+                throw new IOException("无法建立加密连接");
+            }
+        }
+        return conn;
     }
 
     /** api.php sometimes echoes notices before the JSON line. */
@@ -189,24 +250,8 @@ final class GbCloud {
         /** False when the server certificate had to be accepted unverified. */
         private final boolean strictTls;
 
-        /** Accepts any certificate. Only used after strict validation failed. */
-        private static final javax.net.ssl.X509TrustManager TRUST_ANY =
-                new javax.net.ssl.X509TrustManager() {
-                    @Override
-                    public void checkClientTrusted(java.security.cert.X509Certificate[] chain,
-                                                   String authType) {
-                    }
-
-                    @Override
-                    public void checkServerTrusted(java.security.cert.X509Certificate[] chain,
-                                                   String authType) {
-                    }
-
-                    @Override
-                    public java.security.cert.X509Certificate[] getAcceptedIssuers() {
-                        return new java.security.cert.X509Certificate[0];
-                    }
-                };
+        /** Accepts any certificate; aliases the shared {@link GbCloud#TRUST_ANY}. */
+        private static final javax.net.ssl.X509TrustManager TRUST_ANY = GbCloud.TRUST_ANY;
 
         private static SSLSocket openTls(boolean strict) throws IOException {
             SSLSocketFactory factory;

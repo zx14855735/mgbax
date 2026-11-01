@@ -177,6 +177,24 @@ public class EmulatorActivity extends AppCompatActivity {
                     room == null ? "" : room);
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.SIGNAL --es mode host|join
+     *  --es user U --es pass P --es room R --es probes a,b,c` drive the gboy.top room
+     *  signalling directly and log every server reply, so the room protocol can be
+     *  mapped (which action hands the joiner the relay node) without guessing. */
+    private final BroadcastReceiver signalReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String mode = intent.getStringExtra("mode");
+            String user = intent.getStringExtra("user");
+            String pass = intent.getStringExtra("pass");
+            String room = intent.getStringExtra("room");
+            String probes = intent.getStringExtra("probes");
+            Log.i(TAG, "signal probe mode=" + mode + " user=" + user + " room=" + room);
+            ensureCloud().probe(mode == null ? "join" : mode,
+                    user == null ? "" : user, pass == null ? "" : pass,
+                    room == null ? "" : room, probes == null ? "" : probes);
+        }
+    };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.STATE --es cmd save|load
      *  [--ei slot N]` snapshot/restore a savestate without the toolbar buttons, so a
      *  known club state can be cloned from one emulator to the other for a
@@ -430,6 +448,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(cloudReceiver, cloudFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(cloudReceiver, cloudFilter);
+        }
+        IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(signalReceiver, signalFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(signalReceiver, signalFilter);
         }
         IntentFilter stateFilter = new IntentFilter("io.mgba.android.action.STATE");
         if (Build.VERSION.SDK_INT >= 33) {
