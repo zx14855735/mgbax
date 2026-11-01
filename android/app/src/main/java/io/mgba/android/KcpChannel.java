@@ -18,15 +18,27 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 /**
- * KCP over UDP, the transport gboy.top's cloud rooms use.
+ * KCP over UDP - the transport gboy.top's cloud rooms use.
  *
- * Reverse engineered from the GBoy client (see .workbuddy/gboy/PROTOCOL.md):
- * a session opens with a random conv, the client sends "HS" and expects "HK"
- * within three seconds (three attempts), then keeps a one-second PING/PONG
- * heartbeat. GBoyLink frames travel inside as KCP messages.
+ * The parameters and the byte order are taken from the official GBoy client
+ * (see {@code .workbuddy/gboy/PROTOCOL.md}):
  *
- * The KCP core is a straight port of the reference algorithm: segmentation,
- * ACK tracking, RTO retransmit, in-order receive with fragment reassembly.
+ * <ul>
+ *   <li>KCP header in <b>big endian</b>: conv, cmd, frg, wnd, ts, sn, una, len</li>
+ *   <li>MTU 512, so MSS 488</li>
+ *   <li>update interval 30 ms</li>
+ *   <li>send and receive window 128</li>
+ *   <li>the conversation id is a random positive int</li>
+ * </ul>
+ *
+ * On top of that sits GBoy's own handshake: the client sends {@code "HS"},
+ * the node answers {@code "HK"}, both retry three times with three seconds
+ * in between. A one second {@code PING}/{@code PONG} heartbeat keeps the
+ * session alive and {@code "DISC"} closes it.
+ *
+ * The KCP core itself is a straight port of the reference algorithm:
+ * segmentation, ACK tracking, RTO retransmit, in-order receive with fragment
+ * reassembly.
  */
 final class KcpChannel {
     private static final String TAG = "GBoyKcp";
@@ -46,6 +58,13 @@ final class KcpChannel {
     private static final int CMD_WASK = 83;
     private static final int CMD_WINS = 84;
 
+    /** Official GBoy parameters. */
+    private static final int MTU = 512;
+    private static final long INTERVAL_MS = 30;
+    private static final int WND = 128;
+    private static final int HANDSHAKE_TRIES = 3;
+    private static final long HANDSHAKE_WAIT_MS = 3000;
+
     private final Kcp kcp;
     private final DatagramSocket socket;
     private final InetAddress address;
@@ -61,7 +80,7 @@ final class KcpChannel {
         this.port = port;
         // GBoy picks the conversation id the same way: a random positive int.
         int conv = java.util.UUID.randomUUID().hashCode() & Integer.MAX_VALUE;
-        this.kcp = new Kcp(conv, 1200, 10);
+        this.kcp = new Kcp(conv, MTU, INTERVAL_MS);
         this.socket = new DatagramSocket();
         this.socket.setSoTimeout(5);
         this.thread = new Thread(this::loop, "gboy-kcp");
@@ -74,9 +93,9 @@ final class KcpChannel {
         KcpChannel channel = new KcpChannel(address, port);
         try {
             boolean ok = false;
-            for (int attempt = 0; attempt < 3 && !ok; attempt++) {
+            for (int attempt = 0; attempt < HANDSHAKE_TRIES && !ok; attempt++) {
                 channel.kcp.send(HS);
-                long deadline = System.currentTimeMillis() + 3000;
+                long deadline = System.currentTimeMillis() + HANDSHAKE_WAIT_MS;
                 while (System.currentTimeMillis() < deadline) {
                     if (channel.handshakeDone) {
                         ok = true;
@@ -100,7 +119,7 @@ final class KcpChannel {
         }
     }
 
-    /** Queues a GBoyLink payload; the pump thread transmits it. */
+    /** Queues a payload; the pump thread transmits it. */
     void send(byte[] payload) {
         kcp.send(payload);
     }
@@ -155,7 +174,7 @@ final class KcpChannel {
             try {
                 socket.receive(packet);
                 byte[] data = Arrays.copyOf(packet.getData(), packet.getLength());
-                if (TRACE && data.length >= 24) {
+                if (TRACE && data.length >= OVERHEAD) {
                     Log.d(TAG, "in cmd=" + (data[4] & 0xFF) + " sn=" + getInt(data, 12)
                             + " len=" + getInt(data, 20) + " size=" + data.length
                             + " conv=" + Integer.toHexString(getInt(data, 0)));
@@ -240,25 +259,26 @@ final class KcpChannel {
         }
     }
 
+    /** Big endian, exactly like the official client. */
     private static void putInt(byte[] out, int off, int value) {
-        out[off] = (byte) value;
-        out[off + 1] = (byte) (value >> 8);
-        out[off + 2] = (byte) (value >> 16);
-        out[off + 3] = (byte) (value >> 24);
+        out[off] = (byte) (value >>> 24);
+        out[off + 1] = (byte) (value >>> 16);
+        out[off + 2] = (byte) (value >>> 8);
+        out[off + 3] = (byte) value;
     }
 
     private static void putShort(byte[] out, int off, int value) {
-        out[off] = (byte) value;
-        out[off + 1] = (byte) (value >> 8);
+        out[off] = (byte) (value >>> 8);
+        out[off + 1] = (byte) value;
     }
 
     private static int getInt(byte[] in, int off) {
-        return (in[off] & 0xFF) | ((in[off + 1] & 0xFF) << 8)
-                | ((in[off + 2] & 0xFF) << 16) | ((in[off + 3] & 0xFF) << 24);
+        return ((in[off] & 0xFF) << 24) | ((in[off + 1] & 0xFF) << 16)
+                | ((in[off + 2] & 0xFF) << 8) | (in[off + 3] & 0xFF);
     }
 
     private static int getShort(byte[] in, int off) {
-        return (in[off] & 0xFF) | ((in[off + 1] & 0xFF) << 8);
+        return ((in[off] & 0xFF) << 8) | (in[off + 1] & 0xFF);
     }
 
     private static final class Kcp {
@@ -273,7 +293,7 @@ final class KcpChannel {
         int sndNxt;
         int rcvNxt;
         int sndUna;
-        int rmtWnd = 128;
+        int rmtWnd = WND;
         long rto = 200;
         long nextUpdate;
         int deadLink = 64;
@@ -288,7 +308,7 @@ final class KcpChannel {
         }
 
         private int window() {
-            int free = 128 - rcvQueue.size() - rcvBuf.size();
+            int free = WND - rcvQueue.size() - rcvBuf.size();
             return free < 0 ? 0 : free;
         }
 
@@ -427,7 +447,7 @@ final class KcpChannel {
                 out.add(seg.encode());
             }
             acks.clear();
-            while (!sndQueue.isEmpty() && sndBuf.size() < 128) {
+            while (!sndQueue.isEmpty() && sndBuf.size() < WND) {
                 byte[] data = sndQueue.poll();
                 Seg seg = new Seg();
                 seg.conv = conv;

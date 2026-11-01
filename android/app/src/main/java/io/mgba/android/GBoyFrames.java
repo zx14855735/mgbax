@@ -3,229 +3,184 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.util.zip.Deflater;
+import java.util.Arrays;
 
 /**
- * Wire format shared by every GBoy / My Boy link flavour.
+ * The GBoy cloud-link frame layer, byte for byte as the official client
+ * (GBoy 26.10.18) speaks it.
  *
- * A GBoyLink packet is {@code [u32 payload length][payload]} and the payload
- * opens with a {@code u16} message type:
+ * <pre>
+ *   +----------------+----------------+--------------------+
+ *   | u32 length (BE)| u16 type (BE)  | payload ...        |
+ *   +----------------+----------------+--------------------+
+ * </pre>
  *
- *   1 HELLO   u16 type + u32 6 (protocol version)
- *   2 ROMINFO u16 type + 32-byte ASCII MD5 of the ROM + u16 name length + name
- *   3 READY   u16 type only
- *   4 KEYS    u16 type + u32 GBA key mask
- *   5 RESET   u16 type only
- *   6 STATE   u16 type + u32 size + zlib-compressed GBASTATE v4 image
+ * {@code length} counts the two type bytes <em>and</em> the payload, so a bare
+ * frame is {@code length = 2} and occupies six bytes on the wire. The official
+ * client builds every frame with
+ * {@code ByteBuffer.allocate(payload + 6); putInt(payload + 2); putShort(type)}
+ * and reads them back with {@code getInt()} / {@code getShort()} on a default
+ * (big endian) {@link java.nio.ByteBuffer}.
  *
- * The local Wi-Fi link streams these over TCP and the gboy.top cloud room
- * carries the very same payloads inside KCP, so both transports build their
- * packets here.
+ * The frame body - type followed by payload - is what the official client
+ * queues, so that is what {@link #typeOf} and {@link #intOf} operate on.
  */
 final class GBoyFrames {
-    static final int MSG_HELLO = 1;
-    static final int MSG_ROM_INFO = 2;
-    static final int MSG_READY = 3;
-    static final int MSG_KEYS = 4;
-    static final int MSG_RESET = 5;
-    static final int MSG_STATE = 6;
 
-    /** Zero-filled body appended to the synthesized state image, in bytes. */
-    private static final int STATE_PAD = 900 * 1024;
+    /** Key bitmask for the console this session owns. */
+    static final int TYPE_KEYS = 0;
+    /** Session registration (ten byte body) and the plain acknowledgement. */
+    static final int TYPE_REGISTER = 1;
+    /** Key bitmask aimed at another console slot. */
+    static final int TYPE_INPUT_2 = 2;
+    /**
+     * "Ready" in the handshake, the key bitmask of console slot 3 while the
+     * game runs - the official client reuses the type for both.
+     */
+    static final int TYPE_READY = 3;
+    static final int TYPE_INPUT_4 = 4;
+    /** Reset request, the body is an int (0). */
+    static final int TYPE_RESET = 5;
+    /** Save state transfer, the body is an int length plus the blob. */
+    static final int TYPE_STATE = 6;
+    /** Key bitmask for the console the local player drives. */
+    static final int TYPE_KEYS_LOCAL = 7;
+    /** Free running counter. */
+    static final int TYPE_COUNTER = 8;
+    /** Frames per second report. */
+    static final int TYPE_FPS = 9;
+    /** Out of band event. */
+    static final int TYPE_EVENT = 10;
 
     private GBoyFrames() {
     }
 
-    /** Bare frame carrying only a message type. */
-    static byte[] frame(int messageType) {
-        byte[] out = new byte[2];
-        out[0] = (byte) (messageType >> 8);
-        out[1] = (byte) messageType;
+    /** Bare frame: {@code length = 2}, no payload. */
+    static byte[] frame(int type) {
+        byte[] out = new byte[6];
+        putInt(out, 0, 2);
+        putShort(out, 4, type);
         return out;
     }
 
-    static byte[] frameHello() {
-        byte[] frame = new byte[6];
-        frame[0] = 0;
-        frame[1] = MSG_HELLO;
-        frame[2] = 0;
-        frame[3] = 0;
-        frame[4] = 0;
-        frame[5] = 6;
-        return frame;
+    /** Frame carrying a single big endian int. */
+    static byte[] frame(int type, int value) {
+        byte[] out = new byte[10];
+        putInt(out, 0, 6);
+        putShort(out, 4, type);
+        putInt(out, 6, value);
+        return out;
     }
 
-    static byte[] frameKeys(int keys) {
-        byte[] frame = new byte[6];
-        frame[0] = 0;
-        frame[1] = MSG_KEYS;
-        frame[2] = (byte) (keys >> 24);
-        frame[3] = (byte) (keys >> 16);
-        frame[4] = (byte) (keys >> 8);
-        frame[5] = (byte) keys;
-        return frame;
+    /**
+     * The registration frame the official client sends the moment the KCP
+     * handshake completes:
+     *
+     * <pre>
+     *   type 1, body: int playerCount, short 0, int baseStateCount
+     * </pre>
+     *
+     * The body is always ten bytes long - the official client allocates
+     * {@code ARc23Z((short) 1, 10)} and only fills the trailing six bytes when
+     * more than one player is present.
+     */
+    static byte[] registerFrame(int playerCount, int baseStateCount) {
+        byte[] out = new byte[16];
+        putInt(out, 0, 12);
+        putShort(out, 4, TYPE_REGISTER);
+        putInt(out, 6, playerCount);
+        putShort(out, 10, 0);
+        putInt(out, 12, baseStateCount);
+        return out;
     }
 
-    static int typeOf(byte[] frame) {
-        if (frame == null || frame.length < 2) {
+    /** The message type of a frame body. */
+    static int typeOf(byte[] body) {
+        if (body == null || body.length < 2) {
             return -1;
         }
-        return ((frame[0] & 0xFF) << 8) | (frame[1] & 0xFF);
+        return ((body[0] & 0xFF) << 8) | (body[1] & 0xFF);
     }
 
-    /** Reads the u32 that follows the message type, or 0 when absent. */
-    static int valueOf(byte[] frame) {
-        if (frame == null || frame.length < 6) {
+    /** The int that follows the message type, or 0 when the body is short. */
+    static int intOf(byte[] body) {
+        if (body == null || body.length < 6) {
             return 0;
         }
-        return ((frame[2] & 0xFF) << 24) | ((frame[3] & 0xFF) << 16)
-                | ((frame[4] & 0xFF) << 8) | (frame[5] & 0xFF);
+        return ((body[2] & 0xFF) << 24) | ((body[3] & 0xFF) << 16)
+                | ((body[4] & 0xFF) << 8) | (body[5] & 0xFF);
+    }
+
+    /** The payload of a frame body, i.e. everything behind the type. */
+    static byte[] payloadOf(byte[] body) {
+        if (body == null || body.length <= 2) {
+            return new byte[0];
+        }
+        return Arrays.copyOfRange(body, 2, body.length);
+    }
+
+    static void putInt(byte[] out, int offset, int value) {
+        out[offset] = (byte) (value >>> 24);
+        out[offset + 1] = (byte) (value >>> 16);
+        out[offset + 2] = (byte) (value >>> 8);
+        out[offset + 3] = (byte) value;
+    }
+
+    static void putShort(byte[] out, int offset, int value) {
+        out[offset] = (byte) (value >>> 8);
+        out[offset + 1] = (byte) value;
+    }
+
+    static int getInt(byte[] in, int offset) {
+        return ((in[offset] & 0xFF) << 24) | ((in[offset + 1] & 0xFF) << 16)
+                | ((in[offset + 2] & 0xFF) << 8) | (in[offset + 3] & 0xFF);
+    }
+
+    static int getShort(byte[] in, int offset) {
+        return ((in[offset] & 0xFF) << 8) | (in[offset + 1] & 0xFF);
     }
 
     /**
-     * Builds the ROM_INFO payload: u16 type + 32-char lowercase MD5 of the ROM
-     * + u16 name length + file name. GBoy's getRomHash is exactly the MD5 hex
-     * of the ROM data, and the 16 bytes at ROM offset 0xA0 carry the
-     * title+code it validates savestates against.
+     * Incremental splitter for the KCP byte stream. The official client does
+     * the same thing by hand: read the big endian length, wait until that many
+     * bytes are available, then hand the body (type + payload) to the queue.
      */
-    static byte[] romInfo(String path) throws IOException {
-        File rom = path == null ? null : new File(path);
-        if (rom == null || !rom.isFile()) {
-            throw new IOException("找不到当前游戏文件");
-        }
-        byte[] identity = new byte[16];
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            InputStream in = new FileInputStream(rom);
-            try {
-                byte[] buf = new byte[65536];
-                int n;
-                long pos = 0;
-                while ((n = in.read(buf)) >= 0) {
-                    md.update(buf, 0, n);
-                    if (pos < 0xB0 && pos + n > 0xA0) {
-                        for (int i = 0; i < n; i++) {
-                            long abs = pos + i;
-                            if (abs >= 0xA0 && abs < 0xB0) {
-                                identity[(int) (abs - 0xA0)] = buf[i];
-                            }
-                        }
-                    }
-                    pos += n;
-                }
-            } finally {
-                in.close();
-            }
-            StringBuilder hex = new StringBuilder(32);
-            for (byte b : md.digest()) {
-                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
-                hex.append(Character.forDigit(b & 0xF, 16));
-            }
-            byte[] hash = hex.toString().getBytes(StandardCharsets.US_ASCII);
-            byte[] name = rom.getName().getBytes(StandardCharsets.UTF_8);
-            byte[] frame = new byte[2 + 32 + 2 + name.length];
-            frame[0] = 0;
-            frame[1] = MSG_ROM_INFO;
-            System.arraycopy(hash, 0, frame, 2, 32);
-            frame[34] = (byte) (name.length >> 8);
-            frame[35] = (byte) name.length;
-            System.arraycopy(name, 0, frame, 36, name.length);
-            return frame;
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException("读取游戏失败");
-        }
-    }
+    static final class Reader {
+        private byte[] buffer = new byte[0];
+        private int position;
 
-    /** The 32-char MD5 a ROM_INFO payload advertises, or null. */
-    static String romHashOf(byte[] frame) {
-        if (frame == null || frame.length < 34) {
-            return null;
+        void append(byte[] data, int length) {
+            if (length <= 0) {
+                return;
+            }
+            int needed = position + length;
+            if (needed > buffer.length) {
+                int size = Math.max(needed, buffer.length * 2 + 64);
+                buffer = Arrays.copyOf(buffer, size);
+            }
+            System.arraycopy(data, 0, buffer, position, length);
+            position = needed;
         }
-        return new String(frame, 2, 32, StandardCharsets.US_ASCII);
-    }
 
-    /**
-     * Synthesizes a GBASTATE v4 image the peer will accept: the header GBoy
-     * validates (magic, version 4, the 16 ROM identity bytes from offset 0xA0,
-     * BIOS flag zero) followed by a zero-filled body, zlib compressed the way
-     * GBoy's loadStateFromMemory expects. The peer's link console loads it and
-     * that game then simply starts from a fresh boot.
-     */
-    static byte[] frameState(String path) {
-        byte[] raw = new byte[32 + STATE_PAD];
-        raw[0] = 'G';
-        raw[1] = 'B';
-        raw[2] = 'A';
-        raw[3] = 'S';
-        raw[4] = 'T';
-        raw[5] = 'A';
-        raw[6] = 'T';
-        raw[7] = 'E';
-        raw[11] = 4;
-        try {
-            File rom = path == null ? null : new File(path);
-            if (rom != null && rom.isFile()) {
-                InputStream in = new FileInputStream(rom);
-                try {
-                    byte[] head = new byte[16];
-                    long skipped = 0;
-                    while (skipped < 0xA0) {
-                        long step = in.skip(0xA0 - skipped);
-                        if (step <= 0) {
-                            break;
-                        }
-                        skipped += step;
-                    }
-                    int got = 0;
-                    while (got < 16) {
-                        int n = in.read(head, got, 16 - got);
-                        if (n < 0) {
-                            break;
-                        }
-                        got += n;
-                    }
-                    System.arraycopy(head, 0, raw, 12, 16);
-                } finally {
-                    in.close();
-                }
+        /** Next complete frame body, or null while the frame is incomplete. */
+        byte[] next() {
+            if (position < 4) {
+                return null;
             }
-        } catch (IOException ignored) {
-        }
-        Deflater deflater = new Deflater();
-        try {
-            deflater.setInput(raw, 0, raw.length);
-            deflater.finish();
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream(raw.length / 8 + 64);
-            byte[] chunk = new byte[8192];
-            int n;
-            while ((n = deflater.deflate(chunk)) > 0) {
-                buffer.write(chunk, 0, n);
+            int length = getInt(buffer, 0);
+            if (length < 2 || length > 65535) {
+                // Not a frame we understand; drop the stream rather than spin.
+                position = 0;
+                return null;
             }
-            byte[] compressed = buffer.toByteArray();
-            // The u32 after the type is the on-the-wire byte count of the
-            // compressed blob (GBoy's h.a() reads exactly that many bytes),
-            // not the uncompressed size.
-            byte[] frame = new byte[6 + compressed.length];
-            frame[0] = 0;
-            frame[1] = MSG_STATE;
-            int size = compressed.length;
-            frame[2] = (byte) (size >> 24);
-            frame[3] = (byte) (size >> 16);
-            frame[4] = (byte) (size >> 8);
-            frame[5] = (byte) size;
-            System.arraycopy(compressed, 0, frame, 6, compressed.length);
-            return frame;
-        } finally {
-            deflater.end();
+            if (position < 4 + length) {
+                return null;
+            }
+            byte[] body = Arrays.copyOfRange(buffer, 4, 4 + length);
+            int consumed = 4 + length;
+            System.arraycopy(buffer, consumed, buffer, 0, position - consumed);
+            position -= consumed;
+            return body;
         }
     }
 }
