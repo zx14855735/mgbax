@@ -199,13 +199,25 @@ enum { REQ_QUEUE = 8 };
  * 所以这里必须按先来先取排队，不能只留最新一条 —— 主机跑在前面时，它已经在
  * 推第 N+1 轮了，而从机还在等第 N 轮；只留最新一条会把第 N 轮的字直接覆盖掉，
  * 从机只能拿到第 N+1 轮的字顶上去，整条流从此错位一格，送进游戏的 SIOMULTI
- * 永远是别人的上一轮数据（握手能过、checksum 必挂）。 */
-enum { PEER_QUEUE = 16 };
+ * 永远是别人的上一轮数据（握手能过、checksum 必挂）。
+ *
+ * 队列深度 64 而不是 16：主机的推送是「一阵一阵」的 —— 战斗阶段主机靠
+ * Timer3 在一帧的头 146904 个周期里连推 8 轮，然后空 133992 个周期才推
+ * 下一轮（帧长 280896）。从机按自己的节奏取字，队列深度要扛得住这一阵
+ * 的突发，否则队满丢最老的一条，从机就会漏掉轮次、双方错位。 */
+enum { PEER_QUEUE = 64 };
 
 struct PeerWord {
 	uint16_t index;
 	uint16_t mode;
 	uint32_t value;
+	/* 对端推送这一轮时的**模拟时钟**（mTiming 周期数）。从机靠它对齐自己的
+	 * 模拟时钟速率：两台模拟器必须同速推进，否则游戏每帧入队/出队的命令
+	 * 会越错越多。 */
+	uint32_t cycles;
+	/* 收到时刻（真实毫秒）。联机排查用：从「网络收到对端的字」到
+	 * 「本机把它用掉」之间隔了多久，一眼就能看出是网络慢还是对端反应慢。 */
+	uint32_t stamp;
 };
 
 struct Packet {
@@ -215,6 +227,8 @@ struct Packet {
 	uint16_t mode;
 	uint16_t player;
 	uint32_t value;
+	/* 发送方的模拟时钟戳（只有 PKT_PUSH 用）。 */
+	uint32_t cycles;
 };
 
 struct Req {
@@ -230,6 +244,8 @@ struct NetLink {
 	pthread_cond_t cv;
 	pthread_mutex_t sendMu;
 	pthread_t ioThread;
+	pthread_t pingThread;
+	bool pingLive;
 	bool threadLive;
 	bool stop;
 	int listenFd;
@@ -243,6 +259,8 @@ struct NetLink {
 	uint32_t publishedMode;
 	uint32_t localTick;
 	uint32_t peerTick;
+	/* 最近一次 netLinkPush 用的模拟时钟戳，随 PUSH 包发给对端。 */
+	uint32_t pushCycles;
 	uint16_t nextSeq;
 	bool waiting;
 	uint16_t waitSeq;
@@ -256,6 +274,8 @@ struct NetLink {
 	int peerCount;
 	uint32_t peerStale;
 	uint32_t peerDrops;
+	/* 上一条取走的对端字的到达时刻（真实毫秒），用来量「排队时延」。 */
+	uint32_t lastPeerStamp;
 
 	struct Req queue[REQ_QUEUE];
 	int qHead;
@@ -266,10 +286,14 @@ struct NetLink {
 	/* 延迟探测：每秒一个往返。GBA 联机线是同步串行协议，两边必须同一个
 	 * 节拍上交换同一个字，所以 RTT 会直接换成掉帧——异地联机前先看清这个数。 */
 	uint32_t pingAt;
+	uint32_t pingAtUs;
 	uint32_t lastPingAt;
 	uint16_t pingSeq;
 	bool pingOut;
 	int rttMs;
+	uint32_t rttUs;
+	uint32_t rttUsMax;
+	uint32_t rttUsN;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -293,6 +317,14 @@ static uint32_t nowMs(void) {
 	struct timeval tv;
 	gettimeofday(&tv, NULL);
 	return (uint32_t) (tv.tv_sec * 1000u + tv.tv_usec / 1000u);
+}
+
+/* 微秒时钟：GBA 联机是「每帧至少 9 次串行中断」的同步协议，一轮往返必须
+ * 压在 1ms 以内，毫秒精度看不出问题，必须 µs 级。 */
+static uint32_t nowUs(void) {
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return (uint32_t) (tv.tv_sec * 1000000u + tv.tv_usec);
 }
 
 static bool writeAll(int fd, const void* data, size_t len) {
@@ -348,6 +380,7 @@ static bool sendPacket(struct NetLink* link, uint16_t type, uint16_t seq, uint16
 	pthread_mutex_unlock(&link->mu);
 	pkt.player = (uint16_t) (player < 0 ? 0 : player);
 	pkt.value = value;
+	pkt.cycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
 	if (fd < 0) {
 		return false;
 	}
@@ -370,6 +403,9 @@ static void enqueueReq(struct NetLink* link, const struct Packet* pkt) {
 	link->queue[idx].stamp = nowMs();
 	link->qCount++;
 }
+
+static void* readerMain(void* arg);
+static void* pingMain(void* arg);
 
 static void* readerMain(void* arg) {
 	struct NetLink* link = (struct NetLink*) arg;
@@ -395,9 +431,21 @@ static void* readerMain(void* arg) {
 			if (link->pingOut && pkt.seq == link->pingSeq) {
 				/* 用对端回带的时间戳算，避免两边时钟不同步。 */
 				int ms = (int) (nowMs() - pkt.value);
+				uint32_t us = nowUs() - (uint32_t) pkt.value;
 				link->pingOut = false;
 				if (ms >= 0 && ms < 5000) {
 					link->rttMs = link->rttMs > 0 ? (link->rttMs * 3 + ms) / 4 : ms;
+				}
+				if (us < 5000000u) {
+					link->rttUs = link->rttUs ? (link->rttUs * 3 + us) / 4 : us;
+					if (us > link->rttUsMax) {
+						link->rttUsMax = us;
+					}
+					++link->rttUsN;
+					if ((link->rttUsN % 4) == 0) {
+						LINK_LOG("Link RTT avg=%uus max=%uus (last=%uus)",
+						         link->rttUs, link->rttUsMax, us);
+					}
 				}
 			}
 			pthread_mutex_unlock(&link->mu);
@@ -436,6 +484,8 @@ static void* readerMain(void* arg) {
 			link->peerQ[slot].index = pkt.seq;
 			link->peerQ[slot].mode = pkt.mode;
 			link->peerQ[slot].value = pkt.value;
+			link->peerQ[slot].cycles = pkt.cycles;
+			link->peerQ[slot].stamp = nowMs();
 			link->peerCount++;
 			pthread_cond_broadcast(&link->cv);
 			pthread_mutex_unlock(&link->mu);
@@ -485,9 +535,40 @@ static bool startReader(struct NetLink* link) {
 		return false;
 	}
 	int rc = pthread_create(&link->ioThread, NULL, readerMain, link);
+	if (rc == 0 && !link->pingLive) {
+		link->pingLive = true;
+		pthread_create(&link->pingThread, NULL, pingMain, link);
+	}
 	link->threadLive = rc == 0;
 	return link->threadLive;
 }
+
+/* 专用 ping 线程：RTT 探针不能挂在模拟线程上——模拟线程在联机传输时会
+ * 阻塞等对端应答，探针会被一起拖住，测出来的就不是链路真实时延。 */
+static void* pingMain(void* arg) {
+	struct NetLink* link = (struct NetLink*) arg;
+	while (!link->stop) {
+		struct timespec sl;
+		sl.tv_sec = 0;
+		sl.tv_nsec = 250L * 1000000L;
+		nanosleep(&sl, NULL);
+		bool doSend = false;
+		uint16_t probeSeq = 0;
+		pthread_mutex_lock(&link->mu);
+		if (link->state == LINK_CONNECTED && link->sock >= 0 && !link->pingOut) {
+			probeSeq = ++link->pingSeq;
+			link->pingOut = true;
+			link->lastPingAt = nowMs();
+			doSend = true;
+		}
+		pthread_mutex_unlock(&link->mu);
+		if (doSend) {
+			sendPacket(link, PKT_PING, probeSeq, 0, nowUs());
+		}
+	}
+	return NULL;
+}
+
 
 static void* hostMain(void* arg) {
 	struct NetLink* link = (struct NetLink*) arg;
@@ -532,6 +613,10 @@ static void* hostMain(void* arg) {
 		setMessage(link, "已连接，你是 1P");
 		pthread_mutex_unlock(&link->mu);
 		LINK_LOG("Link client accepted");
+		if (!link->pingLive) {
+			link->pingLive = true;
+			pthread_create(&link->pingThread, NULL, pingMain, link);
+		}
 		readerMain(link);
 		if (link->stop) {
 			break;
@@ -748,6 +833,31 @@ void netLinkStatusText(struct NetLink* link, char* out, size_t outLen) {
 	pthread_mutex_unlock(&link->mu);
 }
 
+/* 持续 RTT 探针：由模拟线程高频调用，按 250ms 的节奏发一个 PING，
+ * 回声在 IO 线程里算差值。GBA 联机的成败取决于「一轮往返能不能压进 1ms」，
+ * 所以这个数必须一直有，不能只在建链阶段测一次。 */
+void netLinkPingTick(struct NetLink* link) {
+	if (!link) {
+		return;
+	}
+	uint32_t now = nowMs();
+	pthread_mutex_lock(&link->mu);
+	if (link->state != LINK_CONNECTED || link->sock < 0) {
+		pthread_mutex_unlock(&link->mu);
+		return;
+	}
+	if (link->pingOut || (now - link->lastPingAt) < 250u) {
+		pthread_mutex_unlock(&link->mu);
+		return;
+	}
+	uint16_t probeSeq = ++link->pingSeq;
+	link->pingOut = true;
+	link->pingAt = now;
+	link->lastPingAt = now;
+	pthread_mutex_unlock(&link->mu);
+	sendPacket(link, PKT_PING, probeSeq, 0, nowUs());
+}
+
 bool netLinkBarrier(struct NetLink* link, int timeoutMs) {
 	if (!link) {
 		return false;
@@ -767,10 +877,9 @@ bool netLinkBarrier(struct NetLink* link, int timeoutMs) {
 		link->pingOut = true;
 		link->pingAt = now;
 		link->lastPingAt = now;
-	}
-	pthread_mutex_unlock(&link->mu);
+	}	pthread_mutex_unlock(&link->mu);
 	if (probe) {
-		sendPacket(link, PKT_PING, probeSeq, 0, now);
+		sendPacket(link, PKT_PING, probeSeq, 0, nowUs());
 	}
 	if (!sendPacket(link, PKT_TICK, (uint16_t) mine, 0, mine)) {
 		return false;
@@ -878,16 +987,25 @@ void netLinkPublish(struct NetLink* link, uint16_t mode, uint32_t value) {
 	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
 }
 
-void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t index) {
+void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t index, uint32_t cycles) {
 	if (!link) {
 		return;
 	}
 	__atomic_store_n(&link->published, local, __ATOMIC_RELEASE);
 	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
+	/* 模拟时钟戳随这一轮一起发给对端（只对 PKT_PUSH 有意义）。 */
+	__atomic_store_n(&link->pushCycles, cycles, __ATOMIC_RELEASE);
 	sendPacket(link, PKT_PUSH, index, mode, local);
 }
 
-bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut) {
+/* 从队列里取对端的一个字。
+ *
+ * strict = true  —— 严格按轮次号匹配（主机用）。比 want 老的推送当过期丢掉。
+ * strict = false —— 宽松模式（从机用）：不比 want，只要求轮次号比 minIndex 新
+ *                   （即本机还没消费过的那一轮）。这样启动阶段堆积的旧推送会被
+ *                   跳过，不会把从机拖慢一格；取到的轮次号由主机决定，从机直接
+ *                   跟随。 */
+static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
 	if (!link) {
 		return false;
 	}
@@ -899,9 +1017,16 @@ bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uin
 			struct PeerWord w = link->peerQ[link->peerHead];
 			link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
 			link->peerCount--;
-			if ((int16_t) (w.index - want) < 0) {
-				/* 比本轮还老的推送：本机早就超时收尾过了，丢掉，
-				 * 否则后面的每一轮都会被这条拖慢一格。 */
+			if (strict) {
+				if ((int16_t) (w.index - want) < 0) {
+					/* 比本轮还老的推送：本机早就超时收尾过了，丢掉，
+					 * 否则后面的每一轮都会被这条拖慢一格。 */
+					++link->peerStale;
+					continue;
+				}
+			} else if ((int16_t) (w.index - minIndex) <= 0) {
+				/* 已经消费过的轮次（含启动阶段堆积的旧推送）。丢掉，
+				 * 从机只跟随主机给的、还没见过的轮次。 */
 				++link->peerStale;
 				continue;
 			}
@@ -911,6 +1036,10 @@ bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uin
 			if (indexOut) {
 				*indexOut = w.index;
 			}
+			if (cyclesOut) {
+				*cyclesOut = w.cycles;
+			}
+			link->lastPeerStamp = w.stamp;
 			ok = true;
 			break;
 		}
@@ -932,6 +1061,29 @@ bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uin
 	return ok;
 }
 
+bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
+	return takePeerWord(link, want, true, want, timeoutMs, value, indexOut, cyclesOut);
+}
+
+bool netLinkTakePeerWordAny(struct NetLink* link, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
+	return takePeerWord(link, 0, false, minIndex, timeoutMs, value, indexOut, cyclesOut);
+}
+
+/* 对端队列里现在有几个字（只看不取）。
+ *
+ * 从机靠它判断「主机是不是已经在推字了」：只有主机真的推了字，从机才需要
+ * 挂上自己的轮次事件。没联机时主机一个字都不推，从机就完全不用挂上 ——
+ * 这正是把从机的模拟帧率从 1.4fps 救回 60fps 的关键。 */
+int netLinkPeerPending(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	pthread_mutex_lock(&link->mu);
+	int n = link->peerCount;
+	pthread_mutex_unlock(&link->mu);
+	return n;
+}
+
 void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {
 	if (stale) {
 		*stale = 0;
@@ -950,6 +1102,23 @@ void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {
 		*drops = link->peerDrops;
 	}
 	pthread_mutex_unlock(&link->mu);
+}
+
+/* 上一条取走的对端字在队列里待了多久（真实毫秒）。
+ * 联机「等太久」的问题定位就靠它：时延大说明模拟线程没有及时把队列里的
+ * 字取走（对端反应慢），时延小但主机仍然等很久则是网络或索引对不上。 */
+uint32_t netLinkPeerAge(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	pthread_mutex_lock(&link->mu);
+	uint32_t stamp = link->lastPeerStamp;
+	pthread_mutex_unlock(&link->mu);
+	if (!stamp) {
+		return 0;
+	}
+	uint32_t now = nowMs();
+	return now >= stamp ? now - stamp : 0;
 }
 
 bool netLinkRequest(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t* seqOut) {

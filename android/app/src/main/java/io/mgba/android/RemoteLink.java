@@ -284,6 +284,9 @@ public final class RemoteLink {
 
     private void status(int gen, String text) {
         if (live(gen)) {
+        /* 也打进 logcat：房间号/失败原因只出现在联机对话框里，无头测试
+         * 点不到那些按钮，只能从日志里读。 */
+        android.util.Log.i("mGBA-App", "ROOM status: " + text);
             hooks.onStatus(text);
         }
     }

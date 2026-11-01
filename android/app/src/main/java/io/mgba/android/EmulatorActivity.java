@@ -185,10 +185,14 @@ public class EmulatorActivity extends AppCompatActivity {
     private final BroadcastReceiver linkReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            if (core == null || !core.isLoaded()) {
-                Log.i(TAG, "link broadcast ignored: no rom loaded");
+            if (core == null) {
+                Log.i(TAG, "link broadcast ignored: no core");
                 return;
             }
+            /* 这里刻意不要求「已经加载 ROM」：联机时游戏要在开机那一刻就读
+             * SIOCNT 来判定主从，而这个值只有 SIO 驱动挂上之后才是对的。驱动
+             * 要在 ROM 加载之前挂上，链路就必须能在没有 ROM 的时候先建起来，
+             * 之后再用 .ROM 广播把游戏请进来。 */
             String mode = intent.getStringExtra("mode");
             String ip = intent.getStringExtra("ip");
             int port = intent.getIntExtra("port", 8765);
@@ -232,6 +236,61 @@ public class EmulatorActivity extends AppCompatActivity {
             } else {
                 Log.i(TAG, "state broadcast ignored: bad cmd " + cmd);
             }
+        }
+    };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.ROM --es path /path/to.gba`
+     *  load a ROM after the fact.
+     *
+     *  This exists for the link harness: the SIO driver has to be attached BEFORE the
+     *  game boots, because the game caches its master/slave role from SIOCNT during
+     *  its own init. `lastRom` auto-load races that (the ROM boots within a second of
+     *  the activity starting), so the harness starts the app with no ROM, brings the
+     *  link up, and only then asks for the ROM to be loaded. */
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.ROOM --es mode create|join
+     *  [--es relay host:port] [--es room CODE] drive the 联机大厅's remote room.
+     *
+     *  This is the lobby path that actually carries GBA SIO bytes: the room relays the
+     *  raw link-cable stream (RemoteLink -> core.linkHost/linkJoin -> mgbaMobileLink*),
+     *  unlike the cloud room, which only mirrors key masks and savestates.
+     *  A room is required for a 宝可梦有线俱乐部 battle, so the headless harness
+     *  needs a way in without tapping the dialog (its buttons sit under the game
+     *  SurfaceView). */
+    private final BroadcastReceiver roomReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String mode = intent.getStringExtra("mode");
+            String relay = intent.getStringExtra("relay");
+            String room = intent.getStringExtra("room");
+            Log.i(TAG, "room broadcast mode=" + mode + " relay=" + relay + " room=" + room);
+            if (remoteLink != null) {
+                remoteLink.close();
+            }
+            if ("create".equalsIgnoreCase(mode)) {
+                ensureRemote().create(relay == null ? "" : relay.trim(), localIpv4());
+            } else if ("join".equalsIgnoreCase(mode)) {
+                ensureRemote().join(relay == null ? "" : relay.trim(), room == null ? "" : room.trim());
+            } else {
+                Log.i(TAG, "room broadcast ignored: bad mode " + mode);
+                return;
+            }
+            startLinkWatch();
+        }
+    };
+    private final BroadcastReceiver romReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String path = intent.getStringExtra("path");
+            if (path == null || path.trim().isEmpty()) {
+                Log.i(TAG, "rom broadcast ignored: no path");
+                return;
+            }
+            File f = new File(path);
+            if (!f.isFile()) {
+                Log.i(TAG, "rom broadcast ignored: missing " + path);
+                return;
+            }
+            Log.i(TAG, "rom broadcast load " + path);
+            pendingPath.set(path);
         }
     };
     private ControlsView controls;
@@ -459,6 +518,18 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(stateReceiver, stateFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(stateReceiver, stateFilter);
+        }
+        IntentFilter romFilter = new IntentFilter("io.mgba.android.action.ROM");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(romReceiver, romFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(romReceiver, romFilter);
+        }
+        IntentFilter roomFilter = new IntentFilter("io.mgba.android.action.ROOM");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(roomReceiver, roomFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(roomReceiver, roomFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM

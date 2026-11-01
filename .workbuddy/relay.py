@@ -1,15 +1,23 @@
 """MGBA1 联机大厅中转服务器（与 Android 端 RemoteLink.RelayHub 协议完全兼容）。
 
 协议：
-  客户端 -> 服务器： "MGBA1 CREATE\\n"  /  "MGBA1 JOIN <code>\\n"
-  服务器 -> 客户端： "MGBA1 ROOM <code> HOST\\n" / "MGBA1 ROOM <code> GUEST\\n"
-                     / "MGBA1 PEER\\n" / "MGBA1 ERR <NO_ROOM|FULL|TIMEOUT|BAD>\\n"
+  客户端 -> 服务器： "MGBA1 CREATE\n"  /  "MGBA1 JOIN <code>\n"
+  服务器 -> 客户端： "MGBA1 ROOM <code> HOST\n" / "MGBA1 ROOM <code> GUEST\n"
+                    /  "MGBA1 PEER\n" / "MGBA1 ERR <NO_ROOM|FULL|TIMEOUT|BAD>\n"
   双方各收到**恰好一条** "MGBA1 PEER" 后，连接转为原始字节流双向镜像
   （NetLink 的 16 字节小包，非换行分隔），此后不再有任何控制行。
+
+延迟优化（联机成败的关键）：
+  * 所有 socket 显式开 TCP_NODELAY（Windows 上 Nagle 会把小包卡住几十毫秒）。
+  * 配对后的数据转发改成**单线程 select 双向镜像**，不再为每个方向开一个
+    Python 线程 —— 线程切换 + GIL 争抢会给每次往返加上一到几毫秒。
+  * gen8 每帧要发 9 次串行中断（间隔约 1.86ms），一轮往返必须压进 1ms，
+    所以这里的一切都以「减少一次转发」的代价为目标。
 
 用法：
   python relay.py [port]        # 默认 8766
 """
+import select
 import socket
 import sys
 import threading
@@ -20,6 +28,18 @@ PAIR_TIMEOUT = 900  # 15 分钟，与客户端一致
 
 rooms = {}
 rooms_lock = threading.Lock()
+
+
+def tune(sock):
+    """关掉 Nagle：小包立刻发出去，别等 ACK。"""
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception:
+        pass
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except Exception:
+        pass
 
 
 def make_code():
@@ -42,21 +62,32 @@ def read_line(sock, buf):
     return line.decode('ascii', 'replace').strip(), buf[idx + 1:]
 
 
-def pump(src, dst):
-    """src -> dst 裸字节镜像。阻塞式 recv，不会因空闲超时误断。"""
+def splice(host, guest):
+    """单线程 select 双向镜像：host <-> guest。
+
+    收到多少转多少，不做缓冲合并——合并会引入额外的等待。
+    """
+    peers = {host: guest, guest: host}
+    socks = [host, guest]
     try:
         while True:
-            data = src.recv(65536)
-            if not data:
+            readable, _, errored = select.select(socks, [], socks, None)
+            if errored:
                 break
-            dst.sendall(data)
+            for src in readable:
+                data = src.recv(65536)
+                if not data:
+                    return
+                dst = peers[src]
+                dst.sendall(data)
     except Exception:
         pass
     finally:
-        try:
-            dst.shutdown(socket.SHUT_WR)
-        except Exception:
-            pass
+        for s in socks:
+            try:
+                s.shutdown(socket.SHUT_WR)
+            except Exception:
+                pass
 
 
 def pair(room, code):
@@ -66,17 +97,13 @@ def pair(room, code):
         for s in (host, guest):
             try:
                 s.settimeout(None)
+                tune(s)
                 s.sendall(b"MGBA1 PEER\n")
             except Exception:
                 room["done"].set()
                 return
         print("[relay] room %s paired, splicing" % code, flush=True)
-        t1 = threading.Thread(target=pump, args=(host, guest), daemon=True)
-        t2 = threading.Thread(target=pump, args=(guest, host), daemon=True)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        splice(host, guest)
     finally:
         with rooms_lock:
             rooms.pop(code, None)
@@ -107,6 +134,7 @@ def handle(conn, addr):
                     "started": False}
             with rooms_lock:
                 rooms[code] = room
+            tune(conn)
             conn.sendall(("MGBA1 ROOM %s HOST\n" % code).encode())
             print("[relay] room %s created by %s" % (code, addr[0]), flush=True)
 
@@ -129,6 +157,7 @@ def handle(conn, addr):
                     conn.sendall(b"MGBA1 ERR FULL\n")
                     return
                 room["guest"] = conn
+            tune(conn)
             conn.sendall(("MGBA1 ROOM %s GUEST\n" % code).encode())
             print("[relay] room %s guest joined from %s" % (code, addr[0]), flush=True)
             room["guest_arrived"].set()

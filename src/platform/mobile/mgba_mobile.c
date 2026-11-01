@@ -87,6 +87,16 @@ struct MgbaMobile {
 	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
 	 * 毫秒，游戏内的联机握手会直接超时。 */
 	struct mTimingEvent sioDone;
+	/* 从机侧「一轮完成」事件：把从机的模拟时钟钉在与主机同速的节拍上。
+	 * 见 sioSlaveDoneEvent 的注释。 */
+	struct mTimingEvent sioSlaveDone;
+	bool sioSlaveArmed;
+	/* 从机一轮的目标周期（模拟周期数）：主机一轮 = 5755(传输) + 12608(Timer3)
+	 * + 少量处理 ≈ 18363。实测值由对端的模拟时钟戳校准。 */
+	uint32_t sioSlavePeriod;
+	/* 对端最近一次推送时的模拟时钟戳，用来算主机一轮的真实周期。 */
+	uint32_t sioPeerCycles;
+	bool sioPeerCyclesValid;
 	bool sioWaiting;
 	uint16_t sioSeq;
 	int sioRetries;
@@ -114,6 +124,26 @@ struct MgbaMobile {
 	uint32_t sioPrevM0;
 	uint32_t sioPrevM1;
 	uint32_t sioKick;
+	/* 游戏是否已经做过一次主从判定（它的第一笔 MULTI 写入）。在那之前必须
+	 * 按「总线上只有自己」呈现 SIOCNT 的 Slave 位，否则两边都认为是从机。 */
+	bool sioInitSeen;
+	/* 真实速度探针：每 2 秒统计一次模拟帧数，用来发现「模拟时钟被网络等待冻住」。 */
+	uint32_t probeWallAt;
+	uint32_t probeFrames;
+	uint32_t probeCycAt;
+	/* 等对端应答的耗时统计（真实毫秒）。 */
+	double sioWaitTotal;
+	double sioWaitMax;
+	uint32_t sioWaitN;
+	/* 从机侧：拿到对端的字等了多久（排队时延）。 */
+	uint32_t sioAgeTotal;
+	uint32_t sioAgeMax;
+	uint32_t sioAgeN;
+	uint32_t sioPolls;
+	uint32_t sioPollStamp;
+	double sioSvcTotal;
+	double sioSvcMax;
+	uint32_t sioSvcN;
 	/* 联机排查用的限次计数：轮询事件、请求消费、从机收尾各打前几条。 */
 	uint32_t sioEvtDbg;
 	uint32_t sioTakeDbg;
@@ -360,8 +390,17 @@ enum {
  * read), which is exactly what the front end does on a device. */
 double (*mgbaMobileAudioClock)(void);
 
-static double audioNow(void) {
-	if (mgbaMobileAudioClock) {
+/* 真实墙钟（毫秒）。不用 audioNow —— 那个可能被原生测试替换成合成时钟，
+ * 而联机排查要量的是真实耗时（等对端应答花了多少毫秒）。 */
+static uint32_t wallNowMs(void) {
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
+		return (uint32_t) (ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+	}
+	return 0;
+}
+
+static double audioNow(void) {	if (mgbaMobileAudioClock) {
 		return mgbaMobileAudioClock();
 	}
 #if defined(_WIN32)
@@ -385,6 +424,7 @@ static double audioNow(void) {
 static void attachKeyCallback(struct MgbaMobile* emu);
 static void detachLink(struct MgbaMobile* emu);
 static void pollLink(struct MgbaMobile* emu);
+static void applyLinkTerminalBits(struct MgbaMobile* emu);
 static double audioNativeFps(const struct MgbaMobile* emu);
 static void attachCartHw(struct MgbaMobile* emu);
 static void tiltSample(struct mRotationSource* rotation);
@@ -1723,12 +1763,42 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 #endif
 
 #if MGBA_LINK_PEEK
-#define PEEK_LINK_STATUS 0x03002A90u
-#define PEEK_LINK_STATE  0x03002ACCu
-#define PEEK_LINK        0x03002AE8u
-/* struct Link 内部偏移（include/link.h）：sendQueue 在 +0x18，
+/* 联机排查用的游戏内存窥探（只在开着 MGBA_LINK_PEEK 时编译进去）。
+ * 地址来自 ROM 工程的 rom.map（pokeemerald 系布局，v1.7 汉化改版）：
+ *   gLink                  0x03002AF4  struct Link
+ *   gLinkStatus            0x03002A9C  u32（localId | playerCount<<4 | ...）
+ *   gShouldAdvanceLinkState 0x03002AD8 u8
+ *   gLinkOpen              0x02027B80
+ *   gWirelessCommType      0x03002AAD  u8（0=有线，1=无线）
+ *   gLinkErrorOccurred     0x03002A30
+ *   gReceivedRemoteLinkPlayers 0x03002AC1
+ *   gBlockReceivedStatus   0x03002A40
+ * struct Link 内部偏移（include/link.h）：sendQueue 在 +0x18，
  * u16 data[8][50] 之后是 pos/count；recvQueue 在 +0x33C，
  * u16 data[4][8][50] 之后是 pos/count。 */
+#define PEEK_LINK_STATUS 0x03002A9Cu
+#define PEEK_LINK_STATE  0x03002AD8u
+#define PEEK_LINK        0x03002AF4u
+#define PEEK_LINK_OPEN   0x02027B80u
+#define PEEK_LINK_WLESS  0x03002AADu
+#define PEEK_LINK_ERROCC 0x03002A30u
+#define PEEK_LINK_RECVPL 0x03002AC1u
+#define PEEK_LINK_BLOCKS 0x03002A40u
+/* struct Link 内部偏移 */
+#define PEEK_LK_ISMASTER 0x00
+#define PEEK_LK_STATE    0x01
+#define PEEK_LK_LOCALID  0x02
+#define PEEK_LK_PLAYERS  0x03
+#define PEEK_LK_SICTR    0x0D
+#define PEEK_LK_HANDSHAKE 0x0E
+#define PEEK_LK_FIELD_F  0x0F
+#define PEEK_LK_HWERR    0x10
+#define PEEK_LK_BADCK    0x11
+#define PEEK_LK_QFULL    0x12
+#define PEEK_LK_LAG      0x13
+#define PEEK_LK_CHECKSUM 0x14
+#define PEEK_LK_SENDIX   0x16
+#define PEEK_LK_RECVIX   0x17
 #define PEEK_LK_SENDQ_POS 0x0338
 #define PEEK_LK_SENDQ_CNT 0x0339
 #define PEEK_LK_RECVQ_POS 0x0FBC
@@ -1739,11 +1809,35 @@ static void serviceLink(struct MgbaMobile* emu) {
 	if (!emu->linkAttached || !emu->link) {
 		return;
 	}
+	/* 轮询频率探针：serviceLink 由 linkPollEvent 驱动（每 8192 个模拟周期一次），
+	 * 理论上每帧 30 多次。联机握手慢的时候要靠它确认「模拟线程有没有在跑」。 */
+	++emu->sioPolls;
+	if ((emu->sioPolls % 1000) == 0) {
+		uint32_t now = wallNowMs();
+		if (emu->sioPollStamp) {
+			MOBILE_LOGI("POLL me=%d n=%u rate=%u/s svcAvg=%.2fms svcMax=%.2fms",
+			            netLinkPlayer(emu->link), emu->sioPolls,
+			            (uint32_t) (1000.0 * 1000.0 / (double) (now - emu->sioPollStamp)),
+			            emu->sioSvcTotal / (double) emu->sioSvcN, emu->sioSvcMax);
+			emu->sioSvcTotal = 0.0;
+			emu->sioSvcMax = 0.0;
+			emu->sioSvcN = 0;
+		}
+		emu->sioPollStamp = now;
+	}
+	uint32_t svcStart = wallNowMs();
+	/* 链路状态可能在游戏读 SIOCNT 之后才变化（游戏只在少数几处写 SIOCNT），
+	 * 所以每次轮询都把终端位重新对齐一次「链路当前真实的样子」。
+	 * 游戏在 HANDSHAKE 态每帧读一次 SIOCNT，下一帧就会用上正确的值。 */
+	applyLinkTerminalBits(emu);
 	/* 让 IO 线程随时能拿到本机当前要发的字节：对端发请求时它直接回，不必等
 	 * 模拟线程排到。 */
 	uint16_t localMode = 0;
 	uint32_t local = readLinkOut(emu, &localMode);
 	netLinkPublish(emu->link, localMode, local);
+	/* 持续量链路 RTT（µs）：GBA 联机要求每帧 9 次以上串行中断，
+	 * 一轮往返必须压进 1ms，这个数直接决定能不能连上。 */
+	netLinkPingTick(emu->link);
 	/* MULTI 的发送是「一轮一次、两边各推各的」，不再为每个往返等一条 ACK
 	 * （原来每轮要等 ACK，实测 16ms/轮，握手要跑上万轮，游戏最后报「连接
 	 * 发生了错误」）。1P 在写 SIOCNT 起传输那一刻推，2P 在收尾之后的下一
@@ -1756,42 +1850,38 @@ static void serviceLink(struct MgbaMobile* emu) {
 		 * SIO 被时钟扫过时收尾。1P 每轮开始时把本轮的字推过来，收到就把这次
 		 * 传输收掉（写 SIOMULTI + 发 SIO 中断），从机自己的游戏才会往下走。
 		 *
-		 * 回给 1P 的那个字，就用「本轮收尾时游戏自己用的那一个」（SIOMLT_SEND），
-		 * 也就是 completeMultiTransfer 写进 SIOMULTI 的那个值 —— 收发天然一致。
+		 * 收尾动作搬到 sioSlaveDoneEvent 了：由一个**按固定模拟周期触发**的
+		 * 事件来收尾，把从机的模拟时钟钉在与主机同速的节拍上（为什么必须同速
+		 * 见 sioSlaveDoneEvent 的注释）。这里只负责把事件挂上。
 		 *
 		 * 千万不要「提前把下一轮推出去」：gen8 的字是在上一轮收尾的 SIO 中断处理
 		 * 里写的，提前推要赌中断已经跑完 —— 实测 93 轮赌输 1 轮（推出去 0000、
 		 * 游戏随后才写 AABB），对端把旧值记进本轮，checksum 当场 ck=1。 */
-		if (gba->sio.mode == GBA_SIO_MULTI && player != 0 && !emu->sioWaiting) {
-			uint16_t want = (uint16_t) (emu->sioIndex + 1);
-			uint16_t got = 0;
-			uint32_t remote = 0;
-			if (netLinkTakePeerWord(emu->link, want, 0, &remote, &got)) {
-				if (got != want) {
-					/* 中间丢了一轮（对端超时收尾过），轮次已经对不上，但接着跑
-					 * 比卡死强：游戏自己会靠 checksum 发现并断开重来。 */
-					++emu->sioMisorder;
-					if (emu->sioMisorder < 8) {
-						MOBILE_LOGI("SIO 轮次错位 me=%d want=%u got=%u n=%u",
-						            player, (unsigned) want, (unsigned) got, emu->sioMisorder);
-					}
-				}
-				uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-				emu->sioIndex = want;
-				emu->sioHasRemote = true;
-				emu->sioRemote = remote;
-				completeMultiTransfer(emu, remote, true, 0);
-				netLinkPush(emu->link, GBA_SIO_MULTI, own, emu->sioIndex);
-				emu->sioPushValue = own;
-				emu->sioPushIndex = emu->sioIndex;
-				emu->sioPushed = true;
-				if (own != 0xB9A0 && emu->hsPushDbg < 70) {
-					++emu->hsPushDbg;
-					MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X reply=1",
-					            emu->hsPushDbg, player, (unsigned) emu->sioIndex, own);
-				}
+		/* 【从机的轮次事件只在「对端真的推了字过来」时才挂】
+		 *
+		 * 原来这里判的是 gba->sio.mode == GBA_SIO_MULTI —— 但 gen8 的
+		 * DisableSerial() 写的是 REG_SIOCNT = SIO_MULTI_MODE(0x2000)，
+		 * 而 LinkMain1 一进 START0 就会调它一次，之后 sio.mode 就一直
+		 * 停在 MULTI。于是「只要链路挂上」这个条件在**游戏还没进俱乐部、
+		 * 主机一个字节都没推**的时候就成立，从机的轮次事件被挂上，
+		 * 每 18363 个模拟周期阻塞地等一个永远不会来的字。
+		 *
+		 * 后果（实测）：模拟线程每推进 1.1ms 的模拟时间就要阻塞 20ms 的
+		 * 墙钟时间，帧率从 60fps 掉到 1.4fps —— 从机的游戏直接冻在标题
+		 * 画面走不到俱乐部；联机中掉帧又会打破 gen8「每帧至少 9 次串行
+		 * 中断」的要求，游戏报「通信错误…链接是坏的还是终端不匹配？」。
+		 *
+		 * 改成「对端队列里有字才挂」：没联机时主机一个字都不推，从机永远
+		 * 不会被挂上，模拟线程保持满速；联机开始后主机每轮推一个字，从机
+		 * 照旧一轮一个地取走。 */
+		if (player != 0 && !emu->sioSlaveArmed && netLinkPeerPending(emu->link) > 0) {
+			struct mTiming* timing = coreTiming(emu);
+			if (timing) {
+				mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+				emu->sioSlaveArmed = true;
+				MOBILE_LOGI("SIO slave arm: idx=%u period=%u",
+				            (unsigned) emu->sioIndex, emu->sioSlavePeriod);
 			}
-
 		}
 	}
 	/* 先收主机的传输请求：从机的这一次传输应当由它来收尾。做完再考虑看门狗，
@@ -1823,33 +1913,21 @@ static void serviceLink(struct MgbaMobile* emu) {
 		}
 		finishIncoming(emu, mode, value, player);
 	}
-	/* 看门狗：从机 Busy 立起来后如果主机迟迟不发这一轮的字（主机卡住、或者
-	 * 已经掉线），按「没有对端数据」收尾，让游戏自己报通信错误，而不是永久
-	 * 卡在 Busy 上。
+	/* 原来的「看门狗」被 sioSlaveDoneEvent 取代了：从机的每一轮都由那个
+	 * 定时事件收尾，事件里已经带 2500ms 的超时等待，主机掉线时从机会自己
+	 * 超时收尾，不需要额外的看门狗。
 	 *
-	 * 关键：收尾的同时**也要把本轮的字推出去**。原来这里只收尾不推送，一旦
-	 * 触发，主机的 takePeerWord 就永远等不到这一轮的应答（只能超时用 0xFFFF
-	 * 收尾 → checksum 对不上 → 游戏当场报「连接发生了错误」），而且从机的
-	 * 轮次索引停在原地，之后每一轮都会被主机甩开一格，属于不可恢复的错位。
-	 * 补推之后晚到的主机推送会被当成过期条目丢掉，下一轮自动对齐。
-	 * 窗口也从 5 帧放宽到 120 帧：客机偶发上百毫秒的卡顿不该被当成掉线。 */
-	if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
-	    emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
-		struct GBA* gba = (struct GBA*) emu->core->board;
-		struct mTiming* timing = coreTiming(emu);
-		if (gba->sio.mode == GBA_SIO_MULTI && (gba->sio.siocnt & 0x0080) && timing && emu->sioBusyCycle) {
-			uint32_t now = mTimingCurrentTime(timing);
-			if (now - emu->sioBusyCycle > 120 * 280896) {
-				emu->sioBusyCycle = 0;
-				uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-				++emu->sioIndex;
-				netLinkPush(emu->link, GBA_SIO_MULTI, own, emu->sioIndex);
-				emu->sioPushValue = own;
-				emu->sioPushIndex = emu->sioIndex;
-				emu->sioPushed = true;
-				completeMultiTransfer(emu, 0, false, 0);
-			}
-		}
+	 * 而且看门狗在这里是**危险**的：它会在 Busy 位还挂着的时候擅自
+	 * ++sioIndex 并多推一个字，那一轮就凭空多出来，双方的轮次从此错位，
+	 * checksum 必挂。现在从机的轮次只有一个来源（sioSlaveDoneEvent），
+	 * 轮次一一对应，不存在这种风险。 */
+	/* serviceLink 自身耗时：它跑在模拟线程里，一次 30ms 就足以让对端多等一整
+	 * 个轮询周期（这正是「每轮等 31ms」的嫌疑点）。 */
+	{
+		uint32_t spent = wallNowMs() - svcStart;
+		emu->sioSvcTotal += (double) spent;
+		emu->sioSvcMax = spent > emu->sioSvcMax ? (double) spent : emu->sioSvcMax;
+		++emu->sioSvcN;
 	}
 }
 
@@ -1928,6 +2006,175 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  * 绝不把模拟线程挂在这里等网络。对端掉线时按超时收尾，游戏自己会报通信错误
  * 而不是永久卡在 Busy。
  */
+/* 从机侧「一轮完成」事件。
+ *
+ * 【为什么必须把从机的模拟时钟钉在主机的节拍上】
+ * gen8 的游戏每个 VBlank 都会走一遍 LinkMain1：
+ *     EnqueueSendCmd(sendCmd);   // 入队一条命令
+ *     DequeueRecvCmds(recvCmds); // 出队一条命令
+ * 两台模拟器各自跑自己的时钟，只要速率不一致，队列就必然失衡：
+ *   - 从机跑太快：recvQueue 被抽干（收到的命令全是 0），战斗拿不到对手输入；
+ *   - 从机跑太慢：sendQueue 塞满（QUEUE_CAPACITY=50）→ queueFull → 通信错误。
+ * 而从机在等网络的空档里 CPU 是空转的（模拟时钟照跑），一个 6ms 的往返就能
+ * 跑掉十万个周期，是主机一轮（18363）的十几倍 —— 不钉住必然失控。
+ *
+ * 【钉住的办法】
+ * 这一轮**正好**在「上一次完成 + K」个模拟周期后完成，K = 主机一轮的周期。
+ * 事件触发时如果对端的字还没到，就在这里阻塞等（真实时间）。阻塞期间模拟
+ * 时钟是冻结的，所以这一轮的完成时刻恒等于事件被安排的那一刻，从机的时钟
+ * 速率就与主机严格一致。
+ *
+ * K 的取值：主机一轮 = 传输 5755 + Timer3 12608 + 少量处理 ≈ 18363。实测值
+ * 用对端推送时带的模拟时钟戳校准（主机每轮开始推送时会带上自己那一刻的
+ * mTiming 周期数，相邻两轮的差就是主机一轮的真实周期）。
+ *
+ * 【轮次号的归属】
+ * K 的校准和轮次的匹配必须用同一个轮次号，而轮次号只能由主机决定 —— 两端
+ * 各自递增必然发散（从机 206 / 主机 95），严格匹配会把主机的每一条推送都
+ * 当成过期丢掉，从机永远收不到。因此从机这一侧：
+ *   - 取字用宽松入口（netLinkTakePeerWordAny），不做过期丢弃；
+ *   - 直接采用主机给的轮次号当作自己的 sioIndex；
+ *   - 回推时也用这个号，主机那边严格匹配就一定对得上。
+ */
+static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) user;
+	emu->sioSlaveArmed = false;
+	if (!emu->link || !emu->linkAttached || !emu->core) {
+		return;
+	}
+	if (emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	if (gba->sio.mode != GBA_SIO_MULTI) {
+		/* 游戏还没进多人传输（或者已经退出）：不收尾，等下一次轮询再挂。 */
+		return;
+	}
+	int me = netLinkPlayer(emu->link);
+	if (me == 0) {
+		/* 主机自己驱动轮次，这里不管。 */
+		return;
+	}
+	uint16_t got = 0;
+	uint32_t remote = 0;
+	uint32_t peerCycles = 0;
+	/* 【轮次号必须由主机单方面决定 —— 从机只跟随】
+	 *
+	 * 两端的计数器如果各自独立递增，必然发散：从机每轮超时也会推进自己的
+	 * 计数器，于是从机的轮次跑到 206 时主机才 95。netLinkTakePeerWord 的
+	 * 「(int16_t)(w.index - want) < 0 → 过期丢弃」会把主机的每一条推送都
+	 * 判成过期 → 从机永远收不到 → 每轮空等 2500ms → 模拟帧率掉到
+	 * 0.03fps → 游戏的 Task_TriggerHandshake 跑不到第 5 个 tick → 链路
+	 * 状态卡在 START1 → 双方永远进不了 HANDSHAKE，握手永远完不成。
+	 *
+	 * 这里放宽成「取队列里最早的一条未消费过的」，并**直接采用主机给的
+	 * 轮次号**：主机是链路的时钟源，它的 index 就是全局轮次号。从机回推时
+	 * 也用这个号，于是主机那边严格匹配（want == 实收）一次都不会错位。
+	 *
+	 * 等待窗口分两种：
+	 *   - 还没跟主机同步上（一个主机字都没收到过）：窗口短（20ms）。这时
+	 *     主机多半还没进俱乐部，主机字会随时到，短窗口保证从机不会被
+	 *     一次 2.5 秒的空等冻住（那会把模拟帧率压到 0.03fps，游戏连
+	 *     「请稍候」画面都走不到）。
+	 *   - 已经同步上了：窗口放宽到 300ms，吸收对端的偶发卡顿。
+	 */
+	/* 【绝不在这里长时间阻塞模拟线程】
+	 *
+	 * 原来这里是「阻塞 20ms（还没跟主机同步）/ 300ms（已同步）等主机的字」。
+	 * 这一等就把模拟线程冻住了：每 18363 个模拟周期阻塞一次，模拟时间只
+	 * 推进 1.1ms 而墙钟走了 20ms，帧率从 60fps 掉到 1.4fps。主机还没进俱乐
+	 * 部时从机的游戏干脆冻在标题画面；联机中掉帧则直接打破 gen8「每帧至少
+	 * 9 次串行中断」的要求，游戏报「通信错误」。
+	 *
+	 * 现在改成**非阻塞取字 + 短周期重试**：取不到就 2048 个模拟周期后再试，
+	 * 一次也不阻塞。主机每轮推一个字、从机照单全收（队列是 FIFO，轮次天然
+	 * 一一对应），从机的时钟不再被墙钟拖住。 */
+	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, 0, &remote, &got, &peerCycles);
+	if (!have) {
+		/* 【从机没有对端数据时绝不收尾】
+		 *
+		 * 真机上 MULTI 的时钟由主机产生：从机在主机没有用时钟扫过它之前，
+		 * 这一次传输根本不会结束（Busy 位一直挂着），游戏就那么等着。
+		 * 我们这里如果「超时也收尾」，等于凭空多完成了一轮：
+		 *   - 给游戏喂了一个空槽（对端 = 0），DoHandshake 看到 slot0 不是
+		 *     握手值就把 playerCount 清成 0，握手状态被搅乱；
+		 *   - 而且两端的传输次数不再一一对应，主机的轮次号和从机的对不上，
+		 *     后面每一轮都错一格。
+		 * 所以这里只做一件事：把事件快速重挂一次，等主机的下一个字。 */
+		++emu->sioTimeouts;
+		if (emu->toDbg < 30) {
+			++emu->toDbg;
+			MOBILE_LOGI("SIO slave wait-me me=%d last=%u synced=%d",
+			            me, (unsigned) emu->sioIndex, emu->sioPeerCyclesValid ? 1 : 0);
+		}
+		if (timing) {
+			/* 重试周期取 2048（≈0.12ms 模拟时间）：主机推字之后从机几乎
+			 * 立刻就能取到，回推的延迟远小于一轮（18363 cycles）。 */
+			mTimingSchedule(timing, &emu->sioSlaveDone, 2048);
+			emu->sioSlaveArmed = true;
+		}
+		return;
+	}
+	if (peerCycles != 0) {
+		/* 【从机的轮次节奏必须跟着主机走】
+		 *
+		 * gen8 link.c 的 LinkVSync 要求主机每帧至少 9 次 SIO 中断（不足就
+		 * gLink.lag = LAG_MASTER），一帧 = 280896 cycles。主机一轮的真实
+		 * 周期可以从它推送时带的模拟时钟戳算出来（相邻两轮的差）：战斗阶段
+		 * 是 Timer3(197*64=12608) + 传输(5755) = 18363，握手阶段主机每帧
+		 * 只有 1 轮，差就是 280896。
+		 *
+		 * 从机按同样的周期排自己的轮次事件，两边每帧的轮次数才会一致：
+		 * 从机多一轮就把 recvQueue 塞爆（queueFull → 通信错误），少一轮
+		 * 就把 recvQueue 抽干（receivedNothing → 游戏直接断开）。
+		 * 这里直接跟随（不做平滑）：主机的节奏本身就是规律的，平滑反而会
+		 * 把「一帧 8 轮紧跟 + 1 轮空档」这种突发节奏抹成平均值，从机的帧
+		 * 里轮次数就会忽多忽少。 */
+		if (emu->sioPeerCyclesValid) {
+			uint32_t delta = peerCycles - emu->sioPeerCycles;
+			if (delta > 4000 && delta < 400000) {
+				emu->sioSlavePeriod = delta;
+			}
+		}
+		emu->sioPeerCycles = peerCycles;
+		emu->sioPeerCyclesValid = true;
+	}
+	uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	if (got != emu->sioIndex) {
+		/* 轮次跳跃：主机那边跳过了几轮（或者从机刚接上）。不影响正确性
+		 * —— 从机跟随主机的号，双方仍然一一对应。 */
+		++emu->sioMisorder;
+		if (emu->sioMisorder < 8) {
+			MOBILE_LOGI("SIO slave 跟随主机轮次 me=%d was=%u now=%u n=%u",
+			            me, (unsigned) emu->sioIndex, (unsigned) got, emu->sioMisorder);
+		}
+	}
+	emu->sioIndex = got;
+	emu->sioHasRemote = true;
+	emu->sioRemote = remote;
+	completeMultiTransfer(emu, remote, true, cyclesLate);
+	/* 把本轮的字回推给主机：就是本轮收尾时游戏自己用的那一个
+	 * （SIOMLT_SEND），收发天然一致。轮次号沿用主机的，主机那边严格
+	 * 匹配就一定对得上。 */
+	struct mTiming* timing2 = coreTiming(emu);
+	uint32_t stamp = timing2 ? mTimingCurrentTime(timing2) : 0;
+	netLinkPush(emu->link, GBA_SIO_MULTI, own, emu->sioIndex, stamp);
+	emu->sioPushValue = own;
+	emu->sioPushIndex = emu->sioIndex;
+	emu->sioPushed = true;
+	if (own != 0xB9A0 && emu->hsPushDbg < 70) {
+		++emu->hsPushDbg;
+		MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X reply=1",
+		            emu->hsPushDbg, me, (unsigned) emu->sioIndex, own);
+	}
+	/* 挂上下一轮：正好在 K 个模拟周期之后。 */
+	if (timing) {
+		mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+		emu->sioSlaveArmed = true;
+	}
+}
+
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	if (!emu->sioWaiting) {
@@ -1945,7 +2192,21 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 几十毫秒——比如渲染通路挤了、被系统调度走了——400ms 就会误判成
 	 * 「对端没回」而用 0xFFFF 收尾，游戏当场报「连接发生了错误」。实测客机
 	 * 卡顿是偶发上百毫秒的，窗口必须留够。 */
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 2500, &remote, &got);
+	double t0 = (double) wallNowMs();
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 800, &remote, &got, NULL);
+	double waited = (double) wallNowMs() - t0;
+	if (waited > 3.0) {
+		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
+		 * 这个数直接决定模拟时钟被冻住多久（也就决定模拟帧率掉多少）。 */
+		emu->sioWaitMax = waited > emu->sioWaitMax ? waited : emu->sioWaitMax;
+		emu->sioWaitTotal += waited;
+		++emu->sioWaitN;
+		if (emu->sioWaitN % 64 == 0) {
+			MOBILE_LOGI("WAIT me=%d n=%u avg=%.1fms max=%.1fms",
+			            netLinkPlayer(emu->link), emu->sioWaitN,
+			            emu->sioWaitTotal / (double) emu->sioWaitN, emu->sioWaitMax);
+		}
+	}
 	if (!haveRemote && emu->link && netLinkState(emu->link) == 2) {
 		/* 真的等到超时才记一次：这是「客机没回字」的唯一现场证据。 */
 		MOBILE_LOGI("SIO peer-timeout idx=%u me=%d to=%u",
@@ -1990,6 +2251,13 @@ static bool gbaLinkInit(struct GBASIODriver* driver) {
 	emu->sioDone.callback = sioDoneEvent;
 	emu->sioDone.name = "Mobile SIO Done";
 	emu->sioDone.priority = 0x7F;
+	emu->sioSlaveDone.context = emu;
+	emu->sioSlaveDone.callback = sioSlaveDoneEvent;
+	emu->sioSlaveDone.name = "Mobile SIO Slave Done";
+	emu->sioSlaveDone.priority = 0x7E;
+	emu->sioSlavePeriod = 18363;
+	emu->sioSlaveArmed = false;
+	emu->sioPeerCyclesValid = false;
 	armLinkEvent(emu);
 	return true;
 }
@@ -1998,15 +2266,20 @@ static void gbaLinkDeinit(struct GBASIODriver* driver) {
 	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	struct mTiming* timing = coreTiming(emu);
 	emu->sioWaiting = false;
+	emu->sioSlaveArmed = false;
+	emu->sioPeerCyclesValid = false;
 	if (timing) {
 		mTimingDeschedule(timing, &emu->linkEvent);
 		mTimingDeschedule(timing, &emu->sioDone);
+		mTimingDeschedule(timing, &emu->sioSlaveDone);
 	}
 }
 
 static void gbaLinkReset(struct GBASIODriver* driver) {
 	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	emu->sioWaiting = false;
+	/* 复位后游戏会重新做一次主从判定，所以「只有自己」的呈现窗口要重新打开。 */
+	emu->sioInitSeen = false;
 	armLinkEvent(emu);
 }
 
@@ -2077,13 +2350,17 @@ static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driv
 	 * 一轮推两次（例如再让轮询去补推一个 SIOIndex+1）就会把「下一轮的槽位」提前
 	 * 填上这一轮的旧值，对端按轮次取的时候正好错位一格。 */
 	if (!emu->sioPushed || emu->sioPushIndex != emu->sioIndex) {
-		netLinkPush(emu->link, GBA_SIO_MULTI, local, emu->sioIndex);
+		netLinkPush(emu->link, GBA_SIO_MULTI, local, emu->sioIndex, emu->sioStartCycle);
 		emu->sioPushValue = local;
 		emu->sioPushIndex = emu->sioIndex;
 		emu->sioPushed = true;
 	}
 	mTimingDeschedule(timing, &emu->sioDone);
-	mTimingSchedule(timing, &emu->sioDone, GBASIOTransferCycles(GBA_SIO_MULTI, driver->p->siocnt, gbaLinkDevices(driver)));
+	/* 传输周期必须按真机的 115200 算（5755 cycles），不能沿用内核把波特率
+	 * 位清零之后的旧值 —— 那是 63427 cycles，会让主机每帧只有 3.7 轮，
+	 * 达不到 gen8 link.c 要求的 9 轮/帧，直接被判 LAG_MASTER。 */
+	uint16_t siocnt = (uint16_t) ((driver->p->siocnt & ~0x0003u) | 0x0003u);
+	mTimingSchedule(timing, &emu->sioDone, GBASIOTransferCycles(GBA_SIO_MULTI, siocnt, gbaLinkDevices(driver)));
 	if (emu->sioKick < 200) {
 		++emu->sioKick;
 		MOBILE_LOGI("SIO begin (%s) idx=%u local=%04X", who, emu->sioIndex, local);
@@ -2146,25 +2423,69 @@ static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 			}
 		}
 		uint16_t out = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
-		/* 必须按“本机是不是 1P”明确改写 Slave 位（SIOCNT bit2）。
+		/* 【波特率修复 —— 直接决定能不能连上】
 		 *
-		 * 内核 GBASIOWriteSIOCNT 里 MULTI 分支是
-		 *   value &= 0xFF83;  value = SetSlave(value, id || !connected);
-		 *   value = SetId(value, id);  value |= sio->siocnt & 0x00FC;
-		 * 最后那个 |= 把旧 siocnt 的 bit2..7 或回来，所以 Slave/Ready 位是
-		 * 「粘」的：只要有一次置起来就再也清不掉。没挂联机驱动时 connected=0，
-		 * 内核一律置 Slave=1；而宝可梦在进联机设施之前（开机 ResetSerial）
-		 * 就已经写过 SIOCNT，Slave 从此永远是 1。
+		 * 内核 GBASIOWriteSIOCNT 的 MULTI 分支第一句就是
+		 *     value &= 0xFF83;
+		 * 0xFF83 把 bit0/bit1（波特率）清掉了，而后面 `value |= sio->siocnt &
+		 * 0x00FC` 只把 bit2..7 粘回来，**波特率永远补不回来**。于是
+		 * GBASIOMultiplayerGetBaud(siocnt) 恒为 0，传输周期取
+		 * GBASIOCyclesPerTransfer[0][connected]：
+		 *     baud0 = 63427 cycles（真机 115200 只要 5755）
 		 *
-		 * 而宝可梦正是靠这一位分主从（link.c 的 CheckMasterOrSlave）：
-		 *   terminals = *(vu32*)REG_ADDR_SIOCNT & (SIO_MULTI_SD | SIO_MULTI_SI);
-		 *   isMaster = (terminals == SIO_MULTI_SD && localId == 0);
-		 * SIO_MULTI_SD=0x0008(Ready)、SIO_MULTI_SI=0x0004(Slave)，即
-		 * 「Slave=0 且 Ready=1」才是主机。Slave 粘在 1 时两边都认为自己是从机，
-		 * 谁也不写 START(0x0080)，谁也收不到中断 —— 两端就一直停
-		 * 在「请稍候」，这正是「大厅连上了、游戏里却联不上」的直接原因。 */
+		 * 这一条对游戏是致命的。gen8 link.c 的 LinkVSync 要求主机每帧
+		 * 至少 9 次 SIO 中断，否则直接 gLink.lag = LAG_MASTER（游戏报
+		 * 「通信错误…链接是坏的还是终端不匹配？」）。主机一轮的周期 =
+		 * 传输周期 + Timer3(197*64=12608)：
+		 *     baud=0 : 63427+12608 = 76035 → 每帧 280896/76035 = 3.7 轮 ❌
+		 *     baud=3 :  5755+12608 = 18363 → 每帧 280896/18363 = 15.3 轮 ✅
+		 * 也就是说，仅仅因为内核漏掉了波特率位，主机就永远达不到游戏要的
+		 * 9 轮/帧，握手之后的每一条链路都会以「通信错误」收场。
+		 *
+		 * 修法：驱动把波特率位补回 115200（游戏自己写的 EnableSerial()
+		 * 就是 0x6003 = MULTI|115200|IRQ，本来就是 3），内核丢的信息由我们
+		 * 还原，行为与真机一致。 */
+		out = (uint16_t) ((out & ~0x0003u) | 0x0003u);
+		/* 【终端位：Slave(bit2)/Ready(bit3)/Id(bit4-5)】
+		 *
+		 * gen8 link.c 的 CheckMasterOrSlave()：
+		 *   terminals = *(vu32*)REG_ADDR_SIOCNT & (SIO_MULTI_SD|SIO_MULTI_SI);
+		 *   isMaster = (terminals == SIO_MULTI_SD && gLink.localId == 0);
+		 * 其中 SIO_MULTI_SD=0x0008(Ready)、SIO_MULTI_SI=0x0004(Slave)。
+		 * 也就是 **「Slave=0 且 Ready=1 且 localId=0」才是主机**，
+		 * 从机是 Slave=1。和真机一致：主机产生时钟，自己的 SI 端不是从端。
+		 *
+		 * 内核 GBASIOWriteSIOCNT 的 MULTI 分支：
+		 *   value &= 0xFF83;
+		 *   value = SetSlave(value, id || !connected);
+		 *   value = SetId(value, id);
+		 *   value |= sio->siocnt & 0x00FC;      <-- 把旧 bit2..7 粘回来
+		 * 那个 |= 让 Slave/Ready 位变成「粘」的：写过一次就再也清不掉。
+		 * 所以终端位必须由驱动每次显式改写，不能依赖内核。
+		 *
+		 * 之前这里还留着一个「只有自己(alone)窗口」的补丁：挂载后的第一笔
+		 * MULTI 写入按 Slave=1 呈现，之后才切回按 player 强制。那是错的 ——
+		 * 它把主机在俱乐部握手时唯一一次决定主从的写入也变成了 Slave=1，
+		 * 于是两端都判成从机、双方都发 0xB9A0，永远等不到主机的 0x8FFF，
+		 * 表现就是「大厅连上了、游戏里却卡在请稍候」。
+		 *
+		 * 现在改成**由链路真实状态决定**：
+		 *   传输层还没连上 → 总线上只有自己 → Slave=1（游戏据此知道还没伙伴）
+		 *   连上了且本机是 0 号 → Slave=0（主机）
+		 *   连上了且本机是 1 号 → Slave=1（从机）
+		 * 游戏在 HANDSHAKE 态每一帧都会重新读 SIOCNT，所以只要值是对的，
+		 * 什么时候连上的都能纠正过来（见 serviceLink 里的主动改写）。 */
 		if (emu->linkAttached && emu->link) {
-			out = GBASIOMultiplayerSetSlave(out, netLinkPlayer(emu->link) != 0);
+			int me = netLinkPlayer(emu->link);
+			bool up = netLinkState(emu->link) == 2;   /* LINK_CONNECTED */
+			bool slave = !up || me != 0;
+			out = GBASIOMultiplayerSetSlave(out, slave);
+			out = GBASIOMultiplayerSetId(out, up ? me : 0);
+			if (emu->sioDbg < 400) {
+				++emu->sioDbg;
+				MOBILE_LOGI("SIO term: up=%d me=%d slave=%d out=%04X", up ? 1 : 0, me,
+				            slave ? 1 : 0, out);
+			}
 		}
 		if (emu->sioDbg < 400) {
 			++emu->sioDbg;
@@ -2333,6 +2654,38 @@ static void detachLink(struct MgbaMobile* emu) {
 		GBSIOSetDriver(&((struct GB*) emu->core->board)->sio, NULL);
 	}
 	emu->linkAttached = false;
+	emu->sioInitSeen = false;
+}
+
+/* 把 SIOCNT 的终端位（Slave/Ready/Id）改写成「链路当前真实的样子」。
+ *
+ * 游戏在 HANDSHAKE 态每帧都会读一次 SIOCNT 来定主从
+ * （CheckMasterOrSlave），但它只在少数几处写 SIOCNT —— 也就是说，
+ * 「链路什么时候连上的」和「游戏什么时候读 SIOCNT」两者不一定碰上。
+ * 所以除了每次写入时由 gbaLinkWriteCnt 改写之外，还要在链路状态变化的
+ * 时刻主动把寄存器改对，否则游戏会一直读到内核留下的旧值。
+ *
+ * 绝不碰 0x2000（MULTI 模式位）：内核只有在模式位变化时才切模式，提前置上
+ * 会让内核以为模式没变，游戏的第一次 0x2000 写入就切不到 MULTI 上去。
+ */
+static void applyLinkTerminalBits(struct MgbaMobile* emu) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int me = netLinkPlayer(emu->link);
+	bool up = emu->link && netLinkState(emu->link) == 2;
+	uint16_t siocnt = gba->sio.siocnt;
+	uint16_t want = siocnt;
+	want = GBASIOMultiplayerSetSlave(want, !up || me != 0);
+	want = GBASIOMultiplayerSetId(want, up ? me : 0);
+	want = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(want));
+	want = (uint16_t) ((want & ~0x0003u) | 0x0003u);   /* 波特率补回 115200 */
+	if (want != siocnt) {
+		MOBILE_LOGI("SIOCNT term patch: up=%d me=%d %04X -> %04X",
+		            up ? 1 : 0, me, siocnt, want);
+		gba->sio.siocnt = want;
+	}
 }
 
 static void attachLink(struct MgbaMobile* emu) {
@@ -2342,19 +2695,17 @@ static void attachLink(struct MgbaMobile* emu) {
 	if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) emu->core->board;
 		int me = netLinkPlayer(emu->link);
-		uint16_t siocnt;
 		prepareGbaDriver(emu);
 		GBASIOSetDriver(&gba->sio, &emu->gbaLink.d);
 		/* 游戏可能在挂载之前就已进入 HANDSHAKE，CheckMasterOrSlave 读到的还是
-		 * 「无驱动」时代的 SIOCNT（Slave=1）——两边都当从机，谁也不起传输，
-		 * 而握手态又没有新的 SIOCNT 写入来纠正，永远卡死。挂载这一刻把
-		 * Slave/Ready/ID 位改写成联机线会话的真值，游戏下一帧重新判定。 */
-		siocnt = GBASIOMultiplayerSetId(gba->sio.siocnt, me);
-		siocnt = GBASIOMultiplayerSetSlave(siocnt, me != 0);
-		siocnt = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(siocnt));
-		MOBILE_LOGI("SIOCNT patched at attach: id=%d %04X -> %04X",
-		            me, gba->sio.siocnt, siocnt);
-		gba->sio.siocnt = siocnt;
+		 * 「无驱动」时代的 SIOCNT（Slave=1）。挂载这一刻把终端位改写成联机
+		 * 线会话的真值，游戏下一帧重新判定主从。
+		 * 注意这里绝不能带上 0x2000（MULTI 模式位）：内核只有在模式位变化时
+		 * 才切模式，提前置上会让内核以为模式没变，游戏的第一次 0x2000 写入
+		 * 就切不到 MULTI 模式上去。 */
+		applyLinkTerminalBits(emu);
+		MOBILE_LOGI("SIOCNT patched at attach: id=%d %04X",
+		            me, gba->sio.siocnt);
 		emu->linkAttached = true;
 	} else if (emu->core->platform(emu->core) == mPLATFORM_GB) {
 		prepareGbDriver(emu);
@@ -2374,6 +2725,7 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->sioPushIndex = 0;
 		emu->sioMisorder = 0;
 		emu->sioHasRemote = false;
+		emu->sioInitSeen = false;
 		emu->sioEvtDbg = 0;
 		emu->sioTakeDbg = 0;
 		emu->sioInDbg = 0;
@@ -2448,6 +2800,34 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		count = 1;
 	}
 	pollLink(emu);
+	/* 真实速度探针：模拟帧率是判断「游戏是不是被网络等待拖死」的第一指标。
+	 * 联机时模拟时钟会在等对端应答的那段时间里冻住，所以模拟帧率远低于
+	 * 真实帧率就说明有阻塞。每 60 个模拟帧打一行，带上真实耗时。 */
+	{
+		uint32_t now = wallNowMs();
+		struct mTiming* tm = coreTiming(emu);
+		uint32_t cyc = tm ? mTimingCurrentTime(tm) : 0;
+		if (emu->probeWallAt == 0) {
+			emu->probeWallAt = now;
+			emu->probeCycAt = cyc;
+			emu->probeFrames = 0;
+		}
+		emu->probeFrames += (uint32_t) count;
+		uint32_t wall = now - emu->probeWallAt;
+		if (wall >= 2000) {
+			/* 模拟帧率（按模拟时钟算）才是关键：联机时模拟时钟会在等对端应答
+			 * 的那段时间里冻住，模拟帧率一低就说明游戏被网络等待拖死了。
+			 * calls/s 是真实帧率，用来对照：两者一比就知道时间花在哪儿。 */
+			double emuFrames = (double) (cyc - emu->probeCycAt) / 280896.0;
+			MOBILE_LOGI("FRM me=%d emuFps=%.2f callsFps=%.1f frames=%u wall=%ums",
+			            netLinkPlayer(emu->link), emuFrames * 1000.0 / (double) wall,
+			            (double) emu->probeFrames * 1000.0 / (double) wall,
+			            emu->probeFrames, wall);
+			emu->probeWallAt = now;
+			emu->probeCycAt = cyc;
+			emu->probeFrames = 0;
+		}
+	}
 	if (emu->core->platform(emu->core) == mPLATFORM_GBA) {
 		struct GBA* g = (struct GBA*) emu->core->board;
 		uint32_t stNow = (uint32_t) GBAView32(g->cpu, PEEK_LINK_STATUS);
@@ -2501,9 +2881,12 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		 * 这几个量在一帧内就会被吃掉，靠降采样必然漏掉，所以必须逐帧比变化。 */
 		{
 			int adv = (int) GBAView8(g->cpu, PEEK_LINK_STATE);
-			int hs  = (int) GBAView8(g->cpu, PEEK_LINK + 0x0E);
-			int st  = (int) GBAView8(g->cpu, PEEK_LINK + 0x01);
-			int pc  = (int) GBAView8(g->cpu, PEEK_LINK + 0x03);
+			int hs  = (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_HANDSHAKE);
+			int st  = (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_STATE);
+			int pc  = (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_PLAYERS);
+			int sic = (int) (int8_t) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SICTR);
+			int lag = (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_LAG);
+			int bck = (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_BADCK);
 			uint32_t m0 = GBAIORead(g, GBA_REG_SIOMULTI0);
 			uint32_t m1 = GBAIORead(g, GBA_REG_SIOMULTI1);
 			if ((uint32_t) adv != emu->sioPrevAdv) {
@@ -2517,8 +2900,8 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 				emu->sioPrevHs = (uint32_t) hs;
 			}
 			if (st != emu->sioPrevLinkState || pc != emu->sioPrevPc) {
-				MOBILE_LOGI("ST %d->%d pc %d->%d adv=%d hs=%d m0=%04X m1=%04X me=%d",
-				            emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, m0, m1,
+				MOBILE_LOGI("ST %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
+				            emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
 				            netLinkPlayer(emu->link));
 				emu->sioPrevLinkState = st;
 				emu->sioPrevPc = pc;
@@ -2535,19 +2918,33 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 		            (int) g->sio.mode, g->sio.siocnt, g->sio.rcnt,
 		            g->sio.driver != NULL, emu->sioWaiting);
 #if MGBA_LINK_PEEK
-		MOBILE_LOGI("PEEK st=%08X adv=%d link[m=%d st=%d id=%d pc=%d hs=%d err=%d ck=%d lag=%d sc=%d qf=%d]",
+		MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
+		            "link[m=%d st=%d id=%d pc=%d sic=%d hs=%d fF=%d hw=%d ck=%d lag=%d "
+		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u]",
 		            stNow,
 		            (int) GBAView8(g->cpu, PEEK_LINK_STATE),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x00),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x01),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x02),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x03),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x0E),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x10),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x11),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x13),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x0D),
-		            (int) GBAView8(g->cpu, PEEK_LINK + 0x12));
+		            (int) GBAView8(g->cpu, PEEK_LINK_OPEN),
+		            (int) GBAView8(g->cpu, PEEK_LINK_WLESS),
+		            (int) GBAView8(g->cpu, PEEK_LINK_ERROCC),
+		            (int) GBAView8(g->cpu, PEEK_LINK_RECVPL),
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK_BLOCKS),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_ISMASTER),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_STATE),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_LOCALID),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_PLAYERS),
+		            (int) (int8_t) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SICTR),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_HANDSHAKE),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_FIELD_F),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_HWERR),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_BADCK),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_LAG),
+		            (unsigned) GBAView16(g->cpu, PEEK_LINK + PEEK_LK_CHECKSUM),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDIX),
+		            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVIX),
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_POS),
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_CNT),
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_POS),
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT));
 #endif
 		}
 		/* 命令队列探针：每 30 帧打一行，看游戏自己有没有在入队/出队。
