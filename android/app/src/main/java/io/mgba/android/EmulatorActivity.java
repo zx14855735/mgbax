@@ -3696,6 +3696,14 @@ public class EmulatorActivity extends AppCompatActivity {
                         cloudEnter(true, cloudEmail, cloudCode, cloudPass, cloudRoom, status)),
                 linkButton(getString(R.string.link_cloud_join), v ->
                         cloudEnter(false, cloudEmail, cloudCode, cloudPass, cloudRoom, status))));
+        box.addView(linkButton(getString(R.string.link_cloud_reconnect), v -> {
+            if (cloudLink == null) {
+                status.setText(R.string.link_cloud_reconnect_need_room);
+                return;
+            }
+            // 不重建房间，直接重新解析中继节点并重连
+            ensureCloud().reconnectRelay();
+        }));
         box.addView(linkButton(getString(R.string.link_close), v -> {
             if (cloudLink != null) {
                 cloudLink.close();

@@ -702,6 +702,17 @@ def host_mode():
     if not addr or port <= 0:
         print("  [失败] 没有拿到中继节点（可能账号被限流或中继暂不可用）"); wsH.close(); return 1
     print("  房号=%s  中继节点=%s:%s" % (rid, addr, port))
+    # 分享信息在拿到节点后立刻输出：本机握手若被中继限流，对端仍能马上加入。
+    cmd = "python kcp_relay_test.py join %s:%s %s" % (addr, port, rid)
+    print("  ------------------------------------------------------------")
+    print("  请把下面这行发给『不同 IP 的机器』，让对方运行：")
+    print("    " + cmd)
+    try:
+        import gboy_qr
+        gboy_qr.emit(cmd, title="\n  或者让对方直接扫这个二维码：")
+    except Exception as exc:
+        print("  （二维码生成跳过：%s）" % exc)
+    print("  ------------------------------------------------------------")
     stop_ws = threading.Event()
     uuid = gr.game_uuid(ROM)
     threading.Thread(target=host_keepalive, args=(wsH, token, uuid, addr, port, stop_ws), daemon=True).start()
@@ -713,10 +724,6 @@ def host_mode():
         print("  [失败] 中继连接: %s" % e); stop_ws.set(); wsH.close(); return 1
     players = gboy_handshake(ch, 2, 0)
     print("  GBoy 握手完成 players=%s，开始收发（等待对端加入）..." % players)
-    print("  ------------------------------------------------------------")
-    print("  请把下面这行发给『不同 IP 的机器』，让对方运行：")
-    print("    python kcp_relay_test.py join %s:%s %s" % (addr, port, rid))
-    print("  ------------------------------------------------------------")
     print("  本端持续发送 0xAAAA，等待收到对端 0xBBBB ...")
     ok = loop_peer(ch, 0xAAAA, 0xBBBB, "HOST", seconds=60)
     ch.close(); stop_ws.set(); wsH.close()
@@ -781,6 +788,16 @@ def main():
             print("用法: python kcp_relay_test.py join <地址:端口> [房号]")
             return 2
         return join_mode(args[1], args[2] if len(args) > 2 else None)
+    if args and args[0] == "share":
+        if len(args) < 2:
+            print("用法: python kcp_relay_test.py share <地址:端口> [房号]")
+            return 2
+        import gboy_qr
+        cmd = gboy_qr.join_command(args[1], args[2] if len(args) > 2 else None)
+        print("分享命令:")
+        print("    " + cmd)
+        gboy_qr.emit(cmd, title="\n  扫码加入：")
+        return 0
     # 默认：本机双客户端自测（同 IP 模拟）
     print("本机公网出口 IP = 31.223.184.125（两个测试客户端都从这里出）")
     print("说明：两个客户端从同一公网 IP 的不同源端口连接同一中继节点；")

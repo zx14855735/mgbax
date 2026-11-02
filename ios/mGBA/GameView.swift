@@ -85,7 +85,7 @@ final class GameView: UIView {
         }
         return renderer.captureRGBA(
             filter: filter,
-            linear: filtered ? filter == 11 : bilinear,
+            linear: filtered ? (filter == 11 || filter == ExternalShader.filterId) : bilinear,
             scanlines: scanlines,
             // The CPU-path bytes already carry brightness and contrast.
             brightness: filtered ? brightness : 1,

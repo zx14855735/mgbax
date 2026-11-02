@@ -39,6 +39,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         guard let url = URLContexts.first?.url else { return }
-        (window?.rootViewController as? EmulatorViewController)?.openExternal(url)
+        guard let controller = window?.rootViewController as? EmulatorViewController else { return }
+        if url.scheme?.lowercased() == "mgba" {
+            controller.handleDebugURL(url)
+            return
+        }
+        controller.openExternal(url)
     }
 }

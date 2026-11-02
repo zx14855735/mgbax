@@ -28,6 +28,14 @@
 		B10000000000000000000015 /* SkinTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000015 /* SkinTheme.swift */; };
 		B10000000000000000000016 /* StickerOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000016 /* StickerOverlayView.swift */; };
 		B10000000000000000000017 /* Zip.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000017 /* Zip.swift */; };
+		B10000000000000000000018 /* LobbyFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000018 /* LobbyFrames.swift */; };
+		B10000000000000000000019 /* LobbyKcp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000019 /* LobbyKcp.swift */; };
+		B1000000000000000000001A /* LobbySignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001A /* LobbySignaling.swift */; };
+		B1000000000000000000001B /* LobbyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001B /* LobbyLink.swift */; };
+		B1000000000000000000001C /* DebugViewers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001C /* DebugViewers.swift */; };
+		B1000000000000000000001D /* WebDavSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001D /* WebDavSync.swift */; };
+		B1000000000000000000001E /* GifBall.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001E /* GifBall.swift */; };
+		B1000000000000000000001F /* ExternalShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001F /* ExternalShader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +60,14 @@
 		E10000000000000000000015 /* SkinTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinTheme.swift; sourceTree = "<group>"; };
 		E10000000000000000000016 /* StickerOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerOverlayView.swift; sourceTree = "<group>"; };
 		E10000000000000000000017 /* Zip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Zip.swift; sourceTree = "<group>"; };
+		E10000000000000000000018 /* LobbyFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyFrames.swift; sourceTree = "<group>"; };
+		E10000000000000000000019 /* LobbyKcp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyKcp.swift; sourceTree = "<group>"; };
+		E1000000000000000000001A /* LobbySignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbySignaling.swift; sourceTree = "<group>"; };
+		E1000000000000000000001B /* LobbyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyLink.swift; sourceTree = "<group>"; };
+		E1000000000000000000001C /* DebugViewers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugViewers.swift; sourceTree = "<group>"; };
+		E1000000000000000000001D /* WebDavSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDavSync.swift; sourceTree = "<group>"; };
+		E1000000000000000000001E /* GifBall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifBall.swift; sourceTree = "<group>"; };
+		E1000000000000000000001F /* ExternalShader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShader.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -99,6 +115,14 @@
 				E10000000000000000000015 /* SkinTheme.swift */,
 				E10000000000000000000016 /* StickerOverlayView.swift */,
 				E10000000000000000000017 /* Zip.swift */,
+				E10000000000000000000018 /* LobbyFrames.swift */,
+				E10000000000000000000019 /* LobbyKcp.swift */,
+				E1000000000000000000001A /* LobbySignaling.swift */,
+				E1000000000000000000001B /* LobbyLink.swift */,
+				E1000000000000000000001C /* DebugViewers.swift */,
+				E1000000000000000000001D /* WebDavSync.swift */,
+				E1000000000000000000001E /* GifBall.swift */,
+				E1000000000000000000001F /* ExternalShader.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -215,6 +239,14 @@
 				B10000000000000000000015 /* SkinTheme.swift in Sources */,
 				B10000000000000000000016 /* StickerOverlayView.swift in Sources */,
 				B10000000000000000000017 /* Zip.swift in Sources */,
+				B10000000000000000000018 /* LobbyFrames.swift in Sources */,
+				B10000000000000000000019 /* LobbyKcp.swift in Sources */,
+				B1000000000000000000001A /* LobbySignaling.swift in Sources */,
+				B1000000000000000000001B /* LobbyLink.swift in Sources */,
+				B1000000000000000000001C /* DebugViewers.swift in Sources */,
+				B1000000000000000000001D /* WebDavSync.swift in Sources */,
+				B1000000000000000000001E /* GifBall.swift in Sources */,
+				B1000000000000000000001F /* ExternalShader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

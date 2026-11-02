@@ -3,6 +3,7 @@ import Darwin
 import GameController
 import Photos
 import UIKit
+import UserNotifications
 import UniformTypeIdentifiers
 
 final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
@@ -45,6 +46,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
     private var gboyLink: GBoyLink?
     private var gboyRemoteKeys = 0
+    /** Cloud lobby room link (signalling over HTTPS/WebSocket, KCP over UDP). */
+    private var lobbyLink: LobbyLink?
     /** Auto frameskip state on the emulation thread. */
     private var skipAuto = false
     private var autoSkipLevel = 0
@@ -63,6 +66,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let hapticRigid = UIImpactFeedbackGenerator(style: .rigid)
     /** GIF recording state; the queue hands frames to the encoder thread. */
     private var gifRecording = false
+    /** The floating GIF button, when the user turned it on. */
+    private var gifBall: GifBall?
+    /** 提示过隐藏虚拟按键之后就不再打扰用户。 */
+    private var keypadHideAsked = false
+    /** 屏幕亮度作为阳光来源时的刷新定时器。 */
+    private var solarTimer: Timer?
     private var gifButton: UIButton?
     private var gifQueue: GifFrameQueue?
     private var lastGifAt: UInt64 = 0
@@ -169,7 +178,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         ("save", "快速存档"), ("load", "快速读档"), ("ff", "倍速（按住快进）"), ("shot", "截图"),
     ]
     /** Filter ids, matching the order shown in the 画质 picker (Shaders.functionNames). */
-    private static let filterNames = ["关闭", "GBA 色彩", "灰度", "HQ2x", "HQ4x", "2xBR", "4xBR", "残影", "点阵", "LCD3x", "扫描线（平滑）", "锐利插值"]
+    private static let filterNames = ["关闭", "GBA 色彩", "灰度", "HQ2x", "HQ4x", "2xBR", "4xBR", "残影", "点阵", "LCD3x", "扫描线（平滑）", "锐利插值", "外部渲染器"]
     /**
      * GB DMG palettes, light to dark, expanded to the twelve gb.pal entries
      * (the same four colors for BG, OBJ0 and OBJ1).
@@ -210,6 +219,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         core = mgbaMobileCreate(saves, states, "ios")
+        setupGifBall()
+        // 上次隐藏了虚拟按键的话，这次继续隐藏
+        if defaults.bool(forKey: "vkeypad_hidden") {
+            controls.isHidden = true
+        }
         if let core { mgbaMobileSetRewind(core, true) }
         applyCoreOptions()
         muted = defaults.bool(forKey: "muted")
@@ -341,6 +355,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         applyStageLayout()
+        // 画面场景是叠在布局之上的变换，尺寸变了要重新算一次
+        applyVideoScene()
     }
 
     /** Portrait splits the stage into a DS-like pair of screens; the handheld
@@ -421,6 +437,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("联机", #selector(showLink)),
             ("键位", #selector(toggleLayout)),
             ("金手指", #selector(showCheats)),
+            ("调试", #selector(showDebugTools)),
             ("图库", #selector(showRomLibrary)),
             ("倒带", #selector(toggleRewindBar)),
             ("皮肤", #selector(showSkinDialog)),
@@ -1281,6 +1298,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             romCrc = nil
         }
         let ok = mgbaMobileLoad(core, path)
+        // 进出游戏时自动同步（设置里可关）
+        if defaults.bool(forKey: "sync_auto") {
+            runWebDavSync(quiet: true)
+        }
         if !ok {
             DispatchQueue.main.async { [weak self] in
                 self?.hint.isHidden = false
@@ -1535,6 +1556,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             importStickerImage(url)
         case 8:
             importStickerFolder(url)
+        case 10:
+            installShader(url)
         case 9:
             // The archive was copied out to the chosen location; the temporary
             // file can go now.
@@ -1559,6 +1582,84 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// Loads a ROM handed over by the file picker or by another app ("用 mGBA
     /// 打开" in the Files app). Like the Android build, the file stays where it
     /// is; only a location that cannot be read back is copied into the app.
+    /// The `mgba://` debug hooks - the iOS counterpart of the Android build's
+    /// ADB broadcasts. They are meant for automation, not for everyday use:
+    ///
+    ///   mgba://state              dump the emulator state as JSON
+    ///   mgba://rom                dump the ROM identity only
+    ///   mgba://action=pause       pause the game
+    ///   mgba://action=resume      resume the game
+    ///   mgba://action=reset       reset the game
+    ///   mgba://action=screenshot  take a screenshot
+    ///   mgba://cloud?room=&user=&pass=   join a cloud lobby room
+    ///
+    /// The state dump is written to Documents/mgba-state.json and copied to
+    /// the pasteboard.
+    func handleDebugURL(_ url: URL) {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        let command = parts.first?.lowercased() ?? ""
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        func value(_ name: String) -> String {
+            query.first { $0.name.lowercased() == name }?.value ?? ""
+        }
+        switch command {
+        case "state", "rom":
+            dumpState(romOnly: command == "rom")
+        case "action":
+            switch value("action").lowercased() {
+            case "pause": togglePause()
+            case "resume": if paused { togglePause() }
+            case "reset": resetGame()
+            case "screenshot": takeScreenshot()
+            default: toast("未知动作")
+            }
+        case "cloud":
+            let room = value("room")
+            let user = value("user")
+            let pass = value("pass")
+            guard !room.isEmpty, !user.isEmpty else {
+                toast("需要 room 与 user 参数")
+                return
+            }
+            ensureLobby().start(user: user, password: pass, roomId: room)
+        default:
+            toast("未知命令")
+        }
+    }
+
+    /// Writes the emulator state as JSON and copies a summary to the
+    /// pasteboard.
+    private func dumpState(romOnly: Bool) {
+        var info: [String: Any] = [:]
+        var title = "mGBA"
+        if let core, mgbaMobileIsLoaded(core) {
+            var buffer = [CChar](repeating: 0, count: 32)
+            mgbaMobileTitle(core, &buffer, 32)
+            title = String(cString: buffer).trimmingCharacters(in: .whitespaces)
+            info["title"] = title
+            info["width"] = Int(mgbaMobileWidth(core))
+            info["height"] = Int(mgbaMobileHeight(core))
+            info["paused"] = paused
+            info["speed"] = speed
+            if !romOnly {
+                info["link"] = lobbyLink == nil ? "none" : "cloud"
+                info["filters"] = Self.filterNames[filterPref()]
+                info["solar"] = defaults.bool(forKey: "solar_on")
+            }
+        }
+        info["rom"] = defaults.string(forKey: "lastRom") ?? ""
+        info["crc"] = romCrc.map { String(format: "0x%08X", $0) } ?? ""
+        guard let data = try? JSONSerialization.data(withJSONObject: info,
+                                                  options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return
+        }
+        let file = docs.appendingPathComponent("mgba-state.json")
+        try? text.write(to: file, atomically: true, encoding: .utf8)
+        UIPasteboard.general.string = text
+        toast("状态已写入 \(file.lastPathComponent) 并复制到剪贴板")
+    }
+
     func openExternal(_ url: URL) {
         hint.isHidden = false
         hint.text = "正在读取游戏…"
@@ -1871,6 +1972,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private func showOrientationDialog() {
         let alert = UIAlertController(title: "屏幕方向", message: nil, preferredStyle: .alert)
         let modes: [(String, String)] = [
+            ("auto", "自动旋转"),
+            ("system", "系统默认"),
             ("landscape", "横屏"),
             ("landscape_rev", "横屏（反向）"),
             ("portrait", "竖屏"),
@@ -1989,6 +2092,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         opacity.minimumValue = 30
         opacity.maximumValue = 150
         opacity.value = Float(opacityNow)
+        let keypadVisible = labeledSwitch("显示虚拟按键", !defaults.bool(forKey: "vkeypad_hidden"))
+        keypadVisible.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let visible = keypadVisible.1.isOn
+            self.defaults.set(!visible, forKey: "vkeypad_hidden")
+            self.controls.isHidden = !visible
+        }, for: .valueChanged)
+        let keypadDetect = labeledSwitch("识别到实体按键时提示隐藏虚拟按键", defaults.bool(forKey: "keypad_detect"))
+        keypadDetect.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(keypadDetect.1.isOn, forKey: "keypad_detect")
+        }, for: .valueChanged)
         let extras = UIButton(type: .system)
         extras.contentHorizontalAlignment = .left
         extras.setTitle("虚拟按键开关（连发/宏/快存/快读/倍速/截图）", for: .normal)
@@ -2054,6 +2169,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(diagonal.0)
         box.addArrangedSubview(opacityLabel)
         box.addArrangedSubview(opacity)
+        box.addArrangedSubview(keypadVisible.0)
+        box.addArrangedSubview(keypadDetect.0)
         box.addArrangedSubview(extras)
         box.addArrangedSubview(cKey)
         box.addArrangedSubview(c2Key)
@@ -2206,8 +2323,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func applyOrientation() {
         let mask: UIInterfaceOrientationMask
-        let target: UIInterfaceOrientation
+        // 自动旋转/系统默认不锁定方向，此时 target 为 nil。
+        let target: UIInterfaceOrientation?
         switch orientationMode {
+        case "auto": mask = .all; target = nil
+        case "system": mask = .allButUpsideDown; target = nil
         case "portrait": mask = .portrait; target = .portrait
         case "portrait_rev": mask = .portraitUpsideDown; target = .portraitUpsideDown
         case "landscape_rev": mask = .landscapeLeft; target = .landscapeLeft
@@ -2217,7 +2337,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             setNeedsUpdateOfSupportedInterfaceOrientations()
             view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
         }
-        UIDevice.current.setValue(target.rawValue, forKey: "orientation")
+        if let target {
+            UIDevice.current.setValue(target.rawValue, forKey: "orientation")
+        }
         UIViewController.attemptRotationToDeviceOrientation()
     }
 
@@ -2242,9 +2364,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             : defaults.integer(forKey: "rtc_epoch")
         let offset = Int64(defaults.integer(forKey: "rtc_offset_min")) * 60
         mgbaMobileSetRtc(core, Int32(mode), epoch, offset)
-        mgbaMobileSetSolar(core, Int32(defaults.bool(forKey: "solar_on")
-            ? (defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level"))
-            : -1))
+        if defaults.bool(forKey: "solar_on") {
+            if solarSourceIsScreen {
+                mgbaMobileSetSolar(core, Int32(currentScreenSolarLevel()))
+            } else {
+                mgbaMobileSetSolar(core, Int32(defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level")))
+            }
+        } else {
+            mgbaMobileSetSolar(core, -1)
+        }
+        updateSolarTimer()
         mgbaMobileSetCartRumble(core, defaults.bool(forKey: "cart_rumble"))
         pushGbPalette(palettePref())
         mgbaMobileSetSgbBorders(core, defaults.bool(forKey: "sgb_borders"))
@@ -2554,9 +2683,23 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(solar.1.isOn, forKey: "solar_on")
             self.applyCoreOptions()
         }, for: .valueChanged)
+        let solarSource = UIButton(type: .system)
+        solarSource.contentHorizontalAlignment = .left
+        solarSource.setTitle("阳光来源：\(solarSourceIsScreen ? "屏幕亮度" : "手动")", for: .normal)
+        solarSource.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "阳光来源", current: self.solarSourceIsScreen ? 1 : 0,
+                            options: ["手动", "屏幕亮度"]) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index == 1 ? "screen" : "manual", forKey: "solar_source")
+                solarSource.setTitle("阳光来源：\(index == 1 ? "屏幕亮度" : "手动")", for: .normal)
+                solarBar.isEnabled = index == 0
+                self.applyCoreOptions()
+            }
+        }, for: .touchUpInside)
         let solarNow = defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level")
         let solarLabel = UILabel()
-        solarLabel.text = "阳光强度 \(solarNow)"
+        solarLabel.text = solarSourceIsScreen ? "阳光强度：跟随屏幕亮度" : "阳光强度 \(solarNow)"
         let solarBar = UISlider()
         solarBar.minimumValue = 0
         solarBar.maximumValue = 10
@@ -2566,6 +2709,28 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             solarLabel.text = "阳光强度 \(Int(solarBar.value))"
             self.defaults.set(Int(solarBar.value), forKey: "solar_level")
             self.applyCoreOptions()
+        }, for: .valueChanged)
+        solarBar.isEnabled = !solarSourceIsScreen
+        let notice = labeledSwitch("游戏运行通知（切到后台继续运行）", defaults.bool(forKey: "keep_notice"))
+        notice.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.setBackgroundRunning(notice.1.isOn)
+        }, for: .valueChanged)
+        let syncAuto = labeledSwitch("进出游戏时自动同步存档（WebDAV）", defaults.bool(forKey: "sync_auto"))
+        syncAuto.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(syncAuto.1.isOn, forKey: "sync_auto")
+        }, for: .valueChanged)
+        let gifBallSwitch = labeledSwitch("GIF 悬浮球（悬浮按钮开始/停止录像）", defaults.bool(forKey: "gif_ball"))
+        gifBallSwitch.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(gifBallSwitch.1.isOn, forKey: "gif_ball")
+            if gifBallSwitch.1.isOn {
+                self.setupGifBall()
+            } else {
+                self.gifBall?.removeFromSuperview()
+                self.gifBall = nil
+            }
         }, for: .valueChanged)
         let sgb = labeledSwitch("SGB 边框（Super Game Boy 专用边框画面）", defaults.bool(forKey: "sgb_borders"))
         sgb.1.addAction(UIAction { [weak self] _ in
@@ -2614,9 +2779,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(clock)
         box.addArrangedSubview(rumble.0)
         box.addArrangedSubview(solar.0)
+        box.addArrangedSubview(solarSource)
         box.addArrangedSubview(solarLabel)
         box.addArrangedSubview(solarBar)
         box.addArrangedSubview(sgb.0)
+        box.addArrangedSubview(gifBallSwitch.0)
+        box.addArrangedSubview(notice.0)
+        box.addArrangedSubview(syncAuto.0)
         box.addArrangedSubview(tilt.0)
         box.addArrangedSubview(palette)
         box.addArrangedSubview(fastLabel)
@@ -3670,6 +3839,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let alert = UIAlertController(title: "备份", message: "备份包含设置、电池存档和即时存档。", preferredStyle: .actionSheet)
         alert.addAction(UIAlertAction(title: "导出备份（ZIP）", style: .default) { [weak self] _ in self?.exportBackup() })
         alert.addAction(UIAlertAction(title: "导入备份（ZIP）", style: .default) { [weak self] _ in self?.pick(kind: 4) })
+        alert.addAction(UIAlertAction(title: "云同步设置（WebDAV）", style: .default) { [weak self] _ in self?.showWebDavSettings() })
+        alert.addAction(UIAlertAction(title: "立即同步电池存档", style: .default) { [weak self] _ in self?.runWebDavSync() })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         if let popover = alert.popoverPresentationController {
             popover.sourceView = view
@@ -4109,6 +4280,40 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
+    /// Adds the floating GIF button when the user asked for it.
+    private func setupGifBall() {
+        guard gifBall == nil, defaults.bool(forKey: "gif_ball") else {
+            return
+        }
+        let ball = GifBall(frame: CGRect(x: 0, y: 0, width: GifBall.side, height: GifBall.side))
+        ball.onTap = { [weak self] in
+            self?.toggleGif()
+        }
+        view.addSubview(ball)
+        gifBall = ball
+        // 记住上次停靠的位置
+        let raw = defaults.string(forKey: "gif_ball_pos") ?? "80,120"
+        let parts = raw.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        let x = parts.count >= 2 ? parts[0] : 80
+        let y = parts.count >= 2 ? parts[1] : 120
+        ball.center = CGPoint(x: CGFloat(x), y: CGFloat(y))
+        ball.onMoved = { [weak self] in
+            guard let self, let ball = self.gifBall else { return }
+            self.defaults.set("\(Int(ball.center.x)),\(Int(ball.center.y))", forKey: "gif_ball_pos")
+        }
+        refreshGifBall()
+    }
+
+    /// Shows the ball only while a game is running, and reflects the state.
+    private func refreshGifBall() {
+        guard let ball = gifBall else {
+            return
+        }
+        let loaded = core != nil && mgbaMobileIsLoaded(core)
+        ball.isHidden = !loaded
+        ball.setRecording(gifRecording)
+    }
+
     @objc private func toggleGif() {
         if gifRecording {
             stopGif()
@@ -4137,6 +4342,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gifFrames = 0
         gifRecording = true
         gifButton?.setTitle("停止GIF", for: .normal)
+        refreshGifBall()
         toast("开始GIF录制，再点一次菜单里的 GIF 停止")
         let thread = Thread { [weak self] in
             self?.runGifRecording(queue: queue, w: w, h: h, name: name)
@@ -4148,6 +4354,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func stopGif() {
         gifRecording = false
+        gifButton?.setTitle("GIF", for: .normal)
+        refreshGifBall()
     }
 
     /** Encoder loop: drains the queue into the GIF file, then publishes it. */
@@ -4544,6 +4752,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.applyVideo()
             }
         }, for: .touchUpInside)
+        let sceneRow = UIButton(type: .system)
+        sceneRow.contentHorizontalAlignment = .left
+        let sceneScale = defaults.integer(forKey: "scene_scale") == 0 ? 100 : defaults.integer(forKey: "scene_scale")
+        sceneRow.setTitle("画面场景（移动/缩放画面，当前缩放 \(sceneScale)%）", for: .normal)
+        sceneRow.addAction(UIAction { [weak self] _ in self?.showSceneDialog() }, for: .touchUpInside)
+        let shaderRow = UIButton(type: .system)
+        shaderRow.contentHorizontalAlignment = .left
+        shaderRow.setTitle("外部渲染器：\(ExternalShader.current ?? "无")", for: .normal)
+        shaderRow.addAction(UIAction { [weak self] _ in self?.showShaderDialog() }, for: .touchUpInside)
         let autoSkip = labeledSwitch("自动跳帧（跟不上时自动跳帧保速度）", defaults.bool(forKey: "vf_skip_auto"))
         let skip = slider(max: 5, value: Float(defaults.integer(forKey: "vf_skip")))
         let bright = slider(max: 100, value: Float((defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")) - 50))
@@ -4570,6 +4787,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             box.addArrangedSubview(item.0)
         }
         box.addArrangedSubview(filterRow)
+        box.addArrangedSubview(sceneRow)
+        box.addArrangedSubview(shaderRow)
         box.addArrangedSubview(autoSkip.0)
         box.addArrangedSubview(skipLabel)
         box.addArrangedSubview(skip)
@@ -4610,6 +4829,229 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             box.addArrangedSubview(button)
         }
         presentSheet(SheetController(title: title, content: box))
+    }
+
+    /// 调试工具：内存查看 / 数值搜索 / BG / OAM / 调色板
+    @objc private func showDebugTools() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        DebugViewers.showHub(core: core, presenter: topmostPresenter)
+    }
+
+    /// WebDAV 云同步的账号设置。
+    private func showWebDavSettings() {
+        let config = WebDavSync.Config.load(defaults)
+        let alert = UIAlertController(title: "云同步设置（WebDAV）",
+                                       message: "只同步电池存档（.sav），即时存档留在本机。",
+                                       preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "同步地址，例如 https://dav.jianguoyun.com/dav/"
+            field.text = config.url
+            field.autocapitalizationType = .none
+            field.keyboardType = .URL
+        }
+        alert.addTextField { field in
+            field.placeholder = "目录，例如 mGBAx"
+            field.text = config.dir
+            field.autocapitalizationType = .none
+        }
+        alert.addTextField { field in
+            field.placeholder = "账号"
+            field.text = config.user
+            field.autocapitalizationType = .none
+        }
+        alert.addTextField { field in
+            field.placeholder = "密码"
+            field.text = config.pass
+            field.isSecureTextEntry = true
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "保存", style: .default) { [weak self] _ in
+            guard let self else { return }
+            var updated = WebDavSync.Config()
+            updated.url = alert.textFields?[0].text?.trimmingCharacters(in: .whitespaces)
+                ?? WebDavSync.defaultURL
+            updated.dir = alert.textFields?[1].text?.trimmingCharacters(in: .whitespaces)
+                ?? WebDavSync.defaultDir
+            updated.user = alert.textFields?[2].text?.trimmingCharacters(in: .whitespaces) ?? ""
+            updated.pass = alert.textFields?[3].text ?? ""
+            updated.store(self.defaults)
+            self.toast("已保存云同步设置")
+        })
+        presentSheet(alert)
+    }
+
+    /// 把电池存档和 WebDAV 双向同步一次。
+    private func runWebDavSync(quiet: Bool = false) {
+        let config = WebDavSync.Config.load(defaults)
+        guard config.isComplete else {
+            if !quiet {
+                toast("请先填写云同步设置")
+            }
+            return
+        }
+        let saves = docs.appendingPathComponent("saves", isDirectory: true)
+        if !quiet {
+            toast("正在同步…")
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var message = ""
+            do {
+                let summary = try WebDavSync.run(saves: saves, config: config)
+                message = "同步完成：\(summary.text)"
+                if !summary.errors.isEmpty {
+                    message += "\n失败：\(summary.errors.joined(separator: "、"))"
+                }
+            } catch {
+                message = "同步失败：\(error.localizedDescription)"
+            }
+            DispatchQueue.main.async {
+                if !quiet {
+                    self?.toast(message)
+                }
+            }
+        }
+    }
+
+    /// 外部渲染器：安装 / 选择 / 清除用户自己的着色器。
+    private func showShaderDialog() {
+        let alert = UIAlertController(title: "外部渲染器",
+                                       message: "支持单采样的 GLSL（.glsl）与 Metal（.metal）片元着色器。\n"
+                                        + "GLSL 里的 uTex / uTexSize / uOutSize / uBrightness / vTexCoord 会自动映射。",
+                                       preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "安装渲染器（.glsl/.metal）", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.pickerKind = 10
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.data], asCopy: true)
+            picker.delegate = self
+            self.presentSheet(picker)
+        })
+        for name in ExternalShader.installed {
+            let mark = name == ExternalShader.current ? "✓ " : ""
+            alert.addAction(UIAlertAction(title: mark + name, style: .default) { [weak self] _ in
+                guard let self else { return }
+                do {
+                    try ExternalShader.select(name)
+                    self.defaults.set(ExternalShader.filterId, forKey: "vf_filter")
+                    self.applyVideo()
+                    self.toast("已选择渲染器 \(name)")
+                } catch {
+                    self.toast(error.localizedDescription)
+                }
+            })
+        }
+        if ExternalShader.current != nil {
+            alert.addAction(UIAlertAction(title: "清除外部渲染器", style: .destructive) { [weak self] _ in
+                guard let self else { return }
+                ExternalShader.clear()
+                self.defaults.set(0, forKey: "vf_filter")
+                self.applyVideo()
+                self.toast("已清除外部渲染器")
+            })
+        }
+        alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        if let popover = alert.popoverPresentationController {
+            popover.sourceView = view
+            popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+        }
+        presentSheet(alert)
+    }
+
+    /// Installs a shader the user picked and switches to it.
+    private func installShader(_ url: URL) {
+        do {
+            let name = try ExternalShader.install(from: url)
+            defaults.set(ExternalShader.filterId, forKey: "vf_filter")
+            applyVideo()
+            toast("已安装渲染器 \(name)")
+        } catch {
+            toast("安装失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 阳光来源：屏幕亮度（iOS 没有环境光传感器，用屏幕亮度近似）。
+    private var solarSourceIsScreen: Bool {
+        defaults.string(forKey: "solar_source") == "screen"
+    }
+
+    private func currentScreenSolarLevel() -> Int {
+        min(9, max(0, Int(UIScreen.main.brightness * 10)))
+    }
+
+    /// 每秒按屏幕亮度更新一次阳光强度。
+    private func updateSolarTimer() {
+        solarTimer?.invalidate()
+        solarTimer = nil
+        guard defaults.bool(forKey: "solar_on"), solarSourceIsScreen else {
+            return
+        }
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+            mgbaMobileSetSolar(core, Int32(self.currentScreenSolarLevel()))
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        solarTimer = timer
+    }
+
+    /// 画面场景编辑器：自由移动/缩放游戏画面（悠GBA 的画面场景移植）。
+    private func showSceneDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+        let xLabel = UILabel()
+        let yLabel = UILabel()
+        let scaleLabel = UILabel()
+        let xBar = slider(max: 200, value: Float(defaults.integer(forKey: "scene_x") + 100))
+        let yBar = slider(max: 200, value: Float(defaults.integer(forKey: "scene_y") + 100))
+        let stored = defaults.integer(forKey: "scene_scale")
+        let scaleBar = slider(max: 375, value: Float((stored == 0 ? 100 : stored) - 25))
+
+        func refresh() {
+            let x = Int(xBar.value) - 100
+            let y = Int(yBar.value) - 100
+            let scale = Int(scaleBar.value) + 25
+            xLabel.text = "水平位置 \(x)"
+            yLabel.text = "垂直位置 \(y)"
+            scaleLabel.text = "缩放 \(scale)%"
+            defaults.set(x, forKey: "scene_x")
+            defaults.set(y, forKey: "scene_y")
+            defaults.set(scale, forKey: "scene_scale")
+            applyVideoScene()
+        }
+        for bar in [xBar, yBar, scaleBar] {
+            bar.addAction(UIAction { _ in refresh() }, for: .valueChanged)
+        }
+        let reset = UIButton(type: .system)
+        reset.setTitle("重置", for: .normal)
+        reset.addAction(UIAction { _ in
+            xBar.value = 100
+            yBar.value = 100
+            scaleBar.value = 75
+            refresh()
+        }, for: .touchUpInside)
+        box.addArrangedSubview(xLabel)
+        box.addArrangedSubview(xBar)
+        box.addArrangedSubview(yLabel)
+        box.addArrangedSubview(yBar)
+        box.addArrangedSubview(scaleLabel)
+        box.addArrangedSubview(scaleBar)
+        box.addArrangedSubview(reset)
+        refresh()
+        presentSheet(SheetController(title: "画面场景", content: box))
+    }
+
+    /// Applies the scene transform (pan and zoom) to the game view.
+    private func applyVideoScene() {
+        let x = CGFloat(defaults.integer(forKey: "scene_x"))
+        let y = CGFloat(defaults.integer(forKey: "scene_y"))
+        let stored = defaults.integer(forKey: "scene_scale")
+        let scale = CGFloat(stored == 0 ? 100 : stored) / 100.0
+        gameView.layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        gameView.transform = CGAffineTransform(translationX: gameView.bounds.width * x / 100.0,
+                                                y: gameView.bounds.height * y / 100.0)
+            .scaledBy(x: scale, y: scale)
     }
 
     @objc private func showLink() {
@@ -4723,6 +5165,116 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(Int(p), forKey: "gboy_port")
             self.ensureGboy().join(ip, Int(p))
         }))
+        // ---- 云端联机大厅（房号匹配，中继地址自动获取） ----
+        let lobbyHelp = UILabel()
+        lobbyHelp.numberOfLines = 0
+        lobbyHelp.font = .systemFont(ofSize: 12)
+        lobbyHelp.textColor = UIColor(white: 0.25, alpha: 1)
+        lobbyHelp.text = "云端联机：两边打开同一个游戏，保持 1 倍速，不要暂停。\n创建方点「云端创建」拿到房号，把房号发给对方；对方填房号点「云端加入」，中继地址会自动获取，不用手填。\n已注册账号直接填原密码即可，不会收到任何邮件；新账号先「获取验证码」再「注册」。"
+        let lobbyEmail = field(defaults.string(forKey: "lobby_email") ?? "", "邮箱")
+        let lobbyPassword = field(defaults.string(forKey: "lobby_password") ?? "", "密码（老账号填原密码）")
+        lobbyPassword.isSecureTextEntry = true
+        let lobbyCode = field(defaults.string(forKey: "lobby_code") ?? "", "邮箱验证码（新账号注册用）")
+        let lobbyRoom = field(defaults.string(forKey: "lobby_room") ?? "", "房号（加入时填对方房号）")
+        box.addArrangedSubview(lobbyHelp)
+        box.addArrangedSubview(lobbyEmail)
+        box.addArrangedSubview(lobbyPassword)
+        box.addArrangedSubview(lobbyCode)
+        box.addArrangedSubview(lobbyRoom)
+        box.addArrangedSubview(row(linkButton("获取验证码") { [weak self] in
+            guard let self else { return }
+            let email = lobbyEmail.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard !email.isEmpty else {
+                status.text = "请先填写邮箱"
+                return
+            }
+            status.text = "正在发送验证码…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                let reply = try? LobbySignaling.sendVerificationCodeSync(email: email)
+                DispatchQueue.main.async {
+                    status.text = reply ?? "验证码发送失败"
+                }
+            }
+        }, linkButton("注册") { [weak self] in
+            guard let self else { return }
+            let email = lobbyEmail.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let password = lobbyPassword.text ?? ""
+            let code = lobbyCode.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard !email.isEmpty, !password.isEmpty, !code.isEmpty else {
+                status.text = "注册需要邮箱、密码和验证码"
+                return
+            }
+            status.text = "正在注册…"
+            DispatchQueue.global(qos: .userInitiated).async {
+                let name = self.lobbyUserName(from: email)
+                let token = try? LobbySignaling.registerSync(username: name, email: email,
+                                                             password: password, code: code)
+                DispatchQueue.main.async {
+                    guard let token else {
+                        status.text = "注册失败，请检查验证码"
+                        return
+                    }
+                    self.defaults.set(email, forKey: "lobby_email")
+                    self.defaults.set(password, forKey: "lobby_password")
+                    status.text = "注册成功，正在创建房间…"
+                    self.ensureLobby().start(user: email, password: password, roomId: "", token: token)
+                }
+            }
+        }))
+        box.addArrangedSubview(row(linkButton("云端创建") { [weak self] in
+            guard let self else { return }
+            let email = lobbyEmail.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let password = lobbyPassword.text ?? ""
+            guard !email.isEmpty else {
+                status.text = "请填写邮箱"
+                return
+            }
+            guard let core = self.core, mgbaMobileIsLoaded(core) else {
+                status.text = "请先打开一个游戏再联机"
+                return
+            }
+            self.defaults.set(email, forKey: "lobby_email")
+            self.defaults.set(password, forKey: "lobby_password")
+            self.ensureLobby().start(user: email, password: password, roomId: "")
+        }, linkButton("云端加入") { [weak self] in
+            guard let self else { return }
+            let email = lobbyEmail.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let password = lobbyPassword.text ?? ""
+            let code = lobbyRoom.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard !email.isEmpty else {
+                status.text = "请填写邮箱"
+                return
+            }
+            guard !code.isEmpty else {
+                status.text = "请填写对方房号"
+                return
+            }
+            guard let core = self.core, mgbaMobileIsLoaded(core) else {
+                status.text = "请先打开一个游戏再联机"
+                return
+            }
+            self.defaults.set(email, forKey: "lobby_email")
+            self.defaults.set(password, forKey: "lobby_password")
+            self.defaults.set(code, forKey: "lobby_room")
+            self.ensureLobby().start(user: email, password: password, roomId: code)
+        }))
+        box.addArrangedSubview(linkButton("联机自检") { [weak self] in
+            guard let self else { return }
+            let email = lobbyEmail.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            let password = lobbyPassword.text ?? ""
+            guard !email.isEmpty else {
+                status.text = "请填写邮箱"
+                return
+            }
+            self.defaults.set(email, forKey: "lobby_email")
+            self.defaults.set(password, forKey: "lobby_password")
+            self.ensureLobby().selfTest(user: email, password: password)
+        })
+        box.addArrangedSubview(linkButton("重新连接中继") { [weak self] in
+            guard let self else { return }
+            // 不重建房间，直接重新解析中继节点并重连数据通道
+            self.ensureLobby().reconnectRelay()
+        })
         box.addArrangedSubview(linkButton("断开") { [weak self] in
             guard let self else { return }
             if let remote = self.remote {
@@ -4732,6 +5284,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             if let gboy = self.gboyLink {
                 gboy.close()
+            }
+            if let lobby = self.lobbyLink {
+                lobby.close()
             }
             self.gboyRemoteKeys = 0
             // Mirror the Android disconnect path: republish the (now empty)
@@ -4802,6 +5357,65 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         gboyLink = link
         return link
+    }
+
+    /// Cloud lobby session: room signalling plus the relay transport.
+    private func ensureLobby() -> LobbyLink {
+        if let lobbyLink { return lobbyLink }
+        let link = LobbyLink()
+        link.romPath = { [weak self] in self?.defaults.string(forKey: "lastRom") }
+        link.localKeys = { [weak self] in
+            guard let self else { return 0 }
+            return Int32(self.touchKeys | self.hwKeys | self.padKeys)
+        }
+        link.onRemoteKeys = { [weak self] keys in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gboyRemoteKeys = Int(keys)
+                self.publishKeys()
+            }
+        }
+        link.onStatus = { [weak self] text in
+            DispatchQueue.main.async {
+                self?.linkStatusLabel?.text = text
+            }
+        }
+        link.onConnected = { [weak self] asHost, note in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let note {
+                    self.toast(note)
+                }
+                self.toast(asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P")
+            }
+        }
+        link.onRemoteReset = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+                mgbaMobileReset(core)
+                mgbaMobileClearAudio(core)
+                self.toast("已复位")
+            }
+        }
+        lobbyLink = link
+        return link
+    }
+
+    /// The lobby server rejects user names longer than ten characters, and the
+    /// upstream brand must not show up in the account name either.
+    private func lobbyUserName(from email: String) -> String {
+        var name = (email as NSString).lastPathComponent
+        name = name.replacingOccurrences(of: "gboy", with: "lobby", options: .caseInsensitive)
+        for character in [" ", ".", "_", "-"] {
+            name = name.replacingOccurrences(of: character, with: "")
+        }
+        if name.isEmpty {
+            name = "player"
+        }
+        if name.count > 10 {
+            name = String(name.prefix(10))
+        }
+        return name
     }
 
     private func startLinkWatch() {
@@ -4887,6 +5501,49 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     @objc private func appResignedActive() {
         releaseInput()
+        if defaults.bool(forKey: "keep_notice") {
+            postRunningNotice()
+        }
+    }
+
+    /**
+     * Keeps the game running while the app is in the background: iOS keeps a
+     * process alive when it plays audio in the background mode, and the notice
+     * tells the user the game is still going.
+     */
+    private func setBackgroundRunning(_ on: Bool) {
+        defaults.set(on, forKey: "keep_notice")
+        if on {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                if !granted {
+                    DispatchQueue.main.async {
+                        self.toast("没有通知权限，游戏仍会在后台继续运行")
+                    }
+                }
+            }
+            UIApplication.shared.isIdleTimerDisabled = true
+        } else {
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+    }
+
+    /// The "游戏运行中" notice, shown while the game keeps running.
+    private func postRunningNotice() {
+        let content = UNMutableNotificationContent()
+        content.title = "游戏运行中"
+        var name = "mGBA"
+        if let core, mgbaMobileIsLoaded(core) {
+            var title = [CChar](repeating: 0, count: 32)
+            mgbaMobileTitle(core, &title, 32)
+            let loaded = String(cString: title).trimmingCharacters(in: .whitespaces)
+            if !loaded.isEmpty {
+                name = loaded
+            }
+        }
+        content.body = "\(name) 正在运行"
+        content.sound = nil
+        let request = UNNotificationRequest(identifier: "mgba-running", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
     private func padMask(_ pad: GCExtendedGamepad) -> Int {
@@ -4909,7 +5566,31 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let prev = padKeys
         padKeys = mask
         noteUserKeys(prevTouch: touchKeys, prevHw: hwKeys, prevPad: prev)
-        if (mask & ~prev) != 0 { wakeInput() }
+        if (mask & ~prev) != 0 {
+            wakeInput()
+            maybeOfferKeypadHide()
+        }
+    }
+
+    /// 检测到实体按键（键盘/手柄）时，询问是否隐藏屏幕上的虚拟按键。
+    private func maybeOfferKeypadHide() {
+        guard defaults.bool(forKey: "keypad_detect"),
+              !defaults.bool(forKey: "vkeypad_hidden"),
+              !controls.isHidden,
+              !keypadHideAsked else {
+            return
+        }
+        keypadHideAsked = true
+        let alert = UIAlertController(title: "检测到实体按键",
+                                       message: "要隐藏虚拟按键吗？",
+                                       preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "隐藏", style: .default) { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(true, forKey: "vkeypad_hidden")
+            self.controls.isHidden = true
+        })
+        alert.addAction(UIAlertAction(title: "保持", style: .cancel))
+        presentSheet(alert)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -4927,6 +5608,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let prev = hwKeys
             hwKeys |= bit
             noteUserKeys(prevTouch: touchKeys, prevHw: prev, prevPad: padKeys)
+            maybeOfferKeypadHide()
             if (bit & ~prev) != 0 { wakeInput() }
             handled = true
         }
@@ -5078,7 +5760,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // Do not stay held at 16x (raised pitch) or with A/B latched when the
         // key-up never arrives because the screen went away under a held key.
         releaseInput()
-        audio.setPaused(true)
+        // 后台运行开着时音频不能停，否则 iOS 会挂起进程。
+        if !defaults.bool(forKey: "keep_notice") {
+            audio.setPaused(true)
+        }
         // 退出时自动存档 into the reserved slot.
         if defaults.bool(forKey: "auto_save_state"), let core, mgbaMobileIsLoaded(core) {
             if mgbaMobileSaveState(core, Self.autoSlot) {

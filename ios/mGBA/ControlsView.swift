@@ -314,6 +314,30 @@ final class ControlsView: UIView {
     }
 
     /** Base alpha scaled by the opacity setting. */
+    // 红色模塑键帽的配色（与 Android 的 ControlsView 同一套）
+    private static let keyRing = UIColor(red: 0x14 / 255, green: 0x10 / 255, blue: 0x0F / 255, alpha: 1)
+    private static let keyFaceTop = UIColor(red: 0xCF / 255, green: 0x3A / 255, blue: 0x40 / 255, alpha: 1)
+    private static let keyFaceBottom = UIColor(red: 0x9C / 255, green: 0x1F / 255, blue: 0x24 / 255, alpha: 1)
+    private static let keyInk = UIColor(red: 0x67 / 255, green: 0x11 / 255, blue: 0x15 / 255, alpha: 1)
+    private static let keyHub = UIColor(red: 0x8B / 255, green: 0x1C / 255, blue: 0x21 / 255, alpha: 1)
+
+    /// 渐变缓存：按透明度分档，避免每帧重复创建。
+    private var shadeCache: [String: CGGradient] = [:]
+
+    private func fadedGradient(_ key: String, _ colors: [UIColor], _ locations: [CGFloat]) -> CGGradient? {
+        let step = Int(fade(1) * 10)
+        let cacheKey = "\(key)-\(step)"
+        if let cached = shadeCache[cacheKey] {
+            return cached
+        }
+        let space = CGColorSpaceCreateDeviceRGB()
+        guard let made = CGGradient(colorsSpace: space, colors: colors as CFArray, locations: locations) else {
+            return nil
+        }
+        shadeCache[cacheKey] = made
+        return made
+    }
+
     private func fade(_ alpha: CGFloat) -> CGFloat {
         min(1, alpha * opacity)
     }
@@ -697,12 +721,48 @@ final class ControlsView: UIView {
         let path = round
             ? UIBezierPath(ovalIn: rect)
             : UIBezierPath(roundedRect: rect, cornerRadius: radius)
-        if down {
-            color(theme.accentDeep, alpha: 150 / 255).setFill()
-        } else {
-            UIColor(white: 1, alpha: fade(150 / 255)).setFill()
-        }
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        // 深色底环 + 落在下方的投影
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: 2), blur: 2.5,
+                          color: color(UIColor.black, alpha: 0.35).cgColor)
+        color(Self.keyRing, alpha: 1).setFill()
         path.fill()
+        context.restoreGState()
+        // 键面：垂直渐变的红色塑料
+        context.saveGState()
+        context.addPath(path.cgPath)
+        context.clip()
+        let top = down ? color(Self.keyFaceBottom, alpha: 1) : color(Self.keyFaceTop, alpha: 1)
+        let bottom = color(Self.keyFaceBottom, alpha: 1)
+        if let gradient = fadedGradient("face", [top, bottom], [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: rect.midX, y: rect.minY),
+                                       end: CGPoint(x: rect.midX, y: rect.maxY),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        } else {
+            top.setFill()
+            path.fill()
+        }
+        // 上缘高光
+        if let gradient = fadedGradient("shine",
+                                       [UIColor(white: 1, alpha: fade(70 / 255)), UIColor(white: 1, alpha: 0)],
+                                       [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: rect.midX, y: rect.minY),
+                                       end: CGPoint(x: rect.midX, y: rect.midY + rect.height * 0.08),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        // 下缘阴影
+        if let gradient = fadedGradient("shade",
+                                       [UIColor(white: 0, alpha: 0), UIColor(white: 0, alpha: fade(60 / 255))],
+                                       [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: rect.midX, y: rect.midY),
+                                       end: CGPoint(x: rect.midX, y: rect.maxY),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        context.restoreGState()
         if selected {
             color(UIColor(red: 1, green: 214 / 255, blue: 64 / 255, alpha: 1), alpha: 1).setStroke()
             path.lineWidth = 2.5
@@ -711,7 +771,7 @@ final class ControlsView: UIView {
         let size: CGFloat = label.count > 2 ? 11 : label.count > 1 ? 13 : 17
         let attrs: [NSAttributedString.Key: Any] = [
             .font: UIFont.boldSystemFont(ofSize: size),
-            .foregroundColor: down ? UIColor(white: 1, alpha: fade(240 / 255)) : color(theme.accent, alpha: 1)
+            .foregroundColor: color(Self.keyInk, alpha: 1)
         ]
         let text = label as NSString
         let textSize = text.size(withAttributes: attrs)
@@ -762,22 +822,86 @@ final class ControlsView: UIView {
                          width: dpad.width, height: dpadUp.width)
         let barV = CGRect(x: dpad.midX - dpadLeft.height / 2, y: dpad.minY,
                           width: dpadLeft.height, height: dpad.height)
-        UIColor(white: 1, alpha: fade(150 / 255)).setFill()
-        UIBezierPath(roundedRect: bar, cornerRadius: r).fill()
-        UIBezierPath(roundedRect: barV, cornerRadius: r).fill()
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        // 两臂合成一条路径再填充：交叠处只画一次，不会出现更深的方块
+        let cross = UIBezierPath()
+        cross.append(UIBezierPath(roundedRect: bar, cornerRadius: r))
+        cross.append(UIBezierPath(roundedRect: barV, cornerRadius: r))
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: 2), blur: 2.5,
+                          color: color(UIColor.black, alpha: 0.35).cgColor)
+        color(Self.keyRing, alpha: 1).setFill()
+        cross.fill()
+        context.restoreGState()
+        // 键面：红色渐变 + 上缘高光 + 下缘阴影
+        context.saveGState()
+        context.addPath(cross.cgPath)
+        context.clip()
+        if let gradient = fadedGradient("face",
+                                       [color(Self.keyFaceTop, alpha: 1), color(Self.keyFaceBottom, alpha: 1)],
+                                       [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: dpad.midX, y: dpad.minY),
+                                       end: CGPoint(x: dpad.midX, y: dpad.maxY),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        if let gradient = fadedGradient("shine",
+                                       [UIColor(white: 1, alpha: fade(60 / 255)), UIColor(white: 1, alpha: 0)],
+                                       [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: dpad.midX, y: dpad.minY),
+                                       end: CGPoint(x: dpad.midX, y: dpad.minY + dpad.height * 0.4),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        if let gradient = fadedGradient("shade",
+                                       [UIColor(white: 0, alpha: 0), UIColor(white: 0, alpha: fade(70 / 255))],
+                                       [0, 1]) {
+            context.drawLinearGradient(gradient,
+                                       start: CGPoint(x: dpad.midX, y: dpad.midY),
+                                       end: CGPoint(x: dpad.midX, y: dpad.maxY),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+        }
+        context.restoreGState()
         // Pressed arms light up in the accent color.
         drawArmGlow(dpadUp, Self.up, r)
         drawArmGlow(dpadDown, Self.down, r)
         drawArmGlow(dpadLeft, Self.left, r)
         drawArmGlow(dpadRight, Self.right, r)
-        // Center hub with a small accent mark.
+        // Recessed hub plus the four direction arrows.
         let hub = dpadUp.width * 0.92
-        UIColor(white: 1, alpha: fade(170 / 255)).setFill()
+        color(Self.keyHub, alpha: 1).setFill()
         UIBezierPath(ovalIn: CGRect(x: dpad.midX - hub / 2, y: dpad.midY - hub / 2, width: hub, height: hub)).fill()
-        color(theme.dpadMark, alpha: 150 / 255).setFill()
-        let mark = hub / 5
-        UIBezierPath(ovalIn: CGRect(x: dpad.midX - mark, y: dpad.midY - mark, width: mark * 2, height: mark * 2)).fill()
+        color(Self.keyInk, alpha: 1).setFill()
+        let arrow = dpadUp.width * 0.26
+        drawCapArrow(CGPoint(x: dpad.midX, y: dpad.midY - dpadUp.height * 0.52), size: arrow, up: true)
+        drawCapArrow(CGPoint(x: dpad.midX, y: dpad.midY + dpadDown.height * 0.52), size: arrow, up: false)
+        drawCapArrow(CGPoint(x: dpad.midX - dpadLeft.width * 0.52, y: dpad.midY), size: arrow, left: true)
+        drawCapArrow(CGPoint(x: dpad.midX + dpadRight.width * 0.52, y: dpad.midY), size: arrow, left: false)
         if editing { drawCursor(dpad) }
+    }
+
+    /// One triangular arrow on a key cap.
+    private func drawCapArrow(_ center: CGPoint, size: CGFloat, up: Bool = false, left: Bool = false) {
+        let half = size / 2
+        let path: UIBezierPath
+        if left {
+            path = UIBezierPath()
+            path.move(to: CGPoint(x: center.x - half, y: center.y))
+            path.addLine(to: CGPoint(x: center.x + half, y: center.y - half))
+            path.addLine(to: CGPoint(x: center.x + half, y: center.y + half))
+        } else if up {
+            path = UIBezierPath()
+            path.move(to: CGPoint(x: center.x, y: center.y - half))
+            path.addLine(to: CGPoint(x: center.x - half, y: center.y + half))
+            path.addLine(to: CGPoint(x: center.x + half, y: center.y + half))
+        } else {
+            path = UIBezierPath()
+            path.move(to: CGPoint(x: center.x, y: center.y + half))
+            path.addLine(to: CGPoint(x: center.x - half, y: center.y - half))
+            path.addLine(to: CGPoint(x: center.x + half, y: center.y - half))
+        }
+        path.close()
+        path.fill()
     }
 
     private func drawArmGlow(_ arm: CGRect, _ bit: Int, _ r: CGFloat) {

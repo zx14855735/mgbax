@@ -58,6 +58,8 @@ final class ShaderRenderer {
 
     private var filterId = 0
     private var passthroughState: MTLRenderPipelineState?
+    /// Runtime-compiled library for the user-installed shader.
+    private var externalVersion = -1
 
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -143,7 +145,9 @@ final class ShaderRenderer {
                 encoder.setFragmentTexture(frameTex, index: i + 1)
             }
         }
-        encoder.setFragmentSamplerState(filter == 11 ? samplerLinear : samplerNearest, index: 0)
+        // The external shader samples the frame like the sharp filters do.
+        let linear = filter == 11 || filter == ExternalShader.filterId
+        encoder.setFragmentSamplerState(linear ? samplerLinear : samplerNearest, index: 0)
         var uniforms = FilterUniforms(
             texSize: SIMD2(Float(width), Float(height)),
             outSize: SIMD2(Float(size.width), Float(size.height)),
@@ -160,6 +164,9 @@ final class ShaderRenderer {
     }
 
     private func pipeline(for filter: Int) -> MTLRenderPipelineState? {
+        if filter == ExternalShader.filterId {
+            return externalPipeline()
+        }
         if let cached = pipelines[filter] {
             return cached
         }
@@ -178,6 +185,45 @@ final class ShaderRenderer {
             return state
         } catch {
             broken.insert(filter)
+            return nil
+        }
+    }
+
+    /**
+     * The pipeline for the user-installed shader. The source is compiled at
+     * runtime, so a changed shader drops the cached pipeline; a shader that
+     * fails to compile marks itself broken and the caller falls back to the
+     * software path.
+     */
+    private func externalPipeline() -> MTLRenderPipelineState? {
+        let version = ExternalShader.version
+        if version != externalVersion {
+            externalVersion = version
+            pipelines[ExternalShader.filterId] = nil
+            broken.remove(ExternalShader.filterId)
+        }
+        if let cached = pipelines[ExternalShader.filterId] {
+            return cached
+        }
+        guard let source = ExternalShader.source, let vertex = vertexFunc else {
+            broken.insert(ExternalShader.filterId)
+            return nil
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertex
+        descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        do {
+            let library = try device.makeLibrary(source: source, options: nil)
+            guard let fragment = library.makeFunction(name: ExternalShader.fragmentName) else {
+                broken.insert(ExternalShader.filterId)
+                return nil
+            }
+            descriptor.fragmentFunction = fragment
+            let state = try device.makeRenderPipelineState(descriptor: descriptor)
+            pipelines[ExternalShader.filterId] = state
+            return state
+        } catch {
+            broken.insert(ExternalShader.filterId)
             return nil
         }
     }

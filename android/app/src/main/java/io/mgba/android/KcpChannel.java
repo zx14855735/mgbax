@@ -120,6 +120,46 @@ final class KcpChannel {
         return connect(new KcpChannel(address, port, conv));
     }
 
+    /**
+     * Opens a session <em>without</em> the handshake, so the caller can retry on
+     * the very same conversation id and UDP port.
+     *
+     * The relay keeps a tiny, slowly recycled session table. Every retry that
+     * builds a brand new session fills that table with half open leftovers,
+     * and once it is full the relay silently drops the newcomer - the room
+     * then looks permanently dead. Retrying on one session avoids that.
+     */
+    static KcpChannel open(InetAddress address, int port, int conv) throws IOException {
+        return new KcpChannel(address, port, conv);
+    }
+
+    /**
+     * Re-sends {@code HS} on the current session and waits for {@code HK}.
+     * Returns false when the relay stayed silent for the whole timeout.
+     */
+    boolean retryHandshake(long timeoutMs) throws IOException {
+        long deadline = System.currentTimeMillis() + Math.max(timeoutMs, 1);
+        while (System.currentTimeMillis() < deadline) {
+            rawSend(HS);
+            long stepEnd = Math.min(deadline, System.currentTimeMillis() + 2000);
+            while (System.currentTimeMillis() < stepEnd) {
+                if (handshakeDone) {
+                    return true;
+                }
+                if (dead) {
+                    throw new IOException("中继连接中断");
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("中继握手被中断");
+                }
+            }
+        }
+        return handshakeDone;
+    }
+
     /** Opens a session with a random conversation id and completes HS/HK. */
     static KcpChannel connect(InetAddress address, int port) throws IOException {
         return connect(new KcpChannel(address, port));
@@ -238,6 +278,11 @@ final class KcpChannel {
             Thread.currentThread().interrupt();
             return null;
         }
+    }
+
+    /** True once the channel was closed (the relay loop must stop). */
+    boolean isClosed() {
+        return !running;
     }
 
     void close() {

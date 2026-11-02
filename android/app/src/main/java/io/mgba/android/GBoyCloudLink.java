@@ -46,10 +46,8 @@ public final class GBoyCloudLink {
     private static final String TAG = "GBoyLink";
     private static final long STEP_WAIT_MS = 20000;
     private static final long ROOM_WAIT_MS = 15000;
-    /** Public relay slots are recycled slowly; a single timeout is not fatal. */
-    private static final int RELAY_TRIES = 4;
-    private static final long RELAY_RETRY_FIRST_MS = 15000;
-    private static final long RELAY_RETRY_MAX_MS = 60000;
+    /** Public relay slots are recycled slowly; keep retrying for a while. */
+    private static final long RELAY_WAIT_MS = 300000;
     /** How long to wait for the peer's first key state before starting anyway. */
     private static final long PEER_KEY_WAIT_MS = 4000;
     private static final long KEY_INTERVAL_MS = 50;
@@ -76,6 +74,10 @@ public final class GBoyCloudLink {
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
     private volatile Thread advertiser;
+    /** 会话信息：「重新连接中继」按钮复用它，不重建房间。 */
+    private volatile String authToken;
+    private volatile Room currentRoom;
+    private volatile boolean hostRole;
     private final GBoyFrames.Reader reader = new GBoyFrames.Reader();
     /** Last key state received from the peer; only transitions are logged. */
     private int lastRxKeys = Integer.MIN_VALUE;
@@ -186,7 +188,7 @@ public final class GBoyCloudLink {
             // it to the room (over the lobby broadcast channel) for as long as the
             // link is up. The joiner reads it automatically and fills the relay in
             // itself - no manual NODE2: entry needed.
-            startNodeAdvertiser(sig, token, uuid, room.roomId, room.nodeAddress, room.nodePort);
+            startNodeAdvertiser(sig, token, uuid, room);
         } else {
             status("正在加入房间 " + roomId.trim() + "…");
             send(sig, json("join_room", token, roomId.trim()), 1800);
@@ -194,7 +196,8 @@ public final class GBoyCloudLink {
             // The room server normally only tells the creator where the relay
             // lives, so the host advertises it over the broadcast channel instead.
             // Watch for that for a generous window - the host keeps re-sending it.
-            waitForRoom(sig, room, roomId.trim(), 12000);
+            room.roomId = roomId.trim();
+            waitForRoom(sig, room, roomId.trim(), 20000);
             if (room.nodeAddress == null || room.nodePort <= 0) {
                 throw new IOException("未能自动获取对方的中继地址。"
                         + "请让房主把界面上的「中继 地址:端口」发给你，"
@@ -202,8 +205,43 @@ public final class GBoyCloudLink {
             }
         }
 
-        status("正在连接中继节点 " + room.nodeAddress + ":" + room.nodePort + "…");
-        KcpChannel link = startRelayLink(room.nodeAddress, room.nodePort, room);
+        authToken = token;
+        currentRoom = room;
+        hostRole = asHost;
+        connectRelay(sig, token, room, asHost);
+    }
+
+    /**
+     * 连上中继并进入对战循环。房间与信令已经就绪，这里只负责数据通道，
+     * 「重新连接中继」按钮也复用同一段逻辑。
+     */
+    private void connectRelay(final GbCloud.Session sig, final String token, final Room room,
+                              final boolean asHost) throws IOException {
+        status((asHost ? "房间已创建，房号 " : "已加入房间 ")
+                + (room.roomId == null ? "" : room.roomId)
+                + "\n中继 " + room.nodeAddress + ":" + room.nodePort
+                + "\n正在连接中继节点，等待对方加入…");
+        // 先问一次当前节点：公共节点会被服务器回收，房间还在但节点可能已经换了
+        String fresh = currentNode(sig, token, room, asHost);
+        if (fresh != null) {
+            int colon = fresh.lastIndexOf(':');
+            if (colon > 0) {
+                try {
+                    room.nodeAddress = fresh.substring(0, colon);
+                    room.nodePort = Integer.parseInt(fresh.substring(colon + 1).trim());
+                } catch (NumberFormatException ignored) {
+                    // 保留原来的节点
+                }
+            }
+        }
+        final String currentRoom = room.roomId;
+        final boolean creator = asHost;
+        KcpChannel link = startRelayLink(room.nodeAddress, room.nodePort, room, new NodeQuery() {
+            @Override
+            public String query() {
+                return currentNode(sig, token, room, creator);
+            }
+        });
         if (closed) {
             link.close();
             return;
@@ -217,27 +255,100 @@ public final class GBoyCloudLink {
     }
 
     /**
-     * Creates a room and resolves the relay node. Shared by {@link #run} (real
-     * link) and {@link #selfTest} (connectivity check) so both follow exactly
-     * the same, server-verified signalling order.
+     * 问服务器（房主）或房主广播（加入方）当前的中继节点，返回 "地址:端口" 或 null。
+     */
+    private String currentNode(final GbCloud.Session sig, final String token, final Room room,
+                               final boolean creator) {
+        try {
+            Room probe = new Room();
+            if (creator) {
+                // 房主直接问服务器当前的节点
+                send(sig, createJson(token), 2000);
+                waitForRoom(sig, probe, room.roomId, 8000);
+            } else {
+                // 加入方听房主的广播，节点换了就跟着换
+                waitForRoom(sig, probe, room.roomId, 4000);
+            }
+            if (probe.nodeAddress == null || probe.nodePort <= 0) {
+                return null;
+            }
+            return probe.nodeAddress + ":" + probe.nodePort;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 重新连接中继：不重建房间，直接重新解析节点并重连数据通道。
+     * 房间还在、但节点被回收或对端掉线时用得上。
+     */
+    public void reconnectRelay() {
+        final GbCloud.Session sig = session;
+        final String token = authToken;
+        final Room room = currentRoom;
+        final boolean asHost = hostRole;
+        if (sig == null || token == null || room == null) {
+            status("还没有房间，请先点「云端创建」或「云端加入」");
+            return;
+        }
+        // 关掉旧通道，让旧的 serve 循环退出
+        KcpChannel old = channel;
+        channel = null;
+        if (old != null) {
+            old.close();
+        }
+        status("正在重新连接中继…");
+        new Thread(() -> {
+            try {
+                connectRelay(sig, token, room, asHost);
+            } catch (Exception e) {
+                if (!closed) {
+                    fail(message(e));
+                }
+            }
+        }, "lobby-reconnect").start();
+    }
+
+    /**
+     * 建房并取到中继节点。
+     *
+     * 这里必须先把可能存在的「旧房间」解散掉再新建：服务器把房间绑在账号上，
+     * 旧房间里的中继节点是公共节点池里会被回收的旧端口，拿它去连只会一直超时
+     * （表现就是「中继没有回应」）。而 leave_room 只有在会话已经进过房间时才生效
+     * （否则服务器回「您不在任何游戏房间中」），所以顺序是：
+     *
+     *   create_game_room（问出旧房号）→ join_room → leave_room（房主离开，房间解散）
+     *   → create_game_room（全新房间 + 全新节点）→ join/ready/update_room_settings
+     *   → create_game_room（再问一次，这次带回中继节点）
      */
     private void hostCreateRoom(GbCloud.Session sig, String token, String uuid, Room room)
             throws Exception {
-        send(sig, json("leave_room", token, null), 1200);
+        // 1) 先问一次当前房间（旧房间也要一并解散）
         send(sig, createJson(token), 2500);
         waitForRoomId(sig, room, 5000);
-        if (room.roomId == null || room.roomId.isEmpty()) {
+        if (room.roomId != null && !room.roomId.isEmpty()) {
+            send(sig, json("join_room", token, room.roomId), 1500);
+            send(sig, json("leave_room", token, null), 1500);
+            // 房主离开时服务器会解散房间，等它把旧节点释放掉
+            Thread.sleep(800);
+        }
+        // 2) 建一个全新的房间
+        Room fresh = new Room();
+        send(sig, createJson(token), 2500);
+        waitForRoomId(sig, fresh, 6000);
+        if (fresh.roomId == null || fresh.roomId.isEmpty()) {
             throw new IOException("服务器没有创建房间");
         }
+        room.roomId = fresh.roomId;
+        room.nodeAddress = null;
+        room.nodePort = 0;
+        // 3) 进房 + ready + 切成多人房间
         send(sig, json("join_room", token, room.roomId), 1500);
         send(sig, json("ready", token, null), 1200);
         send(sig, settingsJson(token, room.roomId), 1500);
-        if (room.nodeAddress == null || room.nodePort <= 0) {
-            // Ask again: the server now answers with the existing room and
-            // the node it assigned to it.
-            send(sig, createJson(token), 2500);
-            waitForRoom(sig, room, null, ROOM_WAIT_MS);
-        }
+        // 4) 再问一次：这时服务器会连同中继节点一起返回
+        send(sig, createJson(token), 2500);
+        waitForRoom(sig, room, null, ROOM_WAIT_MS);
         if (room.nodeAddress == null || room.nodePort <= 0) {
             throw new IOException("服务器没有返回中继节点");
         }
@@ -266,11 +377,15 @@ public final class GBoyCloudLink {
                 self.status("自检：创建房间…");
                 Room room = new Room();
                 self.hostCreateRoom(sig, token, uuid, room);
-                self.status("自检：已拿到中继节点 " + room.nodeAddress + ":" + room.nodePort
-                        + "\n自检：正在测试 UDP/KCP 握手…");
-                // 复用游戏用的 KCP over UDP 传输做一次真实握手，验证中继可达。
-                link = KcpChannel.connect(java.net.InetAddress.getByName(room.nodeAddress),
-                        room.nodePort);
+                // 让对方也能自动拿到中继节点（和真实对战完全一样的广播）
+                self.startNodeAdvertiser(sig, token, uuid, room);
+                self.status("✅ 信令自检通过\n房号 " + room.roomId
+                        + "\n中继 " + room.nodeAddress + ":" + room.nodePort
+                        + "\n正在等对方进入这个房间（公共节点要两端都接入才会应答）…");
+                // 复用游戏用的 KCP over UDP 传输做真实握手。
+                // 注意：只有自己一个人在房间里时，公共节点是不会应答的，
+                // 所以这里一直等，等对方进来后自然会连上。
+                link = self.startRelayLink(room.nodeAddress, room.nodePort, room, null);
                 self.status("✅ 联机自检通过：\n房号 " + room.roomId
                         + "\n中继 " + room.nodeAddress + ":" + room.nodePort
                         + "\n信令与中继 UDP/KCP 均可达，本机可以云端联机对战。");
@@ -334,6 +449,7 @@ public final class GBoyCloudLink {
                 link.close();
                 return;
             }
+            sendRegister(link, room);
             handshake(link, room);
         } else if (explicitConv != null) {
             link = KcpChannel.connect(InetAddress.getByName(host), port, explicitConv);
@@ -342,9 +458,10 @@ public final class GBoyCloudLink {
                 link.close();
                 return;
             }
+            sendRegister(link, room);
             handshake(link, room);
         } else {
-            link = startRelayLink(host, port, room);
+            link = startRelayLink(host, port, room, null);
             if (closed) {
                 link.close();
                 return;
@@ -356,36 +473,90 @@ public final class GBoyCloudLink {
     }
 
     /**
-     * Connects to the public relay and completes the GBoy handshake, retrying
-     * with backoff. The node keeps a tiny, slowly recycled session table: an
-     * attempt that dies half way can hold its slot for tens of seconds and a
-     * brand new connection is then silently ignored. Without the retry the
-     * cloud room looks permanently dead after one unlucky try.
+     * Connects to the public relay and completes the GBoy handshake.
+     *
+     * - The very same session (one conversation id, one UDP port) is reused for
+     *   every retry. The node keeps a tiny, slowly recycled session table, so
+     *   a retry that builds a brand new session fills that table with half open
+     *   leftovers and the node then silently drops the newcomer - the room
+     *   looks permanently dead after one unlucky try.
+     * - Public nodes usually answer only once the second player has joined, so
+     *   the retries run for several minutes and the status tells the user that
+     *   we are waiting for the opponent.
+     * - A node can be recycled by the server at any time, so every 30 seconds
+     *   we ask the room server for the current node and switch over when it
+     *   changed.
      */
-    private KcpChannel startRelayLink(String host, int port, Room room) throws IOException {
-        KcpChannel link = null;
+    private KcpChannel startRelayLink(String host, int port, Room room, NodeQuery query)
+            throws IOException {
         IOException failure = null;
-        long wait = RELAY_RETRY_FIRST_MS;
-        for (int attempt = 0; attempt < RELAY_TRIES && !closed; attempt++) {
-            if (attempt > 0) {
-                status("中继没有回应，稍后重试（第 " + (attempt + 1) + "/" + RELAY_TRIES
-                        + " 次，等待 " + (wait / 1000) + " 秒）…");
-                try {
-                    Thread.sleep(wait);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-                wait = Math.min(wait * 2, RELAY_RETRY_MAX_MS);
-            }
+        long deadline = System.currentTimeMillis() + RELAY_WAIT_MS;
+        long started = System.currentTimeMillis();
+        long nextQuery = 0;
+        long lastNotice = 0;
+        String currentHost = host;
+        int currentPort = port;
+        KcpChannel link = null;
+        boolean registered = false;
+        while (!closed && System.currentTimeMillis() < deadline) {
             try {
-                link = KcpChannel.connect(InetAddress.getByName(host), port);
-                channel = link;
-                handshake(link, room);
-                return link;
+                if (link == null) {
+                    link = KcpChannel.open(java.net.InetAddress.getByName(currentHost), currentPort,
+                            java.util.UUID.randomUUID().hashCode() & Integer.MAX_VALUE);
+                    channel = link;
+                    registered = false;
+                }
+                if (link.retryHandshake(3000)) {
+                    if (!registered) {
+                        sendRegister(link, room);
+                        registered = true;
+                    }
+                    try {
+                        handshake(link, room);
+                        return link;
+                    } catch (IOException e) {
+                        // 已经连上中继，但对方还没注册：保留同一个会话继续等
+                        failure = e;
+                        Log.i(TAG, "relay handshake pending: " + e.getMessage());
+                        sleepQuietly(1000);
+                        continue;
+                    }
+                }
+                // 节点可能被回收了，重新问一次服务器
+                if (query != null && System.currentTimeMillis() >= nextQuery) {
+                    nextQuery = System.currentTimeMillis() + 30000;
+                    String fresh = query.query();
+                    if (fresh != null) {
+                        int colon = fresh.lastIndexOf(':');
+                        if (colon > 0) {
+                            String freshHost = fresh.substring(0, colon);
+                            int freshPort = Integer.parseInt(fresh.substring(colon + 1).trim());
+                            if (!freshHost.equals(currentHost) || freshPort != currentPort) {
+                                status("中继节点已更新为 " + fresh + "，正在切换…");
+                                link.close();
+                                link = null;
+                                channel = null;
+                                currentHost = freshHost;
+                                currentPort = freshPort;
+                                room.nodeAddress = freshHost;
+                                room.nodePort = freshPort;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                if (System.currentTimeMillis() - lastNotice >= 5000) {
+                    lastNotice = System.currentTimeMillis();
+                    long waited = (System.currentTimeMillis() - started) / 1000;
+                    status("房号 " + (room.roomId == null ? "" : room.roomId)
+                            + "\n中继还没有回应（已等待 " + waited + " 秒）\n"
+                            + "公共节点要等对方也进入房间才会应答，请把房号发给对方\n"
+                            + "若对方已进房仍无回应，可能是网络拦截了 UDP（关闭 VPN/加速器，或改用移动数据）");
+                }
+                sleepQuietly(1000);
             } catch (IOException e) {
-                Log.i(TAG, "relay attempt " + (attempt + 1) + " failed: " + e.getMessage());
                 failure = e;
+                Log.i(TAG, "relay attempt failed: " + e.getMessage());
                 if (link != null) {
                     link.close();
                     link = null;
@@ -393,11 +564,23 @@ public final class GBoyCloudLink {
                 }
             }
         }
-        // A local VPN/accelerator rewrites all UDP into its tunnel and the relay
-        // handshake then never comes back, which looks like a dead server.
         String detail = failure == null ? "中继连接被取消" : failure.getMessage();
-        throw new IOException(detail + "（已重试 " + RELAY_TRIES
-                + " 次；开着 VPN/加速器时请先关闭）");
+        throw new IOException(detail + "（开着 VPN/加速器时请先关闭）");
+    }
+
+    /** 等一会儿，被打断时安静退出。 */
+    private static void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** 重新向房间服务器询问当前的中继节点（公共节点会被回收）。 */
+    private interface NodeQuery {
+        /** @return "地址:端口"，取不到时返回 null。 */
+        String query();
     }
 
     // ---- official wire handshake ----
@@ -414,14 +597,10 @@ public final class GBoyCloudLink {
      * </pre>
      */
     private void handshake(KcpChannel link, Room room) throws IOException {
-        int players = Math.max(1, room.playerCount);
-        link.send(GBoyFrames.registerFrame(players, room.baseStateCount));
-
         byte[] count = expect(link, GBoyFrames.TYPE_READY, STEP_WAIT_MS);
         int reported = GBoyFrames.intOf(count);
         if (reported > 0) {
-            players = reported;
-            Log.i(TAG, "relay reports " + players + " players");
+            Log.i(TAG, "relay reports " + reported + " players");
         }
         status("已注册到中继，等待对方…");
 
@@ -435,7 +614,13 @@ public final class GBoyCloudLink {
             Log.i(TAG, "peer key not ready yet, continuing: " + e.getMessage());
         }
         link.send(GBoyFrames.frame(GBoyFrames.TYPE_REGISTER));
-        Log.i(TAG, "cloud handshake done, players=" + players);
+        Log.i(TAG, "cloud handshake done");
+    }
+
+    /** Registers this console at the relay. Sent exactly once per session. */
+    private void sendRegister(KcpChannel link, Room room) {
+        int players = Math.max(1, room.playerCount);
+        link.send(GBoyFrames.registerFrame(players, room.baseStateCount));
     }
 
     /**
@@ -560,7 +745,7 @@ public final class GBoyCloudLink {
         long lastKey = 0;
         long lastFps = 0;
         int sentKeys = Integer.MIN_VALUE;
-        while (!closed) {
+        while (!closed && !link.isClosed()) {
             long now = System.currentTimeMillis();
             if (now - lastKey >= KEY_INTERVAL_MS) {
                 int keys = hooks.localKeys();
@@ -745,9 +930,7 @@ public final class GBoyCloudLink {
      * match and the server would otherwise time it out.</p>
      */
     private void startNodeAdvertiser(final GbCloud.Session sig, final String token,
-                                     final String uuid, final String roomId,
-                                     final String address, final int port) {
-        final String node = address + ":" + port;
+                                     final String uuid, final Room room) {
         Thread t = new Thread(() -> {
             long last = 0;
             while (!closed) {
@@ -763,11 +946,16 @@ public final class GBoyCloudLink {
                 long now = System.currentTimeMillis();
                 if (now - last >= 2000) {
                     last = now;
+                    // 节点可能被服务器回收并更换，所以每次都读房间里的最新节点
+                    if (room.nodeAddress == null || room.nodePort <= 0) {
+                        continue;
+                    }
+                    String node = room.nodeAddress + ":" + room.nodePort;
                     try {
                         JSONObject marker = new JSONObject();
                         marker.put("gboy_node", node);
-                        if (roomId != null && !roomId.isEmpty()) {
-                            marker.put("room", roomId);
+                        if (room.roomId != null && !room.roomId.isEmpty()) {
+                            marker.put("room", room.roomId);
                         }
                         JSONObject msg = new JSONObject();
                         msg.put("action", "send_message");
@@ -775,7 +963,7 @@ public final class GBoyCloudLink {
                         msg.put("uuid", uuid);
                         msg.put("message", marker.toString());
                         sig.send(msg.toString());
-                        Log.i(TAG, "advertised relay " + node + " for room " + roomId);
+                        Log.i(TAG, "advertised relay " + node + " for room " + room.roomId);
                     } catch (IOException e) {
                         if (!closed) {
                             Log.i(TAG, "node advertiser send stopped: " + e.getMessage());
