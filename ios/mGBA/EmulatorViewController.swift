@@ -2683,20 +2683,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(solar.1.isOn, forKey: "solar_on")
             self.applyCoreOptions()
         }, for: .valueChanged)
-        let solarSource = UIButton(type: .system)
-        solarSource.contentHorizontalAlignment = .left
-        solarSource.setTitle("阳光来源：\(solarSourceIsScreen ? "屏幕亮度" : "手动")", for: .normal)
-        solarSource.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.pickOption(title: "阳光来源", current: self.solarSourceIsScreen ? 1 : 0,
-                            options: ["手动", "屏幕亮度"]) { [weak self] index in
-                guard let self else { return }
-                self.defaults.set(index == 1 ? "screen" : "manual", forKey: "solar_source")
-                solarSource.setTitle("阳光来源：\(index == 1 ? "屏幕亮度" : "手动")", for: .normal)
-                solarBar.isEnabled = index == 0
-                self.applyCoreOptions()
-            }
-        }, for: .touchUpInside)
         let solarNow = defaults.integer(forKey: "solar_level") == 0 ? 5 : defaults.integer(forKey: "solar_level")
         let solarLabel = UILabel()
         solarLabel.text = solarSourceIsScreen ? "阳光强度：跟随屏幕亮度" : "阳光强度 \(solarNow)"
@@ -2711,6 +2697,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.applyCoreOptions()
         }, for: .valueChanged)
         solarBar.isEnabled = !solarSourceIsScreen
+        let solarSource = UIButton(type: .system)
+        solarSource.contentHorizontalAlignment = .left
+        solarSource.setTitle("阳光来源：\(solarSourceIsScreen ? "屏幕亮度" : "手动")", for: .normal)
+        solarSource.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "阳光来源", current: self.solarSourceIsScreen ? 1 : 0,
+                            options: ["手动", "屏幕亮度"]) { [weak self] index in
+                guard let self else { return }
+                self.defaults.set(index == 1 ? "screen" : "manual", forKey: "solar_source")
+                solarSource.setTitle("阳光来源：\(index == 1 ? "屏幕亮度" : "手动")", for: .normal)
+                solarBar.isEnabled = index == 0
+                self.applyCoreOptions()
+            }
+        }, for: .touchUpInside)
         let notice = labeledSwitch("游戏运行通知（切到后台继续运行）", defaults.bool(forKey: "keep_notice"))
         notice.1.addAction(UIAction { [weak self] _ in
             guard let self else { return }
