@@ -334,8 +334,8 @@ final class GBoyLink {
                 throw LinkError(message: "已取消")
             }
             var readSet = fd_set()
-            fdZero(&readSet)
-            fdSet(listenFd, &readSet)
+            Self.fdZero(&readSet)
+            Self.fdSet(listenFd, &readSet)
             var tv = timeval(tv_sec: 0, tv_usec: 250_000)
             let ready = select(listenFd + 1, &readSet, nil, nil, &tv)
             guard ready > 0 else { continue }
@@ -370,8 +370,8 @@ final class GBoyLink {
                 throw LinkError(message: "无法连接 \(ip)")
             }
             var writeSet = fd_set()
-            fdZero(&writeSet)
-            fdSet(fd, &writeSet)
+            Self.fdZero(&writeSet)
+            Self.fdSet(fd, &writeSet)
             var tv = timeval(tv_sec: 10, tv_usec: 0)
             guard select(fd + 1, nil, &writeSet, nil, &tv) > 0 else {
                 Darwin.close(fd)
