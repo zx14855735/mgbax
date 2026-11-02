@@ -87,6 +87,18 @@ final class GbCloud {
         }
     }
 
+    /**
+     * Rewrites the upstream brand name the lobby server bakes into its own
+     * replies into the neutral in-app name, so no third-party brand ever shows
+     * up on screen. Everything the server says to the user goes through here.
+     */
+    static String lobby(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        return text.replaceAll("(?i)gboy(?:\\.top)?", "联机大厅");
+    }
+
     /** Signs in and returns the token every room command has to carry. */
     static String login(String user, String password) throws IOException {
         JSONObject body = new JSONObject();
@@ -102,7 +114,7 @@ final class GbCloud {
         String token = reply.optString("token", null);
         if (token == null || token.isEmpty()) {
             String message = reply.optString("message", null);
-            throw new IOException(message == null || message.isEmpty() ? "登录失败" : message);
+            throw new IOException(lobby(message == null || message.isEmpty() ? "登录失败" : message));
         }
         return token;
     }
@@ -124,9 +136,9 @@ final class GbCloud {
         JSONObject reply = lastJsonObject(post(body.toString()));
         if (!reply.optBoolean("success", false)) {
             String message = reply.optString("message", null);
-            throw new IOException(message == null || message.isEmpty() ? "验证码发送失败" : message);
+            throw new IOException(lobby(message == null || message.isEmpty() ? "验证码发送失败" : message));
         }
-        return reply.optString("message", "验证码已发送。");
+        return lobby(reply.optString("message", "验证码已发送。"));
     }
 
     /**
@@ -148,7 +160,7 @@ final class GbCloud {
         String token = reply.optString("token", null);
         if (token == null || token.isEmpty()) {
             String message = reply.optString("message", null);
-            throw new IOException(message == null || message.isEmpty() ? "注册失败" : message);
+            throw new IOException(lobby(message == null || message.isEmpty() ? "注册失败" : message));
         }
         return token;
     }

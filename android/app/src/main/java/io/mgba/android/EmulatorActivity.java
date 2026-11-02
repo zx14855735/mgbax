@@ -3704,6 +3704,15 @@ public class EmulatorActivity extends AppCompatActivity {
             publishKeys();
             status.setText(R.string.link_close);
         }));
+        box.addView(linkButton(getString(R.string.link_self_test), v -> {
+            String e = cloudEmail.getText().toString().trim();
+            String p = cloudPass.getText().toString().trim();
+            if (e.isEmpty() || p.isEmpty()) {
+                status.setText(R.string.link_self_test_fill);
+                return;
+            }
+            ensureCloud().selfTest(e, p);
+        }));
         box.addView(status);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);
@@ -3807,7 +3816,7 @@ public class EmulatorActivity extends AppCompatActivity {
             try {
                 GbCloud.sendVerificationCode(email);
             } catch (Exception e) {
-                failure = e.getMessage();
+                failure = GbCloud.lobby(e.getMessage());
             }
             final String error = failure == null || failure.isEmpty() ? null : failure;
             runOnUiThread(() -> {
@@ -3817,7 +3826,8 @@ public class EmulatorActivity extends AppCompatActivity {
                     button.setText(R.string.link_cloud_get_code);
                     return;
                 }
-                status.setText(R.string.link_cloud_sent);
+                status.setText(getString(R.string.link_cloud_sent)
+                        + "\n" + getString(R.string.link_cloud_mail_note));
                 startCodeCooldown(button);
             });
         }, "cloud-code").start();
@@ -3857,7 +3867,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private void cloudEnter(boolean asHost, EditText emailBox, EditText codeBox,
                             EditText passBox, EditText roomBox, TextView status) {
         if (core == null || !core.isLoaded()) {
-            status.setText(R.string.link_gboy_no_rom);
+            status.setText(R.string.link_lobby_no_rom);
             return;
         }
         final String email = emailBox.getText().toString().trim();
@@ -3888,7 +3898,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 final String[] creds = cloudAuth(email, code, password, savedUser);
                 runOnUiThread(() -> ensureCloud().start(creds[0], creds[1], room));
             } catch (Exception e) {
-                final String text = e.getMessage();
+                final String text = GbCloud.lobby(e.getMessage());
                 runOnUiThread(() -> status.setText(
                         text == null || text.isEmpty() ? "登录失败" : text));
             }
@@ -3957,7 +3967,10 @@ public class EmulatorActivity extends AppCompatActivity {
             prefix = prefix.substring(0, at);
         }
         StringBuilder out = new StringBuilder();
-        for (char c : prefix.toCharArray()) {
+        // The upstream brand name must never end up in the account name: the
+        // server echoes it back in places (lobby lists, mails).
+        String clean = prefix.replaceAll("(?i)gboy", "lobby");
+        for (char c : clean.toCharArray()) {
             if (Character.isLetterOrDigit(c) || c == '_') {
                 out.append(c);
             }

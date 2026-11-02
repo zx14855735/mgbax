@@ -85,7 +85,7 @@ final class KcpChannel {
         this.socket = new DatagramSocket();
         this.socket.setSoTimeout(5);
         this.stream = null;
-        this.thread = new Thread(this::loop, "gboy-kcp");
+        this.thread = new Thread(this::loop, "lobby-kcp");
         this.thread.setDaemon(true);
         this.thread.start();
     }
@@ -105,7 +105,7 @@ final class KcpChannel {
         opened.setTcpNoDelay(true);
         opened.setSoTimeout(0);
         this.stream = opened;
-        this.thread = new Thread(this::streamLoop, "gboy-tcp");
+        this.thread = new Thread(this::streamLoop, "lobby-tcp");
         this.thread.setDaemon(true);
         this.thread.start();
     }

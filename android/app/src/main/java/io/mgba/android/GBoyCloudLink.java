@@ -96,7 +96,7 @@ public final class GBoyCloudLink {
                     fail(message(e));
                 }
             }
-        }, "gboy-cloud");
+        }, "lobby-cloud");
         thread.setDaemon(true);
         thread.start();
         worker = thread;
@@ -151,7 +151,7 @@ public final class GBoyCloudLink {
             return;
         }
         boolean asHost = roomId == null || roomId.trim().isEmpty();
-        status("正在登录 gboy.top…");
+        status("正在登录联机大厅…");
         String token = GbCloud.login(user, password);
 
         status("正在连接房间服务器…");
@@ -160,7 +160,7 @@ public final class GBoyCloudLink {
         if (sig.insecureTls()) {
             // The room port serves an expired cert for another domain; the
             // protocol only works if the chain is ignored. Users should know.
-            status("注意：gboy.top 联机端口证书已过期，已降级连接");
+            status("注意：联机大厅端口证书已过期，已降级连接");
         }
         if (closed) {
             sig.close();
@@ -181,24 +181,7 @@ public final class GBoyCloudLink {
             // shows up once the room has been joined, marked ready and switched
             // to multiplayer by update_room_settings - from then on every
             // create_game_room call replies with "您已有房间" plus node_address.
-            send(sig, json("leave_room", token, null), 1200);
-            send(sig, createJson(token), 2500);
-            waitForRoomId(sig, room, 5000);
-            if (room.roomId == null || room.roomId.isEmpty()) {
-                throw new IOException("服务器没有创建房间");
-            }
-            send(sig, json("join_room", token, room.roomId), 1500);
-            send(sig, json("ready", token, null), 1200);
-            send(sig, settingsJson(token, room.roomId), 1500);
-            if (room.nodeAddress == null || room.nodePort <= 0) {
-                // Ask again: the server now answers with the existing room and
-                // the node it assigned to it.
-                send(sig, createJson(token), 2500);
-                waitForRoom(sig, room, null, ROOM_WAIT_MS);
-            }
-            if (room.nodeAddress == null || room.nodePort <= 0) {
-                throw new IOException("服务器没有返回中继节点");
-            }
+            hostCreateRoom(sig, token, uuid, room);
             // gboy.top only tells the creator where the relay lives, so advertise
             // it to the room (over the lobby broadcast channel) for as long as the
             // link is up. The joiner reads it automatically and fills the relay in
@@ -231,6 +214,80 @@ public final class GBoyCloudLink {
                 + "\n" + text);
         hooks.onConnected(asHost, null);
         serve(link);
+    }
+
+    /**
+     * Creates a room and resolves the relay node. Shared by {@link #run} (real
+     * link) and {@link #selfTest} (connectivity check) so both follow exactly
+     * the same, server-verified signalling order.
+     */
+    private void hostCreateRoom(GbCloud.Session sig, String token, String uuid, Room room)
+            throws Exception {
+        send(sig, json("leave_room", token, null), 1200);
+        send(sig, createJson(token), 2500);
+        waitForRoomId(sig, room, 5000);
+        if (room.roomId == null || room.roomId.isEmpty()) {
+            throw new IOException("服务器没有创建房间");
+        }
+        send(sig, json("join_room", token, room.roomId), 1500);
+        send(sig, json("ready", token, null), 1200);
+        send(sig, settingsJson(token, room.roomId), 1500);
+        if (room.nodeAddress == null || room.nodePort <= 0) {
+            // Ask again: the server now answers with the existing room and
+            // the node it assigned to it.
+            send(sig, createJson(token), 2500);
+            waitForRoom(sig, room, null, ROOM_WAIT_MS);
+        }
+        if (room.nodeAddress == null || room.nodePort <= 0) {
+            throw new IOException("服务器没有返回中继节点");
+        }
+    }
+
+    /**
+     * 联机自检：在本机验证"登录 → 建房拿中继节点 → UDP/KCP 握手"全链路是否可达。
+     * 与真实联机走完全相同的信令路径，但连上中继完成握手即结束（不进入对战 serve 循环），
+     * 只用来判断"这台手机的网络能否云端联机"。真正的双机互传仍需两台不同 IP 设备实战。
+     */
+    public void selfTest(final String user, final String password) {
+        final GBoyCloudLink self = this;
+        new Thread(() -> {
+            GbCloud.Session sig = null;
+            KcpChannel link = null;
+            try {
+                self.status("自检：登录联机大厅…");
+                String token = GbCloud.login(user, password);
+                self.status("自检：连接房间服务器…");
+                sig = new GbCloud.Session();
+                if (sig.insecureTls()) {
+                    self.status("自检：联机大厅端口证书已过期，已降级连接");
+                }
+                String uuid = self.gameUuid();
+                self.send(sig, self.sendMessage(token, uuid, "go"), 1200);
+                self.status("自检：创建房间…");
+                Room room = new Room();
+                self.hostCreateRoom(sig, token, uuid, room);
+                self.status("自检：已拿到中继节点 " + room.nodeAddress + ":" + room.nodePort
+                        + "\n自检：正在测试 UDP/KCP 握手…");
+                // 复用游戏用的 KCP over UDP 传输做一次真实握手，验证中继可达。
+                link = KcpChannel.connect(java.net.InetAddress.getByName(room.nodeAddress),
+                        room.nodePort);
+                self.status("✅ 联机自检通过：\n房号 " + room.roomId
+                        + "\n中继 " + room.nodeAddress + ":" + room.nodePort
+                        + "\n信令与中继 UDP/KCP 均可达，本机可以云端联机对战。");
+            } catch (Exception e) {
+                if (!closed) {
+                    self.status("❌ 联机自检失败：" + message(e)
+                            + "\n常见原因：网络不通 / VPN 或加速器拦截 UDP / 账号问题。");
+                }
+            } finally {
+                if (link != null) {
+                    link.close();
+                }
+                if (sig != null) {
+                    sig.close();
+                }
+            }
+        }, "lobby-self-test").start();
     }
 
     /** Skips signalling and connects straight to a hand-supplied relay. */
@@ -483,7 +540,7 @@ public final class GBoyCloudLink {
                     }
                 }
             }
-        }, "gboy-signal-probe").start();
+        }, "lobby-signal-probe").start();
     }
 
     /** Logs everything the room server pushes for the next {@code ms}. */
@@ -729,7 +786,7 @@ public final class GBoyCloudLink {
                     }
                 }
             }
-        }, "gboy-node-advertiser");
+        }, "lobby-node-advertiser");
         t.setDaemon(true);
         t.start();
         advertiser = t;
@@ -897,6 +954,6 @@ public final class GBoyCloudLink {
         if (text == null || text.isEmpty()) {
             return "云端联机失败";
         }
-        return text;
+        return GbCloud.lobby(text);
     }
 }
