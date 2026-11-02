@@ -36,6 +36,7 @@
 		B1000000000000000000001D /* WebDavSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001D /* WebDavSync.swift */; };
 		B1000000000000000000001E /* GifBall.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001E /* GifBall.swift */; };
 		B1000000000000000000001F /* ExternalShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001F /* ExternalShader.swift */; };
+		B10000000000000000000020 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000020 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +69,7 @@
 		E1000000000000000000001D /* WebDavSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDavSync.swift; sourceTree = "<group>"; };
 		E1000000000000000000001E /* GifBall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifBall.swift; sourceTree = "<group>"; };
 		E1000000000000000000001F /* ExternalShader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShader.swift; sourceTree = "<group>"; };
+		E10000000000000000000020 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -123,6 +125,7 @@
 				E1000000000000000000001D /* WebDavSync.swift */,
 				E1000000000000000000001E /* GifBall.swift */,
 				E1000000000000000000001F /* ExternalShader.swift */,
+				E10000000000000000000020 /* Assets.xcassets */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -146,6 +149,7 @@
 				C10000000000000000000001 /* Build mGBA core */,
 				C10000000000000000000002 /* Sources */,
 				C10000000000000000000003 /* Frameworks */,
+				C10000000000000000000004 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -157,6 +161,17 @@
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C10000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000020 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXProject section */
 		P10000000000000000000001 /* Project object */ = {
@@ -292,6 +307,7 @@
 		X10000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = mGBA.entitlements;
 				CODE_SIGN_STYLE = Automatic;
@@ -322,6 +338,7 @@
 		X10000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = mGBA.entitlements;
 				CODE_SIGN_STYLE = Automatic;

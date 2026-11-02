@@ -2,6 +2,11 @@ name: iOS Simulator
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: '归档签名包并上传 TestFlight（需已配置 secrets）'
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -70,3 +75,110 @@ jobs:
           name: ios-simulator-shots
           path: shots/
           if-no-files-found: error
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight secrets
+        id: pre
+        env:
+          P12: ${{ secrets.BUILD_CERT_P12 }}
+          P8: ${{ secrets.APPSTORE_P8 }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P8" ] || [ -z "$TEAM" ]; then
+            echo "::error::缺少 secrets：BUILD_CERT_P12 / APPSTORE_P8 / APPLE_TEAM_ID（还需 APPSTORE_KEY_ID、APPSTORE_ISSUER_ID、BUILD_CERT_PASSWORD）"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import signing certificate
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          P12: ${{ secrets.BUILD_CERT_P12 }}
+          P12PASS: ${{ secrets.BUILD_CERT_PASSWORD }}
+          KEYCHAINPASS: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$KEYCHAINPASS" ]; then KEYCHAINPASS=ci-default-keychain-pass; fi
+          if [ -z "$P12PASS" ]; then P12PASS=; fi
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          KC="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAINPASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAINPASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12PASS" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAINPASS" "$KC"
+          security list-keychain -d user -s "$KC" $(security list-keychains | tr -d '"' | tr '\n' ' ')
+
+      - name: Prepare App Store Connect API key
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          P8: ${{ secrets.APPSTORE_P8 }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_$KEYID.p8"
+          cp "$RUNNER_TEMP/AuthKey_$KEYID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$KEYID.p8"
+
+      - name: Archive (Release, iOS device)
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive -project ios/mGBA.xcodeproj -scheme mGBA -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/mGBAx.xcarchive \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$KEYID.p8" \
+            -authenticationKeyID "$KEYID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee archive.log
+
+      - name: Export IPA
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath build/mGBAx.xcarchive \
+            -exportOptionsPlist ExportOptions.plist -exportPath build/ipa \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$KEYID.p8" \
+            -authenticationKeyID "$KEYID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee export.log
+
+      - name: Upload to TestFlight
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          IPA=$(find build/ipa -name '*.ipa' | head -1)
+          echo "Uploading $IPA"
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$KEYID" --apiIssuer "$ISSUER" 2>&1 | tee upload.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs
+          path: |
+            archive.log
+            export.log
+            upload.log
+          if-no-files-found: ignore
