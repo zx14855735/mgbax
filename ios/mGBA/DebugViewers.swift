@@ -250,9 +250,8 @@ enum DebugViewers {
         widthRow.axis = .horizontal
         widthRow.spacing = 6
         for bits in [8, 16, 32] {
-            let item = button("\(bits) 位") { [weak self] in
+            let item = button("\(bits) 位") {
                 width = bits
-                _ = self
             }
             widthRow.addArrangedSubview(item)
         }
@@ -262,9 +261,8 @@ enum DebugViewers {
         opRow.spacing = 4
         opRow.distribution = .fillEqually
         for (index, label) in opLabels.enumerated() {
-            let item = button(label) { [weak self] in
+            let item = button(label) {
                 op = index
-                _ = self
             }
             opRow.addArrangedSubview(item)
         }
