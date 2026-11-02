@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.Socket;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -67,7 +68,9 @@ final class KcpChannel {
 
     private final Kcp kcp;
     private final DatagramSocket socket;
-    private final InetAddress address;
+    /** TCP transport: used when the relay is reached through a tunnel. */
+    private final Socket stream;
+    private InetAddress address;
     private final int port;
     private final LinkedBlockingQueue<byte[]> inbox = new LinkedBlockingQueue<byte[]>();
     private volatile boolean running = true;
@@ -81,7 +84,28 @@ final class KcpChannel {
         this.kcp = new Kcp(conv, MTU, INTERVAL_MS);
         this.socket = new DatagramSocket();
         this.socket.setSoTimeout(5);
+        this.stream = null;
         this.thread = new Thread(this::loop, "gboy-kcp");
+        this.thread.setDaemon(true);
+        this.thread.start();
+    }
+
+    /**
+     * TCP transport. Used when the relay is published through a TCP tunnel
+     * (ssh -R / bore), because those cannot carry UDP. Each payload is framed
+     * with a big-endian {@code u32} length so the stream stays message aligned.
+     */
+    private KcpChannel(InetAddress address, int port, boolean tcp) throws IOException {
+        this.address = address;
+        this.port = port;
+        this.kcp = null;
+        this.socket = null;
+        Socket opened = new Socket();
+        opened.connect(new java.net.InetSocketAddress(address, port), 8000);
+        opened.setTcpNoDelay(true);
+        opened.setSoTimeout(0);
+        this.stream = opened;
+        this.thread = new Thread(this::streamLoop, "gboy-tcp");
         this.thread.setDaemon(true);
         this.thread.start();
     }
@@ -101,11 +125,16 @@ final class KcpChannel {
         return connect(new KcpChannel(address, port));
     }
 
+    /** Opens a TCP session (relay reached through a TCP tunnel) and does HS/HK. */
+    static KcpChannel connectTcp(InetAddress address, int port) throws IOException {
+        return connect(new KcpChannel(address, port, true));
+    }
+
     private static KcpChannel connect(KcpChannel channel) throws IOException {
         try {
             boolean ok = false;
             for (int attempt = 0; attempt < HANDSHAKE_TRIES && !ok; attempt++) {
-                channel.kcp.send(HS);
+                channel.rawSend(HS);
                 long deadline = System.currentTimeMillis() + HANDSHAKE_WAIT_MS;
                 while (System.currentTimeMillis() < deadline) {
                     if (channel.handshakeDone) {
@@ -132,7 +161,73 @@ final class KcpChannel {
 
     /** Queues a payload; the pump thread transmits it. */
     void send(byte[] payload) {
-        kcp.send(payload);
+        rawSend(payload);
+    }
+
+    /** Transport-agnostic send: UDP goes through KCP, TCP writes a framed blob. */
+    private void rawSend(byte[] payload) {
+        if (kcp != null) {
+            kcp.send(payload);
+            return;
+        }
+        if (stream == null || stream.isClosed()) {
+            return;
+        }
+        byte[] head = new byte[4];
+        putInt(head, 0, payload.length);
+        try {
+            synchronized (stream) {
+                java.io.OutputStream out = stream.getOutputStream();
+                out.write(head);
+                out.write(payload);
+                out.flush();
+            }
+        } catch (IOException e) {
+            Log.i(TAG, "tcp send failed " + e);
+            dead = true;
+            running = false;
+        }
+    }
+
+    private void streamLoop() {
+        byte[] head = new byte[4];
+        try {
+            java.io.InputStream in = stream.getInputStream();
+            while (running) {
+                if (!readFully(in, head, 4)) {
+                    break;
+                }
+                int length = getInt(head, 0);
+                if (length <= 0 || length > 65535) {
+                    Log.i(TAG, "bad stream frame length " + length);
+                    break;
+                }
+                byte[] body = new byte[length];
+                if (!readFully(in, body, length)) {
+                    break;
+                }
+                deliver(body);
+            }
+        } catch (IOException e) {
+            if (running) {
+                Log.i(TAG, "stream closed " + e);
+            }
+        }
+        dead = true;
+        running = false;
+    }
+
+    private static boolean readFully(java.io.InputStream in, byte[] buffer, int length)
+            throws IOException {
+        int done = 0;
+        while (done < length) {
+            int read = in.read(buffer, done, length - done);
+            if (read < 0) {
+                return false;
+            }
+            done += read;
+        }
+        return true;
     }
 
     /** Next payload from the peer, or null after {@code timeoutMs}. */
@@ -150,14 +245,22 @@ final class KcpChannel {
             return;
         }
         running = false;
-        try {
-            kcp.send(DISC);
-            flush();
-        } catch (IOException ignored) {
+        if (kcp != null) {
+            try {
+                kcp.send(DISC);
+                flush();
+            } catch (IOException ignored) {
+            }
+            try {
+                socket.close();
+            } catch (Exception ignored) {
+            }
         }
-        try {
-            socket.close();
-        } catch (Exception ignored) {
+        if (stream != null) {
+            try {
+                stream.close();
+            } catch (Exception ignored) {
+            }
         }
         thread.interrupt();
     }
@@ -231,7 +334,7 @@ final class KcpChannel {
             return;
         }
         if (Arrays.equals(message, PING)) {
-            kcp.send(PONG);
+            rawSend(PONG);
             return;
         }
         if (Arrays.equals(message, PONG)) {
