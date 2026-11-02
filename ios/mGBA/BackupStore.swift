@@ -128,7 +128,7 @@ enum BackupStore {
         var entries: [Zip.Entry] = []
         let rootPath = directory.standardizedFileURL.path
         for case let url as URL in walker {
-            let values = try? url.resourceValues(forKeys: keys)
+            let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true { continue }
             // 相对路径用 / 分隔,和 Android 的压缩包一致.
             var relative = url.standardizedFileURL.path

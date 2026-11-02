@@ -159,7 +159,7 @@ final class GBoyLink {
 
         let peer = try nextFrame(fd, want: Self.msgRomInfo)
         if peer.count < 34 {
-            throw LinkError("对方不是联机大厅会话")
+            throw LinkError(message: "对方不是联机大厅会话")
         }
         let peerHash = String(bytes: peer[2..<34], encoding: .ascii) ?? ""
         let mine = String(bytes: info[2..<34], encoding: .ascii) ?? ""
@@ -292,7 +292,7 @@ final class GBoyLink {
 
     private func listenSocket(_ port: Int) throws -> Int32 {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw LinkError("联机大厅连接失败") }
+        guard fd >= 0 else { throw LinkError(message: "联机大厅连接失败") }
         var yes: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in()
@@ -304,21 +304,38 @@ final class GBoyLink {
         }
         guard bound == 0, listen(fd, 1) == 0 else {
             Darwin.close(fd)
-            throw LinkError("端口 \(port) 被占用")
+            throw LinkError(message: "端口 \(port) 被占用")
         }
         Self.setNonBlocking(fd)
         return fd
+    }
+
+    /** FD_ZERO/FD_SET macros are not exposed to Swift on Darwin. */
+    private static func fdZero(_ set: inout fd_set) {
+        withUnsafeMutableBytes(of: &set) { raw in
+            let bits = raw.bindMemory(to: Int32.self)
+            for index in 0..<bits.count {
+                bits[index] = 0
+            }
+        }
+    }
+
+    private static func fdSet(_ fd: Int32, _ set: inout fd_set) {
+        withUnsafeMutableBytes(of: &set) { raw in
+            let bits = raw.bindMemory(to: Int32.self)
+            bits[Int(fd / 32)] |= Int32(1) << (fd % 32)
+        }
     }
 
     /** Accept loop on a non-blocking socket so 关闭 can break it out. */
     private func acceptLoop(_ listenFd: Int32) throws -> Int32 {
         while true {
             if closed {
-                throw LinkError("已取消")
+                throw LinkError(message: "已取消")
             }
             var readSet = fd_set()
-            FD_ZERO(&readSet)
-            FD_SET(listenFd, &readSet)
+            fdZero(&readSet)
+            fdSet(listenFd, &readSet)
             var tv = timeval(tv_sec: 0, tv_usec: 250_000)
             let ready = select(listenFd + 1, &readSet, nil, nil, &tv)
             guard ready > 0 else { continue }
@@ -328,7 +345,7 @@ final class GBoyLink {
                 return fd
             }
             if errno != EAGAIN && errno != EWOULDBLOCK {
-                throw LinkError("联机大厅连接失败")
+                throw LinkError(message: "联机大厅连接失败")
             }
         }
     }
@@ -340,37 +357,37 @@ final class GBoyLink {
         hints.ai_protocol = IPPROTO_TCP
         var info: UnsafeMutablePointer<addrinfo>?
         guard getaddrinfo(ip, String(port), &hints, &info) == 0, let info else {
-            throw LinkError("无法解析地址 \(ip)")
+            throw LinkError(message: "无法解析地址 \(ip)")
         }
         defer { freeaddrinfo(info) }
         let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
-        guard fd >= 0 else { throw LinkError("联机大厅连接失败") }
+        guard fd >= 0 else { throw LinkError(message: "联机大厅连接失败") }
         Self.setNonBlocking(fd)
         let rc = connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen)
         if rc != 0 {
             guard errno == EINPROGRESS else {
                 Darwin.close(fd)
-                throw LinkError("无法连接 \(ip)")
+                throw LinkError(message: "无法连接 \(ip)")
             }
             var writeSet = fd_set()
-            FD_ZERO(&writeSet)
-            FD_SET(fd, &writeSet)
+            fdZero(&writeSet)
+            fdSet(fd, &writeSet)
             var tv = timeval(tv_sec: 10, tv_usec: 0)
             guard select(fd + 1, nil, &writeSet, nil, &tv) > 0 else {
                 Darwin.close(fd)
-                throw LinkError("连接超时")
+                throw LinkError(message: "连接超时")
             }
             var err: Int32 = 0
             var length = socklen_t(MemoryLayout<Int32>.size)
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &length)
             guard err == 0 else {
                 Darwin.close(fd)
-                throw LinkError("无法连接 \(ip)")
+                throw LinkError(message: "无法连接 \(ip)")
             }
         }
         if closed {
             Darwin.close(fd)
-            throw LinkError("已取消")
+            throw LinkError(message: "已取消")
         }
         Self.setBlocking(fd)
         return fd
@@ -390,7 +407,7 @@ final class GBoyLink {
         var off = 0
         while off < data.count {
             let n = data.withUnsafeBytes { raw -> Int in
-                send(fd, raw.baseAddress!.advanced(by: off), data.count - off, 0)
+                Darwin.send(fd, raw.baseAddress!.advanced(by: off), data.count - off, 0)
             }
             if n > 0 {
                 off += n
@@ -398,9 +415,9 @@ final class GBoyLink {
             }
             if n < 0 {
                 if errno == EINTR { continue }
-                if errno == EAGAIN || errno == EWOULDBLOCK { throw LinkError("发送超时") }
+                if errno == EAGAIN || errno == EWOULDBLOCK { throw LinkError(message: "发送超时") }
             }
-            throw LinkError("对方已断开")
+            throw LinkError(message: "对方已断开")
         }
     }
 
@@ -421,11 +438,11 @@ final class GBoyLink {
     private func expectHello(_ fd: Int32, asHost: Bool) throws {
         let frame = try nextFrame(fd, want: Self.msgHello)
         if frame.count < 6 {
-            throw LinkError("对方不是联机大厅会话")
+            throw LinkError(message: "对方不是联机大厅会话")
         }
         let value = Int(frame[2]) << 24 | Int(frame[3]) << 16 | Int(frame[4]) << 8 | Int(frame[5])
         if value != 6 {
-            throw LinkError("联机大厅协议版本不符")
+            throw LinkError(message: "联机大厅协议版本不符")
         }
         if asHost {
             try send(fd, Self.helloFrame())
@@ -445,7 +462,7 @@ final class GBoyLink {
                 return frame
             }
             if messageType != Self.msgKeys && messageType != Self.msgReset {
-                throw LinkError("对方不是联机大厅会话")
+                throw LinkError(message: "对方不是联机大厅会话")
             }
         }
     }
@@ -458,7 +475,7 @@ final class GBoyLink {
         let header = try Self.readFully(fd, 4)
         let len = Int(header[0]) << 24 | Int(header[1]) << 16 | Int(header[2]) << 8 | Int(header[3])
         if len < 0 || len > 32 * 1024 * 1024 {
-            throw LinkError("数据异常")
+            throw LinkError(message: "数据异常")
         }
         return try Self.readFully(fd, len)
     }
@@ -475,13 +492,13 @@ final class GBoyLink {
                 continue
             }
             if n == 0 {
-                throw LinkError("对方已断开")
+                throw LinkError(message: "对方已断开")
             }
             if errno == EINTR { continue }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                throw LinkError("连接超时")
+                throw LinkError(message: "连接超时")
             }
-            throw LinkError("连接已断开")
+            throw LinkError(message: "连接已断开")
         }
         return data
     }
@@ -495,10 +512,10 @@ final class GBoyLink {
      */
     private func romInfo() throws -> [UInt8] {
         guard let path = romPath(), FileManager.default.fileExists(atPath: path) else {
-            throw LinkError("找不到当前游戏文件")
+            throw LinkError(message: "找不到当前游戏文件")
         }
         guard let handle = FileHandle(forReadingAtPath: path) else {
-            throw LinkError("读取游戏失败")
+            throw LinkError(message: "读取游戏失败")
         }
         defer { try? handle.close() }
         var hasher = Insecure.MD5()
@@ -507,18 +524,18 @@ final class GBoyLink {
                 guard let chunk = try handle.read(upToCount: 65536), !chunk.isEmpty else { break }
                 hasher.update(data: chunk)
             } catch {
-                throw LinkError("读取游戏失败")
+                throw LinkError(message: "读取游戏失败")
             }
         }
         let hex = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         guard let hash = hex.data(using: .ascii) else {
-            throw LinkError("读取游戏失败")
+            throw LinkError(message: "读取游戏失败")
         }
         let name = URL(fileURLWithPath: path).lastPathComponent
         guard let nameBytes = name.data(using: .utf8) else {
-            throw LinkError("读取游戏失败")
+            throw LinkError(message: "读取游戏失败")
         }
-        var frame: [UInt8] = [0, UInt8(msgRomInfo)]
+        var frame: [UInt8] = [0, UInt8(Self.msgRomInfo)]
         frame += [UInt8](hash)
         frame += [UInt8((nameBytes.count >> 8) & 0xFF), UInt8(nameBytes.count & 0xFF)]
         frame += [UInt8](nameBytes)
@@ -551,7 +568,7 @@ final class GBoyLink {
         }
         let compressed = Self.zlibCompress(Data(raw))
         let size = compressed.count
-        var frame: [UInt8] = [0, UInt8(msgState),
+        var frame: [UInt8] = [0, UInt8(Self.msgState),
                               UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF),
                               UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF)]
         frame += [UInt8](compressed)

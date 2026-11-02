@@ -83,7 +83,7 @@ final class GifBall: UIControl {
         return true
     }
 
-    override func endTracking(_ touch: UITouch, with event: UIEvent?) {
+    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
         if moved {
             // Stick to the nearer horizontal edge; a drag never toggles.
             let limits = superview?.bounds.size ?? bounds.size
