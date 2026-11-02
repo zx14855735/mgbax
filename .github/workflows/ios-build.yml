@@ -76,6 +76,38 @@ jobs:
           path: shots/
           if-no-files-found: error
 
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build unsigned device IPA
+        run: |
+          set -o pipefail
+          xcodebuild archive -project ios/mGBA.xcodeproj -scheme mGBA -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/mGBAx.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee ipa-build.log
+          APP=$(find build/mGBAx.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          echo "Packaging $APP"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry mGBAx-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgbax-unsigned-ipa
+          path: mGBAx-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload ipa build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-build-log
+          path: ipa-build.log
+          if-no-files-found: ignore
+
   release:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
     runs-on: macos-15
