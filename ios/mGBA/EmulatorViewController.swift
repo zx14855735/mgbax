@@ -985,7 +985,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             if holdOn != holdEngaged || (holdOn && mult != lastHoldStretch) {
                 if holdOn {
                     mgbaMobileSetAudioConstantPitch(core, true, mult)
-                    mgbaMobileSetAudioHoldMode(core, MOBILE_AUDIO_HOLD_NATIVE)
+                    mgbaMobileSetAudioHoldMode(core, Int32(MOBILE_AUDIO_HOLD_NATIVE))
                 } else {
                     mgbaMobileSetAudioConstantPitch(core, false, 1.0)
                 }
@@ -1334,7 +1334,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         paused = false
         gate.unlock()
         // 进入游戏时自动读档：上次退出的进度。
-        if defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Self.autoSlot) {
+        if defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
             mgbaMobileClearAudio(core)
             _ = mgbaMobileRunFrames(core, 1)
         }
@@ -1381,7 +1381,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("已复位")
         } else if cmd == cmdAutoSave {
             // Silent save into the reserved slot on the way to the background.
-            if mgbaMobileSaveState(core, Self.autoSlot) {
+            if mgbaMobileSaveState(core, Int32(Self.autoSlot)) {
                 writePreview(Self.autoSlot)
             }
         } else if cmd == cmdRewind {
@@ -2361,7 +2361,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let mode = rtcModePref()
         let epoch = defaults.object(forKey: "rtc_epoch") == nil
             ? Int64(Date().timeIntervalSince1970)
-            : defaults.integer(forKey: "rtc_epoch")
+            : Int64(defaults.integer(forKey: "rtc_epoch"))
         let offset = Int64(defaults.integer(forKey: "rtc_offset_min")) * 60
         mgbaMobileSetRtc(core, Int32(mode), epoch, offset)
         if defaults.bool(forKey: "solar_on") {
@@ -3327,7 +3327,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                                                                           includingPropertiesForKeys: keys,
                                                                           options: [.skipsHiddenFiles])) ?? []
                 let folders = items.filter {
-                    (try? $0.resourceValues(forKeys: keys).isDirectory) == true
+                    (try? $0.resourceValues(forKeys: Set(keys)).isDirectory) == true
                 }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
                 for folder in folders {
                     if let one = store.importDirectory(folder, name: folder.lastPathComponent) {
@@ -5766,7 +5766,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         // 退出时自动存档 into the reserved slot.
         if defaults.bool(forKey: "auto_save_state"), let core, mgbaMobileIsLoaded(core) {
-            if mgbaMobileSaveState(core, Self.autoSlot) {
+            if mgbaMobileSaveState(core, Int32(Self.autoSlot)) {
                 writePreview(Self.autoSlot)
             }
         }
