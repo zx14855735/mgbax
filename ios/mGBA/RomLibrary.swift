@@ -62,7 +62,7 @@ final class RomLibrary {
                                                                       options: []) else { return }
         var roms: [Entry] = []
         for url in items {
-            let values = try? url.resourceValues(forKeys: keys)
+            let values = try? url.resourceValues(forKeys: Set(keys))
             if values?.isDirectory == true {
                 // Hidden folders hold thumbnails and the like; skip them.
                 guard depth < RomLibrary.maxDepth, !url.lastPathComponent.hasPrefix(".") else { continue }

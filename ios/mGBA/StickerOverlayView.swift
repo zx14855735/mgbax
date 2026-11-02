@@ -160,9 +160,9 @@ final class StickerOverlayView: UIView {
             }
             dragTouch = touch
             let center = box(stickers[dragIndex], in: bounds.size)
-            let point = touch.location(in: self)
-            grabDx = point.x - center.midX
-            grabDy = point.y - center.midY
+            let grabPoint = touch.location(in: self)
+            grabDx = grabPoint.x - center.midX
+            grabDy = grabPoint.y - center.midY
             pinchStartW = stickers[dragIndex].w
             pinchTouch = nil
             setNeedsDisplay()
