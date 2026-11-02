@@ -1,0 +1,56 @@
+name: iOS Simulator
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build core + app (iphonesimulator)
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/mGBA.xcodeproj \
+            -target mGBA \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Boot simulator, install, launch
+        run: |
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          echo "Using simulator $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          echo "Installing $APP"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" io.mgba.ios
+
+      - name: Verify alive + screenshots
+        run: |
+          sleep 20
+          if pgrep -f 'mGBAx.app' > /dev/null; then
+            echo "APP ALIVE after 20s"
+          else
+            echo "::error::App process not found 20s after launch"
+            exit 1
+          fi
+          mkdir -p shots
+          xcrun simctl io booted screenshot shots/launch.png
+          sleep 5
+          xcrun simctl io booted screenshot shots/launch5s.png
+          xcrun simctl spawn booted log show --last 3m --style compact 2>/dev/null | grep -iE 'mGBAx|crash' | tail -60 || true
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-shots
+          path: shots/
+          if-no-files-found: error

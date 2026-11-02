@@ -1,0 +1,376 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B10000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000001 /* AppDelegate.swift */; };
+		B10000000000000000000002 /* EmulatorViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000002 /* EmulatorViewController.swift */; };
+		B10000000000000000000003 /* GameView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000003 /* GameView.swift */; };
+		B10000000000000000000004 /* ControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000004 /* ControlsView.swift */; };
+		B10000000000000000000005 /* AudioOut.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000005 /* AudioOut.swift */; };
+		B10000000000000000000006 /* RemoteLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000006 /* RemoteLink.swift */; };
+		B10000000000000000000009 /* KeyLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000009 /* KeyLayout.swift */; };
+		B1000000000000000000000A /* GBoyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000A /* GBoyLink.swift */; };
+		B1000000000000000000000B /* ShaderRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000B /* ShaderRenderer.swift */; };
+		B1000000000000000000000C /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000C /* Shaders.metal */; };
+		B1000000000000000000000D /* GifEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000D /* GifEncoder.swift */; };
+		B1000000000000000000000E /* AiOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000E /* AiOverlayView.swift */; };
+		B1000000000000000000000F /* AiTranslate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000000F /* AiTranslate.swift */; };
+		B10000000000000000000010 /* BackupStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000010 /* BackupStore.swift */; };
+		B10000000000000000000011 /* RomLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000011 /* RomLibrary.swift */; };
+		B10000000000000000000012 /* RomSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000012 /* RomSettings.swift */; };
+		B10000000000000000000013 /* ShellStageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000013 /* ShellStageView.swift */; };
+		B10000000000000000000014 /* SkinStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000014 /* SkinStore.swift */; };
+		B10000000000000000000015 /* SkinTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000015 /* SkinTheme.swift */; };
+		B10000000000000000000016 /* StickerOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000016 /* StickerOverlayView.swift */; };
+		B10000000000000000000017 /* Zip.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000017 /* Zip.swift */; };
+		B10000000000000000000018 /* LobbyFrames.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000018 /* LobbyFrames.swift */; };
+		B10000000000000000000019 /* LobbyKcp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000019 /* LobbyKcp.swift */; };
+		B1000000000000000000001A /* LobbySignaling.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001A /* LobbySignaling.swift */; };
+		B1000000000000000000001B /* LobbyLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001B /* LobbyLink.swift */; };
+		B1000000000000000000001C /* DebugViewers.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001C /* DebugViewers.swift */; };
+		B1000000000000000000001D /* WebDavSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001D /* WebDavSync.swift */; };
+		B1000000000000000000001E /* GifBall.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001E /* GifBall.swift */; };
+		B1000000000000000000001F /* ExternalShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001F /* ExternalShader.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		E10000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		E10000000000000000000002 /* EmulatorViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmulatorViewController.swift; sourceTree = "<group>"; };
+		E10000000000000000000003 /* GameView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameView.swift; sourceTree = "<group>"; };
+		E10000000000000000000004 /* ControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlsView.swift; sourceTree = "<group>"; };
+		E10000000000000000000005 /* AudioOut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOut.swift; sourceTree = "<group>"; };
+		E10000000000000000000006 /* RemoteLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteLink.swift; sourceTree = "<group>"; };
+		E10000000000000000000009 /* KeyLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyLayout.swift; sourceTree = "<group>"; };
+		E1000000000000000000000A /* GBoyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyLink.swift; sourceTree = "<group>"; };
+		E1000000000000000000000B /* ShaderRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShaderRenderer.swift; sourceTree = "<group>"; };
+		E1000000000000000000000C /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
+		E1000000000000000000000D /* GifEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifEncoder.swift; sourceTree = "<group>"; };
+		E1000000000000000000000E /* AiOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiOverlayView.swift; sourceTree = "<group>"; };
+		E1000000000000000000000F /* AiTranslate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiTranslate.swift; sourceTree = "<group>"; };
+		E10000000000000000000010 /* BackupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupStore.swift; sourceTree = "<group>"; };
+		E10000000000000000000011 /* RomLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomLibrary.swift; sourceTree = "<group>"; };
+		E10000000000000000000012 /* RomSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomSettings.swift; sourceTree = "<group>"; };
+		E10000000000000000000013 /* ShellStageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellStageView.swift; sourceTree = "<group>"; };
+		E10000000000000000000014 /* SkinStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinStore.swift; sourceTree = "<group>"; };
+		E10000000000000000000015 /* SkinTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkinTheme.swift; sourceTree = "<group>"; };
+		E10000000000000000000016 /* StickerOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickerOverlayView.swift; sourceTree = "<group>"; };
+		E10000000000000000000017 /* Zip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Zip.swift; sourceTree = "<group>"; };
+		E10000000000000000000018 /* LobbyFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyFrames.swift; sourceTree = "<group>"; };
+		E10000000000000000000019 /* LobbyKcp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyKcp.swift; sourceTree = "<group>"; };
+		E1000000000000000000001A /* LobbySignaling.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbySignaling.swift; sourceTree = "<group>"; };
+		E1000000000000000000001B /* LobbyLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LobbyLink.swift; sourceTree = "<group>"; };
+		E1000000000000000000001C /* DebugViewers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugViewers.swift; sourceTree = "<group>"; };
+		E1000000000000000000001D /* WebDavSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebDavSync.swift; sourceTree = "<group>"; };
+		E1000000000000000000001E /* GifBall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifBall.swift; sourceTree = "<group>"; };
+		E1000000000000000000001F /* ExternalShader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShader.swift; sourceTree = "<group>"; };
+		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
+		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C10000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G10000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				G10000000000000000000002 /* mGBA */,
+				G10000000000000000000003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G10000000000000000000002 /* mGBA */ = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000001 /* AppDelegate.swift */,
+				E10000000000000000000002 /* EmulatorViewController.swift */,
+				E10000000000000000000003 /* GameView.swift */,
+				E10000000000000000000004 /* ControlsView.swift */,
+				E10000000000000000000005 /* AudioOut.swift */,
+				E10000000000000000000006 /* RemoteLink.swift */,
+				E10000000000000000000009 /* KeyLayout.swift */,
+				E1000000000000000000000A /* GBoyLink.swift */,
+				E1000000000000000000000B /* ShaderRenderer.swift */,
+				E1000000000000000000000C /* Shaders.metal */,
+				E1000000000000000000000D /* GifEncoder.swift */,
+				E1000000000000000000000E /* AiOverlayView.swift */,
+				E1000000000000000000000F /* AiTranslate.swift */,
+				E10000000000000000000010 /* BackupStore.swift */,
+				E10000000000000000000011 /* RomLibrary.swift */,
+				E10000000000000000000012 /* RomSettings.swift */,
+				E10000000000000000000013 /* ShellStageView.swift */,
+				E10000000000000000000014 /* SkinStore.swift */,
+				E10000000000000000000015 /* SkinTheme.swift */,
+				E10000000000000000000016 /* StickerOverlayView.swift */,
+				E10000000000000000000017 /* Zip.swift */,
+				E10000000000000000000018 /* LobbyFrames.swift */,
+				E10000000000000000000019 /* LobbyKcp.swift */,
+				E1000000000000000000001A /* LobbySignaling.swift */,
+				E1000000000000000000001B /* LobbyLink.swift */,
+				E1000000000000000000001C /* DebugViewers.swift */,
+				E1000000000000000000001D /* WebDavSync.swift */,
+				E1000000000000000000001E /* GifBall.swift */,
+				E1000000000000000000001F /* ExternalShader.swift */,
+				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
+			);
+			path = mGBA;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E10000000000000000000008 /* mGBA.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T10000000000000000000001 /* mGBA */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L10000000000000000000002 /* Build configuration list for PBXNativeTarget "mGBA" */;
+			buildPhases = (
+				C10000000000000000000001 /* Build mGBA core */,
+				C10000000000000000000002 /* Sources */,
+				C10000000000000000000003 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = mGBA;
+			productName = mGBA;
+			productReference = E10000000000000000000008 /* mGBA.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		P10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					T10000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = L10000000000000000000001 /* Build configuration list for PBXProject "mGBA" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				"zh-Hans",
+				Base,
+			);
+			mainGroup = G10000000000000000000001;
+			productRefGroup = G10000000000000000000003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T10000000000000000000001 /* mGBA */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		C10000000000000000000001 /* Build mGBA core */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build mGBA core";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/libmgba_ios.a",
+				"$(BUILT_PRODUCTS_DIR)/mgba_ios.link",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"${SRCROOT}/build-core.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C10000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B10000000000000000000001 /* AppDelegate.swift in Sources */,
+				B10000000000000000000002 /* EmulatorViewController.swift in Sources */,
+				B10000000000000000000003 /* GameView.swift in Sources */,
+				B10000000000000000000004 /* ControlsView.swift in Sources */,
+				B10000000000000000000005 /* AudioOut.swift in Sources */,
+				B10000000000000000000006 /* RemoteLink.swift in Sources */,
+				B10000000000000000000009 /* KeyLayout.swift in Sources */,
+				B1000000000000000000000A /* GBoyLink.swift in Sources */,
+				B1000000000000000000000B /* ShaderRenderer.swift in Sources */,
+				B1000000000000000000000C /* Shaders.metal in Sources */,
+				B1000000000000000000000D /* GifEncoder.swift in Sources */,
+				B1000000000000000000000E /* AiOverlayView.swift in Sources */,
+				B1000000000000000000000F /* AiTranslate.swift in Sources */,
+				B10000000000000000000010 /* BackupStore.swift in Sources */,
+				B10000000000000000000011 /* RomLibrary.swift in Sources */,
+				B10000000000000000000012 /* RomSettings.swift in Sources */,
+				B10000000000000000000013 /* ShellStageView.swift in Sources */,
+				B10000000000000000000014 /* SkinStore.swift in Sources */,
+				B10000000000000000000015 /* SkinTheme.swift in Sources */,
+				B10000000000000000000016 /* StickerOverlayView.swift in Sources */,
+				B10000000000000000000017 /* Zip.swift in Sources */,
+				B10000000000000000000018 /* LobbyFrames.swift in Sources */,
+				B10000000000000000000019 /* LobbyKcp.swift in Sources */,
+				B1000000000000000000001A /* LobbySignaling.swift in Sources */,
+				B1000000000000000000001B /* LobbyLink.swift in Sources */,
+				B1000000000000000000001C /* DebugViewers.swift in Sources */,
+				B1000000000000000000001D /* WebDavSync.swift in Sources */,
+				B1000000000000000000001E /* GifBall.swift in Sources */,
+				B1000000000000000000001F /* ExternalShader.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		X10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_DYNAMIC_NO_PIC = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		X10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		X10000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = mGBA.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src/platform/mobile";
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.11.0;
+				OTHER_LDFLAGS = "@$(BUILT_PRODUCTS_DIR)/mgba_ios.link";
+				PRODUCT_BUNDLE_IDENTIFIER = io.mgba.ios;
+				PRODUCT_NAME = mGBAx;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "mGBA/mGBA-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		X10000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_ENTITLEMENTS = mGBA.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/../src/platform/mobile";
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.11.0;
+				OTHER_LDFLAGS = "@$(BUILT_PRODUCTS_DIR)/mgba_ios.link";
+				PRODUCT_BUNDLE_IDENTIFIER = io.mgba.ios;
+				PRODUCT_NAME = mGBAx;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "mGBA/mGBA-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		L10000000000000000000001 /* Build configuration list for PBXProject "mGBA" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X10000000000000000000001 /* Debug */,
+				X10000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L10000000000000000000002 /* Build configuration list for PBXNativeTarget "mGBA" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				X10000000000000000000003 /* Debug */,
+				X10000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = P10000000000000000000001 /* Project object */;
+}
