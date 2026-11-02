@@ -108,13 +108,13 @@ final class LobbyKcpChannel {
         }
         var one: Int32 = 1
         setsockopt(fd, Int32(IPPROTO_TCP), TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
-        let connected = withUnsafePointer(to: &address) { ptr in
+        let connected = withUnsafePointer(to: address) { ptr in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Darwin.connect(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         guard connected == 0 else {
-            close(fd)
+            Darwin.close(fd)
             throw Failure(message: "无法连接中继 \(host):\(port)")
         }
         socketFd = -1
@@ -252,11 +252,11 @@ final class LobbyKcpChannel {
             flush()
         }
         if socketFd >= 0 {
-            close(socketFd)
+            Darwin.close(socketFd)
         }
         if tcpSocket >= 0 {
             shutdown(tcpSocket, SHUT_RDWR)
-            close(tcpSocket)
+            Darwin.close(tcpSocket)
         }
         inbox.wake()
     }
@@ -298,7 +298,11 @@ final class LobbyKcpChannel {
             let received = buffer.withUnsafeMutableBytes { raw -> Int in
                 var from = sockaddr_storage()
                 var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
-                return recvfrom(socketFd, raw.baseAddress, raw.count, 0, &from, &length)
+                return withUnsafeMutablePointer(to: &from) { fromPtr in
+                    fromPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                        recvfrom(socketFd, raw.baseAddress, raw.count, 0, sa, &length)
+                    }
+                }
             }
             if received > 0 {
                 kcp.input([UInt8](buffer[0..<received]))
@@ -321,7 +325,7 @@ final class LobbyKcpChannel {
     private func streamLoop() {
         var head = [UInt8](repeating: 0, count: 4)
         while running {
-            guard readFully(head, count: 4) else {
+            guard readFully(&head, count: 4) else {
                 break
             }
             let length = Int(LobbyFrames.getInt(head, 0))
@@ -329,7 +333,7 @@ final class LobbyKcpChannel {
                 break
             }
             var body = [UInt8](repeating: 0, count: length)
-            guard readFully(body, count: length) else {
+            guard readFully(&body, count: length) else {
                 break
             }
             deliver(body)
@@ -337,7 +341,7 @@ final class LobbyKcpChannel {
         markDead()
     }
 
-    private func readFully(_ buffer: [UInt8], count: Int) -> Bool {
+    private func readFully(_ buffer: inout [UInt8], count: Int) -> Bool {
         var done = 0
         while done < count {
             let n = buffer.withUnsafeMutableBytes { raw in

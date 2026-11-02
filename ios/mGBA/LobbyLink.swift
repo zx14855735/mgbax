@@ -402,7 +402,7 @@ final class LobbyLink {
         if tcp {
             spec = String(spec.dropFirst(4))
         }
-        guard let colon = spec.lastIndex(of: ":"), colon > 0,
+        guard let colon = spec.lastIndex(of: ":"), colon > spec.startIndex,
               let port = UInt16(spec[spec.index(after: colon)...]) else {
             throw Failure(message: "中继地址格式应为 地址:端口")
         }

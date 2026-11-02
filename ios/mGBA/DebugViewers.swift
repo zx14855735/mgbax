@@ -62,11 +62,11 @@ enum DebugViewers {
         }
         let gba = mgbaMobileWidth(core) == 240
         let sheet = DebugSheet(title: "调试工具")
-        sheet.add(button("内存查看", action: { sheet.dismiss(); showMemory(core: core, presenter: presenter) }))
-        sheet.add(button("数值搜索（金手指）", action: { sheet.dismiss(); showSearch(core: core, presenter: presenter) }))
-        let bg = button("BG 图层", action: { sheet.dismiss(); showBg(core: core, presenter: presenter) })
-        let oam = button("OAM 精灵", action: { sheet.dismiss(); showOam(core: core, presenter: presenter) })
-        let palette = button("调色板", action: { sheet.dismiss(); showPalette(core: core, presenter: presenter) })
+        sheet.add(button("内存查看", action: { sheet.dismiss(animated: false); showMemory(core: core, presenter: presenter) }))
+        sheet.add(button("数值搜索（金手指）", action: { sheet.dismiss(animated: false); showSearch(core: core, presenter: presenter) }))
+        let bg = button("BG 图层", action: { sheet.dismiss(animated: false); showBg(core: core, presenter: presenter) })
+        let oam = button("OAM 精灵", action: { sheet.dismiss(animated: false); showOam(core: core, presenter: presenter) })
+        let palette = button("调色板", action: { sheet.dismiss(animated: false); showPalette(core: core, presenter: presenter) })
         if !gba {
             for item in [bg, oam, palette] {
                 item.isEnabled = false
@@ -141,10 +141,10 @@ enum DebugViewers {
         regionRow.spacing = 4
         regionRow.distribution = .fillEqually
         for (index, region) in all.enumerated() {
-            let item = button(region.name) { [weak self] in
+            let item = button(region.name) {
                 regionIndex = index
                 page = 0
-                self?.refresh()
+                refresh()
             }
             regionRow.addArrangedSubview(item)
         }
@@ -153,9 +153,9 @@ enum DebugViewers {
         widthRow.axis = .horizontal
         widthRow.spacing = 6
         for bits in [8, 16, 32] {
-            let item = button("\(bits) 位") { [weak self] in
+            let item = button("\(bits) 位") {
                 width = bits
-                self?.refresh()
+                refresh()
             }
             widthRow.addArrangedSubview(item)
         }
@@ -163,16 +163,16 @@ enum DebugViewers {
         let pageRow = UIStackView()
         pageRow.axis = .horizontal
         pageRow.spacing = 6
-        pageRow.addArrangedSubview(button("上一页") { [weak self] in
+        pageRow.addArrangedSubview(button("上一页") {
             page -= 1
-            self?.refresh()
+            refresh()
         })
-        pageRow.addArrangedSubview(button("下一页") { [weak self] in
+        pageRow.addArrangedSubview(button("下一页") {
             page += 1
-            self?.refresh()
+            refresh()
         })
-        pageRow.addArrangedSubview(button("刷新") { [weak self] in
-            self?.refresh()
+        pageRow.addArrangedSubview(button("刷新") {
+            refresh()
         })
 
         sheet.add(regionRow)
@@ -183,15 +183,14 @@ enum DebugViewers {
 
         // 点某一行可以改值
         let tap = UITapGestureRecognizer(target: DebugTap.shared, action: #selector(DebugTap.handle))
-        DebugTap.shared.handler = { [weak self] point in
-            guard let self else { return }
+        DebugTap.shared.handler = { point in
             let line = Int(point.y / 15)
             guard line >= 1 else { return }
             let region = all[regionIndex]
             let offset = page * bytesPerRow * rowsPerPage + (line - 1) * bytesPerRow
             guard offset >= 0, offset < region.size else { return }
             let address = region.address + UInt32(offset)
-            self.editValue(core: core, presenter: presenter, address: address, width: width)
+            editValue(core: core, presenter: presenter, address: address, width: width)
         }
         dump.addGestureRecognizer(tap)
 
@@ -289,9 +288,8 @@ enum DebugViewers {
                 label.text = "\(hex(hit.address))   \(hex(mgbaMobileBusRead(core, Int32(width), hit.address)))"
                 label.flexibleWidth()
                 row.addArrangedSubview(label)
-                row.addArrangedSubview(button("改值") { [weak self] in
-                    guard let self else { return }
-                    self.editValue(core: core, presenter: presenter, address: hit.address, width: width)
+                row.addArrangedSubview(button("改值") {
+                    editValue(core: core, presenter: presenter, address: hit.address, width: width)
                 })
                 list.addArrangedSubview(row)
             }
@@ -380,18 +378,18 @@ enum DebugViewers {
         tabs.axis = .horizontal
         tabs.spacing = 6
         for bg in 0..<4 {
-            let item = button("BG\(bg)") { [weak self] in
-                guard let self else { return }
-                if let rendered = self.renderBg(core: core, bg: bg) {
+            let item = button("BG\(bg)") {
+                if let rendered = renderBg(core: core, bg: bg) {
                     imageView.image = rendered
                     info.text = "BG\(bg)  \(rendered.size.width)x\(rendered.size.height)"
                 }
             }
             tabs.addArrangedSubview(item)
         }
-        tabs.addArrangedSubview(button("导出") { [weak self] in
-            guard let self, let image = imageView.image else { return }
-            self.saveToPhotos(image, presenter: presenter)
+        tabs.addArrangedSubview(button("导出") {
+            if let image = imageView.image {
+                saveToPhotos(image, presenter: presenter)
+            }
         })
         sheet.add(tabs)
         sheet.add(info)
@@ -490,7 +488,7 @@ enum DebugViewers {
                 let px = dstX + col
                 let py = dstY + row
                 if px < outWidth && py * outWidth + px < pixels.count {
-                    pixels[py * outWidth + px] = color == 0 ? 0xFF101010 : color
+                    pixels[py * outWidth + px] = UInt32(color == 0 ? 0xFF101010 : color)
                 }
             }
         }
@@ -508,7 +506,7 @@ enum DebugViewers {
             } else {
                 rgb = bgr15(Int(data[index * 2]) | (Int(data[index * 2 + 1]) << 8))
             }
-            pixels[index] = rgb == 0 ? 0xFF000000 : rgb
+            pixels[index] = UInt32(rgb == 0 ? 0xFF000000 : rgb)
         }
         return image(pixels: pixels, width: width, height: height)
     }
@@ -542,10 +540,9 @@ enum DebugViewers {
             let button = UIButton(type: .system)
             button.setImage(thumb, for: .normal)
             button.backgroundColor = .black
-            button.addAction(UIAction { [weak self] _ in
-                guard let self else { return }
-                self.spriteInfo(core: core, presenter: presenter, index: index,
-                                attr0: attr0, attr1: attr1, attr2: attr2)
+            button.addAction(UIAction { _ in
+                spriteInfo(core: core, presenter: presenter, index: index,
+                           attr0: attr0, attr1: attr1, attr2: attr2)
             }, for: .touchUpInside)
             button.widthAnchor.constraint(equalToConstant: 48).isActive = true
             button.heightAnchor.constraint(equalToConstant: 48).isActive = true
@@ -566,10 +563,9 @@ enum DebugViewers {
         info.font = .systemFont(ofSize: 12)
         sheet.add(info)
         sheet.add(grid)
-        sheet.add(button("导出精灵表") { [weak self] in
-            guard let self else { return }
-            if let sheet = self.oamSheet(core: core) {
-                self.saveToPhotos(sheet, presenter: presenter)
+        sheet.add(button("导出精灵表") {
+            if let out = oamSheet(core: core) {
+                saveToPhotos(out, presenter: presenter)
             }
         })
         presenter.present(sheet, animated: true)
@@ -578,8 +574,8 @@ enum DebugViewers {
     private static func spriteDims(attr0: Int, attr1: Int) -> (Int, Int) {
         let shape = (attr0 >> 14) & 3
         let size = (attr1 >> 14) & 3
-        let width: Int
-        let height: Int
+        var width: Int
+        var height: Int
         switch shape {
         case 0:
             width = 8; height = 8
@@ -627,7 +623,7 @@ enum DebugViewers {
                 let sx = hflip ? width - 1 - px : px
                 let sy = vflip ? height - 1 - py : py
                 if sy * width + sx < pixels.count {
-                    pixels[sy * width + sx] = color
+                    pixels[sy * width + sx] = UInt32(color)
                 }
             }
         }
@@ -656,10 +652,9 @@ enum DebugViewers {
         sheet.add(paletteGrid(core: core, base: 0x05000000, title: "背景", presenter: presenter))
         sheet.add(label("对象调色板"))
         sheet.add(paletteGrid(core: core, base: 0x05000400, title: "对象", presenter: presenter))
-        sheet.add(button("导出调色板") { [weak self] in
-            guard let self else { return }
-            if let sheet = self.paletteSheet(core: core) {
-                self.saveToPhotos(sheet, presenter: presenter)
+        sheet.add(button("导出调色板") {
+            if let out = paletteSheet(core: core) {
+                saveToPhotos(out, presenter: presenter)
             }
         })
         presenter.present(sheet, animated: true)
@@ -767,7 +762,7 @@ enum DebugViewers {
                 let position = bank * 256 + index
                 guard position * 2 + 1 < data.count else { continue }
                 let value = Int(data[position * 2]) | (Int(data[position * 2 + 1]) << 8)
-                let color: UInt32 = value == 0 ? 0xFF000000 : UInt32(bitPattern: bgr15(value))
+                let color: UInt32 = value == 0 ? 0xFF000000 : UInt32(bgr15(value))
                 let x = (index % 16) * cell + 1
                 let y = bank * (16 * cell + 16) + (index / 16) * cell + 1
                 for dy in 0..<(cell - 2) {
@@ -793,7 +788,7 @@ enum DebugViewers {
         var pixels = [UInt32](repeating: 0, count: width * height)
         let space = CGColorSpaceCreateDeviceRGB()
         let context = CGContext(data: &pixels, width: width, height: height,
-                                bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+                                bitsPerComponent: 8, bytesPerRow: width * 4,
                                 space: space,
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         guard let context else {
@@ -820,8 +815,8 @@ enum DebugViewers {
             guard let base = raw.baseAddress else {
                 return 0
             }
-            return mgbaMobileBusReadBlock(core, address, Int32(size),
-                                          base.assumingMemoryBound(to: UInt8.self))
+            return Int(mgbaMobileBusReadBlock(core, address, Int32(size),
+                                          base.assumingMemoryBound(to: UInt8.self)))
         }
         guard read > 0 else {
             return []
@@ -865,11 +860,13 @@ enum DebugViewers {
             data.append(UInt8((pixel >> 24) & 0xFF))
         }
         guard let provider = CGDataProvider(data: data as CFData),
-              let cgImage = CGImage(dataProvider: provider, width: width, height: height,
+              let cgImage = CGImage(width: width, height: height,
                                     bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
                                     space: CGColorSpaceCreateDeviceRGB(),
                                     bitmapInfo: CGBitmapInfo(rawValue:
-                                        CGImageAlphaInfo.premultipliedLast.rawValue)) else {
+                                        CGImageAlphaInfo.premultipliedLast.rawValue),
+                                    provider: provider, decode: nil, shouldInterpolate: false,
+                                    intent: .defaultIntent) else {
             return nil
         }
         return UIImage(cgImage: cgImage)
