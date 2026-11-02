@@ -76,7 +76,7 @@ final class ShaderRenderer {
         descriptor.magFilter = .nearest
         descriptor.sAddressMode = .clampToEdge
         descriptor.tAddressMode = .clampToEdge
-        descriptor.mipFilter = .notMapped
+        descriptor.mipFilter = .nearest
         guard let nearest = device.makeSamplerState(descriptor: descriptor) else { return nil }
         samplerNearest = nearest
         descriptor.minFilter = .linear
@@ -321,7 +321,8 @@ final class ShaderRenderer {
         var bytes = [UInt8](repeating: 0, count: outWidth * outHeight * 4)
         let got = bytes.withUnsafeMutableBytes { raw -> Bool in
             guard let base = raw.baseAddress else { return false }
-            readback.getBytes(base, bytesPerRow: outWidth * 4)
+            readback.getBytes(base, bytesPerRow: outWidth * 4,
+                              from: MTLRegionMake2D(0, 0, outWidth, outHeight), mipmapLevel: 0)
             return true
         }
         guard got else { return nil }
