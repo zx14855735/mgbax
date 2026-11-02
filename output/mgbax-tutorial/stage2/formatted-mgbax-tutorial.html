@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="docx-page-size" content="A4">
+  <title>mGBAx 安卓版完整使用教程</title>
+  <style>
+  :root {
+    --page-content-width: 15.6cm;
+    --fs-h1: 22pt;
+    --fs-h2: 16pt;
+    --fs-h3: 13pt;
+    --fs-body: 12pt;
+    --fs-small: 10pt;
+    --ff-heading: "黑体", SimHei, sans-serif;
+    --ff-body: "宋体", SimSun, serif;
+    --color-primary: #1a4d8f;
+    --color-text: #000000;
+    --color-muted: #555555;
+    --color-border: #bbbbbb;
+    --color-highlight: #eef3fa;
+    --spacing-paragraph: 0.5em;
+    --spacing-section: 1.2em;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "宋体", SimSun, serif;
+    font-size: 12pt;
+    line-height: 1.6;
+    color: #000000;
+    background: #ffffff;
+    max-width: 15.6cm;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 2.5cm 0;
+  }
+  h1 {
+    font-family: "黑体", SimHei, sans-serif;
+    font-size: 22pt;
+    font-weight: 700;
+    text-align: center;
+    margin-top: 0.4em;
+    margin-bottom: 0.8em;
+    color: #1a4d8f;
+  }
+  h2 {
+    font-family: "黑体", SimHei, sans-serif;
+    font-size: 16pt;
+    font-weight: 700;
+    margin-top: 1.2em;
+    margin-bottom: 0.5em;
+    color: #1a4d8f;
+    border-bottom: 1px solid #cccccc;
+    padding-bottom: 0.2em;
+  }
+  h3 {
+    font-family: "黑体", SimHei, sans-serif;
+    font-size: 13pt;
+    font-weight: 700;
+    margin-top: 0.9em;
+    margin-bottom: 0.4em;
+    color: #222222;
+  }
+  p {
+    font-family: "宋体", SimSun, serif;
+    font-size: 12pt;
+    margin-bottom: 0.5em;
+    text-indent: 2em;
+  }
+  ul, ol { padding-left: 2em; margin-bottom: 0.5em; }
+  li { font-family: "宋体", SimSun, serif; font-size: 12pt; margin-bottom: 0.25em; }
+  table { border-collapse: collapse; width: 100%; margin: 0.6em 0 0.8em 0; }
+  th, td {
+    font-family: "宋体", SimSun, serif;
+    font-size: 11pt;
+    padding: 0.4em 0.6em;
+    border: 1px solid #bbbbbb;
+    text-indent: 0;
+    vertical-align: top;
+  }
+  th { font-weight: 700; background: #eef3fa; }
+  caption { font-size: 10pt; margin-bottom: 0.3em; text-align: left; }
+  code { font-family: "Courier New", monospace; font-size: 11pt; background: #f2f2f2; padding: 0 2px; }
+  .callout {
+    border-left: 3px solid #1a4d8f;
+    background: #eef3fa;
+    padding: 6px 8px;
+    margin: 0.6em 0;
+    font-family: "宋体", SimSun, serif;
+    font-size: 12pt;
+  }
+  .spacer { height: 0.4em; }
+  a { color: #1a4d8f; }
+  </style>
+</head>
+<body>
+
+<h1>mGBAx 安卓版完整使用教程</h1>
+<p class="callout">&nbsp;&nbsp;mGBAx 是 mGBA 模拟器在 Android 上的移植版本（应用名 <strong>mGBAx</strong>），可运行 <strong>Game Boy Advance（GBA）、Game Boy Color（GBC）、Game Boy（GB）</strong> 游戏，最大支持 <strong>64MB 扩容 ROM</strong>，并可直接从 <strong>ZIP</strong> 内加载。本教程覆盖菜单栏里每一项功能的具体用法。</p>
+<ul>
+<li><strong>系统要求</strong>：Android 7.0 及以上。</li>
+<li><strong>存档位置</strong>：游戏自己的电池存档默认保存在 <code>我的手机/mGBAx/saves</code>，打开游戏后菜单栏下方绿色文字会显示当前 ROM 的存档路径。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-1">目录</h2>
+<ol>
+<li><a href="#1-界面总览">界面总览</a></li>
+<li><a href="#2-打开游戏">打开游戏</a></li>
+<li><a href="#3-基本操作暂停--复位--倍速--快进">基本操作：暂停 / 复位 / 倍速 / 快进</a></li>
+<li><a href="#4-画面与声音">画面与声音</a></li>
+<li><a href="#5-虚拟按键与手感">虚拟按键与手感</a></li>
+<li><a href="#6-即时存档槽位">即时存档（槽位）</a></li>
+<li><a href="#7-游戏存档bios">游戏存档、BIOS</a></li>
+<li><a href="#8-金手指">金手指</a></li>
+<li><a href="#9-倒带">倒带</a></li>
+<li><a href="#10-联机云端大厅">联机（云端大厅）</a></li>
+<li><a href="#11-游戏库">游戏库</a></li>
+<li><a href="#12-皮肤">皮肤</a></li>
+<li><a href="#13-贴纸">贴纸</a></li>
+<li><a href="#14-每游戏设置">每游戏设置</a></li>
+<li><a href="#15-设置总览">设置总览</a></li>
+<li><a href="#16-高级设置">高级设置</a></li>
+<li><a href="#17-存档设置">存档设置</a></li>
+<li><a href="#18-备份与恢复">备份与恢复</a></li>
+<li><a href="#19-ai-画面翻译">AI 画面翻译</a></li>
+<li><a href="#20-截图与-gif-录制">截图与 GIF 录制</a></li>
+<li><a href="#21-调试工具">调试工具</a></li>
+<li><a href="#22-常见问题与提示">常见问题与提示</a></li>
+</ol>
+<p class="spacer"></p>
+<h2 id="section-2">1. 界面总览</h2>
+<p>打开任意游戏后，顶部会浮出一条可横向滚动的<strong>菜单栏</strong>，右侧绿色文字显示当前<strong>倍速 / 帧率（FPS）</strong>。菜单栏按钮从左到右为：</p>
+<table><thead><tr><th>按钮</th><th>功能</th></tr></thead><tbody><tr><td><strong>打开</strong></td><td>选择 ROM 文件（<code>.gba</code> / <code>.gbc</code> / <code>.gb</code> / <code>.zip</code>）</td></tr><tr><td><strong>暂停 / 继续</strong></td><td>暂停或恢复模拟</td></tr><tr><td><strong>1倍 / 倍速</strong></td><td>切换倍速（点开后有 1/4/8/16 倍与自定义）</td></tr><tr><td><strong>复位</strong></td><td>重新开机当前游戏（不删除存档）</td></tr><tr><td><strong>槽位</strong></td><td>切换当前即时存档槽（共 9 个，圆点表示已有存档）</td></tr><tr><td><strong>存档 / 读档</strong></td><td>写入 / 读取即时存档</td></tr><tr><td><strong>BIOS</strong></td><td>导入 BIOS 文件</td></tr><tr><td><strong>画质</strong></td><td>画面滤镜与显示选项</td></tr><tr><td><strong>联机</strong></td><td>云端联机大厅</td></tr><tr><td><strong>键位</strong></td><td>编辑屏幕按键位置 / 大小</td></tr><tr><td><strong>金手指</strong></td><td>添加 / 开关作弊码</td></tr><tr><td><strong>调试</strong></td><td>内存 / 图层 / 贴图 / 调色板查看器</td></tr><tr><td><strong>游戏库</strong></td><td>扫描并管理本地 ROM、收藏</td></tr><tr><td><strong>倒带</strong></td><td>回到过去的游戏进度</td></tr><tr><td><strong>皮肤</strong></td><td>按钮皮肤样式与机身颜色</td></tr><tr><td><strong>每游戏设置</strong></td><td>仅对当前游戏生效的画质 / 倍速 / 存档类型等</td></tr><tr><td><strong>备份</strong></td><td>备份或恢复设置 + 存档 + 状态</td></tr><tr><td><strong>翻译</strong></td><td>用 AI 翻译画面上的文字</td></tr><tr><td><strong>截图</strong></td><td>截一张游戏画面</td></tr><tr><td><strong>GIF</strong></td><td>开始 / 停止 GIF 录制</td></tr><tr><td><strong>设置</strong></td><td>屏幕方向、声音、输入、存档、高级、帮助</td></tr></tbody></table>
+<p>点左上角 <strong>☰ 菜单</strong> 也可随时呼出菜单栏；一段时间不操作会自动隐藏。底部右侧还有 <strong>ROM 存档位置</strong> 提示条（绿色）。</p>
+<p class="spacer"></p>
+<h2 id="section-3">2. 打开游戏</h2>
+<ul>
+<li><strong>方式一（推荐）</strong>：点菜单栏 <strong>打开</strong>，用系统文件选择器选择 <code>.gba</code>、<code>.gbc</code>、<code>.gb</code> 或 <code>.zip</code>。读完后自动开始，下次打开应用会<strong>继续上次的游戏</strong>。</li>
+<li><strong>方式二（扫描）</strong>：<strong>长按「打开」</strong> 会扫描「Download 下载目录」和「模拟器共享目录」，列出找到的 ROM 供一键打开；也可在文件管理器里用「打开方式」选择本应用。</li>
+<li><strong>方式三（游戏库）</strong>：见 <a href="#11-游戏库">第 11 节</a>，先「扫描」再点列表里的游戏。</li>
+<li><strong>ZIP 加载</strong>：把 ROM 直接放进 <code>.zip</code> 即可，无需解压。</li>
+<li>第一次打开游戏会请求「所有文件访问」权限，请允许，游戏存档会写到 <code>mGBAx/saves</code>。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-4">3. 基本操作：暂停 / 复位 / 倍速 / 快进</h2>
+<ul>
+<li><strong>暂停 / 继续</strong>：点 <strong>暂停</strong> 冻结模拟，再点变 <strong>继续</strong>。</li>
+<li><strong>复位</strong>：把当前游戏重新开机，<strong>不会删除电池存档</strong>，但即时存档/未保存的临时进度会丢失（关闭或重置前可设确认）。</li>
+<li><strong>倍速</strong>：</li>
+<li>点 <strong>倍速</strong> 展开倍速条，可选 <strong>1 倍 / 4 倍 / 8 倍 / 16 倍</strong>，以及 <strong>自定义</strong>（输入小数，支持慢动作到 0.25 倍甚至更慢，范围约 0.05–16 倍）。</li>
+<li><strong>倍速声音</strong>：加速时声音是否一起变速。<strong>关闭</strong> → 加速时静音；<strong>打开</strong> → 有声音。</li>
+<li><strong>音乐原速（不变速）</strong>：打开「倍速声音」后还可勾选它，用 WSOLA 时间拉伸把多余音频压进实时播放，音乐保持正常速度、正常音高，不会像磁带那样升调或跳段。</li>
+<li>每次启动都会回到 <strong>1 倍</strong>，不沿用上次倍速。</li>
+<li><strong>快进（临时加速）</strong>：按住键盘 <strong>Tab / 空格</strong>，或手柄 <strong>右摇杆按下</strong>，会临时加速，松开恢复当前倍速。快进速度可在 <a href="#16-高级设置">高级设置</a> 里调（2–16 倍）。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-5">4. 画面与声音</h2>
+<h3>4.1 画质（点「画质」）</h3>
+<ul>
+<li><strong>画面滤镜</strong>：</li>
+<li><strong>关闭</strong>：原始高清放大。</li>
+<li><strong>GBA 色彩</strong>：模拟 GBA 屏幕偏暗偏绿的真实发色。</li>
+<li><strong>灰度</strong>：黑白画面。</li>
+<li><strong>HQ2x / HQ4x / 2xBR / 4xBR</strong>：把像素斜边、圆角插值得更平滑，整数缩放时效果最好。</li>
+<li><strong>残影</strong>：模拟慢响应 LCD 的拖影，和真机液晶一样。</li>
+<li><strong>点阵 / LCD3x</strong>：模拟老掌机像素格子和三色子像素。</li>
+<li><strong>扫描线（平滑）</strong>：柔和的逐行变暗。</li>
+<li><strong>锐利插值</strong>：非整数倍缩放时像素依然干净。</li>
+<li>滤镜配合「整数缩放」效果最佳；亮度调节对滤镜同样生效。</li>
+<li><strong>帧间混合</strong>：开启后让运动画面更顺滑。</li>
+<li><strong>双线性过滤</strong>：放大时平滑像素边缘。</li>
+<li><strong>锁定宽高比</strong>：保持 3:2（GBA）/ 原始比例，不拉伸变形。</li>
+<li><strong>整数缩放</strong>：画面按整数倍放大，避免模糊；与滤镜搭配最佳。</li>
+<li><strong>扫描线</strong>：叠加扫描线效果。</li>
+<li><strong>跳帧</strong>：设备跟不上时手动设置跳帧档位；还有 <strong>自动跳帧</strong>——设备跟不上自动跳、跟得上恢复全帧，优先用这个。</li>
+<li><strong>亮度</strong>：0–100% 调节画面明暗。</li>
+</ul>
+<h3>4.2 外部渲染器（自定义着色器）</h3>
+<p>点「画质」里的 <strong>外部渲染器</strong> → <strong>安装渲染器（.glsl）</strong>，可装第三方单通道 GLSL ES 片段着色器。可用变量：<code>uTex</code>（游戏画面）、<code>vTexCoord</code>（坐标）、<code>uTexSize</code>、<code>uOutSize</code>、<code>uBrightness</code>；常见 RetroArch 命名（<code>TEXTURE</code>/<code>TextureSize</code>/<code>OutputSize</code>/<code>vTexCoord</code>/<code>COMPAT_TEXTURE</code>）会自动适配。</p>
+<h3>4.3 画面场景（移动 / 缩放）</h3>
+<p>点「画质」里的 <strong>画面场景</strong>，可微调游戏画面的 <strong>水平位置、垂直位置、缩放百分比</strong>，并支持「恢复居中」。适合在带鱼屏或异形屏上把画面摆到舒服的位置。</p>
+<h3>4.4 声音</h3>
+<p>在 <strong>设置 → 声音</strong> 中：</p>
+<ul>
+<li><strong>音量</strong>：0–150%。</li>
+<li><strong>低延迟音频</strong>：支持的设备上减少声音延迟（开/关）。</li>
+<li><strong>沉浸模式</strong>：隐藏状态栏 / 导航栏，全屏玩游戏。</li>
+<li><strong>通道音量</strong>（GBA 音频 6 路独立调节）：通道 1/2（方波）、通道 3（波形）、通道 4（噪声）、DMA A / DMA B（音乐 / 音效采样），各 0–150%。比如想单独听 BGM 或关掉某路噪声很方便。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-6">5. 虚拟按键与手感</h2>
+<p>游戏画面上的按键是透明描边，点下去会带一点绿色。</p>
+<ul>
+<li><strong>按键布局</strong>：左边方向键、右边 <strong>B</strong> 和更大的 <strong>A</strong>、左上 <strong>L</strong>、右上 <strong>R</strong>、底部中间 <strong>SELECT / START</strong>。手指按住后稍微滑动，A、B 等键不会松开，松开手指才抬起。</li>
+<li><strong>编辑键位</strong>：点菜单栏 <strong>键位</strong> 进入编辑：</li>
+<li>单指拖动移动按键；</li>
+<li>双指捏合缩放，或用下方滑杆和 <strong>＋ / −</strong> 微调（40%–300%）；</li>
+<li>先点一下选中某按键，再捏合 / 拖滑杆缩放它；</li>
+<li><strong>配置</strong>：可新建空配置、复制当前配置、切换 / 删除多套键位布局（至少保留一套）；</li>
+<li><strong>重置</strong>：恢复默认键位；<strong>完成</strong>：退出编辑，改动自动保存。</li>
+<li><strong>外接手柄</strong>：十字键移动，X 是 A，Z 是 B，Enter 是 START（也可在系统里重映射）。</li>
+</ul>
+<p>在 <strong>设置 → 输入</strong> 中微调手感：</p>
+<ul>
+<li><strong>触屏振动</strong>：关 / 轻 / 中 / 强。</li>
+<li><strong>连击方式</strong>：</li>
+<li><strong>长按 B 键自动连击</strong>：短按 B 只按一次（可取消 / 返回）；按住 B 约 0.2 秒后开始连点，B 边框会闪，松开停止。连点是「一帧按下、一帧松开」，游戏才会当成新按键（适合快速翻对白）。</li>
+<li><strong>仅用连发键</strong>：只用专门的连发键连点。</li>
+<li><strong>关闭</strong>。</li>
+<li><strong>连击速度</strong>：次/秒，调节自动连点的频率。</li>
+<li><strong>禁用方向键对角</strong>：一次只按一个方向，避免斜向误触。</li>
+<li><strong>虚拟按键不透明度</strong>：调淡或调浓按键（40%–300%）。</li>
+<li><strong>虚拟按键开关</strong>：可显示 / 隐藏「连发 / 快存 / 快读 / 倍速 / 截图」等快捷虚拟键。</li>
+<li><strong>C 键 / C2 键（组合宏）</strong>：给某个按键绑定「按住时模拟按下的按键组合」，例如一键放必杀。在键位编辑里选中按键后设置。</li>
+<li><strong>识别到实体按键时提示隐藏虚拟按键</strong>：接上手柄后询问是否隐藏屏幕按键。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-7">6. 即时存档（槽位）</h2>
+<p>即时存档与游戏内自己的存档是两回事，一共 <strong>9 个槽位</strong>，适合随时存 checkpoint。</p>
+<ol>
+<li>点 <strong>槽位</strong> 切换到下一个槽；槽位号后有 <strong>●</strong> 表示该槽已有存档。</li>
+<li>点 <strong>存档</strong> 或 <strong>读档</strong>，列出 9 个槽：有存档的显示保存时间，空槽显示「空」。</li>
+<li>选中后才会写入 / 读取；读取空槽会提示「没有即时存档」，不会覆盖当前画面。</li>
+</ol>
+<p>在 <strong>设置 → 存档</strong> 中还能开启：</p>
+<ul>
+<li><strong>进入游戏时自动读档</strong>（上次退出的进度）。</li>
+<li><strong>退出时自动存档</strong>。</li>
+<li><strong>关闭 / 重置时确认</strong>，防止误关丢失进度。</li>
+<li><strong>定时存档</strong>：每隔 N 分钟自动存一次（关 / 每 5、10、15…分钟）。</li>
+<li><strong>快存自动轮转槽位（1–9）</strong>：每次快存自动换下一个槽，等于自动保留多份进度。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-8">7. 游戏存档、BIOS</h2>
+<ul>
+<li><strong>电池存档</strong>：游戏自己的存档（如《宝可梦》的进度）会自动写入 <code>mGBAx/saves</code>，下次直接打开同一游戏即可继续。菜单栏下方绿字显示的就是该路径，可点击复制。</li>
+<li><strong>BIOS 导入</strong>：点 <strong>BIOS</strong> 选择 BIOS 文件。GBA BIOS 一般 16KB，导入后需<strong>重新打开游戏</strong>生效；在 <a href="#16-高级设置">高级设置</a> 里打开「使用 BIOS」与（可选）「跳过 BIOS 启动画面」。</li>
+<li><strong>复位</strong>：把当前游戏重新开机，不删除任何存档。</li>
+</ul>
+<p>在 <strong>设置 → 存档</strong> 中还能：</p>
+<ul>
+<li><strong>删除电池存档（.sav）</strong>：删除前会备份为 <code>.bak</code>，并重新载入游戏。</li>
+<li><strong>导入 My Boy 存档</strong>：选择 My Boy 的 save 文件夹，把老存档迁移过来（显示成功 / 失败数量）。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-9">8. 金手指</h2>
+<p>点菜单栏 <strong>金手指</strong>：</p>
+<ol>
+<li>若没有任何作弊码，点 <strong>新增</strong>。</li>
+<li>填 <strong>名称</strong>（如「无限金钱」），<strong>格式</strong> 选 <strong>自动识别</strong>（最省心，自动判断 GameShark / Pro Action Replay / CodeBreaker 等）。</li>
+<li><strong>代码</strong> 框里<strong>每行一个</strong>，例如：</li>
+</ol>
+<p>```</p>
+<p>82025838 104E</p>
+<p>```</p>
+<ol>
+<li>点确定即添加并生效；列表里<strong>勾选</strong>即启用，<strong>取消勾选</strong>即停用。</li>
+<li>长按某条作弊码可<strong>删除</strong>。</li>
+</ol>
+<p class="callout">&nbsp;&nbsp;注意：乱填代码可能导致游戏崩溃或卡死，建议一次只开一两条验证。</p>
+<p class="spacer"></p>
+<h2 id="section-10">9. 倒带</h2>
+<p>把游戏「往回拨」，救一把手滑或想重来的一段。</p>
+<ul>
+<li>点菜单栏 <strong>倒带</strong>，可 <strong>倒回</strong> 到指定秒数（如 10 秒、30 秒、1 分钟），或 <strong>持续倒带（按住）</strong>：按住按钮持续往回退，松手停在那一帧。</li>
+<li>倒带记录是边玩边生成的，刚开局还没记录时会提示「还没有倒带记录」。</li>
+<li><strong>硬核模式</strong>（若开启）下倒带不可用。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-11">10. 联机（云端大厅）</h2>
+<p>两边各跑同一款 ROM，一边创建房间、一边加入，即可双人联机（如《精灵宝可梦》交换 / 对战）。</p>
+<ol>
+<li><strong>先打开同一个游戏</strong>，再点菜单栏 <strong>联机</strong> → <strong>云端大厅</strong>。</li>
+<li><strong>已注册过账号</strong>：直接在「邮箱」填邮箱、「密码」填<strong>原密码</strong>，然后点 <strong>云端创建</strong>（拿房间号，你是 1P）或 <strong>云端加入</strong>（再填对方给你的「房间号」）。</li>
+</ol>
+<ul>
+<li>首次注册后账号密码会自动记住，之后免验证码直接登录。</li>
+<li>全程不会收到任何邮件。</li>
+</ul>
+<ol>
+<li><strong>全新账号</strong>：先点 <strong>获取验证码</strong>（同一邮箱 5 分钟只能发一次），到邮箱查收验证码，填好验证码 + 邮箱 + 密码完成注册，再创建 / 加入。</li>
+<li>两边<strong>保持 1 倍速</strong>、打开<strong>同一个游戏</strong>，连接成功后即可联机。</li>
+<li>其它按钮：<strong>重新连接中继</strong>（断线后重连，需先有房间）、<strong>断开</strong>、<strong>联机自检</strong>（先填邮箱与密码做连通性测试）。</li>
+<li>不确定怎么填，点大厅里的说明文字可随时查看帮助。</li>
+</ol>
+<p class="callout">&nbsp;&nbsp;联机依赖内置云中继；若长时间连不上，多为网络 / 防火墙问题，先各自用「联机自检」排查。</p>
+<p class="spacer"></p>
+<h2 id="section-12">11. 游戏库</h2>
+<p>点菜单栏 <strong>游戏库</strong>：</p>
+<ul>
+<li><strong>扫描</strong>：查找 Download 目录、模拟器共享目录等常见位置的 ROM。</li>
+<li><strong>打开…</strong>：用文件选择器直接选 ROM。</li>
+<li><strong>收藏</strong>：把常玩的游戏加星，收藏列表单独成组，打开更快。</li>
+<li><strong>上次游戏</strong>：一键回到上次玩的那款。</li>
+<li>空列表时会提示把 <code>.gba/.gb/.gbc</code> 放进 Download 目录或用「打开方式」启动。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-13">12. 皮肤</h2>
+<p>点菜单栏 <strong>皮肤</strong>：</p>
+<ul>
+<li><strong>皮肤样式</strong>：</li>
+<li><strong>经典（半透明线条）</strong>：默认透明描边按键。</li>
+<li><strong>掌机</strong>：竖屏走 Pizza Boy 风、横屏走 GBA 掌机风，更有实体机味道。</li>
+<li><strong>机身颜色</strong>：切换掌机外壳配色（应用后即时生效）。</li>
+<li><strong>整包皮肤（PNG）</strong>：</li>
+<li>点 <strong>导入皮肤包（zip）</strong>，zip 内放按键 PNG：<code>dpad</code> / <code>a</code> / <code>b</code> / <code>l</code> / <code>r</code> / <code>select</code> / <code>start</code>；加 <code>_p</code> 后缀为「按下」贴图（如 <code>a_p.png</code>）；加 <code>bg_portrait.png</code>、<code>bg_landscape.png</code> 作背景。</li>
+<li>也可从 <code>mGBAx/skins</code> 目录批量导入；<strong>删除选中皮肤</strong> 可移除。</li>
+<li>选「无（默认绘制）」回到内置绘制。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-14">13. 贴纸</h2>
+<p>在画面上叠加图片（攻略图、表情包都行），最多 <strong>10 张</strong>。</p>
+<ul>
+<li><strong>添加贴纸</strong>：从 <code>mGBAx/stickers</code> 目录选图片，或直接选一张本地图片，自动进入编辑模式。</li>
+<li><strong>贴纸编辑模式</strong>：拖动移动、双指捏合缩放，摆好后退出即可（位置会记住）。</li>
+<li><strong>清除全部贴纸</strong>：一键清空。</li>
+<li>贴纸只是覆盖层，不影响游戏操作；图片读取失败会有提示。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-15">14. 每游戏设置</h2>
+<p>有些游戏你想单独调画质 / 倍速 / 存档类型，而不影响全局——用 <strong>每游戏设置</strong>（菜单栏 → 每游戏设置）：</p>
+<ul>
+<li><strong>滤镜</strong>、<strong>倍速</strong>、<strong>存档类型</strong>、<strong>GB 调色板</strong>：仅对当前这款游戏生效，会覆盖全局默认。</li>
+<li><strong>恢复全局默认</strong>：清掉本游戏的专属设置，回到全局配置。</li>
+<li>打开游戏时，菜单栏下方会显示「本游戏设置：…」提示当前生效的覆盖项。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-16">15. 设置总览</h2>
+<p>点菜单栏 <strong>设置</strong>，进入设置中心，里面分六项（外加扫描、帮助）：</p>
+<ol>
+<li><strong>屏幕方向</strong>：横屏 / 横屏（反向）/ 竖屏 / 竖屏（反向）/ 自动旋转 / 系统默认。</li>
+<li><strong>声音</strong>：见 <a href="#44-声音">4.4</a>。</li>
+<li><strong>输入</strong>：见 <a href="#5-虚拟按键与手感">第 5 节</a>。</li>
+<li><strong>存档</strong>：见 <a href="#6-即时存档槽位">第 6、7、17 节</a>。</li>
+<li><strong>高级</strong>：见 <a href="#16-高级设置">第 16 节</a>。</li>
+<li><strong>扫描</strong>：等价于长按「打开」的目录扫描。</li>
+<li><strong>帮助</strong>：内置一段速览帮助（倍速、画质、金手指、调试、补丁、同步、联机、截图的位置和用法）。</li>
+</ol>
+<p class="spacer"></p>
+<h2 id="section-17">16. 高级设置</h2>
+<p>点 <strong>设置 → 高级</strong>：</p>
+<ul>
+<li><strong>使用 BIOS（需先在菜单导入）</strong>：开启后走导入的 BIOS；隔壁 <strong>跳过 BIOS 启动画面</strong> 可跳过开机动画直接进游戏。</li>
+<li><strong>游戏时钟（RTC 卡带）</strong>：</li>
+<li><strong>实时时钟</strong>：跟随手机时间（《宝可梦》日夜系统用它）。</li>
+<li><strong>固定时间</strong>：手动设一个日期时间，用于触发特定时间事件。</li>
+<li><strong>偏移时间</strong>：手机时间 + 偏移分钟。</li>
+<li><strong>卡带振动（轰隆声）</strong>：需游戏支持的振动卡带才有效。</li>
+<li><strong>太阳能仿真（我们的太阳 / Boktai）</strong>：</li>
+<li>开关 + <strong>阳光强度</strong> 0–10 滑杆；</li>
+<li><strong>阳光来源</strong>：用<strong>音量键</strong>实时调节，或手机的<strong>感光器</strong>（环境光越强阳光越足）；</li>
+<li>开启后游戏里的光照随你调节变化。</li>
+<li><strong>SGB 边框</strong>：支持 Super Game Boy 的游戏显示专用边框画面。</li>
+<li><strong>倾斜传感器卡带</strong>：玩《扭转世界》（GBA）和《科比摇摆》（GB）这类感应卡带时，用手机姿态模拟卡带里的传感器（倾斜手机即可）。</li>
+<li><strong>GIF 浮球（录制开关悬浮在画面上）</strong>：开启后画面上有个随时开 / 停 GIF 的小球，比进菜单更方便。</li>
+<li><strong>游戏运行通知（防后台清理）</strong>：开启后状态栏常驻「游戏运行中」通知，降低被系统杀后台的概率。</li>
+<li><strong>GB 调色板</strong>：14 种单色 GB 配色（默认 / 原版 / 灰度 / 棕色 / 深棕 / 红 / 绿 / 深绿 / 蓝 / 深蓝 / 橙 / 黄 / 粉彩 / 反转），换了立即生效。</li>
+<li><strong>快进速度</strong>：2–16 倍，决定 Tab / 空格 / 右摇杆快进的力度。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-18">17. 存档设置</h2>
+<p>点 <strong>设置 → 存档</strong>：</p>
+<ul>
+<li><strong>游戏保存类型</strong>：自动检测或手动指定（Flash / SRAM / EEPROM 等）；遇到存档失效时可手动改。</li>
+<li><strong>进入游戏时自动读档</strong>：上次退出进度自动恢复。</li>
+<li><strong>退出时自动存档</strong>：关游戏前自动写一次电池存档。</li>
+<li><strong>关闭 / 重置时确认</strong>：防误触丢失进度。</li>
+<li><strong>自动使用 IPS / UPS / BPS 补丁</strong>：把补丁改成和 ROM <strong>同名</strong>（扩展名保留，如 <code>游戏.ups</code>）放在同一文件夹，进游戏时自动应用（汉化、改版常用）。</li>
+<li><strong>删除电池存档（.sav）</strong>：删除会先备份为 <code>.bak</code> 再重载；没有存档会提示。</li>
+<li><strong>导入 My Boy 存档</strong>：选 My Boy 的 save 目录批量迁移。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-19">18. 备份与恢复</h2>
+<p>点菜单栏 <strong>备份</strong>：</p>
+<ul>
+<li><strong>备份到文件（设置 + 存档 + 状态）</strong>：把当前键位 / 画面 / 声音等设置、电池存档、即时存档打包成一个备份文件，方便换机或重装前保存。</li>
+<li><strong>从备份文件恢复</strong>：选备份文件还原，进度与设置一并回来。</li>
+<li>操作成功 / 失败都有提示；建议重装或换手机前先备份一次。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-20">19. AI 画面翻译</h2>
+<p>点菜单栏 <strong>翻译</strong>（需先配置）：</p>
+<ol>
+<li><strong>设置 Gemini API Key</strong>：在 <strong>设置 → 输入</strong> 之外的专属入口（或翻译面板里）粘贴 Gemini API Key（免费档可用）。</li>
+<li>选 <strong>目标语言</strong>（如中文）。</li>
+<li>回到游戏点 <strong>翻译</strong>，应用会识别画面上的文字块并翻译覆盖，提示「已翻译 N 个文本块」；<strong>点击画面</strong> 关闭翻译层。</li>
+<li>没识别到文字 / 没填 Key / 翻译失败都会有对应提示。</li>
+</ol>
+<p class="callout">&nbsp;&nbsp;适合玩英文 / 日文原版 RPG：把对白、菜单译成中文再点掉，沉浸感拉满。</p>
+<p class="spacer"></p>
+<h2 id="section-21">20. 截图与 GIF 录制</h2>
+<ul>
+<li><strong>截图</strong>：点菜单栏 <strong>截图</strong>，图片存到 <strong><code>Pictures/mGBAx</code></strong>（可在设置里改截图格式）。也可在 <strong>设置 → 输入</strong> 开启 <strong>双击屏幕截图</strong>，游戏中双击即存。</li>
+<li><strong>GIF 录制</strong>：点菜单栏 <strong>GIF</strong> 开始录制，再点一次 <strong>停止 GIF</strong> 结束，文件自动保存；或在 <a href="#16-高级设置">高级设置</a> 开 <strong>GIF 浮球</strong>，用悬浮球随时开始 / 停止。适合录一段搞笑操作发群里。</li>
+</ul>
+<p class="spacer"></p>
+<h2 id="section-22">21. 调试工具</h2>
+<p>点菜单栏 <strong>调试</strong>（移植自专业调试套件，进阶玩家向）：</p>
+<ul>
+<li><strong>内存查看器</strong>：十六进制内存浏览，<strong>搜索</strong> 数值（首次选 <code>=</code> 输入要找的数，再逐步缩小）、点击十六进制区<strong>直接改字节</strong>（改值前建议先暂停游戏），可拿来做「内存型金手指」。</li>
+<li><strong>图层查看器（BG）</strong>：查看背景图层，显示大小 / 优先级 / 图层地址 / 映射地址；模式 3/4/5 会标注位图信息。</li>
+<li><strong>贴图查看器（OAM）</strong>：查看当前画面里的精灵贴图，显示坐标 / 尺寸 / 图块 / 调色板 / 翻转 / 优先级。</li>
+<li><strong>调色板查看器</strong>：查看背景 / 贴图调色板，显示每个颜色的 RGB 与内存地址。</li>
+</ul>
+<p class="callout">&nbsp;&nbsp;图层 / 贴图 / 调色板查看器（PPU 相关）<strong>仅支持 GBA 游戏</strong>，GB / GBC 下会提示不可用。</p>
+<p class="spacer"></p>
+<h2 id="section-23">22. 常见问题与提示</h2>
+<ul>
+<li><strong>游戏打不开 / 黑屏</strong>：确认 ROM 没损坏；试试在「每游戏设置」改存档类型；必要时导入 GBA BIOS 并在高级里开「使用 BIOS」。</li>
+<li><strong>没声音</strong>：检查「声音」里音量不是 0；试开关「低延迟音频」；通道音量别误调到 0。</li>
+<li><strong>存档丢了</strong>：电池存档在 <code>mGBAx/saves</code>，删除前会留 <code>.bak</code>；换机前用「备份」打包。</li>
+<li><strong>想多设备同步存档</strong>：在存档设置里配 <strong>坚果云 WebDAV</strong>（注册后到「账户信息 → 安全选项 → 添加应用密码」生成 16 位应用密码，账号填邮箱、密码填应用密码，服务器地址默认即可），开「进出游戏时自动同步」，按修改时间取较新的 <code>.sav</code>。</li>
+<li><strong>联机连不上</strong>：两边同一游戏、都 1 倍速；用「联机自检」先测账号与网络；卡住点「重新连接中继」。</li>
+<li><strong>按键误触 / 手感差</strong>：进「键位」重排并调不透明度；手柄用户开「识别实体按键时隐藏虚拟按键」。</li>
+<li><strong>画面糊 / 锯齿</strong>：开「整数缩放」+ 选 HQ2x / 4xBR 等插值滤镜；非整数屏可用「锐利插值」。</li>
+<li><strong>权限提示</strong>：首次打开游戏会请求文件访问，请允许，否则存档写不进去。</li>
+</ul>
+<p class="spacer"></p>
+<p class="callout">&nbsp;&nbsp;<strong>开源说明</strong>：本安卓移植跟随上游 mGBA，采用 Mozilla Public License 2.0。第三方代码（MIT / BSD / CC0 等）放在 <code>third-party</code>，许可证全文见仓库根目录 <code>LICENSE</code>。</p>
+</body>
+</html>

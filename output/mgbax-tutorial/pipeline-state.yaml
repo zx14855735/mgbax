@@ -1,0 +1,30 @@
+request_id: mgbax-tutorial
+entry_type: beautify_only
+current_stage: 3
+output_docx_path: D:\mgba-android-version\output\mgbax-tutorial\stage3\mGBAx安卓版完整使用教程.docx
+output_docx_user_specified: false
+stages:
+  stage_0:
+    status: completed
+    action: resolve_output_docx_path
+  stage_1:
+    status: skipped
+    reason: content already existed as markdown (beautify_only flow)
+  stage_2:
+    status: completed
+    route: html
+    html_sub: template
+    output_path: stage2/formatted-mgbax-tutorial.html
+    output_format: html
+    genre: general
+    theme: modern-minimal
+  stage_3:
+    status: completed
+    executor: doc-converter
+    input_format: html
+    output_path: D:\mgba-android-version\output\mgbax-tutorial\stage3\mGBAx安卓版完整使用教程.docx
+    skill_used: [html-to-doc]
+    present_files_opened: true
+    fallback: false
+    chunks: null
+consistency_check: ok
