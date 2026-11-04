@@ -44,6 +44,20 @@ Java_io_mgba_android_MgbaCore_nativeLoad(JNIEnv* env, jobject, jlong handle, jst
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetSaveDirs(JNIEnv* env, jobject, jlong handle, jstring saveDir, jstring stateDir) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) handle;
+	const char* save = saveDir ? env->GetStringUTFChars(saveDir, NULL) : NULL;
+	const char* state = stateDir ? env->GetStringUTFChars(stateDir, NULL) : NULL;
+	mgbaMobileSetSaveDirs(emu, save, state);
+	if (save) {
+		env->ReleaseStringUTFChars(saveDir, save);
+	}
+	if (state) {
+		env->ReleaseStringUTFChars(stateDir, state);
+	}
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeSetKeys(JNIEnv*, jobject, jlong handle, jint keys) {
 	mgbaMobileSetKeys((struct MgbaMobile*) handle, (uint32_t) keys);
 }

@@ -17,6 +17,9 @@ struct MgbaMobile;
 struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port);
 void mgbaMobileDestroy(struct MgbaMobile* emu);
 bool mgbaMobileLoad(struct MgbaMobile* emu, const char* path);
+/* Overrides the battery-save / save-state folders before the next load.
+ * Passing the ROM's own folder keeps saves beside the game. */
+void mgbaMobileSetSaveDirs(struct MgbaMobile* emu, const char* saveDir, const char* stateDir);
 bool mgbaMobileIsLoaded(const struct MgbaMobile* emu);
 void mgbaMobileSetKeys(struct MgbaMobile* emu, uint32_t keys);
 void mgbaMobileSetTurbo(struct MgbaMobile* emu, uint32_t mask);

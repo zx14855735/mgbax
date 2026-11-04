@@ -22,6 +22,7 @@
 #include "link_net.h"
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -76,6 +77,8 @@ struct MgbaMobile {
 	unsigned height;
 	char savePath[1024];
 	char statePath[1024];
+	/* Suffix of the battery save actually opened (.sav, .srm, .saN). */
+	char saveSuffix[8];
 	char port[32];
 	int fast;
 	struct NetLink* link;
@@ -996,6 +999,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
 	copyPath(emu->statePath, sizeof(emu->statePath), stateDir);
 	copyPath(emu->port, sizeof(emu->port), port && port[0] ? port : "mobile");
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), ".sav");
 	if (emu->savePath[0]) {
 		mobile_mkdir(emu->savePath);
 	}
@@ -1038,6 +1042,61 @@ void mgbaMobileDestroy(struct MgbaMobile* emu) {
 	netLinkDestroy(emu->link);
 	emu->link = NULL;
 	free(emu);
+}
+
+void mgbaMobileSetSaveDirs(struct MgbaMobile* emu, const char* saveDir, const char* stateDir) {
+	if (!emu) {
+		return;
+	}
+	if (saveDir && saveDir[0]) {
+		copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
+	}
+	if (stateDir && stateDir[0]) {
+		copyPath(emu->statePath, sizeof(emu->statePath), stateDir);
+	}
+}
+
+/*
+ * Battery saves kept next to the ROM may carry any of the usual suffixes:
+ * mGBA writes <base>.sav, other emulators <base>.srm, and per-player saves
+ * use .sa1..sa4. Open an existing one rather than letting the core create
+ * an empty .sav beside a real .srm. The VFile stays owned by the core so
+ * later saves are written back to the same file.
+ */
+static bool autoloadExistingSave(struct MgbaMobile* emu, struct mCore* core) {
+	char preferred[16] = ".sav";
+	const char* suffixes[7];
+	size_t count = 0;
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), ".sav");
+	if (!core || !core->dirs.save || !core->dirs.baseName[0]) {
+		return false;
+	}
+	/* Match mCoreAutoloadSave's per-player suffix first, so a player who
+	 * configured savePlayerId keeps using the same file as before. */
+	int savePlayerId = 0;
+	mCoreConfigGetIntValue(&core->config, "savePlayerId", &savePlayerId);
+	if (savePlayerId > 1) {
+		snprintf(preferred, sizeof(preferred), ".sa%i", savePlayerId);
+	}
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), "%s", preferred);
+	suffixes[count++] = preferred;
+	suffixes[count++] = ".sav";
+	suffixes[count++] = ".srm";
+	suffixes[count++] = ".sa1";
+	suffixes[count++] = ".sa2";
+	suffixes[count++] = ".sa3";
+	suffixes[count++] = ".sa4";
+	for (size_t i = 0; i < count; ++i) {
+		struct VFile* vf = mDirectorySetOpenSuffix(&core->dirs, core->dirs.save, suffixes[i], O_RDWR);
+		if (!vf) {
+			continue;
+		}
+		core->loadSave(core, vf);
+		snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), "%s", suffixes[i]);
+		MOBILE_LOGI("Loaded battery save %s%s", core->dirs.baseName, suffixes[i]);
+		return true;
+	}
+	return false;
 }
 
 bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
@@ -1100,7 +1159,10 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		// No patch next to the ROM is the normal case; a bad patch only warns.
 		MOBILE_LOGI("No patch applied for %s", filename);
 	}
-	mCoreAutoloadSave(core);
+	if (!autoloadExistingSave(emu, core)) {
+		/* No save next to the ROM yet: let the core create its own .sav. */
+		mCoreAutoloadSave(core);
+	}
 	core->setAudioBufferSize(core, 16384);
 	if (!ensureVideo(emu)) {
 		MOBILE_LOGE("No video buffer before reset for %s", filename);
@@ -3751,7 +3813,7 @@ void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen) 
 	if (!emu || !emu->core || emu->savePath[0] == '\0' || emu->core->dirs.baseName[0] == '\0') {
 		return;
 	}
-	snprintf(out, outLen, "%s/%s.sav", emu->savePath, emu->core->dirs.baseName);
+	snprintf(out, outLen, "%s/%s%s", emu->savePath, emu->core->dirs.baseName, emu->saveSuffix);
 }
 
 void mgbaMobilePumpLink(struct MgbaMobile* emu) {

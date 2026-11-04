@@ -44,7 +44,19 @@ public class ControlsView extends View {
     public static final int ACTION_FF_TOGGLE = 5;
     public static final int ACTION_MENU = 6;
     public static final int ACTION_MUTE = 7;
+    /** The original rewind control: opens the seconds bar. */
     public static final int ACTION_REWIND = 8;
+    /** Extra shortcut key: one tap rewinds a few seconds, no menu needed. */
+    public static final int ACTION_REWIND_QUICK = 9;
+
+    /** Seconds shown on the extra one-tap rewind key. */
+    private int quickRewindSeconds = 2;
+
+    /** Keeps the shortcut key's label in sync with the configured jump. */
+    public void setQuickRewindSeconds(int seconds) {
+        quickRewindSeconds = Math.max(1, Math.min(10, seconds));
+        invalidate();
+    }
 
     public interface Listener {
         void onKeysChanged(int mask);
@@ -103,7 +115,8 @@ public class ControlsView extends View {
     private final RectF buttonSelectDefault = new RectF();
     private final RectF buttonStartDefault = new RectF();
     /* Optional utility keys: turbo A/B, L+R, C/C2 macros, quick save/load,
-     * fast-forward, screenshot. Hidden until the player turns them on. */
+     * fast-forward, screenshot and one-tap rewind. Hidden until enabled,
+     * except the rewind key which is on by default. */
     private final RectF keyTurboA = new RectF();
     private final RectF keyTurboB = new RectF();
     private final RectF keyLR = new RectF();
@@ -113,6 +126,7 @@ public class ControlsView extends View {
     private final RectF keyLoad = new RectF();
     private final RectF keyFast = new RectF();
     private final RectF keyShot = new RectF();
+    private final RectF keyRewind = new RectF();
     private final RectF keyTurboADefault = new RectF();
     private final RectF keyTurboBDefault = new RectF();
     private final RectF keyLRDefault = new RectF();
@@ -122,6 +136,7 @@ public class ControlsView extends View {
     private final RectF keyLoadDefault = new RectF();
     private final RectF keyFastDefault = new RectF();
     private final RectF keyShotDefault = new RectF();
+    private final RectF keyRewindDefault = new RectF();
     private final java.util.HashSet<String> visibleExtras = new java.util.HashSet<>();
     private final Map<String, float[]> centers = new HashMap<>();
     private final Map<String, Float> scales = new HashMap<>();
@@ -545,6 +560,8 @@ public class ControlsView extends View {
         float lrTop = shoulderTop + shoulderH + 8 * d;
         keyLRDefault.set(center - utilW, lrTop, center + utilW, lrTop + utilH);
         keyShotDefault.set(center - utilW / 2f, lrTop + utilH + 8 * d, center + utilW / 2f, lrTop + 2 * utilH + 8 * d);
+        keyRewindDefault.set(keyShotDefault.right + 8 * d, keyShotDefault.top,
+                keyShotDefault.right + 8 * d + utilW, keyShotDefault.bottom);
         float turbo = 46 * d;
         keyTurboADefault.set(buttonADefault.left - 4 * d, buttonADefault.top - turbo - 6 * d,
                 buttonADefault.left - 4 * d + turbo, buttonADefault.top - 6 * d);
@@ -611,6 +628,7 @@ public class ControlsView extends View {
         keyFastDefault.set(44 * fw, utilTop, 44 * fw + utilW, utilTop + utilH);
         keyShotDefault.set(57 * fw, utilTop, 57 * fw + utilW, utilTop + utilH);
         keyLRDefault.set(70 * fw, utilTop, 70 * fw + utilW, utilTop + utilH);
+        keyRewindDefault.set(83 * fw, utilTop, 83 * fw + utilW, utilTop + utilH);
         float turbo = 9 * fw;
         keyTurboADefault.set(buttonADefault.left - turbo - 2 * fw, buttonADefault.top + 2 * fh,
                 buttonADefault.left - 2 * fw, buttonADefault.top + 2 * fh + turbo);
@@ -640,6 +658,7 @@ public class ControlsView extends View {
         shrink(keyLoadDefault, 0.8f);
         shrink(keyFastDefault, 0.8f);
         shrink(keyShotDefault, 0.8f);
+        shrink(keyRewindDefault, 0.8f);
     }
 
     /** Landscape shell (GBA hardware style): d-pad left, A/B right, slanted
@@ -686,6 +705,7 @@ public class ControlsView extends View {
         keyLoadDefault.set(50 * fw, utilTop, 50 * fw + utilW, utilTop + utilH);
         keyFastDefault.set(60 * fw, utilTop, 60 * fw + utilW, utilTop + utilH);
         keyShotDefault.set(70 * fw, utilTop, 70 * fw + utilW, utilTop + utilH);
+        keyRewindDefault.set(81 * fw, utilTop, 81 * fw + utilW, utilTop + utilH);
         keyLRDefault.set(45 * fw, 82 * fh, 45 * fw + utilW + 6 * fw, 82 * fh + utilH);
         keyTurboADefault.set(buttonADefault.left - utilW - 1.5f * fw, buttonADefault.top,
                 buttonADefault.left - 1.5f * fw, buttonADefault.top + utilH);
@@ -806,6 +826,10 @@ public class ControlsView extends View {
         }
         if (visibleExtras.contains("shot")) {
             drawKey(canvas, keyShot, "截图", actionPointers.indexOfValue(ACTION_SHOT) >= 0, editing, false);
+        }
+        if (visibleExtras.contains("rewind")) {
+            drawKey(canvas, keyRewind, "倒带" + quickRewindSeconds + "s",
+                    actionPointers.indexOfValue(ACTION_REWIND_QUICK) >= 0, editing, false);
         }
     }
 
@@ -1440,6 +1464,9 @@ public class ControlsView extends View {
         if (visibleExtras.contains("shot") && keyShot.contains(x, y)) {
             return ACTION_SHOT;
         }
+        if (visibleExtras.contains("rewind") && keyRewind.contains(x, y)) {
+            return ACTION_REWIND_QUICK;
+        }
         return 0;
     }
 
@@ -1567,6 +1594,7 @@ public class ControlsView extends View {
         keyLoadDefault.set(keyLoad);
         keyFastDefault.set(keyFast);
         keyShotDefault.set(keyShot);
+        keyRewindDefault.set(keyRewind);
     }
 
     private void applyCenters() {
@@ -1603,6 +1631,9 @@ public class ControlsView extends View {
         }
         if (visibleExtras.contains("shot")) {
             place(keyShot, keyShotDefault, "shot");
+        }
+        if (visibleExtras.contains("rewind")) {
+            place(keyRewind, keyRewindDefault, "rewind");
         }
         layoutDpadArms();
         updateGestureExclusion();
@@ -1937,6 +1968,9 @@ public class ControlsView extends View {
         if (visibleExtras.contains("shot") && keyShot.contains(x, y)) {
             return "shot";
         }
+        if (visibleExtras.contains("rewind") && keyRewind.contains(x, y)) {
+            return "rewind";
+        }
         int face = nearestFace(x, y);
         if (face == A) {
             return "a";
@@ -2010,6 +2044,9 @@ public class ControlsView extends View {
         }
         if ("shot".equals(key)) {
             return keyShot;
+        }
+        if ("rewind".equals(key)) {
+            return keyRewind;
         }
         return buttonStart;
     }

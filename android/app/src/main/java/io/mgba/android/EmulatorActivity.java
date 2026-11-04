@@ -107,6 +107,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_STORAGE = 3;
     private static final int REQ_SAVDIR = 4;
     private static final int REQ_SHADER = 9;
+    private static final int REQ_ROMDIR = 10;
     private static final int CMD_SAVE = 1;
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
@@ -127,7 +128,9 @@ public class EmulatorActivity extends AppCompatActivity {
     /** How full the playback buffer is kept while playing. */
     private static final float AUDIO_TARGET_FILL = 0.65f;
     /** Most ROMs offered at once by the scan. */
-    private static final int ROM_SCAN_LIMIT = 60;
+    private static final int ROM_SCAN_LIMIT = 200;
+    /** How deep a custom ROM folder is searched (games often sit in sub-folders). */
+    private static final int ROM_DIR_DEPTH = 3;
     /** How long the menu stays open after it was last used. */
     private static final int MENU_HIDE_MS = 4000;
 
@@ -375,6 +378,12 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile boolean rewindHold;
     private volatile int rewindSeconds;
     private long lastRewindAt;
+    /** Fallback folders used when the ROM has no saves beside it. */
+    private File defaultSaveDir;
+    private File defaultStateDir;
+    /** State folder in effect for the loaded ROM, read by the UI slot helpers. */
+    private volatile File activeStateDir;
+    private volatile String currentRomPath;
     private RomSettingsDb romDb;
     /** CRC32 of the loaded ROM, the per-game settings key. */
     private long romCrc = -1;
@@ -516,6 +525,8 @@ public class EmulatorActivity extends AppCompatActivity {
                                 rewindBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
                         showMenu();
                     }
+                } else if (action == ControlsView.ACTION_REWIND_QUICK) {
+                    quickRewind();
                 }
             }
 
@@ -746,8 +757,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (SaveLocation.hasAccess(this)) {
             getPreferences(MODE_PRIVATE).edit().putBoolean("save_access_declined", false).apply();
         }
-        File saves = SaveLocation.prepare(this);
-        core = new MgbaCore(saves, new File(getFilesDir(), "states"));
+        defaultSaveDir = SaveLocation.prepare(this);
+        defaultStateDir = new File(getFilesDir(), "states");
+        activeStateDir = defaultStateDir;
+        core = new MgbaCore(defaultSaveDir, defaultStateDir);
         core.setRewind(true);
         applyCoreOptions();
         applyVideo();
@@ -995,6 +1008,12 @@ public class EmulatorActivity extends AppCompatActivity {
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         if (requestCode == REQ_STORAGE) {
             startEmulator();
+            return;
+        }
+        if (requestCode == REQ_ROMDIR) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                addRomDirFromTree(data.getData());
+            }
             return;
         }
         if (requestCode == REQ_SAVDIR) {
@@ -1292,6 +1311,209 @@ public class EmulatorActivity extends AppCompatActivity {
         return clean;
     }
 
+    // == Custom ROM folders ==
+
+    /** Absolute paths the player added; one per line in the preferences. */
+    private static final String PREF_ROM_DIRS = "rom_dirs";
+
+    private List<String> romDirs() {
+        List<String> out = new ArrayList<>();
+        String csv;
+        try {
+            csv = getPreferences(MODE_PRIVATE).getString(PREF_ROM_DIRS, "");
+        } catch (ClassCastException e) {
+            csv = "";
+        }
+        if (csv != null && !csv.isEmpty()) {
+            for (String line : csv.split("\n")) {
+                String path = line.trim();
+                if (!path.isEmpty() && !out.contains(path)) {
+                    out.add(path);
+                }
+            }
+        }
+        return out;
+    }
+
+    private void saveRomDirs(List<String> dirs) {
+        StringBuilder csv = new StringBuilder();
+        for (String dir : dirs) {
+            if (csv.length() > 0) {
+                csv.append('\n');
+            }
+            csv.append(dir);
+        }
+        getPreferences(MODE_PRIVATE).edit().putString(PREF_ROM_DIRS, csv.toString()).apply();
+    }
+
+    private boolean addRomDir(String path) {
+        if (path == null || path.trim().isEmpty()) {
+            return false;
+        }
+        File dir = new File(path.trim());
+        String absolute = dir.getAbsolutePath();
+        if (!dir.isDirectory() || !dir.canRead()) {
+            toast(getString(R.string.rom_dirs_bad, absolute));
+            return false;
+        }
+        List<String> dirs = romDirs();
+        if (dirs.contains(absolute)) {
+            toast(getString(R.string.rom_dirs_exists));
+            return false;
+        }
+        dirs.add(absolute);
+        saveRomDirs(dirs);
+        toast(getString(R.string.rom_dirs_added, absolute));
+        return true;
+    }
+
+    private void addRomDirFromTree(Uri tree) {
+        try {
+            getContentResolver().takePersistableUriPermission(tree,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Exception ignored) {
+            // Some providers hand out a one-shot grant; the real path still works.
+        }
+        String path = treeToPath(tree);
+        if (path == null) {
+            toast(getString(R.string.rom_dirs_tree_bad));
+            return;
+        }
+        if (addRomDir(path)) {
+            showRomDirsDialog();
+        }
+    }
+
+    /** Turns a document-tree Uri into a real path when the provider exposes one. */
+    @Nullable
+    private String treeToPath(@Nullable Uri tree) {
+        if (tree == null) {
+            return null;
+        }
+        String id;
+        try {
+            id = DocumentsContract.getTreeDocumentId(tree);
+        } catch (Exception e) {
+            return null;
+        }
+        if (id == null) {
+            return null;
+        }
+        String authority = tree.getAuthority();
+        if ("com.android.externalstorage.documents".equals(authority)) {
+            int colon = id.indexOf(':');
+            if (colon > 0 && colon + 1 <= id.length()) {
+                String volume = id.substring(0, colon);
+                String rest = id.substring(colon + 1);
+                File base = "primary".equalsIgnoreCase(volume)
+                        ? Environment.getExternalStorageDirectory()
+                        : new File("/storage", volume);
+                return new File(base, rest).getAbsolutePath();
+            }
+        }
+        if ("com.android.providers.downloads.documents".equals(authority) && id.startsWith("raw:")) {
+            return id.substring(4);
+        }
+        return null;
+    }
+
+    /** Manage the folders the ROM scan looks in first. */
+    private void showRomDirsDialog() {
+        final AlertDialog[] holder = new AlertDialog[1];
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        TextView hint = new TextView(this);
+        hint.setText(R.string.rom_dirs_hint);
+        hint.setTextColor(0xFF222222);
+        hint.setTextSize(13);
+        hint.setPadding(0, 0, 0, pad);
+        box.addView(hint);
+
+        List<String> dirs = romDirs();
+        if (dirs.isEmpty()) {
+            TextView empty = new TextView(this);
+            empty.setText(R.string.rom_dirs_empty);
+            empty.setTextColor(0xFF888888);
+            box.addView(empty);
+        }
+        for (String dir : dirs) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = new TextView(this);
+            label.setText(dir);
+            label.setTextColor(0xFF222222);
+            label.setTextSize(13);
+            label.setSingleLine(true);
+            row.addView(label, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+            Button remove = new Button(this);
+            remove.setAllCaps(false);
+            remove.setText(R.string.rom_dirs_remove);
+            final String target = dir;
+            remove.setOnClickListener(v -> {
+                List<String> next = romDirs();
+                next.remove(target);
+                saveRomDirs(next);
+                toast(getString(R.string.rom_dirs_removed, target));
+                if (holder[0] != null) {
+                    holder[0].dismiss();
+                }
+                showRomDirsDialog();
+            });
+            row.addView(remove);
+            box.addView(row);
+        }
+        Button pick = new Button(this);
+        pick.setAllCaps(false);
+        pick.setText(R.string.rom_dirs_pick);
+        pick.setOnClickListener(v -> {
+            if (holder[0] != null) {
+                holder[0].dismiss();
+            }
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            launchPicker(intent, REQ_ROMDIR);
+        });
+        box.addView(pick);
+        Button manual = new Button(this);
+        manual.setAllCaps(false);
+        manual.setText(R.string.rom_dirs_manual);
+        manual.setOnClickListener(v -> {
+            final EditText input = new EditText(this);
+            input.setHint(R.string.rom_dirs_manual_hint);
+            input.setSingleLine(true);
+            input.setText(Environment.getExternalStorageDirectory().getAbsolutePath() + "/");
+            input.setSelection(input.getText().length());
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.rom_dirs_manual_title)
+                    .setView(input)
+                    .setPositiveButton(android.R.string.ok, (d, w) -> {
+                        if (addRomDir(input.getText().toString())) {
+                            if (holder[0] != null) {
+                                holder[0].dismiss();
+                            }
+                            showRomDirsDialog();
+                        }
+                    })
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show();
+        });
+        box.addView(manual);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(R.string.rom_dirs_title)
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .setNeutralButton(R.string.scan_button, (d, w) -> showRomScan())
+                .create();
+        holder[0] = dialog;
+        dialog.show();
+    }
+
     /**
      * Looks for ROMs in the places they usually land: the download folder,
      * the app's own import folder, and the host-share folders that Windows
@@ -1331,7 +1553,8 @@ public class EmulatorActivity extends AppCompatActivity {
             String size = bytes >= (1 << 20)
                     ? String.format(Locale.ROOT, "%.1fMB", bytes / 1048576.0)
                     : Math.max(1, (bytes + 1023) / 1024) + "KB";
-            labels[i] = getString(R.string.scan_entry, file.getName(), path, size);
+            labels[i] = getString(R.string.scan_entry, file.getName(), path, size)
+                    + (hasBesideSaves(file) ? getString(R.string.scan_has_save) : "");
         }
         new AlertDialog.Builder(this)
                 .setTitle(R.string.scan_title)
@@ -1352,6 +1575,11 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private List<File> scanRoms() {
         List<File> dirs = new ArrayList<>();
+        final List<String> custom = romDirs();
+        // Player-added folders come first: their games always top the list.
+        for (String path : custom) {
+            dirs.add(new File(path));
+        }
         File external = Environment.getExternalStorageDirectory();
         File[] roots = {
                 new File(external, "Download"),
@@ -1385,12 +1613,31 @@ public class EmulatorActivity extends AppCompatActivity {
                 break;
             }
         }
-        Collections.sort(found, (a, b) -> Long.compare(b.lastModified(), a.lastModified()));
+        // Games from the player's own folders stay at the top of the list.
+        Collections.sort(found, (a, b) -> {
+            boolean ca = inRomDir(a, custom);
+            boolean cb = inRomDir(b, custom);
+            if (ca != cb) {
+                return ca ? -1 : 1;
+            }
+            return Long.compare(b.lastModified(), a.lastModified());
+        });
         return found.size() > ROM_SCAN_LIMIT ? new ArrayList<>(found.subList(0, ROM_SCAN_LIMIT)) : found;
     }
 
+    private static boolean inRomDir(File rom, List<String> dirs) {
+        String path = rom.getAbsolutePath();
+        for (String dir : dirs) {
+            String prefix = dir.endsWith(File.separator) ? dir : dir + File.separator;
+            if (path.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void collectRoms(File dir, int depth, List<File> out, Set<String> seen) {
-        if (depth > 2 || out.size() >= ROM_SCAN_LIMIT) {
+        if (depth > ROM_DIR_DEPTH || out.size() >= ROM_SCAN_LIMIT) {
             return;
         }
         File[] entries = dir.listFiles();
@@ -1732,8 +1979,70 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    // == ROMs and saves in the same folder ==
+
+    /** Name of a ROM without its extension; saves and states share it. */
+    private static String romBaseName(File rom) {
+        String name = rom.getName();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    /** Whether a battery save or save state already sits beside this ROM. */
+    private boolean hasBesideSaves(File rom) {
+        if (rom == null || !rom.isFile()) {
+            return false;
+        }
+        File parent = rom.getAbsoluteFile().getParentFile();
+        if (parent == null) {
+            return false;
+        }
+        String base = romBaseName(rom);
+        String[] battery = {".sav", ".srm", ".sa1", ".sa2", ".sa3", ".sa4"};
+        for (String suffix : battery) {
+            File file = new File(parent, base + suffix);
+            if (file.isFile() && file.length() > 0) {
+                return true;
+            }
+        }
+        for (int slot = 0; slot <= 9; slot++) {
+            File file = new File(parent, base + ".ss" + slot);
+            if (file.isFile() && file.length() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Saves live beside the ROM when the player already keeps them there (or
+     * explicitly asks for it); otherwise the shared folders stay in use so
+     * existing saves are never orphaned.
+     */
+    private void applyRomSaveLocation(String romPath) {
+        File rom = new File(romPath).getAbsoluteFile();
+        File parent = rom.getParentFile();
+        boolean beside = parent != null && parent.canWrite()
+                && (hasBesideSaves(rom)
+                    || getPreferences(MODE_PRIVATE).getBoolean("saves_beside_rom", false));
+        File saveDir = beside ? parent : defaultSaveDir;
+        File stateDir = beside ? parent : defaultStateDir;
+        if (saveDir == null) {
+            saveDir = SaveLocation.prepare(this);
+        }
+        if (stateDir == null) {
+            stateDir = new File(getFilesDir(), "states");
+        }
+        activeStateDir = stateDir;
+        if (core != null) {
+            core.setSaveDirs(saveDir.getAbsolutePath(), stateDir.getAbsolutePath());
+        }
+    }
+
     private void loadRom(String path) {
         releaseAudio();
+        currentRomPath = path;
+        applyRomSaveLocation(path);
         romCrc = romCrc32(path);
         boolean ok = core.load(path);
         if (!ok) {
@@ -2317,13 +2626,17 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private File stateFile(int index) {
-        String path = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        String path = currentRomPath;
+        if (path == null) {
+            path = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        }
         String name = path == null ? "game" : new File(path).getName();
         int dot = name.lastIndexOf('.');
         if (dot > 0) {
             name = name.substring(0, dot);
         }
-        return new File(new File(getFilesDir(), "states"), name + ".ss" + index);
+        File dir = activeStateDir != null ? activeStateDir : new File(getFilesDir(), "states");
+        return new File(dir, name + ".ss" + index);
     }
 
     private void refreshSlotButton() {
@@ -4272,14 +4585,16 @@ public class EmulatorActivity extends AppCompatActivity {
         final int IDX_INPUT = 2;
         final int IDX_SAVE = 3;
         final int IDX_ADVANCED = 4;
-        final int IDX_SCAN = 5;
-        final int IDX_HELP = 6;
+        final int IDX_ROM_DIRS = 5;
+        final int IDX_SCAN = 6;
+        final int IDX_HELP = 7;
         String[] items = {
                 getString(R.string.orientation_title),
                 getString(R.string.settings_sound),
                 getString(R.string.settings_input),
                 getString(R.string.settings_save),
                 getString(R.string.settings_advanced),
+                getString(R.string.rom_dirs_menu),
                 getString(R.string.scan_button),
                 getString(R.string.settings_help),
         };
@@ -4296,6 +4611,8 @@ public class EmulatorActivity extends AppCompatActivity {
                         showSaveSettingsDialog();
                     } else if (which == IDX_ADVANCED) {
                         showAdvancedDialog();
+                    } else if (which == IDX_ROM_DIRS) {
+                        showRomDirsDialog();
                     } else if (which == IDX_SCAN) {
                         showRomScan();
                     } else if (which == IDX_HELP) {
@@ -4488,6 +4805,27 @@ public class EmulatorActivity extends AppCompatActivity {
         extras.setAllCaps(false);
         extras.setText(R.string.input_extras);
         extras.setOnClickListener(v -> showExtraKeysDialog());
+        final Button rewindTap = new Button(this);
+        rewindTap.setAllCaps(false);
+        rewindTap.setText(getString(R.string.rewind_tap, rewindTapSeconds()));
+        rewindTap.setOnClickListener(v -> {
+            CharSequence[] labels = new CharSequence[10];
+            for (int i = 0; i < labels.length; i++) {
+                labels[i] = rewindLabel(i + 1);
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.rewind_tap_title)
+                    .setSingleChoiceItems(labels, rewindTapSeconds() - 1, (dialog, which) -> {
+                        int seconds = which + 1;
+                        getPreferences(MODE_PRIVATE).edit().putInt("rewind_tap_seconds", seconds).apply();
+                        rewindTap.setText(getString(R.string.rewind_tap, seconds));
+                        if (controls != null) {
+                            controls.setQuickRewindSeconds(seconds);
+                        }
+                        dialog.dismiss();
+                    })
+                    .show();
+        });
         final Button cKey = new Button(this);
         cKey.setAllCaps(false);
         cKey.setText(R.string.c_button);
@@ -4534,6 +4872,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(opacityLabel);
         box.addView(opacityBar);
         box.addView(extras);
+        box.addView(rewindTap);
         box.addView(cKey);
         box.addView(c2Key);
         box.addView(shotFormat);
@@ -4594,6 +4933,7 @@ public class EmulatorActivity extends AppCompatActivity {
             {"ta", "A键（连发）"}, {"tb", "B键（连发）"}, {"lr", "L+R键"},
             {"c", "C键（组合宏）"}, {"c2", "C2键（组合宏）"},
             {"save", "快速存档"}, {"load", "快速读档"}, {"ff", "倍速（按住快进）"}, {"shot", "截图"},
+            {"rewind", "倒带快捷键（点一次 2 秒）"},
     };
 
     private void showExtraKeysDialog() {
@@ -4613,24 +4953,38 @@ public class EmulatorActivity extends AppCompatActivity {
                     } else {
                         next.remove(EXTRA_KEY_CHOICES[which][0]);
                     }
-                    StringBuilder csv = new StringBuilder();
-                    for (String key : next) {
-                        if (csv.length() > 0) {
-                            csv.append(',');
-                        }
-                        csv.append(key);
-                    }
-                    getPreferences(MODE_PRIVATE).edit().putString("extra_keys", csv.toString()).apply();
+                    saveExtraKeys(next);
                     applyInputSettings();
                 })
                 .setPositiveButton(android.R.string.ok, null)
                 .show();
     }
 
+    private void saveExtraKeys(Set<String> keys) {
+        StringBuilder csv = new StringBuilder();
+        for (String key : keys) {
+            if (csv.length() > 0) {
+                csv.append(',');
+            }
+            csv.append(key);
+        }
+        getPreferences(MODE_PRIVATE).edit().putString("extra_keys", csv.toString()).apply();
+    }
+
     private Set<String> extraKeys() {
         Set<String> out = new HashSet<>();
-        String csv = getPreferences(MODE_PRIVATE).getString("extra_keys", "");
-        if (csv != null && !csv.isEmpty()) {
+        String csv;
+        try {
+            csv = getPreferences(MODE_PRIVATE).getString("extra_keys", null);
+        } catch (ClassCastException e) {
+            csv = null;
+        }
+        if (csv == null) {
+            // First launch: put the one-tap rewind key on screen by default.
+            out.add("rewind");
+            return out;
+        }
+        if (!csv.isEmpty()) {
             for (String key : csv.split(",")) {
                 for (String[] choice : EXTRA_KEY_CHOICES) {
                     if (choice[0].equals(key)) {
@@ -4671,6 +5025,8 @@ public class EmulatorActivity extends AppCompatActivity {
         CheckBox patches = check(R.string.save_patches, getPreferences(MODE_PRIVATE).getBoolean("patches", true));
         CheckBox quickRotate = check(R.string.quick_rotate, getPreferences(MODE_PRIVATE).getBoolean("quick_rotate", false));
         CheckBox confirmQuick = check(R.string.confirm_quick, getPreferences(MODE_PRIVATE).getBoolean("confirm_quick", false));
+        CheckBox besideRom = check(R.string.save_beside_rom,
+                getPreferences(MODE_PRIVATE).getBoolean("saves_beside_rom", false));
         final Button timedSave = new Button(this);
         timedSave.setAllCaps(false);
         int timedNow = 0;
@@ -4726,6 +5082,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(patches);
         box.addView(quickRotate);
         box.addView(confirmQuick);
+        box.addView(besideRom);
         box.addView(timedSave);
         box.addView(deleteSav);
         box.addView(importSav);
@@ -4735,6 +5092,8 @@ public class EmulatorActivity extends AppCompatActivity {
         confirmClose.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_close", checked).apply());
         quickRotate.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("quick_rotate", checked).apply());
         confirmQuick.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("confirm_quick", checked).apply());
+        besideRom.setOnCheckedChangeListener((v, checked) ->
+                getPreferences(MODE_PRIVATE).edit().putBoolean("saves_beside_rom", checked).apply());
         patches.setOnCheckedChangeListener((v, checked) -> {
             getPreferences(MODE_PRIVATE).edit().putBoolean("patches", checked).apply();
             applyCoreOptions();
@@ -5185,12 +5544,23 @@ public class EmulatorActivity extends AppCompatActivity {
 
     /** Pushes the input-related preferences into the on-screen controls. */
     private void applyInputSettings() {
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        if (!prefs.getBoolean("rewind_key_seen", false)) {
+            // One-time upgrade: show the new one-tap rewind key even for
+            // players who had already saved an extras list before it existed.
+            Set<String> extras = extraKeys();
+            if (extras.add("rewind")) {
+                saveExtraKeys(extras);
+            }
+            prefs.edit().putBoolean("rewind_key_seen", true).apply();
+        }
         if (controls != null) {
             controls.setVisibility(getPreferences(MODE_PRIVATE).getBoolean("vkeypad_hidden", false)
                     ? View.GONE : View.VISIBLE);
             controls.setDiagonalLock(getPreferences(MODE_PRIVATE).getBoolean("no_diagonal", false));
             controls.setTurboRate(getPreferences(MODE_PRIVATE).getInt("turbo_rate", 25));
             controls.setVisibleExtras(extraKeys());
+            controls.setQuickRewindSeconds(rewindTapSeconds());
             controls.setOpacity(getPreferences(MODE_PRIVATE).getInt("controls_opacity", 100));
             controls.setMacro(0, getPreferences(MODE_PRIVATE).getInt("c_macro", ControlsView.A | ControlsView.B));
             controls.setMacro(1, getPreferences(MODE_PRIVATE).getInt("c2_macro", ControlsView.L | ControlsView.R));
@@ -6078,6 +6448,29 @@ public class EmulatorActivity extends AppCompatActivity {
         return getString(R.string.rewind_seconds, seconds);
     }
 
+    /** Seconds the one-tap rewind key jumps back (1..10, default 2). */
+    private int rewindTapSeconds() {
+        int seconds = 2;
+        try {
+            seconds = getPreferences(MODE_PRIVATE).getInt("rewind_tap_seconds", 2);
+        } catch (ClassCastException ignored) {
+            // A restored backup may have stored a different type under the key.
+        }
+        return Math.max(1, Math.min(10, seconds));
+    }
+
+    /** Only the extra "quick rewind" key lands here: one tap jumps back
+     * without opening the menu. The original rewind button/bar are untouched. */
+    private void quickRewind() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        rewindSeconds = rewindTapSeconds();
+        command.set(CMD_REWIND);
+        wakeInput();
+    }
+
     /** Retro-style rewind bar: jump back 1min/45/30/15/12/9/6/3 seconds, or
      * hold to keep rewinding. Uses the differential-state history the core
      * records. */
@@ -6229,6 +6622,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setTitle(R.string.library_title)
                 .setView(scroll)
                 .setPositiveButton(R.string.library_scan, (d, w) -> showRomScan())
+                .setNeutralButton(R.string.rom_dirs_menu, (d, w) -> showRomDirsDialog())
                 .setNegativeButton(R.string.library_open, (d, w) -> openDocument(REQ_ROM))
                 .create();
         holder[0] = dialog;
@@ -6244,7 +6638,8 @@ public class EmulatorActivity extends AppCompatActivity {
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         TextView name = new TextView(this);
-        String label = file.getName() + (isLast ? "　" + getString(R.string.library_last) : "");
+        String label = file.getName() + (isLast ? "　" + getString(R.string.library_last) : "")
+                + (hasBesideSaves(file) ? getString(R.string.scan_has_save) : "");
         name.setText((favorite ? "★ " : "○ ") + label);
         name.setTextColor(0xFF222222);
         name.setTextSize(15);

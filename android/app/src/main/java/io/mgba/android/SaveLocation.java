@@ -164,7 +164,7 @@ final class SaveLocation {
 
     private static boolean isBatterySave(String name) {
         String lower = name.toLowerCase();
-        if (lower.endsWith(".sav")) {
+        if (lower.endsWith(".sav") || lower.endsWith(".srm")) {
             return true;
         }
         return lower.matches(".*\\.sa\\d$");

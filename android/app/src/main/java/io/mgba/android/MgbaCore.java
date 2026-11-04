@@ -28,6 +28,17 @@ public final class MgbaCore {
         }
     }
 
+    /**
+     * Chooses the folders the next ROM's battery save and save states live in.
+     * Passing the ROM's own folder keeps saves beside the game; passing the
+     * global folders restores the default layout.
+     */
+    public void setSaveDirs(String saveDir, String stateDir) {
+        if (handle != 0) {
+            nativeSetSaveDirs(handle, saveDir, stateDir);
+        }
+    }
+
     public boolean load(String path) {
         return handle != 0 && nativeLoad(handle, path);
     }
@@ -389,6 +400,8 @@ public final class MgbaCore {
     private static native void nativeDestroy(long handle);
 
     private static native boolean nativeLoad(long handle, String path);
+
+    private static native void nativeSetSaveDirs(long handle, String saveDir, String stateDir);
 
     private static native boolean nativeIsLoaded(long handle);
 
