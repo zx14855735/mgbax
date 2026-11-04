@@ -33,6 +33,10 @@
 #include <mgba-util/math.h>
 #include <mgba-util/vfs.h>
 
+#ifdef M_CORE_GBA
+#include "sio_link.h"
+#endif
+
 #include "moc_CoreController.cpp"
 
 #define AUTOSAVE_GRANULARITY 600
@@ -441,6 +445,35 @@ void CoreController::detachDolphin() {
 	}
 	GBASIODolphinDestroy(&m_dolphin);
 }
+
+bool CoreController::lanLinkHost(quint16 port) {
+	if (!m_lanLink) {
+		m_lanLink = sioLinkCreate();
+	}
+	return m_lanLink && sioLinkHost(m_lanLink, port);
+}
+
+bool CoreController::lanLinkJoin(const QString& host, quint16 port) {
+	if (!m_lanLink) {
+		m_lanLink = sioLinkCreate();
+	}
+	return m_lanLink && sioLinkJoin(m_lanLink, host.toUtf8().constData(), port);
+}
+
+void CoreController::lanLinkClose() {
+	if (m_lanLink) {
+		sioLinkDestroy(m_lanLink);
+		m_lanLink = nullptr;
+	}
+}
+
+int CoreController::lanLinkState() const {
+	return m_lanLink ? sioLinkState(m_lanLink) : 0;
+}
+
+int CoreController::lanLinkPlayer() const {
+	return m_lanLink ? sioLinkPlayer(m_lanLink) : -1;
+}
 #endif
 
 void CoreController::setOverride(std::unique_ptr<Override> override) {
@@ -500,6 +533,9 @@ void CoreController::stop() {
 #endif
 	setPaused(false);
 	mCoreThreadEnd(&m_threadContext);
+#ifdef M_CORE_GBA
+	lanLinkClose();
+#endif
 }
 
 void CoreController::reset() {
@@ -1247,6 +1283,14 @@ int CoreController::updateAutofire() {
 }
 
 void CoreController::finishFrame() {
+#ifdef M_CORE_GBA
+	if (m_lanLink) {
+		// Per-frame top-up on the core thread: attaches the SIO driver once
+		// the peer connects, re-attaches after a reset, drains requests and
+		// publishes our current send register (mirrors mgbaMobilePumpLink).
+		sioLinkPump(m_lanLink, m_threadContext.core);
+	}
+#endif
 	if (!m_hwaccel) {
 		unsigned width, height;
 		m_threadContext.core->currentVideoSize(m_threadContext.core, &width, &height);

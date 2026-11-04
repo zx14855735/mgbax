@@ -42,6 +42,8 @@ private:
 	QPointer<Window> m_window;
 	std::shared_ptr<CoreController> m_controller;
 	GBoyLink* m_link = nullptr;
+	bool m_lanActive = false;
+	QTimer* m_lanTimer = nullptr;
 };
 
 }

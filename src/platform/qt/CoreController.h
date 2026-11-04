@@ -36,6 +36,7 @@
 #endif
 
 struct mCore;
+struct SioLink;
 
 namespace QGBA {
 
@@ -215,6 +216,15 @@ public slots:
 
 	bool attachDolphin(const Address& address);
 	void detachDolphin();
+
+	// LAN SIO link cable (exact-cycle link over TCP, a port of the mobile
+	// layer's GbaLinkDriver). Host or join first; the driver attaches itself
+	// on the first pump once the peer connects.
+	bool lanLinkHost(quint16 port);
+	bool lanLinkJoin(const QString& host, quint16 port);
+	void lanLinkClose();
+	int lanLinkState() const;
+	int lanLinkPlayer() const;
 #endif
 
 	void setAVStream(mAVStream*);
@@ -339,6 +349,7 @@ private:
 	MultiplayerController* m_multiplayer = nullptr;
 #ifdef M_CORE_GBA
 	GBASIODolphin m_dolphin;
+	struct SioLink* m_lanLink = nullptr;
 #endif
 
 #ifdef ENABLE_DEBUGGERS

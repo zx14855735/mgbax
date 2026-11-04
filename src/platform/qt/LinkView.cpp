@@ -27,7 +27,7 @@ LinkView::LinkView(Window* window, QWidget* parent)
 }
 
 void LinkView::startLink() {
-	if (m_link) {
+	if (m_link || m_lanActive) {
 		stopLink();
 	}
 	if (!m_window || !m_window->controller()) {
@@ -36,6 +36,37 @@ void LinkView::startLink() {
 	}
 	if (m_window->controller()->platform() != mPLATFORM_GBA) {
 		m_ui.status->append(tr("WiFi link only supports GBA games."));
+		return;
+	}
+	m_controller = m_window->controller();
+	connect(m_controller.get(), &CoreController::stopping, this, &LinkView::stopLink);
+	connect(m_controller.get(), &QObject::destroyed, this, &LinkView::stopLink);
+
+	if (m_ui.lanMode->isChecked()) {
+		// LAN precise SIO cable: the driver lives in CoreController and pumps
+		// itself per frame; the SIO attach happens once the peer connects.
+		quint16 port = quint16(m_ui.port->value());
+		bool ok;
+		if (m_ui.radioHost->isChecked()) {
+			ok = m_controller->lanLinkHost(port);
+			m_ui.status->append(tr("LAN 联机线监听端口 %1，等待对方…（你是 1P）").arg(port));
+		} else {
+			QString ip = m_ui.ipAddr->text().trimmed();
+			ok = m_controller->lanLinkJoin(ip, port);
+			m_ui.status->append(tr("LAN 联机线连接 %1:%2…（你是 2P）").arg(ip).arg(port));
+		}
+		if (!ok) {
+			m_ui.status->append(tr("LAN 联机线启动失败"));
+			m_controller.reset();
+			updateRunning();
+			return;
+		}
+		m_lanActive = true;
+		// Status refresh until the SIO driver reports attached play.
+		m_lanTimer = new QTimer(this);
+		connect(m_lanTimer, &QTimer::timeout, this, &LinkView::updateRunning);
+		m_lanTimer->start(500);
+		updateRunning();
 		return;
 	}
 
@@ -51,8 +82,6 @@ void LinkView::startLink() {
 	connect(m_link, &GBoyLink::linkEnded, this, &LinkView::ended);
 	connect(m_link, &GBoyLink::remoteKeys, m_controller.get(), &CoreController::setRemoteKeys);
 	connect(m_link, &GBoyLink::remoteReset, m_controller.get(), &CoreController::reset);
-	connect(m_controller.get(), &CoreController::stopping, this, &LinkView::stopLink);
-	connect(m_controller.get(), &QObject::destroyed, this, &LinkView::stopLink);
 	m_link->startLink(config);
 
 	// The key pump runs at its own cadence; feed it the current local mask.
@@ -69,6 +98,21 @@ void LinkView::startLink() {
 }
 
 void LinkView::stopLink() {
+	if (m_lanActive) {
+		m_lanActive = false;
+		if (m_lanTimer) {
+			m_lanTimer->stop();
+			m_lanTimer->deleteLater();
+			m_lanTimer = nullptr;
+		}
+		if (m_controller) {
+			m_controller->lanLinkClose();
+			m_controller.reset();
+		}
+		m_ui.status->append(tr("已断开"));
+		updateRunning();
+		return;
+	}
 	if (!m_link) {
 		return;
 	}
@@ -101,7 +145,7 @@ void LinkView::ended(const QString& message) {
 }
 
 void LinkView::updateRunning() {
-	bool running = m_link != nullptr;
+	bool running = m_link != nullptr || m_lanActive;
 	m_ui.start->setDisabled(running);
 	m_ui.disconnect->setEnabled(running);
 	m_ui.sendReset->setEnabled(running);
@@ -109,4 +153,25 @@ void LinkView::updateRunning() {
 	m_ui.radioJoin->setDisabled(running);
 	m_ui.ipAddr->setDisabled(running);
 	m_ui.port->setDisabled(running);
+	m_ui.lanMode->setDisabled(running);
+	if (m_lanActive && m_controller) {
+		int state = m_controller->lanLinkState();
+		int player = m_controller->lanLinkPlayer();
+		QString text;
+		switch (state) {
+		case 1:
+			text = tr("监听中，等待对方接入…");
+			break;
+		case 2:
+			text = tr("已连接，你是 P%1（SIO 驱动已就位，进游戏房间即可）").arg(player + 1);
+			break;
+		case 3:
+			text = tr("对方已断开");
+			break;
+		default:
+			text = tr("离线");
+			break;
+		}
+		m_ui.status->setPlaceholderText(text);
+	}
 }

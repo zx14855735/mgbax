@@ -79,6 +79,16 @@
     </widget>
    </item>
    <item row="3" column="0" colspan="2">
+    <widget class="QCheckBox" name="lanMode">
+     <property name="toolTip">
+      <string>Precise SIO link cable over LAN (port 18765). Same protocol as the Android/iOS LAN mode; supports in-game battles and trades.</string>
+     </property>
+     <property name="text">
+      <string>LAN precise SIO cable (instead of WiFi keys merge)</string>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="0" colspan="2">
     <widget class="QTextEdit" name="status">
      <property name="readOnly">
       <bool>true</bool>
@@ -88,7 +98,7 @@
      </property>
     </widget>
    </item>
-   <item row="4" column="0" colspan="2">
+   <item row="5" column="0" colspan="2">
     <layout class="QHBoxLayout" name="buttonLayout">
      <item>
       <widget class="QPushButton" name="start">

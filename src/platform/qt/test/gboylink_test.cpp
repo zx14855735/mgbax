@@ -31,6 +31,7 @@
 #include "GbCloud.h"
 #include "KcpChannel.h"
 #endif
+#include "sio_link.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -42,9 +43,17 @@
 #include <QRegularExpression>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QThread>
 #include <QTimer>
 
 #include <cstdio>
+
+#include <mgba/core/core.h>
+#include <mgba/core/config.h>
+#include <mgba-util/vfs.h>
+#include <mgba/internal/gba/gba.h>
+#include <mgba/internal/gba/sio.h>
+#include <mgba/internal/gba/io.h>
 
 using namespace QGBA;
 
@@ -461,6 +470,123 @@ static int glslTest(const QString& input) {
 	return failures;
 }
 
+/**
+ * LAN SIO cable E2E: two real GBA cores in-process, one hosting on 18765 and
+ * one joining, the mobile-layer SIO driver driving one full MULTI transfer
+ * in both directions. The master writes 0x1234, the slave 0xBEEF; PASS when
+ * each core receives the other's word in its SIOMULTI registers.
+ */
+static int lanSioTest(const QString& rom) {
+	struct mCore* cores[2] = { nullptr, nullptr };
+	struct SioLink* links[2] = { nullptr, nullptr };
+	mColor video[2][240 * 160];
+	int failures = 0;
+	QString error;
+
+	QString romAbs = QFileInfo(rom).absoluteFilePath();
+	for (int i = 0; i < 2; i++) {
+		QByteArray romUtf8 = romAbs.toUtf8();
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			qInfo().noquote() << QString("LAN SIO TEST: FAIL (cannot open %1; cwd=%2; exists=%3)")
+			                     .arg(romAbs, QDir::currentPath())
+			                     .arg(QFile::exists(romAbs) ? "yes" : "no");
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			qInfo().noquote() << "LAN SIO TEST: FAIL (cannot find core for" << rom << ")";
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			qInfo() << "LAN SIO TEST: FAIL (cannot load ROM)";
+			return 1;
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+		links[i] = sioLinkCreate();
+	}
+
+	if (!sioLinkHost(links[0], 18765)) {
+		qInfo() << "LAN SIO TEST: FAIL (cannot listen)";
+		return 1;
+	}
+	if (!sioLinkJoin(links[1], "127.0.0.1", 18765)) {
+		qInfo() << "LAN SIO TEST: FAIL (cannot connect)";
+		return 1;
+	}
+	// Pump until both sides are connected and the SIO driver attached.
+	for (int i = 0; i < 100 && sioLinkState(links[0]) != 2; i++) {
+		sioLinkPump(links[0], cores[0]);
+		sioLinkPump(links[1], cores[1]);
+		QThread::msleep(50);
+	}
+	if (sioLinkState(links[0]) != 2 || sioLinkState(links[1]) != 2) {
+		qInfo() << "LAN SIO TEST: FAIL (link never connected:" << sioLinkState(links[0]) << sioLinkState(links[1]) << ")";
+		return 1;
+	}
+	sioLinkPump(links[0], cores[0]);
+	sioLinkPump(links[1], cores[1]);
+	struct GBA* gba0 = (struct GBA*) cores[0]->board;
+	struct GBA* gba1 = (struct GBA*) cores[1]->board;
+	if (!gba0->sio.driver || !gba1->sio.driver) {
+		qInfo() << "LAN SIO TEST: FAIL (SIO driver not attached)";
+		return 1;
+	}
+	qInfo().noquote() << QString("attached: master id=%1 slave id=%2")
+	                     .arg(gba0->sio.driver->deviceId(gba0->sio.driver))
+	                     .arg(gba1->sio.driver->deviceId(gba1->sio.driver));
+
+	// Real games switch the SIO pins out of RCNT GPIO mode before linking;
+	// without this the mode stays GPIO and the driver never sees SIOCNT.
+	GBASIOWriteRCNT(&gba0->sio, 0);
+	GBASIOWriteRCNT(&gba1->sio, 0);
+	// Master begins a MULTI transfer (Pokemon-style 0x600F write), the slave
+	// arms itself the same way. Round 0's push is dropped by design (the
+	// loose slave take discards anything <= minIndex, exactly like the
+	// Android version); the game simply starts the next round, so run three.
+	gba0->memory.io[GBA_REG(SIOMLT_SEND)] = 0x1234;
+	gba1->memory.io[GBA_REG(SIOMLT_SEND)] = 0xBEEF;
+	for (int round = 0; round < 3; round++) {
+		GBASIOWriteSIOCNT(&gba0->sio, 0x600F);
+		GBASIOWriteSIOCNT(&gba1->sio, 0x600F);
+		// Let the slave's serviceLink see the master's pushed word and run
+		// its round event, then run the master so its sioDone fetches the
+		// reply (the 800 ms peer wait only stalls on a dead link).
+		for (int f = 0; f < 4; f++) {
+			sioLinkPump(links[1], cores[1]);
+			cores[1]->runFrame(cores[1]);
+			sioLinkPump(links[0], cores[0]);
+			cores[0]->runFrame(cores[0]);
+		}
+	}
+	uint16_t m1 = gba0->memory.io[GBA_REG(SIOMULTI1)];
+	uint16_t m0 = gba1->memory.io[GBA_REG(SIOMULTI0)];
+	qInfo().noquote() << QString("master SIOMULTI1=%1 (want BEEF), slave SIOMULTI0=%2 (want 1234)")
+	                     .arg(m1, 4, 16, QChar('0')).arg(m0, 4, 16, QChar('0'));
+	if (m1 != 0xBEEF) {
+		++failures;
+	}
+	if (m0 != 0x1234) {
+		++failures;
+	}
+	if (failures == 0) {
+		qInfo() << "LAN SIO TEST: PASS (full MULTI transfer both directions)";
+	} else {
+		qInfo() << "LAN SIO TEST: FAIL" << failures;
+	}
+	for (int i = 0; i < 2; i++) {
+		sioLinkDestroy(links[i]);
+		cores[i]->deinit(cores[i]);
+	}
+	return failures;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	QStringList args = app.arguments();
@@ -477,6 +603,10 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("webdav")) {
 		return webdavTest();
+	}
+	if (mode == QStringLiteral("lanio")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
+		return lanSioTest(rom);
 	}
 	if (mode == QStringLiteral("glsl")) {
 		if (args.size() < 3) {

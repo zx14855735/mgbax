@@ -226,7 +226,9 @@ set(GBA_SRC
 	BattleChipUpdater.cpp
 	BattleChipView.cpp
 	DolphinConnector.cpp
-	GBAOverride.cpp)
+	GBAOverride.cpp
+	sio_link.c
+	${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
 
 set(GB_SRC
 	GameBoy.cpp
@@ -275,9 +277,13 @@ if(TARGET ${QT}::WebSockets)
 	list(APPEND UI_FILES LobbyView.ui)
 
 	# Console E2E harness: wifi round trip + gboy.top signalling self test.
-	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp)
-	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets)
-	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD)
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
+	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets ${BINARY_NAME})
+	if(WIN32)
+		target_link_libraries(test-gboylink ws2_32)
+	endif()
+	target_include_directories(test-gboylink PRIVATE ${PROJECT_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/include ${PROJECT_SOURCE_DIR}/src)
+	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD ENABLE_VFS ENABLE_VFS_FD ENABLE_DIRECTORIES)
 	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
 endif()
 
@@ -472,7 +478,10 @@ else()
 	qt5_wrap_ui(UI_SRC ${UI_FILES})
 endif()
 
-add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
+	add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
+	if(WIN32)
+		target_link_libraries(${BINARY_NAME}-qt ws2_32)
+	endif()
 set_target_properties(${BINARY_NAME}-qt PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/res/info.plist.in COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES};${QT_DEFINES}" COMPILE_OPTIONS "${FEATURE_FLAGS}")
 
 if(WIN32)
