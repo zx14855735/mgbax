@@ -1223,9 +1223,11 @@ void CoreController::setFramebufferHandle(int fb) {
 void CoreController::updateKeys() {
 	int polledKeys = m_inputController->pollEvents() | updateAutofire();
 	int activeKeys = m_activeKeys | polledKeys;
+	activeKeys |= m_remoteKeys.load(std::memory_order_relaxed);
 	activeKeys |= m_threadContext.core->getKeys(m_threadContext.core) & ~m_removedKeys;
 	m_removedKeys = polledKeys;
 	m_threadContext.core->setKeys(m_threadContext.core, activeKeys);
+	m_lastKeys.store(activeKeys, std::memory_order_relaxed);
 }
 
 int CoreController::updateAutofire() {

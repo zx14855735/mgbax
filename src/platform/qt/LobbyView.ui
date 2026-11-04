@@ -1,0 +1,189 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QGBA::LobbyView</class>
+ <widget class="QDialog" name="QGBA::LobbyView">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>420</width>
+    <height>460</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Cloud Lobby (gboy.top)</string>
+  </property>
+  <layout class="QVBoxLayout" name="mainLayout">
+   <item>
+    <widget class="QGroupBox" name="accountGroup">
+     <property name="title">
+      <string>Account</string>
+     </property>
+     <layout class="QGridLayout" name="accountLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="emailLabel">
+        <property name="text">
+         <string>Email</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="email"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="passwordLabel">
+        <property name="text">
+         <string>Password</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLineEdit" name="password">
+        <property name="echoMode">
+         <enum>QLineEdit::Password</enum>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QLabel" name="codeLabel">
+        <property name="text">
+         <string>Mail code</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLineEdit" name="code">
+        <property name="placeholderText">
+         <string>Only for first-time registration</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0" colspan="2">
+       <layout class="QHBoxLayout" name="accountButtons">
+        <item>
+         <widget class="QPushButton" name="sendCode">
+          <property name="text">
+           <string>Send code</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="codeLogin">
+          <property name="text">
+           <string>Register / login (code)</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="directLogin">
+          <property name="text">
+           <string>Sign in</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="roomGroup">
+     <property name="title">
+      <string>Room</string>
+     </property>
+     <layout class="QGridLayout" name="roomLayout">
+      <item row="0" column="0">
+       <widget class="QLabel" name="roomLabel">
+        <property name="text">
+         <string>Room code</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLineEdit" name="roomId">
+        <property name="placeholderText">
+         <string>Empty = create; also accepts NODE:/NODE2:/tcp:</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0" colspan="2">
+       <layout class="QHBoxLayout" name="roomButtons">
+        <item>
+         <widget class="QPushButton" name="createRoom">
+          <property name="text">
+           <string>Create</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="joinRoom">
+          <property name="text">
+           <string>Join</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="disconnect">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>Disconnect</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="sendReset">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
+          <property name="text">
+           <string>Send reset</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QPlainTextEdit" name="status">
+     <property name="readOnly">
+      <bool>true</bool>
+     </property>
+     <property name="maximumBlockCount">
+      <number>400</number>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="bottomButtons">
+     <item>
+      <spacer name="spacer">
+       <property name="orientation">
+        <enum>Qt::Horizontal</enum>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <widget class="QPushButton" name="close">
+       <property name="text">
+        <string>Close</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>close</sender>
+   <signal>clicked()</signal>
+   <receiver>QGBA::LobbyView</receiver>
+   <slot>close()</slot>
+  </connection>
+ </connections>
+</ui>

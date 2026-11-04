@@ -36,6 +36,9 @@ class CoreManager;
 class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
+class LinkView;
+class LobbyView;
+class WebDavView;
 class FrameView;
 class GDBController;
 class GIFView;
@@ -256,6 +259,11 @@ private:
 	QPointer<OverrideView> m_overrideView;
 	QPointer<SensorView> m_sensorView;
 	QPointer<DolphinConnector> m_dolphinView;
+	QPointer<LinkView> m_linkView;
+#ifdef BUILD_QT_CLOUD
+	QPointer<LobbyView> m_lobbyView;
+#endif
+	QPointer<WebDavView> m_webdavView;
 	QPointer<FrameView> m_frameView;
 
 #ifdef USE_FFMPEG

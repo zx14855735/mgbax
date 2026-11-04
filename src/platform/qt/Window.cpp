@@ -45,6 +45,10 @@
 #include "input/SDLInputDriver.h"
 #endif
 #include "IOViewer.h"
+#include "LinkView.h"
+#ifdef BUILD_QT_CLOUD
+#include "LobbyView.h"
+#endif
 #include "LoadSaveState.h"
 #include "LogView.h"
 #include "MapView.h"
@@ -65,6 +69,7 @@
 #endif
 #include "SensorView.h"
 #include "ShaderSelector.h"
+#include "WebDavView.h"
 #include "ShortcutController.h"
 #include "TileView.h"
 #include "VideoProxy.h"
@@ -1476,6 +1481,18 @@ void Window::setupMenu(QMenuBar* menubar) {
 #ifdef M_CORE_GBA
 	auto dolphin = m_actions.addAction(tr("Connect to Dolphin..."), "connectDolphin", openNamedTView<DolphinConnector>(&m_dolphinView, true, this), "file");
 	m_platformActions.insert(mPLATFORM_GBA, dolphin);
+
+	auto gboyLink = m_actions.addAction(tr("WiFi link (GBoy/My Boy)..."), "gboyLink", openNamedTView<LinkView>(&m_linkView, true, this), "file");
+	m_platformActions.insert(mPLATFORM_GBA, gboyLink);
+#endif
+
+#ifdef BUILD_QT_CLOUD
+	auto cloudLobby = m_actions.addAction(tr("Cloud lobby (gboy.top)..."), "cloudLobby", openNamedTView<LobbyView>(&m_lobbyView, true, this), "file");
+#ifdef M_CORE_GBA
+	m_platformActions.insert(mPLATFORM_GBA, cloudLobby);
+#else
+	(void) cloudLobby;
+#endif
 #endif
 
 	m_actions.addSeparator("file");
@@ -1798,6 +1815,8 @@ void Window::setupMenu(QMenuBar* menubar) {
 #ifdef ENABLE_SCRIPTING
 	m_actions.addAction(tr("Scripting..."), "scripting", this, &Window::scriptingOpen, "tools");
 #endif
+
+	m_actions.addAction(tr("WebDAV save sync..."), "webdavSync", openNamedTView<WebDavView>(&m_webdavView, false, this), "tools");
 
 	m_actions.addAction(tr("Create forwarder..."), "createForwarder", openTView<ForwarderView>(), "tools");
 

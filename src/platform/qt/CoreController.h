@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include <atomic>
+
 #include <QByteArray>
 #include <QFile>
 #include <QList>
@@ -182,6 +184,11 @@ public slots:
 	void clearKey(int key);
 	void setAutofire(int key, bool enable);
 
+	// WiFi link (GBoy/My Boy): the remote player's key mask is OR-ed into
+	// every key update, mirroring the Android lobby's merged-keys mode.
+	void setRemoteKeys(int keys) { m_remoteKeys.store(keys, std::memory_order_relaxed); }
+	int localKeys() const { return m_lastKeys.load(std::memory_order_relaxed); }
+
 #ifdef USE_PNG
 	void screenshot();
 #endif
@@ -292,6 +299,8 @@ private:
 
 	int m_activeKeys = 0;
 	int m_removedKeys = 0;
+	std::atomic<int> m_remoteKeys{0};
+	std::atomic<int> m_lastKeys{0};
 	bool m_autofire[32] = {};
 	int m_autofireStatus[32] = {};
 	int m_autofireThreshold = 1;

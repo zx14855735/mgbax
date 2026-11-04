@@ -38,7 +38,7 @@ endif()
 foreach(V ${QT_VERSIONS})
 	set(QT Qt${V})
 	set(QT_V ${V})
-	find_package(${QT} COMPONENTS Core Widgets Network OPTIONAL_COMPONENTS Multimedia)
+	find_package(${QT} COMPONENTS Core Widgets Network OPTIONAL_COMPONENTS Multimedia WebSockets)
 	if(QT_V GREATER_EQUAL 6)
 		find_package(${QT} COMPONENTS OpenGL OpenGLWidgets)
 	endif()
@@ -118,6 +118,7 @@ set(SOURCE_FILES
 	Display.cpp
 	DisplayGL.cpp
 	DisplayQt.cpp
+	ExternalShader.cpp
 	ForwarderController.cpp
 	ForwarderGenerator.cpp
 	ForwarderGenerator3DS.cpp
@@ -126,9 +127,12 @@ set(SOURCE_FILES
 	FrameView.cpp
 	GBAApp.cpp
 	GBAKeyEditor.cpp
+	GBoyFrames.cpp
+	GBoyLink.cpp
 	GIFView.cpp
 	HistoryLineEdit.cpp
 	IOViewer.cpp
+	LinkView.cpp
 	input/Gamepad.cpp
 	input/GamepadAxisEvent.cpp
 	input/GamepadButtonEvent.cpp
@@ -173,6 +177,8 @@ set(SOURCE_FILES
 	Swatch.cpp
 	TilePainter.cpp
 	TileView.cpp
+	WebDavSync.cpp
+	WebDavView.cpp
 	utils.cpp
 	Window.cpp
 	VFileDevice.cpp
@@ -192,6 +198,7 @@ set(UI_FILES
 	FrameView.ui
 	GIFView.ui
 	IOViewer.ui
+	LinkView.ui
 	LoadSaveState.ui
 	LogView.ui
 	MapView.ui
@@ -259,6 +266,19 @@ if(${QT}Multimedia_FOUND)
 	list(APPEND QT_LIBRARIES ${QT}::Multimedia)
 	list(APPEND QT_DEFINES BUILD_QT_MULTIMEDIA)
 	set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}multimedia${QT_V}")
+endif()
+
+if(TARGET ${QT}::WebSockets)
+	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
+	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp KcpChannel.cpp LobbyView.cpp)
+	list(APPEND UI_FILES LobbyView.ui)
+
+	# Console E2E harness: wifi round trip + gboy.top signalling self test.
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp)
+	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets)
+	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD)
+	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
 endif()
 
 if(NOT AUDIO_SRC)

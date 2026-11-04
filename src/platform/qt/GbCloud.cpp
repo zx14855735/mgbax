@@ -1,0 +1,249 @@
+/* Copyright (c) 2013-2021 Jeffrey Pfau
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+#include "GbCloud.h"
+
+#include <QCoreApplication>
+#include <QDeadlineTimer>
+#include <QEventLoop>
+#include <QJsonDocument>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QStringList>
+#include <QTimer>
+#include <QWebSocket>
+
+using namespace QGBA;
+
+namespace {
+
+constexpr int HTTP_TIMEOUT_MS = 15000;
+
+}
+
+namespace QGBA {
+namespace GbCloud {
+
+const QString& api() {
+	static const QString API = QStringLiteral("https://gboy.top/api/api.php");
+	return API;
+}
+
+const QString& wsHost() {
+	static const QString HOST = QStringLiteral("gboy.top");
+	return HOST;
+}
+
+int wsPort() {
+	return 23459;
+}
+
+QString lobby(QString text) {
+	if (text.isEmpty()) {
+		return text;
+	}
+	static const QRegularExpression brand(QStringLiteral("gboy(?:\\.top)?"),
+	                                      QRegularExpression::CaseInsensitiveOption);
+	return text.replace(brand, QStringLiteral("联机大厅"));
+}
+
+QJsonObject lastJsonObject(const QString& raw, bool* ok) {
+	const QStringList lines = raw.split('\n');
+	for (int i = lines.size() - 1; i >= 0; i--) {
+		QString line = lines[i].trimmed();
+		if (line.startsWith('{')) {
+			QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8());
+			if (doc.isObject()) {
+				if (ok) {
+					*ok = true;
+				}
+				return doc.object();
+			}
+		}
+	}
+	if (ok) {
+		*ok = false;
+	}
+	return QJsonObject();
+}
+
+QString post(const QString& body, QString* error) {
+	QNetworkAccessManager manager;
+	QNetworkRequest request((QUrl(api())));
+	request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+	request.setTransferTimeout(HTTP_TIMEOUT_MS);
+	QNetworkReply* reply = manager.post(request, body.toUtf8());
+
+	QEventLoop loop;
+	QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+	// Give the loop a hard ceiling so a stalled DNS lookup cannot hang the caller.
+	QTimer::singleShot(HTTP_TIMEOUT_MS + 2000, &loop, &QEventLoop::quit);
+	loop.exec();
+
+	if (reply->error() != QNetworkReply::NoError) {
+		if (error) {
+			*error = lobby(reply->errorString());
+		}
+		reply->deleteLater();
+		return QString();
+	}
+	QString raw = QString::fromUtf8(reply->readAll());
+	reply->deleteLater();
+	return raw;
+}
+
+QString login(const QString& user, const QString& password, QString* error) {
+	QJsonObject body;
+	body.insert("action", "login");
+	body.insert("email_or_username", user);
+	body.insert("password", password);
+	QString raw = post(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact)), error);
+	if (raw.isEmpty()) {
+		return QString();
+	}
+	bool ok = false;
+	QJsonObject reply = lastJsonObject(raw, &ok);
+	QString token = reply.value("token").toString();
+	if (token.isEmpty()) {
+		QString message = reply.value("message").toString();
+		if (error) {
+			*error = lobby(message.isEmpty() ? QStringLiteral("登录失败") : message);
+		}
+		return QString();
+	}
+	return token;
+}
+
+QString sendVerificationCode(const QString& email, QString* error) {
+	QJsonObject body;
+	body.insert("action", "send_verification_code");
+	body.insert("email", email);
+	QString raw = post(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact)), error);
+	if (raw.isEmpty()) {
+		return QString();
+	}
+	bool ok = false;
+	QJsonObject reply = lastJsonObject(raw, &ok);
+	if (!reply.value("success").toBool(false)) {
+		QString message = reply.value("message").toString();
+		if (error) {
+			*error = lobby(message.isEmpty() ? QStringLiteral("验证码发送失败") : message);
+		}
+		return QString();
+	}
+	QString message = reply.value("message").toString();
+	return lobby(message.isEmpty() ? QStringLiteral("验证码已发送。") : message);
+}
+
+QString registerAccount(const QString& username, const QString& email,
+                        const QString& password, const QString& code, QString* error) {
+	QJsonObject body;
+	body.insert("action", "register");
+	body.insert("username", username);
+	body.insert("email", email);
+	body.insert("password", password);
+	body.insert("verification_code", code);
+	QString raw = post(QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact)), error);
+	if (raw.isEmpty()) {
+		return QString();
+	}
+	bool ok = false;
+	QJsonObject reply = lastJsonObject(raw, &ok);
+	QString token = reply.value("token").toString();
+	if (token.isEmpty()) {
+		QString message = reply.value("message").toString();
+		if (error) {
+			*error = lobby(message.isEmpty() ? QStringLiteral("注册失败") : message);
+		}
+		return QString();
+	}
+	return token;
+}
+
+Session::Session()
+	: m_socket(new QWebSocket)
+{
+	// gboy.top serves a certificate issued for gameboyfrp.top and the chain it
+	// sends is sometimes incomplete, so a strictly-validating client can never
+	// finish the handshake. The official client tolerates this; we mirror that.
+	m_socket->ignoreSslErrors();
+	QObject::connect(m_socket, &QWebSocket::textMessageReceived, [this](const QString& text) {
+		onText(text);
+	});
+}
+
+void Session::onText(const QString& text) {
+	m_lastText = text;
+	m_gotText = true;
+}
+
+Session::~Session() {
+	close();
+	delete m_socket;
+}
+
+bool Session::open(int timeoutMs, QString* error) {
+	QUrl url(QStringLiteral("wss://%1:%2").arg(wsHost()).arg(wsPort()));
+	bool opened = false;
+	QEventLoop loop;
+	QObject::connect(m_socket, &QWebSocket::connected, [&]() { opened = true; loop.quit(); });
+	QObject::connect(m_socket, &QWebSocket::disconnected, &loop, &QEventLoop::quit);
+	m_socket->open(url);
+	QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
+	loop.exec();
+	if (!opened) {
+		if (error) {
+			*error = QStringLiteral("WebSocket 握手失败");
+		}
+		return false;
+	}
+	return true;
+}
+
+void Session::close() {
+	if (m_socket && m_socket->state() != QAbstractSocket::UnconnectedState) {
+		m_socket->close();
+	}
+}
+
+bool Session::isOpen() const {
+	return m_socket && m_socket->state() == QAbstractSocket::ConnectedState;
+}
+
+bool Session::sendText(const QString& text, QString* error) {
+	if (!isOpen()) {
+		if (error) {
+			*error = QStringLiteral("服务器关闭了房间连接");
+		}
+		return false;
+	}
+	m_socket->sendTextMessage(text);
+	return true;
+}
+
+QString Session::recv(int timeoutMs) {
+	if (!isOpen()) {
+		return QString();
+	}
+	m_gotText = false;
+	m_lastText.clear();
+	QDeadlineTimer deadline{qint64(timeoutMs)};
+	while (!deadline.hasExpired()) {
+		// Spin the local event queue so the socket notifiers fire.
+		QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+		if (m_gotText) {
+			return m_lastText;
+		}
+		if (m_socket->state() != QAbstractSocket::ConnectedState) {
+			return QString();
+		}
+	}
+	return QString();
+}
+
+}
+}
