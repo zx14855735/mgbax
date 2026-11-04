@@ -24,9 +24,9 @@ final class RomLibrary {
     /// Absolute path of the game that was opened last.
     private static let lastRomKey = "lastRom"
     /// How many ROMs one directory contributes and how many the list holds.
-    private static let limit = 60
+    private static let limit = 200
     /// How far below a root directory the walk goes.
-    private static let maxDepth = 2
+    private static let maxDepth = 3
 
     private let defaults: UserDefaults
 
@@ -40,15 +40,26 @@ final class RomLibrary {
         return lower.hasSuffix(".gba") || lower.hasSuffix(".gbc") || lower.hasSuffix(".gb") || lower.hasSuffix(".sgc")
     }
 
-    /// Scans the given folders for ROMs, at most two levels deep, and returns
-    /// them newest first. The result is capped at 60 entries.
-    func scan(roots: [URL]) -> [Entry] {
+    /// Scans the given folders for ROMs, at most three levels deep, and returns
+    /// them newest first. Games under `preferred` (the player's own folders)
+    /// are listed first. The result is capped at 200 entries.
+    func scan(roots: [URL], preferred: Set<String> = []) -> [Entry] {
         var found: [Entry] = []
         var seen = Set<String>()
         for root in roots {
             collect(root, depth: 0, into: &found, seen: &seen)
         }
-        found.sort { $0.modified > $1.modified }
+        func isPreferred(_ entry: Entry) -> Bool {
+            let path = entry.url.standardizedFileURL.path
+            for dir in preferred where path.hasPrefix(dir + "/") { return true }
+            return false
+        }
+        found.sort { a, b in
+            let ca = isPreferred(a)
+            let cb = isPreferred(b)
+            if ca != cb { return ca }
+            return a.modified > b.modified
+        }
         return Array(found.prefix(RomLibrary.limit))
     }
 
@@ -77,7 +88,7 @@ final class RomLibrary {
                               title: url.deletingPathExtension().lastPathComponent,
                               modified: values?.contentModificationDate ?? Date.distantPast))
         }
-        // 每个目录最多贡献 60 个 ROM,新的在前.
+        // 每个目录最多贡献 200 个 ROM,新的在前.
         out.append(contentsOf: roms.sorted { $0.modified > $1.modified }.prefix(RomLibrary.limit))
     }
 

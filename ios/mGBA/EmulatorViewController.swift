@@ -109,6 +109,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdReset = 3
     private let cmdAutoSave = 4
     private let cmdRewind = 5
+    /** Separate command for the extra one-tap rewind key. */
+    private let cmdRewindQuick = 6
     private let layoutBar = UIView()
     private let bar = UIScrollView()
     private let rewindBar = UIScrollView()
@@ -148,6 +150,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var perRomPalette: Int?
     private var rewindWanted = false
     private var rewindSeconds = 15
+    /** Save-state folder in effect for the loaded ROM (nil = shared folder). */
+    private var activeStateDir: URL?
+    private var currentRomPath: String?
+    /** Security-scoped folder URLs kept open for the whole session. */
+    private var scopedFolderURLs: [URL] = []
     private var rewindHold = false
     private var lastRewindAt: UInt64 = 0
     private var ffOn = false
@@ -176,6 +183,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         ("ta", "A键（连发）"), ("tb", "B键（连发）"), ("lr", "L+R键"),
         ("c", "C键（组合宏）"), ("c2", "C2键（组合宏）"),
         ("save", "快速存档"), ("load", "快速读档"), ("ff", "倍速（按住快进）"), ("shot", "截图"),
+        ("rewind", "倒带快捷键（点一次 2 秒）"),
     ]
     /** Filter ids, matching the order shown in the 画质 picker (Shaders.functionNames). */
     private static let filterNames = ["关闭", "GBA 色彩", "灰度", "HQ2x", "HQ4x", "2xBR", "4xBR", "残影", "点阵", "LCD3x", "扫描线（平滑）", "锐利插值", "外部渲染器"]
@@ -255,6 +263,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.toggleMute()
             } else if action == ControlsView.actionRewind {
                 self.toggleRewindBar()
+            } else if action == ControlsView.actionRewindQuick {
+                self.quickRewind()
             }
         }
         controls.onFastHold = { [weak self] down in
@@ -264,6 +274,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.refreshSpeedButtons()
         }
         applyInputSettings()
+        restoreCustomFolderAccess()
         loadMacroSettings()
         controls.setMuted(muted)
         controls.setFastForwardOn(ffOn)
@@ -1285,6 +1296,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func loadRom(_ path: String) {
         guard let core else { return }
+        currentRomPath = path
+        applyRomSaveLocation(path)
         stopTimedSave()
         audio.stop()
         // The checksum keys the per-game overrides; compute it before the load
@@ -1350,6 +1363,24 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
+    /** Seconds the extra one-tap rewind key jumps back (1...10, default 2). */
+    private func rewindTapSeconds() -> Int {
+        let raw = defaults.object(forKey: "rewind_tap_seconds") == nil
+            ? 2 : defaults.integer(forKey: "rewind_tap_seconds")
+        return min(10, max(1, raw))
+    }
+
+    /** Only the extra rewind key lands here. The original rewind button,
+     * seconds bar and hold-to-rewind are left untouched. */
+    private func quickRewind() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        postCommand(cmdRewindQuick)
+        wakeInput()
+    }
+
     private func runCommand(_ cmd: Int) {
         guard let core, mgbaMobileIsLoaded(core) else {
             toast("请先打开一个游戏")
@@ -1386,6 +1417,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         } else if cmd == cmdRewind {
             let seconds = max(1, rewindSeconds)
+            let ok = mgbaMobileRewind(core, Int32(seconds))
+            mgbaMobileClearAudio(core)
+            if ok {
+                _ = mgbaMobileRunFrames(core, 1)
+                toast("已倒带 \(seconds) 秒")
+            } else {
+                toast("没有可倒带的历史")
+            }
+        } else if cmd == cmdRewindQuick {
+            let seconds = rewindTapSeconds()
             let ok = mgbaMobileRewind(core, Int32(seconds))
             mgbaMobileClearAudio(core)
             if ok {
@@ -1518,7 +1559,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let types: [UTType]
         var copy = false
         switch kind {
-        case 3, 6, 8:
+        case 3, 6, 8, 11:
             types = [.folder]
         case 4, 5:
             types = [.zip]
@@ -1556,6 +1597,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             importStickerImage(url)
         case 8:
             importStickerFolder(url)
+        case 11:
+            addCustomRomFolder(url)
         case 10:
             installShader(url)
         case 9:
@@ -1959,6 +2002,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         alert.addAction(UIAlertAction(title: "声音", style: .default) { [weak self] _ in self?.showSoundDialog() })
         alert.addAction(UIAlertAction(title: "输入", style: .default) { [weak self] _ in self?.showInputDialog() })
         alert.addAction(UIAlertAction(title: "存档", style: .default) { [weak self] _ in self?.showSaveSettingsDialog() })
+        alert.addAction(UIAlertAction(title: "ROM 文件夹", style: .default) { [weak self] _ in self?.showRomDirsDialog() })
         alert.addAction(UIAlertAction(title: "高级", style: .default) { [weak self] _ in self?.showAdvanced() })
         alert.addAction(UIAlertAction(title: "帮助", style: .default) { [weak self] _ in self?.showHelpDialog() })
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
@@ -2139,6 +2183,21 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 shotFormat.setTitle("截图格式：\(index == 1 ? "JPG" : "PNG")", for: .normal)
             }
         }, for: .touchUpInside)
+        let rewindTap = UIButton(type: .system)
+        rewindTap.contentHorizontalAlignment = .left
+        rewindTap.setTitle("倒带快捷键：\(rewindTapSeconds()) 秒 / 点一次", for: .normal)
+        rewindTap.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let options = (1...10).map { "\($0) 秒" }
+            self.pickOption(title: "倒带快捷键秒数", current: self.rewindTapSeconds() - 1,
+                            options: options) { [weak self] index in
+                guard let self else { return }
+                let seconds = index + 1
+                self.defaults.set(seconds, forKey: "rewind_tap_seconds")
+                rewindTap.setTitle("倒带快捷键：\(seconds) 秒 / 点一次", for: .normal)
+                self.controls.setQuickRewindSeconds(seconds)
+            }
+        }, for: .touchUpInside)
         let doubleShot = labeledSwitch("双击屏幕截图", defaults.bool(forKey: "double_click_shot"))
         doubleShot.1.addAction(UIAction { [weak self] _ in
             self?.defaults.set(doubleShot.1.isOn, forKey: "double_click_shot")
@@ -2175,6 +2234,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(cKey)
         box.addArrangedSubview(c2Key)
         box.addArrangedSubview(shotFormat)
+        box.addArrangedSubview(rewindTap)
         box.addArrangedSubview(doubleShot.0)
         let hint = UILabel()
         hint.text = "C/C2 是组合键：按住时同时按下所选按键。双击截图只响应游戏画面上的双击。"
@@ -2205,11 +2265,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }, for: .valueChanged)
             box.addArrangedSubview(row.0)
         }
-        presentSheet(SheetController(title: "虚拟按键开关（连发/快存/快读/倍速/截图）", content: box))
+        presentSheet(SheetController(title: "虚拟按键开关（连发/快存/快读/倍速/截图/倒带）", content: box))
     }
 
     private func extraKeys() -> Set<String> {
         var out = Set<String>()
+        if defaults.object(forKey: "extra_keys") == nil {
+            // First launch: put the one-tap rewind key on screen by default.
+            return ["rewind"]
+        }
         let csv = defaults.string(forKey: "extra_keys") ?? ""
         if !csv.isEmpty {
             for key in csv.split(separator: ",") {
@@ -2267,6 +2331,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         confirmQuick.1.addAction(UIAction { [weak self] _ in
             self?.defaults.set(confirmQuick.1.isOn, forKey: "confirm_quick")
         }, for: .valueChanged)
+        let besideRom = labeledSwitch("新游戏的存档也放 ROM 同目录", defaults.bool(forKey: "saves_beside_rom"))
+        besideRom.1.addAction(UIAction { [weak self] _ in
+            self?.defaults.set(besideRom.1.isOn, forKey: "saves_beside_rom")
+        }, for: .valueChanged)
         let timedSave = UIButton(type: .system)
         timedSave.contentHorizontalAlignment = .left
         func timedTitle(_ minutes: Int) -> String {
@@ -2307,6 +2375,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(patches.0)
         box.addArrangedSubview(quickRotate.0)
         box.addArrangedSubview(confirmQuick.0)
+        box.addArrangedSubview(besideRom.0)
         box.addArrangedSubview(timedSave)
         box.addArrangedSubview(deleteSav)
         box.addArrangedSubview(importSav)
@@ -2419,9 +2488,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     /** Pushes the input-related preferences into the on-screen controls. */
     private func applyInputSettings() {
+        if !defaults.bool(forKey: "rewind_key_seen") {
+            // One-time upgrade: show the new one-tap rewind key even for
+            // players who had already saved an extras list before it existed.
+            var extras = extraKeys()
+            if extras.insert("rewind").inserted {
+                defaults.set(extras.joined(separator: ","), forKey: "extra_keys")
+            }
+            defaults.set(true, forKey: "rewind_key_seen")
+        }
         controls.setDiagonalLock(defaults.bool(forKey: "no_diagonal"))
         controls.setTurboRate(defaults.integer(forKey: "turbo_rate") == 0 ? 25 : defaults.integer(forKey: "turbo_rate"))
         controls.setVisibleExtras(extraKeys())
+        controls.setQuickRewindSeconds(rewindTapSeconds())
         controls.setOpacity(defaults.object(forKey: "controls_opacity") == nil ? 100 : defaults.integer(forKey: "controls_opacity"))
         loadMacroSettings()
     }
@@ -3688,6 +3767,236 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     // == ROM library ==
 
+    // == Custom ROM folders ==
+
+    private static let romDirsKey = "rom_dirs"
+    private static let romDirBookmarksKey = "rom_dir_bookmarks"
+
+    private func romDirs() -> [String] {
+        let raw = defaults.string(forKey: Self.romDirsKey) ?? ""
+        return raw.split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func saveRomDirs(_ dirs: [String]) {
+        defaults.set(dirs.joined(separator: "\n"), forKey: Self.romDirsKey)
+    }
+
+    private func romDirBookmarks() -> [String: Data] {
+        (defaults.dictionary(forKey: Self.romDirBookmarksKey) as? [String: Data]) ?? [:]
+    }
+
+    private func setRomDirBookmark(_ path: String, _ data: Data?) {
+        var all = romDirBookmarks()
+        if let value = data {
+            all[path] = value
+        } else {
+            all.removeValue(forKey: path)
+        }
+        defaults.set(all, forKey: Self.romDirBookmarksKey)
+    }
+
+    /** Resolves the player's folders; bookmarked ones keep their sandbox grant. */
+    private func customRomDirs() -> [URL] {
+        let bookmarks = romDirBookmarks()
+        var out: [URL] = []
+        for path in romDirs() {
+            if let data = bookmarks[path] {
+                var stale = false
+                if let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil,
+                                      bookmarkDataIsStale: &stale), !stale {
+                    out.append(url)
+                    continue
+                }
+            }
+            out.append(URL(fileURLWithPath: path))
+        }
+        return out
+    }
+
+    /** Keeps a security-scoped grant alive for the whole session so ROMs and
+     * their saves stay reachable after the picker closes. */
+    private func restoreCustomFolderAccess() {
+        for url in scopedFolderURLs { url.stopAccessingSecurityScopedResource() }
+        scopedFolderURLs.removeAll()
+        let bookmarks = romDirBookmarks()
+        for path in romDirs() {
+            guard let data = bookmarks[path] else { continue }
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: data, options: [], relativeTo: nil,
+                                     bookmarkDataIsStale: &stale) else { continue }
+            if url.startAccessingSecurityScopedResource() { scopedFolderURLs.append(url) }
+        }
+    }
+
+    private func addCustomRomFolder(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            toast("这不是一个文件夹")
+            return
+        }
+        if url.startAccessingSecurityScopedResource() {
+            scopedFolderURLs.append(url)
+        }
+        if let data = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            setRomDirBookmark(path, data)
+        }
+        addRomDirPath(path)
+    }
+
+    private func addRomDirPath(_ raw: String) {
+        let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              isDir.boolValue, FileManager.default.isReadableFile(atPath: url.path) else {
+            toast("文件夹不存在或不可读：\(url.path)")
+            return
+        }
+        var dirs = romDirs()
+        if dirs.contains(url.path) {
+            toast("这个文件夹已经添加过了")
+            return
+        }
+        dirs.append(url.path)
+        saveRomDirs(dirs)
+        toast("已添加：\(url.path)")
+        showRomDirsDialog()
+    }
+
+    private func removeRomDir(_ path: String) {
+        var dirs = romDirs()
+        dirs.removeAll { $0 == path }
+        saveRomDirs(dirs)
+        setRomDirBookmark(path, nil)
+        for (index, url) in scopedFolderURLs.enumerated().reversed() {
+            if url.standardizedFileURL.path == path {
+                url.stopAccessingSecurityScopedResource()
+                scopedFolderURLs.remove(at: index)
+            }
+        }
+        toast("已移除：\(path)")
+        showRomDirsDialog()
+    }
+
+    /** Manage the folders the ROM scan looks in first. */
+    private func showRomDirsDialog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+        let hint = UILabel()
+        hint.text = "把游戏（.gba/.gb/.gbc）和存档（.sav/.srm/.ss1）放在同一个文件夹，在这里添加该文件夹后即可扫描并自动读取同目录存档。\n\n同目录已有存档时优先使用它；否则仍用公共存档目录。同目录存档不纳入应用内备份和 WebDAV 同步。"
+        hint.textColor = .secondaryLabel
+        hint.font = .systemFont(ofSize: 12)
+        hint.numberOfLines = 0
+        box.addArrangedSubview(hint)
+        let dirs = romDirs()
+        if dirs.isEmpty {
+            let empty = UILabel()
+            empty.text = "还没有添加文件夹。"
+            empty.textColor = .secondaryLabel
+            box.addArrangedSubview(empty)
+        }
+        for path in dirs {
+            let row = UIStackView()
+            row.axis = .horizontal
+            row.spacing = 6
+            row.alignment = .center
+            let label = UILabel()
+            label.text = path
+            label.font = .systemFont(ofSize: 12)
+            label.numberOfLines = 2
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            row.addArrangedSubview(label)
+            let remove = UIButton(type: .system)
+            remove.setTitle("移除", for: .normal)
+            let target = path
+            remove.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                self.topmostPresenter.dismiss(animated: true) { self.removeRomDir(target) }
+            }, for: .touchUpInside)
+            row.addArrangedSubview(remove)
+            box.addArrangedSubview(row)
+        }
+        let pickFolder = UIButton(type: .system)
+        pickFolder.contentHorizontalAlignment = .left
+        pickFolder.setTitle("选择文件夹（系统文件选择器）", for: .normal)
+        pickFolder.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) { self.pick(kind: 11) }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(pickFolder)
+        let manual = UIButton(type: .system)
+        manual.contentHorizontalAlignment = .left
+        manual.setTitle("手动输入路径（App 文档目录内）", for: .normal)
+        manual.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let alert = UIAlertController(title: "ROM 文件夹路径", message: nil, preferredStyle: .alert)
+            alert.addTextField { field in field.text = self.docs.path + "/" }
+            alert.addAction(UIAlertAction(title: "添加", style: .default) { [weak self] _ in
+                guard let self else { return }
+                self.addRomDirPath(alert.textFields?.first?.text ?? "")
+            })
+            alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+            self.presentSheet(alert)
+        }, for: .touchUpInside)
+        box.addArrangedSubview(manual)
+        let rescan = UIButton(type: .system)
+        rescan.contentHorizontalAlignment = .left
+        rescan.setTitle("立即扫描", for: .normal)
+        rescan.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) { self.showRomLibrary() }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(rescan)
+        presentSheet(SheetController(title: "ROM 文件夹", content: box))
+    }
+
+    // == Saves beside the ROM ==
+
+    private func romBaseName(_ rom: URL) -> String {
+        rom.deletingPathExtension().lastPathComponent
+    }
+
+    /** Whether a battery save or save state already sits beside this ROM. */
+    private func hasBesideSaves(_ rom: URL) -> Bool {
+        let parent = rom.deletingLastPathComponent()
+        let base = romBaseName(rom)
+        for suffix in [".sav", ".srm", ".sa1", ".sa2", ".sa3", ".sa4"] {
+            let file = parent.appendingPathComponent(base + suffix)
+            if ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0) > 0 {
+                return true
+            }
+        }
+        for slot in 0...9 {
+            let file = parent.appendingPathComponent("\(base).ss\(slot)")
+            if ((try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0) > 0 {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * Saves live beside the ROM when the player already keeps them there (or
+     * explicitly asks for it); otherwise the shared folders stay in use so
+     * existing saves are never orphaned. Must run before mgbaMobileLoad.
+     */
+    private func applyRomSaveLocation(_ path: String) {
+        guard let core else { return }
+        let rom = URL(fileURLWithPath: path).standardizedFileURL
+        let parent = rom.deletingLastPathComponent()
+        let beside = FileManager.default.isWritableFile(atPath: parent.path)
+            && (hasBesideSaves(rom) || defaults.bool(forKey: "saves_beside_rom"))
+        let saveDir = beside ? parent : docs.appendingPathComponent("saves", isDirectory: true)
+        let stateDir = beside ? parent : docs.appendingPathComponent("states", isDirectory: true)
+        activeStateDir = stateDir
+        mgbaMobileSetSaveDirs(core, saveDir.path, stateDir.path)
+    }
+
     @objc private func showRomLibrary() {
         let roots = romRoots()
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -3696,18 +4005,21 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             for root in roots where root.startAccessingSecurityScopedResource() {
                 scoped.append(root)
             }
-            let found = self.romLibrary.scan(roots: roots)
+            let preferred = Set(self.customRomDirs().map { $0.standardizedFileURL.path })
+            let found = self.romLibrary.scan(roots: roots, preferred: preferred)
             for url in scoped { url.stopAccessingSecurityScopedResource() }
             DispatchQueue.main.async { self.showRomLibraryList(found) }
         }
     }
 
     private func romRoots() -> [URL] {
-        var roots = [
+        // Player-added folders come first: their games always top the list.
+        var roots = customRomDirs()
+        roots.append(contentsOf: [
             docs,
             docs.appendingPathComponent("roms", isDirectory: true),
             docs.appendingPathComponent("Inbox", isDirectory: true),
-        ]
+        ])
         if let last = romLibrary.lastRom() {
             roots.append(last.deletingLastPathComponent())
         }
@@ -3731,8 +4043,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let open = UIButton(type: .system)
         open.setTitle("打开文件", for: .normal)
         open.addAction(UIAction { [weak self] _ in self?.pick(kind: 1) }, for: .touchUpInside)
+        let folders = UIButton(type: .system)
+        folders.setTitle("文件夹", for: .normal)
+        folders.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) { self.showRomDirsDialog() }
+        }, for: .touchUpInside)
         actions.addArrangedSubview(rescan)
         actions.addArrangedSubview(open)
+        actions.addArrangedSubview(folders)
         actions.addArrangedSubview(UIView())
         box.addArrangedSubview(actions)
         if found.isEmpty {
@@ -3775,7 +4094,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         func title(_ favorite: Bool) -> String {
             let mark = favorite ? "★ " : "☆ "
             let suffix = last ? "（上次）" : ""
-            return "\(mark)\(entry.url.lastPathComponent)\(suffix)\n\(entry.url.deletingLastPathComponent().path)"
+            let saveMark = hasBesideSaves(entry.url) ? "  [同目录有存档]" : ""
+            return "\(mark)\(entry.url.lastPathComponent)\(suffix)\(saveMark)\n\(entry.url.deletingLastPathComponent().path)"
         }
         open.setTitle(title(favorite), for: .normal)
         open.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
@@ -4592,9 +4912,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func stateURL(_ index: Int) -> URL {
-        let rom = defaults.string(forKey: "lastRom") ?? "game"
+        let rom = currentRomPath ?? defaults.string(forKey: "lastRom") ?? "game"
         let base = URL(fileURLWithPath: rom).deletingPathExtension().lastPathComponent
-        return docs.appendingPathComponent("states").appendingPathComponent("\(base).ss\(index)")
+        let dir = activeStateDir ?? docs.appendingPathComponent("states", isDirectory: true)
+        return dir.appendingPathComponent("\(base).ss\(index)")
     }
 
     private func refreshSlotButton() {
