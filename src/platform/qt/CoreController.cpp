@@ -33,11 +33,30 @@
 #include <mgba-util/math.h>
 #include <mgba-util/vfs.h>
 
+#include <QSettings>
+
 #ifdef M_CORE_GBA
 #include "sio_link.h"
 #endif
 
 #include "moc_CoreController.cpp"
+
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+namespace {
+
+// The mobile layer owns the GBALuminanceSource inside its emulator struct and
+// recovers the owner with offsetof. The Qt frontend already attaches
+// InputController's luminance source (mPERIPH_GBA_LUMINANCE), so the solar
+// slider drives that one instead of inventing a second source: no container
+// trick, no pointer arithmetic on a foreign struct.
+
+QSettings& featureSettings() {
+	static QSettings settings(QStringLiteral("mGBAx"), QStringLiteral("features"));
+	return settings;
+}
+
+}
+#endif
 
 #define AUTOSAVE_GRANULARITY 600
 
@@ -337,6 +356,9 @@ void CoreController::loadConfig(ConfigController* config) {
 	}
 	m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", config->config());
 #endif
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	applyPersistedFeatures();
+#endif
 }
 
 #ifdef ENABLE_DEBUGGERS
@@ -473,6 +495,207 @@ int CoreController::lanLinkState() const {
 
 int CoreController::lanLinkPlayer() const {
 	return m_lanLink ? sioLinkPlayer(m_lanLink) : -1;
+}
+
+// ---- mobile-parity features ----
+
+void CoreController::setChannelVolumes(const int gains[6]) {
+	for (int i = 0; i < 6; ++i) {
+		m_channelGains[i] = gains[i];
+	}
+	Interrupter interrupter(this);
+	if (m_threadContext.core && m_threadContext.core->board) {
+		switch (platform()) {
+#ifdef M_CORE_GBA
+		case mPLATFORM_GBA: {
+			struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+			for (int i = 0; i < 4; ++i) {
+				gba->audio.psg.chGain[i] = static_cast<int16_t>(gains[i]);
+			}
+			gba->audio.chGainA = static_cast<int16_t>(gains[4]);
+			gba->audio.chGainB = static_cast<int16_t>(gains[5]);
+			break;
+		}
+#endif
+#ifdef M_CORE_GB
+		case mPLATFORM_GB: {
+			struct GB* gb = static_cast<struct GB*>(m_threadContext.core->board);
+			for (int i = 0; i < 4; ++i) {
+				gb->audio.chGain[i] = static_cast<int16_t>(gains[i]);
+			}
+			break;
+		}
+#endif
+		default:
+			break;
+		}
+	}
+	QByteArray stored;
+	for (int i = 0; i < 6; ++i) {
+		stored.append(reinterpret_cast<const char*>(&m_channelGains[i]), sizeof(int));
+	}
+	featureSettings().setValue("channelGains", stored);
+}
+
+void CoreController::channelVolumes(int gains[6]) const {
+	for (int i = 0; i < 6; ++i) {
+		gains[i] = m_channelGains[i];
+	}
+}
+
+#ifdef M_CORE_GBA
+void CoreController::setSolarLevel(int level) {
+	if (level > 10) {
+		level = 10;
+	} else if (level < -1) {
+		level = -1;
+	}
+	m_solarLevel = level;
+	featureSettings().setValue("solarLevel", level);
+	if (platform() != mPLATFORM_GBA || !m_threadContext.core) {
+		return;
+	}
+	Interrupter interrupter(this);
+	struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+	if (level >= 0) {
+		// Drive the console's own 0-10 sunlight scale through the luminance
+		// source the frontend already attached (InputController's), then force
+		// the cartridge hardware bit so games that do not auto-detect the
+		// sensor (Boktai detects it, most hacks do not) still see it.
+		if (m_inputController) {
+			m_inputController->setLuminanceLevel(level);
+		}
+		gba->memory.hw.devices |= HW_LIGHT_SENSOR;
+	} else {
+		if (m_inputController) {
+			m_inputController->setLuminanceLevel(0);
+		}
+		gba->memory.hw.devices &= ~HW_LIGHT_SENSOR;
+	}
+}
+
+void CoreController::setCartRumble(bool enabled) {
+	m_cartRumble = enabled;
+	featureSettings().setValue("cartRumble", enabled ? 1 : 0);
+	if (platform() != mPLATFORM_GBA || !m_threadContext.core) {
+		return;
+	}
+	Interrupter interrupter(this);
+	struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+	if (enabled) {
+		gba->memory.hw.devices |= HW_RUMBLE;
+		// Keep whatever mPERIPH_RUMBLE attached; only fill in if the game was
+		// loaded before an input driver was available.
+		if (!gba->rumble && m_inputController) {
+			gba->rumble = m_inputController->rumble();
+		}
+	} else {
+		gba->memory.hw.devices &= ~HW_RUMBLE;
+		gba->rumble = NULL;
+	}
+}
+#endif
+
+void CoreController::setGbPalette(const int32_t colors[12]) {
+	memcpy(m_gbPalette, colors, sizeof(m_gbPalette));
+	m_gbPaletteSet = true;
+	QByteArray stored;
+	for (int i = 0; i < 12; ++i) {
+		stored.append(reinterpret_cast<const char*>(&m_gbPalette[i]), sizeof(int32_t));
+	}
+	featureSettings().setValue("gbPalette", stored);
+	featureSettings().setValue("gbPaletteSet", 1);
+	if (platform() == mPLATFORM_GB) {
+		Interrupter interrupter(this);
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			mCoreConfigSetOverrideIntValue(&m_threadContext.core->config, key, m_gbPalette[i]);
+		}
+		m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", NULL);
+	}
+}
+
+void CoreController::clearGbPalette() {
+	m_gbPaletteSet = false;
+	featureSettings().setValue("gbPaletteSet", 0);
+	if (platform() == mPLATFORM_GB) {
+		Interrupter interrupter(this);
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			ConfigurationClearValue(&m_threadContext.core->config.overridesTable, m_threadContext.core->config.port, key);
+		}
+		m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", NULL);
+	}
+}
+
+void CoreController::gbPalette(int32_t colors[12]) const {
+	memcpy(colors, m_gbPalette, sizeof(m_gbPalette));
+}
+
+void CoreController::setAudioHoldMode(int mode) {
+	if (mode < 0 || mode > 2) {
+		mode = 0;
+	}
+	m_audioHoldMode = mode;
+	featureSettings().setValue("audioHoldMode", mode);
+}
+
+void CoreController::audioHoldState(bool* on, double* stretch) const {
+	if (m_audioHoldMode == 0 || !(m_fastForward || m_fastForwardForced)) {
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	// Take the ratio from the sync target the frontend actually pushed: that
+	// covers both the held key and the toggled "Fast forward" item, and it is
+	// already clamped by whatever ratio the config resolved to.
+	double ratio = m_fpsTarget > 0 ? m_threadContext.impl->sync.fpsTarget / m_fpsTarget : 0.0;
+	if (ratio <= 1.01) {
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	if (on) {
+		*on = true;
+	}
+	if (stretch) {
+		*stretch = ratio;
+	}
+}
+
+void CoreController::applyPersistedFeatures() {
+	QSettings& settings = featureSettings();
+	m_audioHoldMode = settings.value("audioHoldMode", 0).toInt();
+	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
+		m_audioHoldMode = 0;
+	}
+	QByteArray stored = settings.value("channelGains").value<QByteArray>();
+	if (stored.size() == int(6 * sizeof(int))) {
+		int gains[6];
+		memcpy(gains, stored.constData(), sizeof(gains));
+		setChannelVolumes(gains);
+	}
+#ifdef M_CORE_GBA
+	int solar = settings.value("solarLevel", -1).toInt();
+	if (solar != m_solarLevel || solar >= 0) {
+		setSolarLevel(solar);
+	}
+	if (settings.value("cartRumble", 0).toInt()) {
+		setCartRumble(true);
+	}
+#endif
+	if (settings.value("gbPaletteSet", 0).toInt()) {
+		QByteArray pal = settings.value("gbPalette").value<QByteArray>();
+		if (pal.size() == int(12 * sizeof(int32_t))) {
+			int32_t colors[12];
+			memcpy(colors, pal.constData(), sizeof(colors));
+			setGbPalette(colors);
+		}
+	}
 }
 #endif
 

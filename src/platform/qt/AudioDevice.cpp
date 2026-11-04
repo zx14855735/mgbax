@@ -6,6 +6,7 @@
 #include "AudioDevice.h"
 #include "moc_AudioDevice.cpp"
 
+#include "CoreController.h"
 #include "GBAApp.h"
 #include "LogController.h"
 
@@ -24,12 +25,14 @@ AudioDevice::AudioDevice(QObject* parent)
 	setOpenMode(ReadOnly);
 	mAudioBufferInit(&m_buffer, 0x4000, 2);
 	mAudioResamplerInit(&m_resampler, mINTERPOLATOR_SINC);
+	audioStretchInit(&m_stretch);
 	m_updateTimer.setSingleShot(false);
 	m_updateTimer.setInterval(1);
 	connect(&m_updateTimer, &QTimer::timeout, this, &AudioDevice::update);
 }
 
 AudioDevice::~AudioDevice() {
+	audioStretchDeinit(&m_stretch);
 	mAudioResamplerDeinit(&m_resampler);
 	mAudioBufferDeinit(&m_buffer);
 }
@@ -53,6 +56,35 @@ void AudioDevice::setBufferSamples(int samples) {
 
 void AudioDevice::setInput(mCoreThread* input) {
 	m_context = input;
+	// A new game must not replay anything staged by the previous one.
+	audioStretchReset(&m_stretch);
+}
+
+/*
+ * Drains the core's audio into the playback staging, optionally through the
+ * fast-forward stretcher (音乐原速): when engaged, the core buffer is parked
+ * into the stretch engine and the resampler reads its staged output one for
+ * one at the console's own rate, so the tune keeps its tempo and pitch no
+ * matter how fast the game runs.
+ */
+void AudioDevice::pumpAudio() {
+	// Caller must hold the audio sync lock.
+	if (!m_context || !m_context->core) {
+		return;
+	}
+	mCore* core = m_context->core;
+	unsigned coreRate = core->audioSampleRate(core);
+	bool holdOn = false;
+	double holdStretch = 1.0;
+	if (m_controller) {
+		m_controller->audioHoldState(&holdOn, &holdStretch);
+	}
+	size_t want = 512;
+	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
+	struct mAudioBuffer* src = audioStretchProcess(&m_stretch, coreBuffer, coreRate, holdOn, holdStretch, want);
+	mAudioResamplerSetSource(&m_resampler, src, coreRate, true);
+	mAudioResamplerProcess(&m_resampler);
+	mCoreSyncConsumeAudio(&m_context->impl->sync);
 }
 
 qint64 AudioDevice::readData(char* data, qint64 maxSize) {
@@ -66,15 +98,14 @@ qint64 AudioDevice::readData(char* data, qint64 maxSize) {
 	}
 
 	mCoreSyncLockAudio(&m_context->impl->sync);
-	mAudioResamplerSetSource(&m_resampler, m_context->core->getAudioBuffer(m_context->core), m_context->core->audioSampleRate(m_context->core), true);
-	mAudioResamplerProcess(&m_resampler);
-	mCoreSyncConsumeAudio(&m_context->impl->sync);
+	pumpAudio();
+	mCoreSyncUnlockAudio(&m_context->impl->sync);
 	if (mAudioBufferAvailable(&m_buffer) < 32) {
 		// Audio is running slow...let's wait a tiny bit for more to come in
 		QThread::usleep(100);
 		mCoreSyncLockAudio(&m_context->impl->sync);
-		mAudioResamplerProcess(&m_resampler);
-		mCoreSyncConsumeAudio(&m_context->impl->sync);
+		pumpAudio();
+		mCoreSyncUnlockAudio(&m_context->impl->sync);
 	}
 	quint64 available = std::min<quint64>({
 		mAudioBufferAvailable(&m_buffer),
@@ -110,7 +141,7 @@ qint64 AudioDevice::bytesAvailable() {
 	}
 	mCoreSyncLockAudio(&m_context->impl->sync);
 	adjustResampler();
-	mAudioResamplerProcess(&m_resampler);
+	pumpAudio();
 	int available = mAudioBufferAvailable(&m_buffer);
 	mCoreSyncUnlockAudio(&m_context->impl->sync);
 	m_updateTimer.start();
@@ -125,8 +156,8 @@ void AudioDevice::update() {
 	bool wasAvailable = mAudioBufferAvailable(&m_buffer);
 
 	mCoreSyncLockAudio(&m_context->impl->sync);
-	mAudioResamplerProcess(&m_resampler);
-	mCoreSyncConsumeAudio(&m_context->impl->sync);
+	pumpAudio();
+	mCoreSyncUnlockAudio(&m_context->impl->sync);
 
 	if (!wasAvailable && mAudioBufferAvailable(&m_buffer)) {
 		emit readyRead();

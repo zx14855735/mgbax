@@ -34,6 +34,7 @@
 #include "DebuggerConsoleController.h"
 #include "Display.h"
 #include "DolphinConnector.h"
+#include "EnhancementsView.h"
 #include "CoreController.h"
 #include "ForwarderView.h"
 #include "FrameView.h"
@@ -1817,6 +1818,10 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addAction(tr("WebDAV save sync..."), "webdavSync", openNamedTView<WebDavView>(&m_webdavView, false, this), "tools");
+
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	m_actions.addAction(tr("模拟器增强..."), "enhancements", openNamedTView<EnhancementsView>(&m_enhancementsView, true, this), "tools");
+#endif
 
 	m_actions.addAction(tr("Create forwarder..."), "createForwarder", openTView<ForwarderView>(), "tools");
 

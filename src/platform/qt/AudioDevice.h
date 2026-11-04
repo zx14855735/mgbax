@@ -12,9 +12,13 @@
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/audio-resampler.h>
 
+#include "audio_stretch.h"
+
 struct mCoreThread;
 
 namespace QGBA {
+
+class CoreController;
 
 class AudioDevice : public QIODevice {
 Q_OBJECT
@@ -24,6 +28,7 @@ public:
 	virtual ~AudioDevice();
 
 	void setInput(mCoreThread* input);
+	void setController(CoreController* controller) { m_controller = controller; }
 	void setFormat(const QAudioFormat& format);
 	void setBufferSamples(int samples);
 	bool atEnd() const override;
@@ -39,12 +44,16 @@ private slots:
 	void update();
 
 private:
+	void pumpAudio();
+
 	size_t m_samples = 512;
 	QAudioFormat m_format;
 	mCoreThread* m_context;
 	mAudioBuffer m_buffer;
 	mAudioResampler m_resampler;
 	mutable QTimer m_updateTimer;
+	struct AudioStretch m_stretch;
+	CoreController* m_controller = nullptr;
 
 	void adjustResampler();
 };

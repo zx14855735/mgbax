@@ -227,6 +227,30 @@ public slots:
 	int lanLinkPlayer() const;
 #endif
 
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	// ---- mobile-parity features (per-channel volume, solar sensor, cart
+	// rumble, GB palette), ported from the Android mobile layer ----
+	void setChannelVolumes(const int gains[6]); // 0..256, 256 = 100%; GBA: PSG1-4 + DMA A/B, GB: PSG1-4
+	void channelVolumes(int gains[6]) const;
+	void setSolarLevel(int level); // -1 = sensor off, 0..10 lux steps
+	int solarLevel() const { return m_solarLevel; }
+	void setCartRumble(bool enabled);
+	bool cartRumble() const { return m_cartRumble; }
+	void setGbPalette(const int32_t colors[12]); // 0xRRGGBB, same 4 colors x3 (BG/OBJ0/OBJ1)
+	void clearGbPalette();
+	bool gbPaletteSet() const { return m_gbPaletteSet; }
+	void gbPalette(int32_t colors[12]) const;
+	void applyPersistedFeatures(); // re-apply saved feature state after a game loads
+#endif
+
+	// ---- 倍速音乐原速: fast-forward audio production (0 = pitch up like
+	// stock mGBA, 1 = WSOLA constant pitch, 2 = native hold), ported from the
+	// Android mobile layer's audio engine ----
+	void setAudioHoldMode(int mode);
+	int audioHoldMode() const { return m_audioHoldMode; }
+	// Called from the audio thread every pull; cheap atomic-free reads.
+	void audioHoldState(bool* on, double* stretch) const;
+
 	void setAVStream(mAVStream*);
 	void clearAVStream();
 
@@ -350,7 +374,15 @@ private:
 #ifdef M_CORE_GBA
 	GBASIODolphin m_dolphin;
 	struct SioLink* m_lanLink = nullptr;
+	int m_solarLevel = -1;
+	bool m_cartRumble = false;
 #endif
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	int m_channelGains[6] = {256, 256, 256, 256, 256, 256};
+	bool m_gbPaletteSet = false;
+	int32_t m_gbPalette[12] = {};
+#endif
+	int m_audioHoldMode = 0;
 
 #ifdef ENABLE_DEBUGGERS
 	std::shared_ptr<MemoryAccessLogController> m_malController;

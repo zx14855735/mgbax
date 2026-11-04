@@ -26,6 +26,7 @@
 #include "GBoyLink.h"
 #include "ExternalShader.h"
 #include "WebDavSync.h"
+#include "audio_stretch.h"
 #ifdef BUILD_QT_CLOUD
 #include "CloudLink.h"
 #include "GbCloud.h"
@@ -587,6 +588,140 @@ static int lanSioTest(const QString& rom) {
 	return failures;
 }
 
+/**
+ * Fast-forward audio stretcher (倍速音乐原速) E2E. Paced like the real thing:
+ * the "core" produces `speed`x more audio than real time, the "frontend" pulls
+ * every few milliseconds, and the clock is the wall clock. Both production
+ * modes must therefore hand back ~RATE frames per second of wall clock - the
+ * whole point of the feature is that the tune plays at its own tempo instead
+ * of being pitched up - and the samples must stay a 440 Hz sine (no resample
+ * artifacts), with the native mode cutting sections once the lag ring fills.
+ */
+static int holdTest() {
+	const unsigned rate = 48000;
+	const double speed = 4.0;
+	const int runMs = 2000;
+	int failures = 0;
+
+	for (int mode = AUDIO_STRETCH_PITCH; mode <= AUDIO_STRETCH_NATIVE; ++mode) {
+		struct AudioStretch stretch;
+		audioStretchInit(&stretch);
+		audioStretchSetMode(&stretch, mode);
+
+		struct mAudioBuffer source;
+		mAudioBufferInit(&source, rate * 2, 2); // 2 s core ring
+
+		// Room for a full 100 ms of 4x production, so a sleeping scheduler
+		// never forces a short feed.
+		std::vector<int16_t> chunk(size_t(speed * rate * 0.1) * 2);
+		std::vector<int16_t> outBuf(rate); // 0.5 s scratch
+		double phase = 0.0;
+		long long fed = 0;
+		long long out = 0;
+		long long crossings = 0;
+		int16_t prev = 0;
+		double lastFeed = 0.0;
+		QElapsedTimer clock;
+		clock.start();
+
+		while (clock.elapsed() < runMs) {
+			// Produce exactly what a 4x core would have made since the last
+			// pass, so scheduler jitter cannot slow the simulated console down.
+			double now = clock.elapsed() / 1000.0;
+			double dt = now - lastFeed;
+			size_t produce = size_t(speed * rate * dt);
+			size_t want = size_t(rate * dt);
+			if (!produce) {
+				QThread::msleep(1);
+				continue;
+			}
+			if (produce > chunk.size() / 2) {
+				produce = chunk.size() / 2;
+			}
+			if (want > outBuf.size() / 2) {
+				want = outBuf.size() / 2;
+			}
+			lastFeed = now;
+			for (size_t i = 0; i < produce; ++i) {
+				int16_t v = (int16_t) (12000.0 * sin(phase));
+				chunk[i * 2] = v;
+				chunk[i * 2 + 1] = v;
+				phase += 2.0 * 3.14159265358979323846 * 440.0 / rate;
+			}
+			mAudioBufferWrite(&source, chunk.data(), produce);
+			fed += produce;
+
+			struct mAudioBuffer* staged = audioStretchProcess(&stretch, &source, rate, true, speed, want);
+			size_t avail = mAudioBufferAvailable(staged);
+			if (avail > outBuf.size() / 2) {
+				avail = outBuf.size() / 2;
+			}
+			if (avail) {
+				mAudioBufferRead(staged, outBuf.data(), avail);
+				for (size_t i = 0; i < avail; ++i) {
+					int16_t s = outBuf[i * 2];
+					if ((prev < 0 && s >= 0) || (prev > 0 && s <= 0)) {
+						++crossings;
+					}
+					prev = s;
+				}
+				out += avail;
+			}
+			QThread::msleep(2);
+		}
+
+		double wall = clock.elapsed() / 1000.0;
+		double seconds = out / double(rate);
+		double pitch = seconds > 0.01 ? crossings / 2.0 / seconds : 0.0;
+		qInfo().noquote() << QString("mode %1: wall %2 s, fed %3 s of core audio (4x), out %4 s, pitch ~%5 Hz, dropped %6, cuts %7")
+		                     .arg(mode).arg(wall, 0, 'f', 2)
+		                     .arg(fed / double(rate), 0, 'f', 2)
+		                     .arg(seconds, 0, 'f', 2)
+		                     .arg(pitch, 0, 'f', 0)
+		                     .arg(audioStretchDropped(&stretch))
+		                     .arg(audioStretchCuts(&stretch));
+		// Real-time production: the output must track the wall clock, not the
+		// 4x production rate.
+		if (seconds < wall * 0.70 || seconds > wall * 1.15) {
+			qWarning() << "HOLD TEST: not playing at 1x for mode" << mode;
+			++failures;
+		}
+		if (pitch < 400 || pitch > 480) {
+			qWarning() << "HOLD TEST: pitch drifted for mode" << mode << pitch;
+			++failures;
+		}
+		if (mode == AUDIO_STRETCH_PITCH && audioStretchDropped(&stretch) > rate / 4) {
+			qWarning() << "HOLD TEST: WSOLA discarded too much";
+			++failures;
+		}
+		if (mode == AUDIO_STRETCH_NATIVE && audioStretchCuts(&stretch) == 0) {
+			qWarning() << "HOLD TEST: native mode never cut a section";
+			++failures;
+		}
+		mAudioBufferDeinit(&source);
+		audioStretchDeinit(&stretch);
+	}
+
+	// Disengaging must hand the core's own buffer straight back.
+	struct AudioStretch off;
+	audioStretchInit(&off);
+	struct mAudioBuffer src;
+	mAudioBufferInit(&src, 4096, 2);
+	if (audioStretchProcess(&off, &src, rate, false, 1.0, 480) != &src) {
+		qWarning() << "HOLD TEST: disengaged stretcher did not return the core buffer";
+		++failures;
+	}
+	mAudioBufferDeinit(&src);
+	audioStretchDeinit(&off);
+
+	if (failures == 0) {
+		qInfo() << "HOLD TEST: PASS";
+	} else {
+		qInfo() << "HOLD TEST: FAIL" << failures;
+	}
+	return failures;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	QStringList args = app.arguments();
@@ -603,6 +738,9 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("webdav")) {
 		return webdavTest();
+	}
+	if (mode == QStringLiteral("hold")) {
+		return holdTest();
 	}
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");

@@ -118,7 +118,9 @@ set(SOURCE_FILES
 	Display.cpp
 	DisplayGL.cpp
 	DisplayQt.cpp
+	EnhancementsView.cpp
 	ExternalShader.cpp
+	audio_stretch.c
 	ForwarderController.cpp
 	ForwarderGenerator.cpp
 	ForwarderGenerator3DS.cpp
@@ -277,7 +279,7 @@ if(TARGET ${QT}::WebSockets)
 	list(APPEND UI_FILES LobbyView.ui)
 
 	# Console E2E harness: wifi round trip + gboy.top signalling self test.
-	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
 	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets ${BINARY_NAME})
 	if(WIN32)
 		target_link_libraries(test-gboylink ws2_32)

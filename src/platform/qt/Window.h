@@ -36,6 +36,7 @@ class CoreManager;
 class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
+class EnhancementsView;
 class LinkView;
 class LobbyView;
 class WebDavView;
@@ -264,6 +265,9 @@ private:
 	QPointer<LobbyView> m_lobbyView;
 #endif
 	QPointer<WebDavView> m_webdavView;
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	QPointer<EnhancementsView> m_enhancementsView;
+#endif
 	QPointer<FrameView> m_frameView;
 
 #ifdef USE_FFMPEG
