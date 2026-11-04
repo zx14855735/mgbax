@@ -7,6 +7,7 @@
 #include "moc_ShaderSelector.cpp"
 
 #include "ConfigController.h"
+#include "ExternalShader.h"
 #include "GBAApp.h"
 #include "Display.h"
 #include "VFileDevice.h"
@@ -15,6 +16,7 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QMessageBox>
@@ -45,6 +47,7 @@ ShaderSelector::ShaderSelector(Display* display, ConfigController* config, QWidg
 
 	connect(m_ui.load, &QAbstractButton::clicked, this, &ShaderSelector::selectShader);
 	connect(m_ui.unload, &QAbstractButton::clicked, this, &ShaderSelector::clearShader);
+	connect(m_ui.loadExternal, &QAbstractButton::clicked, this, &ShaderSelector::selectExternal);
 	connect(m_ui.buttonBox, &QDialogButtonBox::clicked, this, &ShaderSelector::buttonPressed);
 }
 
@@ -98,6 +101,31 @@ void ShaderSelector::selectShader() {
 		loadShader(name);
 		refreshShaders();
 	}
+}
+
+void ShaderSelector::selectExternal() {
+	QString filters = QStringLiteral("%1 (*.glsl)").arg(tr("GLSL shaders"));
+	QString name = GBAApp::app()->getOpenFileName(this, tr("Load external GLSL"), filters, QString());
+	if (name.isNull()) {
+		return;
+	}
+	// Convert to a mGBA .shader directory under the data dir, so it persists
+	// and survives restarts via the regular "shader" config option.
+	QDir outDir(GBAApp::dataDir());
+	if (!outDir.cd(QLatin1String("external-shaders"))) {
+		if (!outDir.mkdir(QLatin1String("external-shaders"))) {
+			QMessageBox::warning(this, tr("Error loading shader"), tr("Could not create the external shader directory."));
+			return;
+		}
+		outDir.cd(QLatin1String("external-shaders"));
+	}
+	QString target = outDir.absoluteFilePath(QFileInfo(name).completeBaseName());
+	QString error;
+	if (!ExternalShader::convert(name, target, &error)) {
+		QMessageBox::warning(this, tr("Error loading shader"), error);
+		return;
+	}
+	loadShader(target, true);
 }
 
 void ShaderSelector::loadShader(const QString& path, bool saveToSettings) {
