@@ -100,8 +100,9 @@
 <p class="callout">&nbsp;&nbsp;mGBAx 是 mGBA 模拟器在 Android 上的移植版本（应用名 <strong>mGBAx</strong>），可运行 <strong>Game Boy Advance（GBA）、Game Boy Color（GBC）、Game Boy（GB）</strong> 游戏，最大支持 <strong>64MB 扩容 ROM</strong>，并可直接从 <strong>ZIP</strong> 内加载。本教程覆盖菜单栏里每一项功能的具体用法。</p>
 <ul>
 <li><strong>系统要求</strong>：Android 7.0 及以上。</li>
-<li><strong>存档位置</strong>：游戏自己的电池存档默认保存在 <code>我的手机/mGBAx/saves</code>，打开游戏后菜单栏下方绿色文字会显示当前 ROM 的存档路径。</li>
+<li><strong>存档位置</strong>：游戏自己的电池存档默认保存在 <code>我的手机/mGBAx/saves</code>；如果 ROM 同目录里已经有同名存档，则自动改用同目录那一份（见 <a href="#112-游戏和存档放同一个文件夹">11.2</a>）。打开游戏后菜单栏下方绿色文字会显示当前 ROM 的<strong>实际</strong>存档路径。</li>
 </ul>
+<p class="callout">&nbsp;&nbsp;<strong>新版新增</strong>：① <strong>自定义 ROM 文件夹</strong>——游戏文件和存档放在同一个文件夹就能自动识别，见 <a href="#111-自定义-rom-文件夹">11.1 / 11.2</a>；② <strong>一键 2 秒倒带快捷键</strong>——点一下直接回退 2 秒，见 <a href="#91-一键倒带快捷键">9.1</a>。原有倒带条、菜单「倒带」与掌机皮肤 ⏪ 的用法完全不变。</p>
 <p class="spacer"></p>
 <h2 id="section-1">目录</h2>
 <ol>
@@ -113,15 +114,15 @@
 <li><a href="#6-即时存档槽位">即时存档（槽位）</a></li>
 <li><a href="#7-游戏存档bios">游戏存档、BIOS</a></li>
 <li><a href="#8-金手指">金手指</a></li>
-<li><a href="#9-倒带">倒带</a></li>
+<li><a href="#9-倒带">倒带</a>（含一键 2 秒快捷键）</li>
 <li><a href="#10-联机云端大厅">联机（云端大厅）</a></li>
-<li><a href="#11-游戏库">游戏库</a></li>
+<li><a href="#11-游戏库">游戏库</a>（含自定义 ROM 文件夹、同目录存档）</li>
 <li><a href="#12-皮肤">皮肤</a></li>
 <li><a href="#13-贴纸">贴纸</a></li>
 <li><a href="#14-每游戏设置">每游戏设置</a></li>
-<li><a href="#15-设置总览">设置总览</a></li>
+<li><a href="#15-设置总览">设置总览</a>（新增 ROM 文件夹入口）</li>
 <li><a href="#16-高级设置">高级设置</a></li>
-<li><a href="#17-存档设置">存档设置</a></li>
+<li><a href="#17-存档设置">存档设置</a>（含同目录存档开关）</li>
 <li><a href="#18-备份与恢复">备份与恢复</a></li>
 <li><a href="#19-ai-画面翻译">AI 画面翻译</a></li>
 <li><a href="#20-截图与-gif-录制">截图与 GIF 录制</a></li>
@@ -137,7 +138,7 @@
 <h2 id="section-3">2. 打开游戏</h2>
 <ul>
 <li><strong>方式一（推荐）</strong>：点菜单栏 <strong>打开</strong>，用系统文件选择器选择 <code>.gba</code>、<code>.gbc</code>、<code>.gb</code> 或 <code>.zip</code>。读完后自动开始，下次打开应用会<strong>继续上次的游戏</strong>。</li>
-<li><strong>方式二（扫描）</strong>：<strong>长按「打开」</strong> 会扫描「Download 下载目录」和「模拟器共享目录」，列出找到的 ROM 供一键打开；也可在文件管理器里用「打开方式」选择本应用。</li>
+<li><strong>方式二（扫描）</strong>：<strong>长按「打开」</strong> 会扫描「Download 下载目录」、「模拟器共享目录」和你在 <a href="#111-自定义-rom-文件夹">11.1 自定义 ROM 文件夹</a> 里添加的目录，列出找到的 ROM 供一键打开；也可在文件管理器里用「打开方式」选择本应用。</li>
 <li><strong>方式三（游戏库）</strong>：见 <a href="#11-游戏库">第 11 节</a>，先「扫描」再点列表里的游戏。</li>
 <li><strong>ZIP 加载</strong>：把 ROM 直接放进 <code>.zip</code> 即可，无需解压。</li>
 <li>第一次打开游戏会请求「所有文件访问」权限，请允许，游戏存档会写到 <code>mGBAx/saves</code>。</li>
@@ -211,7 +212,8 @@
 <li><strong>连击速度</strong>：次/秒，调节自动连点的频率。</li>
 <li><strong>禁用方向键对角</strong>：一次只按一个方向，避免斜向误触。</li>
 <li><strong>虚拟按键不透明度</strong>：调淡或调浓按键（40%–300%）。</li>
-<li><strong>虚拟按键开关</strong>：可显示 / 隐藏「连发 / 快存 / 快读 / 倍速 / 截图」等快捷虚拟键。</li>
+<li><strong>虚拟按键开关</strong>：可显示 / 隐藏「连发 / 快存 / 快读 / 倍速 / 截图 / 倒带快捷键」等快捷虚拟键。其中 <strong>「倒带快捷键（点一次 2 秒）」默认开启</strong>，点一下直接回退 2 秒，不用进菜单；在 <strong>键位</strong> 编辑里可像普通按键一样拖动、缩放，不想用就在这里取消勾选。</li>
+<li><strong>倒带快捷键秒数</strong>：<code>倒带快捷键：N 秒 / 点一次</code> 可设 <strong>1～10 秒</strong>（默认 2 秒）。改完后按键上的标签会同步变化，例如设成 5 秒就显示「倒带5s」。</li>
 <li><strong>C 键 / C2 键（组合宏）</strong>：给某个按键绑定「按住时模拟按下的按键组合」，例如一键放必杀。在键位编辑里选中按键后设置。</li>
 <li><strong>识别到实体按键时提示隐藏虚拟按键</strong>：接上手柄后询问是否隐藏屏幕按键。</li>
 </ul>
@@ -234,7 +236,7 @@
 <p class="spacer"></p>
 <h2 id="section-8">7. 游戏存档、BIOS</h2>
 <ul>
-<li><strong>电池存档</strong>：游戏自己的存档（如《宝可梦》的进度）会自动写入 <code>mGBAx/saves</code>，下次直接打开同一游戏即可继续。菜单栏下方绿字显示的就是该路径，可点击复制。</li>
+<li><strong>电池存档</strong>：游戏自己的存档（如《宝可梦》的进度）默认自动写入 <code>mGBAx/saves</code>；若 ROM 同目录已有同名存档，则自动改用同目录那一份（见 <a href="#112-游戏和存档放同一个文件夹">11.2</a>）。下次直接打开同一游戏即可继续。菜单栏下方绿字显示的就是当前实际路径，可点击复制。</li>
 <li><strong>BIOS 导入</strong>：点 <strong>BIOS</strong> 选择 BIOS 文件。GBA BIOS 一般 16KB，导入后需<strong>重新打开游戏</strong>生效；在 <a href="#16-高级设置">高级设置</a> 里打开「使用 BIOS」与（可选）「跳过 BIOS 启动画面」。</li>
 <li><strong>复位</strong>：把当前游戏重新开机，不删除任何存档。</li>
 </ul>
@@ -261,9 +263,20 @@
 <p class="callout">&nbsp;&nbsp;注意：乱填代码可能导致游戏崩溃或卡死，建议一次只开一两条验证。</p>
 <p class="spacer"></p>
 <h2 id="section-10">9. 倒带</h2>
-<p>把游戏「往回拨」，救一把手滑或想重来的一段。</p>
+<p>把游戏「往回拨」，救一把手滑或想重来的一段。现在有<strong>两种</strong>用法，互不冲突。</p>
+<h3>9.1 一键倒带快捷键</h3>
+<p>这是新增的快捷方式，推荐日常使用。虚拟按键上多了一个 <strong>「倒带2s」</strong> 键，<strong>默认就显示在屏幕上</strong>：</p>
 <ul>
-<li>点菜单栏 <strong>倒带</strong>，可 <strong>倒回</strong> 到指定秒数（如 10 秒、30 秒、1 分钟），或 <strong>持续倒带（按住）</strong>：按住按钮持续往回退，松手停在那一帧。</li>
+<li><strong>点一下立即回退 2 秒</strong>，不弹菜单、不用两步，手滑了随手一点就能重来。</li>
+<li>秒数可改：<strong>设置 → 输入 → 倒带快捷键：N 秒 / 点一次</strong>，可选 <strong>1～10 秒</strong>（默认 2 秒）；按键标签随之变为「倒带Ns」。</li>
+<li>这个键与普通按键一样，可在 <strong>键位</strong> 编辑里单指拖动、双指捏合缩放；不想用就在 <strong>设置 → 输入 → 虚拟按键开关</strong> 里取消勾选「倒带快捷键（点一次 2 秒）」。</li>
+<li>从旧版本升级上来时会自动帮你开启这个键一次；之后你手动关掉就不会再自动打开。</li>
+</ul>
+<p class="callout">&nbsp;&nbsp;它和菜单倒带走的是两条独立通道：点快捷键只执行「一次 N 秒」，不会展开秒数条，也不会改动倒带条上当前选中的秒数。</p>
+<h3>9.2 原来的倒带条（完全保留）</h3>
+<ul>
+<li>点菜单栏 <strong>倒带</strong>（或掌机皮肤顶部的 <strong>⏪</strong>）展开秒数条，可选 <strong>1 分钟 / 45 / 30 / 15 / 12 / 9 / 6 / 3 秒</strong> 倒回，或 <strong>持续倒带（按住）</strong>：按住按钮持续往回退，松手停在那一帧。</li>
+<li>菜单「倒带」按钮单击仍是展开秒数条，掌机皮肤 ⏪ 的行为也没变。</li>
 <li>倒带记录是边玩边生成的，刚开局还没记录时会提示「还没有倒带记录」。</li>
 <li><strong>硬核模式</strong>（若开启）下倒带不可用。</li>
 </ul>
@@ -289,12 +302,39 @@
 <h2 id="section-12">11. 游戏库</h2>
 <p>点菜单栏 <strong>游戏库</strong>：</p>
 <ul>
-<li><strong>扫描</strong>：查找 Download 目录、模拟器共享目录等常见位置的 ROM。</li>
+<li><strong>扫描</strong>：查找 Download 目录、模拟器共享目录，以及你添加的自定义 ROM 文件夹（见 <a href="#111-自定义-rom-文件夹">11.1</a>）。</li>
+<li><strong>ROM 文件夹</strong>：直接打开文件夹管理对话框（与 <strong>设置 → ROM 文件夹</strong> 是同一个）。</li>
 <li><strong>打开…</strong>：用文件选择器直接选 ROM。</li>
 <li><strong>收藏</strong>：把常玩的游戏加星，收藏列表单独成组，打开更快。</li>
 <li><strong>上次游戏</strong>：一键回到上次玩的那款。</li>
-<li>空列表时会提示把 <code>.gba/.gb/.gbc</code> 放进 Download 目录或用「打开方式」启动。</li>
+<li>带存档的游戏会在名字后标注 <strong>[同目录有存档]</strong>。</li>
+<li>空列表时会提示把 <code>.gba/.gb/.gbc</code> 放进 Download 目录、添加自己的文件夹，或用「打开方式」启动。</li>
 </ul>
+<h3>11.1 自定义 ROM 文件夹</h3>
+<p><strong>入口</strong>：<strong>设置 → ROM 文件夹</strong>，或 <strong>游戏库 → ROM 文件夹</strong>。</p>
+<ol>
+<li>点 <strong>从系统选择文件夹…</strong>，在系统文件夹选择器里选中放游戏的目录；也可点 <strong>手动输入路径</strong>，直接填绝对路径（例如 <code>/sdcard/ROMs</code>）后确定。</li>
+<li>可以同时添加<strong>多个</strong>文件夹；列表里每个目录右边都有 <strong>移除</strong>，随时可删。</li>
+<li>点 <strong>扫描 ROM</strong> 立即重新扫描，或回到游戏库点 <strong>扫描</strong>。</li>
+</ol>
+<p>使用要点：</p>
+<ul>
+<li>自定义文件夹里的游戏<strong>优先扫描、排在最前面</strong>；扫描最多向下找 <strong>3 层子目录</strong>，一次最多列出 <strong>200 个</strong> ROM。</li>
+<li>系统文件夹选择器会同时申请该目录的持久读取权限。若个别第三方文件管理器给不出真实路径、提示「系统无法给出该文件夹的真实路径」，改用 <strong>手动输入路径</strong> 添加即可。</li>
+<li>自定义目录扫描依赖系统的 <strong>「所有文件访问权限」</strong>，首次使用时请允许。</li>
+<li>不必再把 ROM 复制到 Download 目录；原来的公共目录扫描也照常保留。</li>
+</ul>
+<h3>11.2 游戏和存档放同一个文件夹</h3>
+<p>这是自定义文件夹最实用的用法：<strong>把游戏文件和存档放在同一个目录，模拟器会自动认出来</strong>。</p>
+<ul>
+<li>目录举例：<code>/sdcard/ROMs/口袋妖怪.gba</code>（游戏）、<code>/sdcard/ROMs/口袋妖怪.sav</code>（电池存档）、<code>/sdcard/ROMs/口袋妖怪.ss1</code>（即时存档槽 1），放在同一个文件夹即可。</li>
+<li>命名规则：存档与 ROM <strong>同名、同目录，只换扩展名</strong>。电池存档支持 <code>.sav</code>、<code>.srm</code>、<code>.sa1</code>～<code>.sa4</code>；即时存档支持 <code>.ss0</code>～<code>.ss9</code>（常用 <code>.ss1</code>）。</li>
+<li><strong>自动识别</strong>：加载游戏前会检查同目录有没有同名存档，有的话电池存档和 9 个即时存档槽位<strong>整体切到 ROM 同目录</strong>；扫描列表和游戏库会标注 <strong>[同目录有存档]</strong>，菜单栏下方绿字路径也会指向这里。</li>
+<li>核心会优先打开<strong>已经存在</strong>的那份（<code>.sav → .srm → .saN</code>），不会在同目录凭空新建一个空 <code>.sav</code> 把真存档盖掉。</li>
+<li><strong>兼容老存档</strong>：同目录<strong>没有</strong>存档时，仍用原来的公共目录 <code>mGBAx/saves</code> 和私有 <code>states</code>，升级后旧存档不会丢。</li>
+<li>想让<strong>新游戏从一开始就存到 ROM 同目录</strong>：到 <strong>设置 → 存档</strong> 打开 <strong>「新游戏的存档也放 ROM 同目录」</strong>（该文件夹需可写）。</li>
+</ul>
+<p class="callout">&nbsp;&nbsp;<strong>注意</strong>：放在 ROM 同目录的存档<strong>不纳入</strong>应用内「备份」和 WebDAV 云同步（这两处只扫描公共存档目录）。换机或同步时请手动复制整个文件夹，或关掉同目录存档让它回到公共目录。</p>
 <p class="spacer"></p>
 <h2 id="section-13">12. 皮肤</h2>
 <p>点菜单栏 <strong>皮肤</strong>：</p>
@@ -327,14 +367,15 @@
 </ul>
 <p class="spacer"></p>
 <h2 id="section-16">15. 设置总览</h2>
-<p>点菜单栏 <strong>设置</strong>，进入设置中心，里面分六项（外加扫描、帮助）：</p>
+<p>点菜单栏 <strong>设置</strong>，进入设置中心，里面分八项：</p>
 <ol>
 <li><strong>屏幕方向</strong>：横屏 / 横屏（反向）/ 竖屏 / 竖屏（反向）/ 自动旋转 / 系统默认。</li>
 <li><strong>声音</strong>：见 <a href="#44-声音">4.4</a>。</li>
-<li><strong>输入</strong>：见 <a href="#5-虚拟按键与手感">第 5 节</a>。</li>
-<li><strong>存档</strong>：见 <a href="#6-即时存档槽位">第 6、7、17 节</a>。</li>
+<li><strong>输入</strong>：见 <a href="#5-虚拟按键与手感">第 5 节</a>；这里还能设 <strong>倒带快捷键秒数</strong>（1～10 秒，默认 2 秒）。</li>
+<li><strong>存档</strong>：见 <a href="#6-即时存档槽位">第 6、7、17 节</a>；可开「新游戏的存档也放 ROM 同目录」。</li>
 <li><strong>高级</strong>：见 <a href="#16-高级设置">第 16 节</a>。</li>
-<li><strong>扫描</strong>：等价于长按「打开」的目录扫描。</li>
+<li><strong>ROM 文件夹</strong>：添加 / 移除自定义游戏目录，见 <a href="#111-自定义-rom-文件夹">11.1</a>。</li>
+<li><strong>扫描 ROM</strong>：等价于长按「打开」的目录扫描。</li>
 <li><strong>帮助</strong>：内置一段速览帮助（倍速、画质、金手指、调试、补丁、同步、联机、截图的位置和用法）。</li>
 </ol>
 <p class="spacer"></p>
@@ -366,6 +407,7 @@
 <li><strong>进入游戏时自动读档</strong>：上次退出进度自动恢复。</li>
 <li><strong>退出时自动存档</strong>：关游戏前自动写一次电池存档。</li>
 <li><strong>关闭 / 重置时确认</strong>：防误触丢失进度。</li>
+<li><strong>新游戏的存档也放 ROM 同目录</strong>：开启后，即使同目录还没有存档，新游戏的电池存档和即时存档也直接写到 ROM 所在文件夹（需该文件夹可写）；关闭时沿用公共目录。详见 <a href="#112-游戏和存档放同一个文件夹">11.2</a>。</li>
 <li><strong>自动使用 IPS / UPS / BPS 补丁</strong>：把补丁改成和 ROM <strong>同名</strong>（扩展名保留，如 <code>游戏.ups</code>）放在同一文件夹，进游戏时自动应用（汉化、改版常用）。</li>
 <li><strong>删除电池存档（.sav）</strong>：删除会先备份为 <code>.bak</code> 再重载；没有存档会提示。</li>
 <li><strong>导入 My Boy 存档</strong>：选 My Boy 的 save 目录批量迁移。</li>
@@ -377,6 +419,7 @@
 <li><strong>备份到文件（设置 + 存档 + 状态）</strong>：把当前键位 / 画面 / 声音等设置、电池存档、即时存档打包成一个备份文件，方便换机或重装前保存。</li>
 <li><strong>从备份文件恢复</strong>：选备份文件还原，进度与设置一并回来。</li>
 <li>操作成功 / 失败都有提示；建议重装或换手机前先备份一次。</li>
+<li><strong>范围提醒</strong>：「备份」只收集公共存档目录里的电池存档和即时存档。若启用了 <a href="#112-游戏和存档放同一个文件夹">ROM 同目录存档</a>，这些文件需要自己手动复制整个文件夹来备份。</li>
 </ul>
 <p class="spacer"></p>
 <h2 id="section-20">19. AI 画面翻译</h2>
@@ -415,6 +458,9 @@
 <li><strong>按键误触 / 手感差</strong>：进「键位」重排并调不透明度；手柄用户开「识别实体按键时隐藏虚拟按键」。</li>
 <li><strong>画面糊 / 锯齿</strong>：开「整数缩放」+ 选 HQ2x / 4xBR 等插值滤镜；非整数屏可用「锐利插值」。</li>
 <li><strong>权限提示</strong>：首次打开游戏会请求文件访问，请允许，否则存档写不进去。</li>
+<li><strong>自己建的文件夹扫不到游戏</strong>：确认已在 <strong>设置 → ROM 文件夹</strong> 添加该目录、路径是真实绝对路径（系统选择器给不出路径时改用「手动输入路径」），并允许「所有文件访问权限」；添加后点「扫描 ROM」。子目录最多向下找 3 层。</li>
+<li><strong>同目录的存档没被读到</strong>：存档必须和 ROM <strong>同名、同目录</strong>（<code>游戏.gba</code> ↔ <code>游戏.sav</code> / <code>游戏.ss1</code>），扩展名用 <code>.sav</code> / <code>.srm</code> / <code>.sa1</code>～<code>.sa4</code> / <code>.ss0</code>～<code>.ss9</code>，且文件不能是 0 字节。命中后游戏库会标注「[同目录有存档]」，没标就是没认出来。</li>
+<li><strong>倒带快捷键不见了 / 想改秒数</strong>：到 <strong>设置 → 输入 → 虚拟按键开关</strong> 重新勾选「倒带快捷键（点一次 2 秒）」；秒数在「倒带快捷键：N 秒 / 点一次」里改（1～10 秒）。菜单「倒带」和掌机 ⏪ 的用法没变，仍是展开秒数条。</li>
 </ul>
 <p class="spacer"></p>
 <p class="callout">&nbsp;&nbsp;<strong>开源说明</strong>：本安卓移植跟随上游 mGBA，采用 Mozilla Public License 2.0。第三方代码（MIT / BSD / CC0 等）放在 <code>third-party</code>，许可证全文见仓库根目录 <code>LICENSE</code>。</p>
