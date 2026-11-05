@@ -624,7 +624,6 @@ static int holdTest() {
 		long long crossings = 0;
 		int16_t prev = 0;
 		double lastFeed = 0.0;
-		int dbgCalls = 0;
 		QElapsedTimer clock;
 		clock.start();
 
@@ -671,13 +670,6 @@ static int holdTest() {
 				out += avail;
 			}
 			QThread::msleep(2);
-			++dbgCalls;
-			if ((dbgCalls % 200) == 0) {
-				qInfo().noquote() << QString("  [dbg] mode %1 calls %2 wall %3 out %4 acc %5 in %6 lastTime %7")
-				                     .arg(mode).arg(dbgCalls).arg(clock.elapsed() / 1000.0, 0, 'f', 2)
-				                     .arg(out / double(rate), 0, 'f', 2).arg(stretch.wsolaOutAcc, 0, 'f', 1)
-				                     .arg(mAudioBufferAvailable(&stretch.wsolaIn)).arg(stretch.wsolaLastTime, 0, 'f', 3);
-			}
 		}
 
 		double wall = clock.elapsed() / 1000.0;
