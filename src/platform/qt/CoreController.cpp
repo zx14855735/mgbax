@@ -638,8 +638,30 @@ void CoreController::setAudioHoldMode(int mode) {
 	if (mode < 0 || mode > 2) {
 		mode = 0;
 	}
+	if (m_audioHoldMode == mode) {
+		return;
+	}
 	m_audioHoldMode = mode;
 	featureSettings().setValue("audioHoldMode", mode);
+	// The fast-forward pacing depends on the mode (the music feature turns the
+	// free-running fast-forward into a controlled one), so re-apply it now.
+	if (m_fastForward || m_fastForwardForced) {
+		updateFastForward();
+	}
+}
+
+void CoreController::setAudioHoldRatio(double ratio) {
+	if (ratio < 1.5 || ratio > 32.0) {
+		return;
+	}
+	if (fabs(ratio - m_audioHoldRatio) < 0.01) {
+		return;
+	}
+	m_audioHoldRatio = ratio;
+	featureSettings().setValue("audioHoldRatio", ratio);
+	if (m_fastForward || m_fastForwardForced) {
+		updateFastForward();
+	}
 }
 
 void CoreController::audioHoldState(bool* on, double* stretch) const {
@@ -649,10 +671,16 @@ void CoreController::audioHoldState(bool* on, double* stretch) const {
 		}
 		return;
 	}
-	// Take the ratio from the sync target the frontend actually pushed: that
-	// covers both the held key and the toggled "Fast forward" item, and it is
-	// already clamped by whatever ratio the config resolved to.
-	double ratio = m_fpsTarget > 0 ? m_threadContext.impl->sync.fpsTarget / m_fpsTarget : 0.0;
+	// The stretch factor must equal how much faster the game is really running,
+	// because that is how much surplus audio the stretcher has to absorb. The
+	// core is paced to sync.fpsTarget, so the factor is fpsTarget / nativeFps -
+	// not fpsTarget / m_fpsTarget, which would be off by the difference between
+	// the configured 60 and the real 59.7275.
+	double ratio = 0.0;
+	mCore* core = m_threadContext.core;
+	if (core && m_threadContext.impl->sync.fpsTarget > 0) {
+		ratio = 1.0 / mCoreCalculateFramerateRatio(core, m_threadContext.impl->sync.fpsTarget);
+	}
 	if (ratio <= 1.01) {
 		if (on) {
 			*on = false;
@@ -672,6 +700,10 @@ void CoreController::applyPersistedFeatures() {
 	m_audioHoldMode = settings.value("audioHoldMode", 0).toInt();
 	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
 		m_audioHoldMode = 0;
+	}
+	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
+	if (m_audioHoldRatio < 1.5 || m_audioHoldRatio > 32.0) {
+		m_audioHoldRatio = 4.0;
 	}
 	QByteArray stored = settings.value("channelGains").value<QByteArray>();
 	if (stored.size() == int(6 * sizeof(int))) {
@@ -1580,9 +1612,17 @@ void CoreController::updateFastForward() {
 		m_threadContext.core->opts.mute = m_fastForwardMute || m_mute;
 		setSync(false);
 
-		// If we aren't holding the fast forward button
-		// then use the non "(held)" ratio
-		if(!m_fastForward) {
+		// 倍速声音不变：把快进改成「固定倍率、由音频时钟驱动」的受控快进。
+		// 默认的快进是解除同步让核心全速跑：核心的音频环形缓冲以倍速产出，
+		// 而重采样器只按 1x 消费，缓冲溢出就丢样本，音乐于是变成断断续续的
+		// 「电音」。受控快进把核心产出速率钉死在已知倍率上，与拉伸引擎的
+		// 消耗速率一致，零丢弃，而且倍速可预期（不再取决于机器快慢）。
+		if (m_audioHoldMode != 0 && m_audioHoldRatio > 1.01) {
+			m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_audioHoldRatio;
+			m_threadContext.impl->sync.audioWait = true;
+		} else if (!m_fastForward) {
+			// If we aren't holding the fast forward button
+			// then use the non "(held)" ratio
 			if (m_fastForwardRatio > 0) {
 				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_fastForwardRatio;
 				m_threadContext.impl->sync.audioWait = true;

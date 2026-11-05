@@ -46,6 +46,10 @@ struct AudioStretch {
 	size_t wsolaHa;
 	size_t wsolaAnaPos;
 	size_t wsolaDropped;
+	// Real-time pacing for the WSOLA synthesis: frames of output the engine
+	// still owes the player, and the wall clock the debt is measured against.
+	double wsolaOutAcc;
+	double wsolaLastTime;
 	float* wsolaAcc;
 	int16_t* wsolaEmit;
 	int16_t* wsolaPrev;

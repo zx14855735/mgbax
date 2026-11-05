@@ -235,7 +235,11 @@ static size_t wsolaGenerate(struct AudioStretch* s, size_t want) {
 		tol = (int) (Ha / 2);
 	}
 
-	while (produced < want && ap + N <= available) {
+	/* Emit at most what this call was asked for, and never start a frame the
+	 * staging buffer cannot hold in full. The budget is expressed in whole
+	 * synthesis hops: a partial hop is not emitted but stays owed, so the
+	 * output rate tracks the wall clock exactly (see audioStretchProcess). */
+	while (produced + Hs <= want && ap + N <= available) {
 		if (holdCapacity - mAudioBufferAvailable(&s->audioHold) < Hs) {
 			break;
 		}
@@ -419,10 +423,16 @@ static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* so
 		s->natOutAcc += dt * (double) coreRate;
 	}
 	double acc = s->natOutAcc;
-	size_t budget = (size_t) acc;
-	s->natOutAcc = acc - (double) budget;
+	size_t owed = (size_t) acc;
+	s->natOutAcc = acc - (double) owed;
+	/* A long stall must not turn into a backlog of stale music. */
+	double maxOwed = (double) coreRate * 0.25;
+	if (s->natOutAcc > maxOwed) {
+		s->natOutAcc = maxOwed;
+	}
 
 	size_t have = s->natW - s->natR;
+	size_t budget = owed;
 	if (budget > have) {
 		budget = have;
 	}
@@ -463,6 +473,9 @@ static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* so
 		}
 	}
 	produced = s->natR - startR;
+	/* Whatever the staging buffer could not take stays owed: dropping it here
+	 * would make the music drift slower than real time, call after call. */
+	s->natOutAcc += (double) (owed - produced);
 	return produced;
 }
 
@@ -492,13 +505,42 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 		s->natPrimed = 0;
 		s->natOutAcc = 0.0;
 		s->natLastTime = 0.0;
+		s->wsolaOutAcc = 0.0;
+		s->wsolaLastTime = 0.0;
 		s->clearPending = false;
 	}
 	if (s->mode == AUDIO_STRETCH_NATIVE) {
 		nativeHoldGenerate(s, source, want, coreRate);
 	} else {
 		wsolaFeed(s, source);
-		wsolaGenerate(s, want);
+		/* Pace the synthesis to real time: the stretcher must hand out
+		 * exactly one frame per core sample of wall clock, no matter how fast
+		 * the game runs. Over-producing would fill the staging buffer, stall
+		 * the synthesis, and the core's own audio ring would then overflow and
+		 * drop samples - the gappy "electric" artefact this feature exists to
+		 * remove. Whole synthesis hops (Hs frames) are emitted, so the
+		 * remainder stays owed and is carried into the next call. */
+		double now = stretchNow();
+		double dt = now - s->wsolaLastTime;
+		s->wsolaLastTime = now;
+		if (dt > 0.0 && dt < 0.5) {
+			s->wsolaOutAcc += dt * (double) coreRate;
+		}
+		/* A long stall (window dragged, game paused) must not turn into a
+		 * backlog of stale music: cap what the engine may owe. */
+		double maxOwed = (double) coreRate * 0.25;
+		if (s->wsolaOutAcc > maxOwed) {
+			s->wsolaOutAcc = maxOwed;
+		}
+		size_t budget = (size_t) s->wsolaOutAcc;
+		if (budget > want) {
+			budget = want;
+		}
+		size_t made = wsolaGenerate(s, budget);
+		s->wsolaOutAcc -= (double) made;
+		if (s->wsolaOutAcc < 0.0) {
+			s->wsolaOutAcc = 0.0;
+		}
 	}
 	return &s->audioHold;
 }

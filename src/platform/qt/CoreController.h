@@ -248,6 +248,11 @@ public slots:
 	// Android mobile layer's audio engine ----
 	void setAudioHoldMode(int mode);
 	int audioHoldMode() const { return m_audioHoldMode; }
+	// The controlled fast-forward multiplier used while the music feature is
+	// on: the core is paced at exactly this speed, so its audio output rate is
+	// known and nothing has to be dropped to keep it.
+	void setAudioHoldRatio(double ratio);
+	double audioHoldRatio() const { return m_audioHoldRatio; }
 	// Called from the audio thread every pull; cheap atomic-free reads.
 	void audioHoldState(bool* on, double* stretch) const;
 
@@ -383,6 +388,7 @@ private:
 	int32_t m_gbPalette[12] = {};
 #endif
 	int m_audioHoldMode = 0;
+	double m_audioHoldRatio = 4.0;
 
 #ifdef ENABLE_DEBUGGERS
 	std::shared_ptr<MemoryAccessLogController> m_malController;

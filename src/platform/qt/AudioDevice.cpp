@@ -79,7 +79,7 @@ void AudioDevice::pumpAudio() {
 	if (m_controller) {
 		m_controller->audioHoldState(&holdOn, &holdStretch);
 	}
-	size_t want = 512;
+	size_t want = 4096;
 	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
 	struct mAudioBuffer* src = audioStretchProcess(&m_stretch, coreBuffer, coreRate, holdOn, holdStretch, want);
 	/* 倍速声音不变开启时，WSOLA/保持引擎已把核心音频压成 1x 的 audioHold，
@@ -178,22 +178,25 @@ void AudioDevice::update() {
 void AudioDevice::adjustResampler() {
 	mCore* core = m_context->core;
 	double fauxClock = mCoreCalculateFramerateRatio(m_context->core, m_context->impl->sync.fpsTarget);
-	/* 倍速声音不变开启时，目标速率必须归一为 1x：拉伸后的音频已是 1x，
-	 * 若仍按快进倍速（fpsTarget）设目标速率，会把它当倍速重放成电音。 */
 	bool holdOn = false;
 	double holdStretch = 1.0;
 	if (m_controller) {
 		m_controller->audioHoldState(&holdOn, &holdStretch);
 	}
-	if (holdOn) {
-		fauxClock = 1.0;
-	}
-	mAudioResamplerSetDestination(&m_resampler, &m_buffer, m_format.sampleRate() * fauxClock);
+	/* The high water mark lives in the core's own audio ring, so it is scaled
+	 * by the real speed ratio: the core is paced at fauxClock times the native
+	 * rate, and the ring must hold enough wall-clock buffering for that. */
 	m_context->impl->sync.audioHighWater = m_samples + m_resampler.highWaterMark + m_resampler.lowWaterMark;
 	m_context->impl->sync.audioHighWater *= core->audioSampleRate(core) / (m_format.sampleRate() * fauxClock);
+	/* The destination rate is a different question: with 倍速声音不变 the
+	 * staged audio is already at the console's own rate, so the resampler must
+	 * convert it at 1x - replaying 1x audio at the fast-forward rate is what
+	 * made it come out pitched up and gappy ("电音"). */
+	mAudioResamplerSetDestination(&m_resampler, &m_buffer, m_format.sampleRate() * (holdOn ? 1.0 : fauxClock));
 
-	if (m_resampler.source) {
-		size_t destSize = mAudioBufferCapacity(m_resampler.source);
+	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
+	if (coreBuffer) {
+		size_t destSize = mAudioBufferCapacity(coreBuffer);
 		if (m_context->impl->sync.audioHighWater >= destSize) {
 			m_context->impl->sync.audioHighWater = destSize;
 		}

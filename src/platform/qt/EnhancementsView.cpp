@@ -25,6 +25,8 @@
 
 #include <mgba-util/vfs.h>
 
+#include <cmath>
+
 using namespace QGBA;
 
 namespace {
@@ -58,6 +60,11 @@ const char* const VOLUME_NAMES[] = {
 	"通道 1（方波）", "通道 2（方波）", "通道 3（波形）", "通道 4（噪声）", "DMA A（音乐）", "DMA B（音效）",
 };
 
+// Controlled fast-forward multipliers offered while 倍速声音不变 is on. The
+// core is paced at exactly this speed so its audio output rate is known and
+// the surplus can be absorbed without dropping a single sample.
+const double HOLD_RATIOS[] = {2.0, 3.0, 4.0, 6.0, 8.0};
+
 }
 
 EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
@@ -87,6 +94,11 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	m_hold->addItem(tr("恒定音调（WSOLA 拉伸）"));
 	m_hold->addItem(tr("音乐原速（整段切割）"));
 	form->addRow(tr("快进音乐"), m_hold);
+	m_ratio = new QComboBox;
+	for (double ratio : HOLD_RATIOS) {
+		m_ratio->addItem(tr("%1×").arg(ratio, 0, 'g', 2));
+	}
+	form->addRow(tr("快进倍率"), m_ratio);
 	m_palette = new QComboBox;
 	m_palette->addItem(tr("核心默认（不覆盖）"));
 	for (int i = 0; i < 14; ++i) {
@@ -119,6 +131,7 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 
 	connect(m_palette, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyPalette);
 	connect(m_hold, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyHold);
+	connect(m_ratio, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyRatio);
 	connect(m_solar, &QSlider::valueChanged, this, &EnhancementsView::applySolar);
 	connect(m_rumble, &QCheckBox::toggled, this, &EnhancementsView::applyRumble);
 	connect(m_backup, &QAbstractButton::clicked, this, &EnhancementsView::backupNow);
@@ -149,6 +162,13 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	m_solar->setValue(m_controller->solarLevel());
 	m_rumble->setChecked(m_controller->cartRumble());
 	m_hold->setCurrentIndex(m_controller->audioHoldMode());
+	double ratio = m_controller->audioHoldRatio();
+	for (int i = 0; i < int(sizeof(HOLD_RATIOS) / sizeof(HOLD_RATIOS[0])); ++i) {
+		if (fabs(HOLD_RATIOS[i] - ratio) < 0.01) {
+			m_ratio->setCurrentIndex(i);
+			break;
+		}
+	}
 	m_updating = false;
 }
 
@@ -157,6 +177,16 @@ void EnhancementsView::applyHold(int index) {
 		return;
 	}
 	m_controller->setAudioHoldMode(index);
+}
+
+void EnhancementsView::applyRatio(int index) {
+	if (m_updating || !m_controller) {
+		return;
+	}
+	if (index < 0 || index >= int(sizeof(HOLD_RATIOS) / sizeof(HOLD_RATIOS[0]))) {
+		return;
+	}
+	m_controller->setAudioHoldRatio(HOLD_RATIOS[index]);
 }
 
 void EnhancementsView::applyVolumes() {
