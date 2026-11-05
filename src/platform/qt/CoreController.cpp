@@ -642,7 +642,7 @@ void CoreController::setAudioHoldMode(int mode) {
 		return;
 	}
 	m_audioHoldMode = mode;
-	featureSettings().setValue("audioHoldMode3", mode);
+	featureSettings().setValue("audioHoldMode4", mode);
 	syncAudioHold();
 	// The fast-forward pacing depends on the mode (the music feature turns the
 	// free-running fast-forward into a controlled one), so re-apply it now.
@@ -747,15 +747,16 @@ void CoreController::audioHoldState(bool* on, double* stretch, double* rate) con
 
 void CoreController::applyPersistedFeatures() {
 	QSettings& settings = featureSettings();
-	/* The key was renamed (audioHoldMode2 -> audioHoldMode3) to force the new
-	 * default for existing configs. The default is now the NATIVE mode
-	 * (audioHoldMode 2): it plays the console audio bit-for-bit at 1x and only
-	 * skips during silent gaps, so the timbre stays original (no WSOLA
-	 * coloration / "低沉"). WSOLA (mode 1) remains selectable for those who
-	 * prefer continuous stretch. */
-	m_audioHoldMode = settings.value("audioHoldMode3", 2).toInt();
+	/* The key was renamed (audioHoldMode3 -> audioHoldMode4) to force the new
+	 * default for existing configs. The default is back to the WSOLA mode
+	 * (audioHoldMode 1): it is the proven, stable path that keeps the music at
+	 * its own tempo during fast-forward without the native-cut ring logic,
+	 * which could drift and produce dead fast-forward audio. The NATIVE mode
+	 * (audioHoldMode 2) is still selectable for those who want bit-exact 1x
+	 * audio - its ring handling has been hardened. */
+	m_audioHoldMode = settings.value("audioHoldMode4", 1).toInt();
 	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
-		m_audioHoldMode = 2;
+		m_audioHoldMode = 1;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
 	/* 1x used to be offered as a fast-forward ratio, but it paced the core at
@@ -1690,11 +1691,6 @@ void CoreController::updateFastForward() {
 			double nativeFps = m_threadContext.core ? mCoreCalculateFramerateRatio(m_threadContext.core, 1.0) : 0.0;
 			double base = (m_fpsTarget > 0 ? m_fpsTarget : nativeFps);
 			m_threadContext.impl->sync.fpsTarget = base * m_audioHoldRatio;
-			m_threadContext.impl->sync.audioWait = true;
-		} else if (m_audioHoldMode != 0) {
-			/* 1x: the game is not sped up at all, so there is no surplus for
-			 * the stretcher to absorb and the music needs no help. */
-			m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
 			m_threadContext.impl->sync.audioWait = true;
 		} else if (!m_fastForward) {
 			// If we aren't holding the fast forward button

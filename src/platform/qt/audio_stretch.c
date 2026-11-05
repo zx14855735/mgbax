@@ -52,7 +52,7 @@ static double stretchNow(void) {
 
 void audioStretchInit(struct AudioStretch* s) {
 	memset(s, 0, sizeof(*s));
-	s->mode = AUDIO_STRETCH_NATIVE;
+	s->mode = AUDIO_STRETCH_PITCH;
 }
 
 static void deinitHold(struct AudioStretch* s) {
@@ -386,10 +386,15 @@ static void nativeHoldCut(struct AudioStretch* s, size_t need, unsigned coreRate
 		quiet = 16;
 	}
 	if (landMax < landMin) {
-		/* Degenerate (need larger than the backlog can spare): fall back to
-		 * the plain drop-to-fit so the ring invariant always holds. */
+		/* Degenerate (need larger than the backlog can spare): drop the whole
+		 * pending backlog so the ring invariant (natR <= natW) always holds.
+		 * The previous code advanced natR to landMin == natR + need, which can
+		 * exceed natW and make `have = natW - natR` underflow to a huge number;
+		 * the playback head then drifts into unwritten ring space and the
+		 * fast-forward audio stays dead/garbled. Dropping to natW is the safe
+		 * fallback. */
 		s->natLagDrops += need;
-		s->natR = landMin;
+		s->natR = s->natW;
 		s->natPrimed = 0;
 		++s->natCuts;
 		return;

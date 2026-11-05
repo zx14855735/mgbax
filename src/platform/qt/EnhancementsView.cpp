@@ -98,8 +98,8 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	QFormLayout* form = new QFormLayout;
 	m_hold = new QComboBox;
 	m_hold->addItem(tr("变调（跟随游戏加速，原版行为）"));
-	m_hold->addItem(tr("音乐连续不变速（WSOLA 拉伸，高倍速下音色略闷）"));
-	m_hold->addItem(tr("原音高但跳段（推荐·整段切割，原声原调）"));
+	m_hold->addItem(tr("音乐连续不变速（WSOLA 拉伸，默认·高倍速下音色略闷）"));
+	m_hold->addItem(tr("原音高但跳段（整段切割，原声原调，跳段可能不连贯）"));
 	m_hold->setToolTip(tr("快进时音乐怎么办：\n"
 	                       "· 连续不变速：整首曲子按原速连续播放，只有音高不变。\n"
 	                       "· 原音高但跳段：每个音符音高不变，但 4 倍速下必须丢掉 3/4 的曲子，\n"
