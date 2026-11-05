@@ -380,7 +380,7 @@ static void nativeHoldCut(struct AudioStretch* s, size_t need, unsigned coreRate
 	++s->natCuts;
 }
 
-static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* source, size_t want, unsigned coreRate) {
+static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* source, size_t want, unsigned coreRate, double rate) {
 	size_t cap = s->natRingCap;
 	size_t holdCap = mAudioBufferCapacity(&s->audioHold);
 	size_t holdAvail = mAudioBufferAvailable(&s->audioHold);
@@ -420,7 +420,7 @@ static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* so
 	double dt = now - s->natLastTime;
 	s->natLastTime = now;
 	if (dt > 0.0 && dt < 0.5) {
-		s->natOutAcc += dt * (double) coreRate;
+		s->natOutAcc += dt * (double) coreRate * rate;
 	}
 	double acc = s->natOutAcc;
 	size_t owed = (size_t) acc;
@@ -480,7 +480,7 @@ static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* so
 }
 
 struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBuffer* source,
-                                         unsigned coreRate, bool holdOn, double stretch, size_t want) {
+                                         unsigned coreRate, bool holdOn, double stretch, double rate, size_t want) {
 	if (!holdOn || !coreRate || stretch < 1.001) {
 		/* Disengaged (or too slow to matter): anything staged under the last
 		 * engagement must not replay on the next one. The clear itself is
@@ -490,6 +490,9 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 			s->clearPending = true;
 		}
 		return source;
+	}
+	if (rate < 0.05) {
+		rate = 1.0;
 	}
 	initHold(s, coreRate, stretch);
 	if (!s->inited) {
@@ -510,7 +513,7 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 		s->clearPending = false;
 	}
 	if (s->mode == AUDIO_STRETCH_NATIVE) {
-		nativeHoldGenerate(s, source, want, coreRate);
+		nativeHoldGenerate(s, source, want, coreRate, rate);
 	} else {
 		wsolaFeed(s, source);
 		/* Pace the synthesis to real time: the stretcher must hand out
@@ -519,12 +522,13 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 		 * the synthesis, and the core's own audio ring would then overflow and
 		 * drop samples - the gappy "electric" artefact this feature exists to
 		 * remove. Whole synthesis hops (Hs frames) are emitted, so the
-		 * remainder stays owed and is carried into the next call. */
+		 * remainder stays owed and is carried into the next call. The tempo
+		 * the music ends up playing at scales the whole budget. */
 		double now = stretchNow();
 		double dt = now - s->wsolaLastTime;
 		s->wsolaLastTime = now;
 		if (dt > 0.0 && dt < 0.5) {
-			s->wsolaOutAcc += dt * (double) coreRate;
+			s->wsolaOutAcc += dt * (double) coreRate * rate;
 		}
 		/* A long stall (window dragged, game paused) must not turn into a
 		 * backlog of stale music: cap what the engine may owe. */

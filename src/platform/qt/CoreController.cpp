@@ -651,7 +651,7 @@ void CoreController::setAudioHoldMode(int mode) {
 }
 
 void CoreController::setAudioHoldRatio(double ratio) {
-	if (ratio < 1.5 || ratio > 32.0) {
+	if (ratio < 1.0 || ratio > 32.0) {
 		return;
 	}
 	if (fabs(ratio - m_audioHoldRatio) < 0.01) {
@@ -664,24 +664,37 @@ void CoreController::setAudioHoldRatio(double ratio) {
 	}
 }
 
-void CoreController::audioHoldState(bool* on, double* stretch) const {
+void CoreController::setAudioHoldRate(double rate) {
+	if (rate < 0.5 || rate > 4.0) {
+		return;
+	}
+	if (fabs(rate - m_audioHoldRate) < 0.01) {
+		return;
+	}
+	m_audioHoldRate = rate;
+	featureSettings().setValue("audioHoldRate", rate);
+}
+
+void CoreController::audioHoldState(bool* on, double* stretch, double* rate) const {
 	if (m_audioHoldMode == 0 || !(m_fastForward || m_fastForwardForced)) {
 		if (on) {
 			*on = false;
 		}
 		return;
 	}
-	// The stretch factor must equal how much faster the game is really running,
-	// because that is how much surplus audio the stretcher has to absorb. The
-	// core is paced to sync.fpsTarget, so the factor is fpsTarget / nativeFps -
-	// not fpsTarget / m_fpsTarget, which would be off by the difference between
+	// How much faster the game is really running: the core is paced to
+	// sync.fpsTarget, so that is fpsTarget / nativeFps - not
+	// fpsTarget / m_fpsTarget, which would be off by the difference between
 	// the configured 60 and the real 59.7275.
-	double ratio = 0.0;
+	double speed = 0.0;
 	mCore* core = m_threadContext.core;
 	if (core && m_threadContext.impl->sync.fpsTarget > 0) {
-		ratio = 1.0 / mCoreCalculateFramerateRatio(core, m_threadContext.impl->sync.fpsTarget);
+		speed = 1.0 / mCoreCalculateFramerateRatio(core, m_threadContext.impl->sync.fpsTarget);
 	}
-	if (ratio <= 1.01) {
+	if (!(speed > 1.05 && speed < 64.0)) {
+		/* The frame timing is unusable (or the game is not actually
+		 * speeding up). Either way there is no surplus to absorb, so the
+		 * music must not be stretched. */
 		if (on) {
 			*on = false;
 		}
@@ -690,8 +703,20 @@ void CoreController::audioHoldState(bool* on, double* stretch) const {
 	if (on) {
 		*on = true;
 	}
+	/* The music may play faster than its own tempo, but never slower than the
+	 * game runs - slowing it down would need compression, not stretching. */
+	double musicRate = m_audioHoldRate > 0.05 ? m_audioHoldRate : 1.0;
+	if (musicRate > speed) {
+		musicRate = speed;
+	}
+	if (rate) {
+		*rate = musicRate;
+	}
 	if (stretch) {
-		*stretch = ratio;
+		/* The surplus has to be compressed by this much: the game runs at
+		 * `speed`, the music plays at `musicRate`, so the stretcher has to
+		 * absorb the difference. */
+		*stretch = speed / musicRate;
 	}
 }
 
@@ -707,8 +732,12 @@ void CoreController::applyPersistedFeatures() {
 		m_audioHoldMode = 1;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
-	if (m_audioHoldRatio < 1.5 || m_audioHoldRatio > 32.0) {
+	if (m_audioHoldRatio < 1.0 || m_audioHoldRatio > 32.0) {
 		m_audioHoldRatio = 4.0;
+	}
+	m_audioHoldRate = settings.value("audioHoldRate", 1.0).toDouble();
+	if (m_audioHoldRate < 0.5 || m_audioHoldRate > 4.0) {
+		m_audioHoldRate = 1.0;
 	}
 	QByteArray stored = settings.value("channelGains").value<QByteArray>();
 	if (stored.size() == int(6 * sizeof(int))) {
@@ -1624,6 +1653,11 @@ void CoreController::updateFastForward() {
 		// 消耗速率一致，零丢弃，而且倍速可预期（不再取决于机器快慢）。
 		if (m_audioHoldMode != 0 && m_audioHoldRatio > 1.01) {
 			m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_audioHoldRatio;
+			m_threadContext.impl->sync.audioWait = true;
+		} else if (m_audioHoldMode != 0) {
+			/* 1x: the game is not sped up at all, so there is no surplus for
+			 * the stretcher to absorb and the music needs no help. */
+			m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
 			m_threadContext.impl->sync.audioWait = true;
 		} else if (!m_fastForward) {
 			// If we aren't holding the fast forward button

@@ -92,20 +92,23 @@ void AudioDevice::pumpAudio() {
 	unsigned coreRate = core->audioSampleRate(core);
 	bool holdOn = false;
 	double holdStretch = 1.0;
+	double holdRate = 1.0;
 	if (m_controller) {
-		m_controller->audioHoldState(&holdOn, &holdStretch);
+		m_controller->audioHoldState(&holdOn, &holdStretch, &holdRate);
 	}
 	size_t want = 4096;
 	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
-	struct mAudioBuffer* src = audioStretchProcess(&m_stretch, coreBuffer, coreRate, holdOn, holdStretch, want);
+	struct mAudioBuffer* src = audioStretchProcess(&m_stretch, coreBuffer, coreRate, holdOn, holdStretch, holdRate, want);
 	/* 倍速声音不变开启时，WSOLA/保持引擎已把核心音频压成 1x 的 audioHold，
 	 * 重采样器必须按 1x 目标速率播放；否则这段 1x 音频会被再按倍速重放，
 	 * 表现为音调抬高、断续的「电音」。普通快进（holdOn 为假）仍走原 fauxClock
-	 * 路径：核心以倍速灌入、重采样器以倍速消费，音调保持不变。 */
+	 * 路径：核心以倍速灌入、重采样器以倍速消费，音调保持不变。
+	 * 音乐自身的速度由 holdRate 决定：源速率同步放大，音高不变、速度即倍率。 */
 	double fauxClock = holdOn ? 1.0
 	                         : mCoreCalculateFramerateRatio(core, m_context->impl->sync.fpsTarget);
+	double sourceRate = holdOn ? coreRate * holdRate : coreRate;
 	size_t diagBefore = mAudioBufferAvailable(&m_buffer);
-	mAudioResamplerSetSource(&m_resampler, src, coreRate, true);
+	mAudioResamplerSetSource(&m_resampler, src, sourceRate, true);
 	mAudioResamplerSetDestination(&m_resampler, &m_buffer, m_format.sampleRate() * fauxClock);
 	mAudioResamplerProcess(&m_resampler);
 	/* TEMP DIAGNOSTIC: measure the pitch of what actually reaches the device,
@@ -228,8 +231,9 @@ void AudioDevice::adjustResampler() {
 	double fauxClock = mCoreCalculateFramerateRatio(m_context->core, m_context->impl->sync.fpsTarget);
 	bool holdOn = false;
 	double holdStretch = 1.0;
+	double holdRate = 1.0;
 	if (m_controller) {
-		m_controller->audioHoldState(&holdOn, &holdStretch);
+		m_controller->audioHoldState(&holdOn, &holdStretch, &holdRate);
 	}
 	/* The high water mark lives in the core's own audio ring, so it is scaled
 	 * by the real speed ratio: the core is paced at fauxClock times the native
@@ -245,8 +249,17 @@ void AudioDevice::adjustResampler() {
 	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
 	if (coreBuffer) {
 		size_t destSize = mAudioBufferCapacity(coreBuffer);
-		if (m_context->impl->sync.audioHighWater >= destSize) {
-			m_context->impl->sync.audioHighWater = destSize;
+		/* Keep the high water mark below the core ring's capacity, with
+		 * headroom: the emulation thread only blocks once the ring reaches
+		 * the mark, so a mark at (or above) the capacity would let the ring
+		 * overflow first and the samples would be dropped - the "electric"
+		 * artefact. */
+		size_t limit = destSize - (destSize >> 2);
+		if (limit < 16) {
+			limit = destSize;
+		}
+		if (m_context->impl->sync.audioHighWater >= limit) {
+			m_context->impl->sync.audioHighWater = limit;
 		}
 	}
 }

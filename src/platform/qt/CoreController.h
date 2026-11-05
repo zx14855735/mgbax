@@ -253,8 +253,15 @@ public slots:
 	// known and nothing has to be dropped to keep it.
 	void setAudioHoldRatio(double ratio);
 	double audioHoldRatio() const { return m_audioHoldRatio; }
+	// How fast the music itself plays during fast-forward: 1 = its own
+	// tempo (the tune is stretched back to normal), 2 = twice as fast (less
+	// stretching, more of the tune squeezed in).
+	void setAudioHoldRate(double rate);
+	double audioHoldRate() const { return m_audioHoldRate; }
 	// Called from the audio thread every pull; cheap atomic-free reads.
-	void audioHoldState(bool* on, double* stretch) const;
+	// `stretch` is how much the surplus has to be compressed by, `rate` is
+	// the tempo the music ends up playing at.
+	void audioHoldState(bool* on, double* stretch, double* rate) const;
 
 	void setAVStream(mAVStream*);
 	void clearAVStream();
@@ -389,6 +396,7 @@ private:
 #endif
 	int m_audioHoldMode = 1;
 	double m_audioHoldRatio = 4.0;
+	double m_audioHoldRate = 1.0;
 
 #ifdef ENABLE_DEBUGGERS
 	std::shared_ptr<MemoryAccessLogController> m_malController;

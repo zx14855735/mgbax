@@ -85,10 +85,11 @@ void audioStretchReset(struct AudioStretch* s);
  * the buffer the resampler should read from: `source` itself when disengaged,
  * the staged `audioHold` buffer when engaged (consume it one-for-one at the
  * console's own rate). `want` is the resampler's immediate appetite in frames;
- * `stretch` is the fast-forward multiplier.
+ * `stretch` is the fast-forward multiplier, and `rate` is how fast the music
+ * itself should play (1 = its own tempo).
  */
 struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBuffer* source,
-                                         unsigned coreRate, bool holdOn, double stretch, size_t want);
+                                         unsigned coreRate, bool holdOn, double stretch, double rate, size_t want);
 
 /** Diagnostics: frames the stretcher had to discard (0 is healthy). */
 size_t audioStretchDropped(const struct AudioStretch* s);

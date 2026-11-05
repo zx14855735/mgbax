@@ -62,8 +62,14 @@ const char* const VOLUME_NAMES[] = {
 
 // Controlled fast-forward multipliers offered while 倍速声音不变 is on. The
 // core is paced at exactly this speed so its audio output rate is known and
-// the surplus can be absorbed without dropping a single sample.
-const double HOLD_RATIOS[] = {2.0, 3.0, 4.0, 6.0, 8.0};
+// the surplus can be absorbed without dropping a single sample. 1x means the
+// game is not sped up at all.
+const double HOLD_RATIOS[] = {1.0, 2.0, 3.0, 4.0, 6.0, 8.0};
+
+// How fast the music itself plays during fast-forward. 1x is the tune's own
+// tempo (everything is stretched back to normal); higher values play the
+// music faster, which needs less stretching and keeps more of the tune.
+const double HOLD_RATES[] = {1.0, 1.5, 2.0, 3.0};
 
 }
 
@@ -102,9 +108,18 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	for (double ratio : HOLD_RATIOS) {
 		m_ratio->addItem(tr("%1×").arg(ratio, 0, 'g', 2));
 	}
-	m_ratio->setToolTip(tr("开启「倍速音乐」后，快进按此倍率受控运行。\n"
-	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。"));
+	m_ratio->setToolTip(tr("开启「倍速音乐」后，游戏按此倍率受控快进。\n"
+	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。\n"
+	                       "1× = 快进时不加速游戏。"));
 	form->addRow(tr("快进倍率"), m_ratio);
+	m_rate = new QComboBox;
+	for (double rate : HOLD_RATES) {
+		m_rate->addItem(tr("%1×").arg(rate, 0, 'g', 2));
+	}
+	m_rate->setToolTip(tr("快进时音乐本身的播放速度。\n"
+	                      "1× = 音乐保持原速（原声原调），这是最自然的听感。\n"
+	                      "更高的倍率让音乐加快，拉伸量更小、保留的旋律更多。"));
+	form->addRow(tr("音乐速度"), m_rate);
 	m_palette = new QComboBox;
 	m_palette->addItem(tr("核心默认（不覆盖）"));
 	for (int i = 0; i < 14; ++i) {
@@ -138,6 +153,7 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	connect(m_palette, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyPalette);
 	connect(m_hold, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyHold);
 	connect(m_ratio, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyRatio);
+	connect(m_rate, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &EnhancementsView::applyRate);
 	connect(m_solar, &QSlider::valueChanged, this, &EnhancementsView::applySolar);
 	connect(m_rumble, &QCheckBox::toggled, this, &EnhancementsView::applyRumble);
 	connect(m_backup, &QAbstractButton::clicked, this, &EnhancementsView::backupNow);
@@ -175,6 +191,13 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 			break;
 		}
 	}
+	double rate = m_controller->audioHoldRate();
+	for (int i = 0; i < int(sizeof(HOLD_RATES) / sizeof(HOLD_RATES[0])); ++i) {
+		if (fabs(HOLD_RATES[i] - rate) < 0.01) {
+			m_rate->setCurrentIndex(i);
+			break;
+		}
+	}
 	m_updating = false;
 }
 
@@ -193,6 +216,16 @@ void EnhancementsView::applyRatio(int index) {
 		return;
 	}
 	m_controller->setAudioHoldRatio(HOLD_RATIOS[index]);
+}
+
+void EnhancementsView::applyRate(int index) {
+	if (m_updating || !m_controller) {
+		return;
+	}
+	if (index < 0 || index >= int(sizeof(HOLD_RATES) / sizeof(HOLD_RATES[0]))) {
+		return;
+	}
+	m_controller->setAudioHoldRate(HOLD_RATES[index]);
 }
 
 void EnhancementsView::applyVolumes() {

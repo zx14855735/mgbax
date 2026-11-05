@@ -35,6 +35,7 @@ private slots:
 	void applyPalette(int index);
 	void applyHold(int index);
 	void applyRatio(int index);
+	void applyRate(int index);
 	void applySolar(int value);
 	void applyRumble(bool enabled);
 	void backupNow();
@@ -49,6 +50,7 @@ private:
 	QComboBox* m_palette = nullptr;
 	QComboBox* m_hold = nullptr;
 	QComboBox* m_ratio = nullptr;
+	QComboBox* m_rate = nullptr;
 	QSlider* m_solar = nullptr;
 	QLabel* m_solarLabel = nullptr;
 	QCheckBox* m_rumble = nullptr;
