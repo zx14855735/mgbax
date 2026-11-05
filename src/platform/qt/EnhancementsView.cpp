@@ -98,6 +98,8 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	for (double ratio : HOLD_RATIOS) {
 		m_ratio->addItem(tr("%1×").arg(ratio, 0, 'g', 2));
 	}
+	m_ratio->setToolTip(tr("开启「倍速音乐」后，快进按此倍率受控运行。\n"
+	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。"));
 	form->addRow(tr("快进倍率"), m_ratio);
 	m_palette = new QComboBox;
 	m_palette->addItem(tr("核心默认（不覆盖）"));
