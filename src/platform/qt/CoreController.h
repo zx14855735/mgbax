@@ -387,7 +387,7 @@ private:
 	bool m_gbPaletteSet = false;
 	int32_t m_gbPalette[12] = {};
 #endif
-	int m_audioHoldMode = 0;
+	int m_audioHoldMode = 1;
 	double m_audioHoldRatio = 4.0;
 
 #ifdef ENABLE_DEBUGGERS

@@ -90,9 +90,13 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 
 	QFormLayout* form = new QFormLayout;
 	m_hold = new QComboBox;
-	m_hold->addItem(tr("变调（原版行为）"));
-	m_hold->addItem(tr("恒定音调（WSOLA 拉伸）"));
-	m_hold->addItem(tr("音乐原速（整段切割）"));
+	m_hold->addItem(tr("变调（跟随游戏加速，原版行为）"));
+	m_hold->addItem(tr("音乐连续不变速（推荐·WSOLA 拉伸）"));
+	m_hold->addItem(tr("原音高但跳段（整段切割，会跳过部分旋律）"));
+	m_hold->setToolTip(tr("快进时音乐怎么办：\n"
+	                       "· 连续不变速：整首曲子按原速连续播放，只有音高不变。\n"
+	                       "· 原音高但跳段：每个音符音高不变，但 4 倍速下必须丢掉 3/4 的曲子，\n"
+	                       "  旋律会明显往前赶，听起来仍像倍速。"));
 	form->addRow(tr("快进音乐"), m_hold);
 	m_ratio = new QComboBox;
 	for (double ratio : HOLD_RATIOS) {

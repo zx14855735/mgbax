@@ -51,6 +51,7 @@
 
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
+#include <mgba-util/audio-resampler.h>
 #include <mgba-util/vfs.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/sio.h>
@@ -724,6 +725,153 @@ static int holdTest() {
 	return failures;
 }
 
+/*
+ * Full-pipeline check for 倍速声音不变: a synthetic tone is pushed through
+ * the exact chain the Qt frontend uses - the core's ring -> the fast-forward
+ * stretcher -> the resampler -> the playback buffer - and the pitch of what
+ * comes out is measured.
+ *
+ * At 1x the tone must come out at its original pitch. At 4x, with the
+ * stretcher engaged, it must STILL come out at the original pitch (that is
+ * the whole point of the feature). At 4x without the stretcher the same
+ * stream must come out four times higher - that is the "music speeds up"
+ * complaint, and it is measured here as the baseline that proves this test
+ * can tell the two apart.
+ *
+ * The last scenario switches from 1x to 4x+stretcher mid-run, which is what
+ * the frontend actually does when fast-forward starts: the resampler keeps
+ * its fractional timestamp across the source switch, and a stale timestamp
+ * there silently swallows the start of the music.
+ */
+static int audioFfTest() {
+	const unsigned coreRate = 32768;
+	const unsigned deviceRate = 48000;
+	const double speed = 4.0;
+	const int runMs = 2400;
+	int failures = 0;
+
+	enum {
+		CASE_1X = 0,
+		CASE_4X_PLAIN = 1,
+		CASE_4X_STRETCH = 2,
+		CASE_SWITCH = 3,
+		CASE_4X_NATIVE = 4,
+	};
+
+	for (int scenario = CASE_1X; scenario <= CASE_4X_NATIVE; ++scenario) {
+		struct mAudioBuffer coreRing;
+		mAudioBufferInit(&coreRing, coreRate * 4, 2);
+		struct mAudioBuffer out;
+		mAudioBufferInit(&out, 0x4000, 2);
+		struct mAudioResampler resampler;
+		mAudioResamplerInit(&resampler, mINTERPOLATOR_SINC);
+		struct AudioStretch stretch;
+		audioStretchInit(&stretch);
+		audioStretchSetMode(&stretch, scenario == CASE_4X_NATIVE ? AUDIO_STRETCH_NATIVE : AUDIO_STRETCH_PITCH);
+
+		std::vector<int16_t> chunk(size_t(coreRate * 0.2) * 2);
+		std::vector<int16_t> drain(size_t(deviceRate * 0.2) * 2);
+		double phase = 0.0;
+		long long outSamples = 0;
+		long long crossings = 0;
+		int16_t prev = 0;
+		double lastFeed = 0.0;
+		double switchAt = runMs / 2000.0 / 2.0;
+		QElapsedTimer clock;
+		clock.start();
+
+		while (clock.elapsed() < runMs) {
+			double now = clock.elapsed() / 1000.0;
+			double dt = now - lastFeed;
+			if (dt <= 0.0) {
+				QThread::msleep(1);
+				continue;
+			}
+			lastFeed = now;
+			bool stretched = (scenario == CASE_4X_STRETCH)
+			                 || (scenario == CASE_SWITCH && now >= switchAt);
+			double factor = (scenario == CASE_1X || (scenario == CASE_SWITCH && !stretched)) ? 1.0 : speed;			size_t produce = size_t(factor * coreRate * dt);
+			if (produce > chunk.size() / 2) {
+				produce = chunk.size() / 2;
+			}
+			for (size_t i = 0; i < produce; ++i) {
+				int16_t v = (int16_t) (12000.0 * sin(phase));
+				chunk[i * 2] = v;
+				chunk[i * 2 + 1] = v;
+				phase += 2.0 * 3.14159265358979323846 * 440.0 / coreRate;
+			}
+			mAudioBufferWrite(&coreRing, chunk.data(), produce);
+
+			struct mAudioBuffer* src = &coreRing;
+			if (stretched) {
+				src = audioStretchProcess(&stretch, &coreRing, coreRate, true, speed, deviceRate);
+			}
+			/* The frontend's destination rate: 1x while the stretcher is on
+			 * (the staged audio is already at the console's own rate), and
+			 * the fast-forward ratio otherwise - which is what makes a plain
+			 * 4x fast-forward come out four times higher. */
+			double destRate = deviceRate;
+			if (scenario == CASE_4X_PLAIN) {
+				destRate = deviceRate / speed;
+			}
+			mAudioResamplerSetSource(&resampler, src, coreRate, true);
+			mAudioResamplerSetDestination(&resampler, &out, destRate);
+			mAudioResamplerProcess(&resampler);
+
+			// The device drains the playback buffer at its own rate.
+			size_t want = size_t(deviceRate * dt);
+			if (want > drain.size() / 2) {
+				want = drain.size() / 2;
+			}
+			size_t avail = mAudioBufferAvailable(&out);
+			if (avail > want) {
+				avail = want;
+			}
+			if (avail) {
+				mAudioBufferRead(&out, drain.data(), avail);
+				// Only measure the part of the run that matters: after the
+				// switch, the first scenario's samples would skew the pitch.
+				bool measure = (scenario != CASE_SWITCH) || stretched;
+				for (size_t i = 0; i < avail; ++i) {
+					int16_t s = drain[i * 2];
+					if (measure && ((prev < 0 && s >= 0) || (prev > 0 && s <= 0))) {
+						++crossings;
+					}
+					prev = s;
+				}
+				if (measure) {
+					outSamples += avail;
+				}
+			}
+			QThread::msleep(2);
+		}
+
+		double seconds = outSamples / double(deviceRate);
+		double pitch = seconds > 0.01 ? crossings / 2.0 / seconds : 0.0;
+		const char* names[] = { "1x", "4x plain", "4x stretcher", "1x->4x switch", "4x native" };
+		qInfo().noquote() << QString("AUDIO FF: %1: out %2 s, pitch ~%3 Hz, cuts %4")
+		                     .arg(names[scenario]).arg(seconds, 0, 'f', 2).arg(pitch, 0, 'f', 0)
+		                     .arg(audioStretchCuts(&stretch));
+		double expect = (scenario == CASE_4X_PLAIN) ? 440.0 * speed : 440.0;
+		if (pitch < expect * 0.9 || pitch > expect * 1.1) {
+			qWarning().noquote() << QString("AUDIO FF: %1 pitched %2 Hz, expected ~%3 Hz")
+			                        .arg(names[scenario]).arg(pitch, 0, 'f', 0).arg(expect, 0, 'f', 0);
+			++failures;
+		}
+		mAudioBufferDeinit(&coreRing);
+		mAudioBufferDeinit(&out);
+		mAudioResamplerDeinit(&resampler);
+		audioStretchDeinit(&stretch);
+	}
+
+	if (failures == 0) {
+		qInfo() << "AUDIO FF: PASS";
+	} else {
+		qInfo() << "AUDIO FF: FAIL" << failures;
+	}
+	return failures;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	QStringList args = app.arguments();
@@ -743,6 +891,9 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("hold")) {
 		return holdTest();
+	}
+	if (mode == QStringLiteral("audioff")) {
+		return audioFfTest();
 	}
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");

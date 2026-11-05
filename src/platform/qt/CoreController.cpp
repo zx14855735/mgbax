@@ -642,7 +642,7 @@ void CoreController::setAudioHoldMode(int mode) {
 		return;
 	}
 	m_audioHoldMode = mode;
-	featureSettings().setValue("audioHoldMode", mode);
+	featureSettings().setValue("audioHoldMode2", mode);
 	// The fast-forward pacing depends on the mode (the music feature turns the
 	// free-running fast-forward into a controlled one), so re-apply it now.
 	if (m_fastForward || m_fastForwardForced) {
@@ -697,9 +697,14 @@ void CoreController::audioHoldState(bool* on, double* stretch) const {
 
 void CoreController::applyPersistedFeatures() {
 	QSettings& settings = featureSettings();
-	m_audioHoldMode = settings.value("audioHoldMode", 0).toInt();
+	/* The key was renamed: the old "audioHoldMode" value could point at the
+	 * cut-a-section mode, which cannot keep a song at its own tempo (at 4x
+	 * it has to drop three quarters of the melody, so the tune races
+	 * forward). The default is now the WSOLA mode, which really does hold
+	 * the tempo. */
+	m_audioHoldMode = settings.value("audioHoldMode2", 1).toInt();
 	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
-		m_audioHoldMode = 0;
+		m_audioHoldMode = 1;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
 	if (m_audioHoldRatio < 1.5 || m_audioHoldRatio > 32.0) {
