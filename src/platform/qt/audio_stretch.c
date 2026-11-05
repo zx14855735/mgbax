@@ -452,6 +452,16 @@ static size_t nativeHoldGenerate(struct AudioStretch* s, struct mAudioBuffer* so
 		if (chunk > room) {
 			chunk = room;
 		}
+		/* The scratch buffer only holds so many frames: writing past it would
+		 * run off the end of the allocation (a crash that looks like the
+		 * emulator freezing). */
+		size_t scratchRoom = STRETCH_WSOLA_SCRATCH - done;
+		if (chunk > scratchRoom) {
+			chunk = scratchRoom;
+		}
+		if (!chunk) {
+			break;
+		}
 		for (size_t k = 0; k < chunk; ++k) {
 			int16_t l = s->natRing[(ridx + k) * 2];
 			int16_t r = s->natRing[(ridx + k) * 2 + 1];

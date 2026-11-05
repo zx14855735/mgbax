@@ -812,7 +812,7 @@ static int audioFfTest() {
 			double musicRate = (scenario == CASE_4X_RATE2) ? 2.0 : 1.0;
 			if (stretched) {
 				src = audioStretchProcess(&stretch, &coreRing, coreRate, true,
-				                         speed / musicRate, musicRate, deviceRate);
+				                         speed / musicRate, musicRate, 4096);
 			}
 			/* The frontend's destination rate: 1x while the stretcher is on
 			 * (the staged audio is already at the console's own rate), and
