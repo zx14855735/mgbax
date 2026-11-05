@@ -206,6 +206,25 @@ static void wsolaFeed(struct AudioStretch* s, struct mAudioBuffer* source) {
  * two is exactly the stretch: no section is ever dropped, so the tune never
  * jumps. Backpressure (stop, leave the input parked) keeps every hop intact.
  */
+/* Normalised cross-correlation between the reference tail `prev` (the samples
+ * just emitted) and the input window starting at analysis offset `d`. Returns a
+ * value in [-1, 1]; the caller keeps the highest. Pulled out as a helper so the
+ * two-stage phase search can run the same inner loop twice (coarse then fine)
+ * without duplicating it. */
+static float wsolaCorrelate(struct mAudioBuffer* in, const int16_t* prev, int d, size_t ref) {
+	long long dot = 0, e1 = 0, e2 = 0;
+	for (size_t i = 0; i < ref; ++i) {
+		int16_t L = mAudioBufferPeek(in, 0, d + i);
+		int16_t R = mAudioBufferPeek(in, 1, d + i);
+		int ma = (int) L + (int) R;
+		int mp = (int) prev[i * 2] + (int) prev[i * 2 + 1];
+		dot += (long long) ma * mp;
+		e1 += (long long) ma * ma;
+		e2 += (long long) mp * mp;
+	}
+	return e2 > 0 ? (float) dot / (sqrtf((float) e1 * e2) + 1) : 0;
+}
+
 static size_t wsolaGenerate(struct AudioStretch* s, size_t want) {
 	if (!s->inited) {
 		return 0;
@@ -247,38 +266,54 @@ static size_t wsolaGenerate(struct AudioStretch* s, size_t want) {
 		if (holdCapacity - mAudioBufferAvailable(&s->audioHold) < Hs) {
 			break;
 		}
-		int lo = (int) ap - tol;
-		if (lo < 0) {
-			lo = 0;
+	int lo = (int) ap - tol;
+	if (lo < 0) {
+		lo = 0;
+	}
+	int hi = (int) ap + tol;
+	if ((size_t) (hi + (int) N) > available) {
+		hi = (int) available - (int) N;
+	}
+	if (hi < lo) {
+		hi = lo;
+	}
+	/* Two-stage phase search. A coarse sweep (step 4) finds the approximate
+	 * continuation, then a single-sample refinement around the winner locks the
+	 * overlap-add phase precisely. A coarse step alone (the old code used 8)
+	 * quantised the analysis position to a multiple of several samples, landing
+	 * up to half a period off for any tone whose period is under ~2x that step.
+	 * The two misaligned frames then cancel in the 50% overlap-add cross-fade,
+	 * hollowing out the upper mid / high range - the music loses its brightness
+	 * and sounds low and dead (闷). The fine pass restores it at a fraction of a
+	 * full single-sample sweep's cost. */
+	int coarseStep = 4;
+	int bestD = (int) ap;
+	float best = -1e30f;
+	for (int d = lo; d <= hi; d += coarseStep) {
+		float sc = wsolaCorrelate(&s->wsolaIn, prev, d, ref);
+		if (sc > best) {
+			best = sc;
+			bestD = d;
 		}
-		int hi = (int) ap + tol;
-		if ((size_t) (hi + (int) N) > available) {
-			hi = (int) available - (int) N;
+	}
+	int flo = bestD - 2 * coarseStep;
+	if (flo < lo) {
+		flo = lo;
+	}
+	int fhi = bestD + 2 * coarseStep;
+	if (fhi > hi) {
+		fhi = hi;
+	}
+	best = -1e30f;
+	int fineBest = bestD;
+	for (int d = flo; d <= fhi; ++d) {
+		float sc = wsolaCorrelate(&s->wsolaIn, prev, d, ref);
+		if (sc > best) {
+			best = sc;
+			fineBest = d;
 		}
-		if (hi < lo) {
-			hi = lo;
-		}
-		int bestD = (int) ap;
-		float best = -1e30f;
-		for (int d = lo; d <= hi; d += 8) {
-			long long dot = 0, e1 = 0, e2 = 0;
-			for (size_t i = 0; i < ref; ++i) {
-				int16_t L = mAudioBufferPeek(&s->wsolaIn, 0, d + i);
-				int16_t R = mAudioBufferPeek(&s->wsolaIn, 1, d + i);
-				int16_t pL = prev[i * 2];
-				int16_t pR = prev[i * 2 + 1];
-				int ma = (int) L + (int) R;
-				int mp = (int) pL + (int) pR;
-				dot += (long long) ma * mp;
-				e1 += (long long) ma * ma;
-				e2 += (long long) mp * mp;
-			}
-			float sc = e2 > 0 ? (float) dot / (sqrtf((float) e1 * e2) + 1) : 0;
-			if (sc > best) {
-				best = sc;
-				bestD = d;
-			}
-		}
+	}
+	bestD = fineBest;
 		size_t fp = (size_t) bestD;
 		for (size_t i = 0; i < N; ++i) {
 			frame[i * 2] = mAudioBufferPeek(&s->wsolaIn, 0, fp + i);
