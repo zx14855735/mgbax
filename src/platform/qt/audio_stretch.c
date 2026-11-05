@@ -235,11 +235,15 @@ static size_t wsolaGenerate(struct AudioStretch* s, size_t want) {
 		tol = (int) (Ha / 2);
 	}
 
-	/* Emit at most what this call was asked for, and never start a frame the
-	 * staging buffer cannot hold in full. The budget is expressed in whole
-	 * synthesis hops: a partial hop is not emitted but stays owed, so the
-	 * output rate tracks the wall clock exactly (see audioStretchProcess). */
-	while (produced + Hs <= want && ap + N <= available) {
+	/* Emit until at least `want` frames have been produced. Emitting whole
+	 * synthesis hops means the last hop usually overshoots `want` by up to
+	 * Hs-1 frames; that overshoot is bounded (the caller carries the surplus
+	 * back as negative debt) and is what guarantees the device is never
+	 * under-fed. The previous guard `produced + Hs <= want` stopped one hop
+	 * early, leaving the staging buffer starved between callbacks - which the
+	 * resampler answers with silence and the ear hears as a choppy "electric"
+	 * artefact. */
+	while (produced < want && ap + N <= available) {
 		if (holdCapacity - mAudioBufferAvailable(&s->audioHold) < Hs) {
 			break;
 		}
@@ -546,16 +550,28 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 		if (s->wsolaOutAcc > maxOwed) {
 			s->wsolaOutAcc = maxOwed;
 		}
-		size_t budget = (size_t) s->wsolaOutAcc;
-		/* The wall-clock debt is what paces the engine - it must not be capped
-		 * by the caller's appetite. A synthesis hop is a whole frame block, so
-		 * a budget below one hop could never be emitted at all and the output
-		 * would starve (the caller is polled far less often than the hop
-		 * length). The debt itself is bounded by maxOwed above. */
-		size_t made = wsolaGenerate(s, budget);
+		double debt = s->wsolaOutAcc;
+		if (debt < 0.0) {
+			debt = 0.0;
+		}
+		size_t budget = (size_t) debt;
+		/* Keep a low-water reserve in the staging buffer so the device's smooth,
+		 * steady pull never finds it empty between whole-hop emissions. The
+		 * top-up only fires when we dip below the mark, so the long-run
+		 * emission rate stays exactly the wall-clock rate (tempo unchanged). */
+		size_t holdAvail = mAudioBufferAvailable(&s->audioHold);
+		size_t lowWater = (size_t) (coreRate * 0.10 + 0.5); /* ~100 ms slack */
+		size_t topUp = holdAvail < lowWater ? lowWater - holdAvail : 0;
+		size_t emitBudget = budget + topUp;
+		size_t made = wsolaGenerate(s, emitBudget);
 		s->wsolaOutAcc -= (double) made;
-		if (s->wsolaOutAcc < 0.0) {
-			s->wsolaOutAcc = 0.0;
+		/* A whole-hop emission overshoots `budget` by up to Hs-1 frames. Carry
+		 * that surplus back as a small negative credit instead of clamping to 0,
+		 * otherwise it accumulates in the staging buffer and grows latency
+		 * without bound. The credit is capped at one hop so it cannot starve
+		 * the engine either. */
+		if (s->wsolaOutAcc < -(double) s->wsolaHs) {
+			s->wsolaOutAcc = -(double) s->wsolaHs;
 		}
 	}
 	return &s->audioHold;

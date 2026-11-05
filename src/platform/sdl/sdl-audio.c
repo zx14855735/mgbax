@@ -211,9 +211,10 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 			}
 			if (s_diag) {
 				double expectPitchMul = holdOn ? holdRate : fauxClock;
-				fprintf(s_diag, "[AUDIOHOLD] on=%d mode=%d ratio=%.2f rate=%.2f stretch=%.2f fpsTarget=%.1f coreRate=%u outFreq=%d expectPitchMul=%.3f\n",
+				fprintf(s_diag, "[AUDIOHOLD] on=%d mode=%d ratio=%.2f rate=%.2f stretch=%.2f fpsTarget=%.1f coreRate=%u outFreq=%d expectPitchMul=%.3f dropped=%zu\n",
 					holdOn ? 1 : 0, holdMode, (audioContext->sync ? audioContext->sync->audioHoldRatio : 0.0),
-					holdRate, holdStretch, fpsTarget, coreRate, audioContext->obtainedSpec.freq, expectPitchMul);
+					holdRate, holdStretch, fpsTarget, coreRate, audioContext->obtainedSpec.freq, expectPitchMul,
+					audioStretchDropped(&audioContext->stretch));
 				fflush(s_diag);
 			}
 		}
