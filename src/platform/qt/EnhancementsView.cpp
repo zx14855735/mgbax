@@ -62,9 +62,10 @@ const char* const VOLUME_NAMES[] = {
 
 // Controlled fast-forward multipliers offered while 倍速声音不变 is on. The
 // core is paced at exactly this speed so its audio output rate is known and
-// the surplus can be absorbed without dropping a single sample. 1x means the
-// game is not sped up at all.
-const double HOLD_RATIOS[] = {1.0, 2.0, 3.0, 4.0, 6.0, 8.0};
+// the surplus can be absorbed without dropping a single sample. 2x is the
+// slowest useful value: 1x would mean "no speed-up at all" and make the
+// turbo key do nothing (which is what "没效果" used to be).
+const double HOLD_RATIOS[] = {2.0, 3.0, 4.0, 6.0, 8.0};
 
 // How fast the music itself plays during fast-forward. 1x is the tune's own
 // tempo (everything is stretched back to normal); higher values play the
@@ -108,9 +109,9 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	for (double ratio : HOLD_RATIOS) {
 		m_ratio->addItem(tr("%1×").arg(ratio, 0, 'g', 2));
 	}
-	m_ratio->setToolTip(tr("开启「倍速音乐」后，游戏按此倍率受控快进。\n"
-	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。\n"
-	                       "1× = 快进时不加速游戏。"));
+	m_ratio->setToolTip(tr("开启「倍速音乐」后，游戏按此倍率受控快进（2×~8×）。\n"
+	                       "这是游戏本身的加速倍率；音乐则按下方「音乐速度」播放。\n"
+	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。"));
 	form->addRow(tr("快进倍率"), m_ratio);
 	m_rate = new QComboBox;
 	for (double rate : HOLD_RATES) {
@@ -185,12 +186,23 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	m_rumble->setChecked(m_controller->cartRumble());
 	m_hold->setCurrentIndex(m_controller->audioHoldMode());
 	double ratio = m_controller->audioHoldRatio();
+	// Migrate the legacy 1x fast-forward ratio (which disabled fast-forward
+	// entirely and made the turbo key do nothing) back to a working 4x.
+	if (ratio < 2.0 - 1e-6) {
+		m_controller->setAudioHoldRatio(4.0);
+		ratio = 4.0;
+	}
+	int ratioIndex = -1;
 	for (int i = 0; i < int(sizeof(HOLD_RATIOS) / sizeof(HOLD_RATIOS[0])); ++i) {
 		if (fabs(HOLD_RATIOS[i] - ratio) < 0.01) {
-			m_ratio->setCurrentIndex(i);
+			ratioIndex = i;
 			break;
 		}
 	}
+	if (ratioIndex < 0) {
+		ratioIndex = 2; // HOLD_RATIOS[2] == 4.0
+	}
+	m_ratio->setCurrentIndex(ratioIndex);
 	double rate = m_controller->audioHoldRate();
 	for (int i = 0; i < int(sizeof(HOLD_RATES) / sizeof(HOLD_RATES[0])); ++i) {
 		if (fabs(HOLD_RATES[i] - rate) < 0.01) {
@@ -198,6 +210,15 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 			break;
 		}
 	}
+	// The 快进倍率 / 音乐速度 controls only do anything while 倍速音乐 is in a
+	// hold mode (WSOLA or native cut). In "变调" mode they are ignored, so
+	// grey them out and tell the user why changing them appears to do nothing.
+	bool holdEnabled = m_controller->audioHoldMode() != 0;
+	m_ratio->setEnabled(holdEnabled);
+	m_rate->setEnabled(holdEnabled);
+	m_status->setText(holdEnabled
+		? tr("快进时游戏按「快进倍率」加速，音乐按「音乐速度」播放（1× = 原速原调）。")
+		: tr("「快进音乐」当前为「变调」：游戏按常规倍速快进、音乐随游戏升调，下方两项不起作用。"));
 	m_updating = false;
 }
 
@@ -206,6 +227,12 @@ void EnhancementsView::applyHold(int index) {
 		return;
 	}
 	m_controller->setAudioHoldMode(index);
+	bool holdEnabled = index != 0;
+	m_ratio->setEnabled(holdEnabled);
+	m_rate->setEnabled(holdEnabled);
+	m_status->setText(holdEnabled
+		? tr("快进时游戏按「快进倍率」加速，音乐按「音乐速度」播放（1× = 原速原调）。")
+		: tr("「快进音乐」当前为「变调」：游戏按常规倍速快进、音乐随游戏升调，下方两项不起作用。"));
 }
 
 void EnhancementsView::applyRatio(int index) {

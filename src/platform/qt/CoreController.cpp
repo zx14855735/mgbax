@@ -651,7 +651,9 @@ void CoreController::setAudioHoldMode(int mode) {
 }
 
 void CoreController::setAudioHoldRatio(double ratio) {
-	if (ratio < 1.0 || ratio > 32.0) {
+	if (ratio < 2.0 || ratio > 32.0) {
+		// 1x would pace the core at native speed and make the turbo key do
+		// nothing; the smallest useful controlled fast-forward is 2x.
 		return;
 	}
 	if (fabs(ratio - m_audioHoldRatio) < 0.01) {
@@ -682,15 +684,19 @@ void CoreController::audioHoldState(bool* on, double* stretch, double* rate) con
 		}
 		return;
 	}
-	// How much faster the game is really running: the core is paced to
-	// sync.fpsTarget, so that is fpsTarget / nativeFps - not
-	// fpsTarget / m_fpsTarget, which would be off by the difference between
-	// the configured 60 and the real 59.7275.
-	double speed = 0.0;
+	// How much faster the game is really running. We derive this from the
+	// values we *set* in updateFastForward (sync.fpsTarget = m_fpsTarget *
+	// m_audioHoldRatio) instead of reading sync.fpsTarget back, because that
+	// field is shared with the emulation thread and a mid-fast-forward config
+	// reload can overwrite it with the stored (native) value. When that
+	// happened the read-back speed collapsed to ~1.0, the guard below tripped,
+	// holdOn went false and the music raced ahead with the game - the exact
+	// "music speeds up on fast-forward" complaint. Computing it from our own
+	// configuration is deterministic and immune to that race.
 	mCore* core = m_threadContext.core;
-	if (core && m_threadContext.impl->sync.fpsTarget > 0) {
-		speed = 1.0 / mCoreCalculateFramerateRatio(core, m_threadContext.impl->sync.fpsTarget);
-	}
+	double nativeFps = core ? mCoreCalculateFramerateRatio(core, 1.0) : 0.0;
+	double pacedFps = (m_fpsTarget > 0 ? m_fpsTarget : nativeFps) * m_audioHoldRatio;
+	double speed = (nativeFps > 0.0) ? pacedFps / nativeFps : m_audioHoldRatio;
 	if (!(speed > 1.05 && speed < 64.0)) {
 		/* The frame timing is unusable (or the game is not actually
 		 * speeding up). Either way there is no surplus to absorb, so the
@@ -732,7 +738,10 @@ void CoreController::applyPersistedFeatures() {
 		m_audioHoldMode = 1;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
-	if (m_audioHoldRatio < 1.0 || m_audioHoldRatio > 32.0) {
+	/* 1x used to be offered as a fast-forward ratio, but it paced the core at
+	 * its native speed and so made the turbo key do nothing. Treat any value
+	 * below 2x as the 4x default so fast-forward always actually speeds up. */
+	if (m_audioHoldRatio < 2.0 || m_audioHoldRatio > 32.0) {
 		m_audioHoldRatio = 4.0;
 	}
 	m_audioHoldRate = settings.value("audioHoldRate", 1.0).toDouble();
@@ -1652,7 +1661,9 @@ void CoreController::updateFastForward() {
 		// 「电音」。受控快进把核心产出速率钉死在已知倍率上，与拉伸引擎的
 		// 消耗速率一致，零丢弃，而且倍速可预期（不再取决于机器快慢）。
 		if (m_audioHoldMode != 0 && m_audioHoldRatio > 1.01) {
-			m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_audioHoldRatio;
+			double nativeFps = m_threadContext.core ? mCoreCalculateFramerateRatio(m_threadContext.core, 1.0) : 0.0;
+			double base = (m_fpsTarget > 0 ? m_fpsTarget : nativeFps);
+			m_threadContext.impl->sync.fpsTarget = base * m_audioHoldRatio;
 			m_threadContext.impl->sync.audioWait = true;
 		} else if (m_audioHoldMode != 0) {
 			/* 1x: the game is not sped up at all, so there is no surplus for
