@@ -8,11 +8,8 @@
 #define SDL_MAIN_HANDLED
 
 #include "ConfigController.h"
-#include "CoreController.h"
 #include "GBAApp.h"
 #include "Window.h"
-
-#include <QTimer>
 
 #include <mgba/core/version.h>
 #include <mgba/gba/interface.h>
@@ -143,14 +140,6 @@ int main(int argc, char* argv[]) {
 
 	Window* w = application.newWindow();
 	w->argumentsPassed();
-
-	/* TEMP DIAGNOSTIC: enter fast-forward a few seconds in, once the core is
-	 * up, so the audio path can be probed without a keyboard. */
-	QTimer::singleShot(4000, w, [w]() {
-		if (w->controller()) {
-			w->controller()->forceFastForward(true);
-		}
-	});
 
 	application.initMultiplayer();
 
