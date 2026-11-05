@@ -643,6 +643,7 @@ void CoreController::setAudioHoldMode(int mode) {
 	}
 	m_audioHoldMode = mode;
 	featureSettings().setValue("audioHoldMode2", mode);
+	syncAudioHold();
 	// The fast-forward pacing depends on the mode (the music feature turns the
 	// free-running fast-forward into a controlled one), so re-apply it now.
 	if (m_fastForward || m_fastForwardForced) {
@@ -661,6 +662,7 @@ void CoreController::setAudioHoldRatio(double ratio) {
 	}
 	m_audioHoldRatio = ratio;
 	featureSettings().setValue("audioHoldRatio", ratio);
+	syncAudioHold();
 	if (m_fastForward || m_fastForwardForced) {
 		updateFastForward();
 	}
@@ -675,32 +677,49 @@ void CoreController::setAudioHoldRate(double rate) {
 	}
 	m_audioHoldRate = rate;
 	featureSettings().setValue("audioHoldRate", rate);
+	syncAudioHold();
+}
+
+void CoreController::syncAudioHold() {
+	if (!m_threadContext.impl) {
+		return;
+	}
+	m_threadContext.impl->sync.audioHoldMode = m_audioHoldMode;
+	m_threadContext.impl->sync.audioHoldRatio = m_audioHoldRatio;
+	m_threadContext.impl->sync.audioHoldRate = m_audioHoldRate;
 }
 
 void CoreController::audioHoldState(bool* on, double* stretch, double* rate) const {
-	if (m_audioHoldMode == 0 || !(m_fastForward || m_fastForwardForced)) {
+	// The hold feature only does something in the two stretch modes
+	// (1 = WSOLA, 2 = native "skip a section"). Mode 0 is "变调" - the pitch
+	// follows the game, which is exactly what the user is trying to avoid, so
+	// it must never engage the stretcher.
+	if (m_audioHoldMode == 0) {
 		if (on) {
 			*on = false;
 		}
 		return;
 	}
-	// How much faster the game is really running. We derive this from the
-	// values we *set* in updateFastForward (sync.fpsTarget = m_fpsTarget *
-	// m_audioHoldRatio) instead of reading sync.fpsTarget back, because that
-	// field is shared with the emulation thread and a mid-fast-forward config
-	// reload can overwrite it with the stored (native) value. When that
-	// happened the read-back speed collapsed to ~1.0, the guard below tripped,
-	// holdOn went false and the music raced ahead with the game - the exact
-	// "music speeds up on fast-forward" complaint. Computing it from our own
-	// configuration is deterministic and immune to that race.
 	mCore* core = m_threadContext.core;
 	double nativeFps = core ? mCoreCalculateFramerateRatio(core, 1.0) : 0.0;
-	double pacedFps = (m_fpsTarget > 0 ? m_fpsTarget : nativeFps) * m_audioHoldRatio;
-	double speed = (nativeFps > 0.0) ? pacedFps / nativeFps : m_audioHoldRatio;
+	if (nativeFps <= 0.0) {
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	// Decide purely from the core's live pacing: updateFastForward sets
+	// sync.fpsTarget to (m_fpsTarget * m_audioHoldRatio) the instant a
+	// fast-forward starts, in ANY hold mode, and restores it to the native
+	// target the moment it stops. The emulation thread never writes this
+	// field, so reading it here is a stable, race-free reflection of whether
+	// the game is actually running faster than native. Tying the decision to
+	// this - rather than to m_fastForward, which the audio thread may not
+	// observe at the same instant - is what makes the hold engage reliably.
+	double speed = m_threadContext.impl->sync.fpsTarget / nativeFps;
 	if (!(speed > 1.05 && speed < 64.0)) {
-		/* The frame timing is unusable (or the game is not actually
-		 * speeding up). Either way there is no surplus to absorb, so the
-		 * music must not be stretched. */
+		/* The game is not actually running faster than native, so there is no
+		 * surplus to absorb and the music needs no help. */
 		if (on) {
 			*on = false;
 		}
@@ -748,6 +767,7 @@ void CoreController::applyPersistedFeatures() {
 	if (m_audioHoldRate < 0.5 || m_audioHoldRate > 4.0) {
 		m_audioHoldRate = 1.0;
 	}
+	syncAudioHold();
 	QByteArray stored = settings.value("channelGains").value<QByteArray>();
 	if (stored.size() == int(6 * sizeof(int))) {
 		int gains[6];
@@ -817,7 +837,12 @@ void CoreController::start() {
 	if (!mCoreThreadStart(&m_threadContext)) {
 		emit failed();
 		emit stopping();
+		return;
 	}
+	// The thread impl now exists, so the audio-hold settings can finally be
+	// mirrored into the sync struct (applyPersistedFeatures could not do it at
+	// startup). The SDL audio callback reads them from here.
+	syncAudioHold();
 }
 
 void CoreController::stop() {
@@ -1693,6 +1718,15 @@ void CoreController::updateFastForward() {
 		m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
 		setSync(true);
 	}
+
+	// Mirror the audio-hold settings into the shared sync struct every time we
+	// touch pacing. The emulation thread reads them from there (the SDL audio
+	// callback has no CoreController to ask), and applyPersistedFeatures
+	// cannot do it at startup because the thread impl does not exist yet. If we
+	// skip this, sync.audioHoldMode stays 0 and the music stretcher never
+	// engages, so the music still races with the game on fast-forward - the
+	// exact "still ineffective" symptom.
+	syncAudioHold();
 
 	m_threadContext.core->reloadConfigOption(m_threadContext.core, NULL, NULL);
 }

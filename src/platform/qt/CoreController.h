@@ -263,6 +263,10 @@ public slots:
 	// the tempo the music ends up playing at.
 	void audioHoldState(bool* on, double* stretch, double* rate) const;
 
+	/* Push the current hold settings into the shared sync struct so the SDL
+	 * audio backend (which has no CoreController pointer) can read them. */
+	void syncAudioHold();
+
 	void setAVStream(mAVStream*);
 	void clearAVStream();
 
