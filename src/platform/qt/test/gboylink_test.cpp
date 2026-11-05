@@ -654,7 +654,7 @@ static int holdTest() {
 			mAudioBufferWrite(&source, chunk.data(), produce);
 			fed += produce;
 
-			struct mAudioBuffer* staged = audioStretchProcess(&stretch, &source, rate, true, speed, want);
+			struct mAudioBuffer* staged = audioStretchProcess(&stretch, &source, rate, true, speed, 1.0, want);
 			size_t avail = mAudioBufferAvailable(staged);
 			if (avail > outBuf.size() / 2) {
 				avail = outBuf.size() / 2;
@@ -710,7 +710,7 @@ static int holdTest() {
 	audioStretchInit(&off);
 	struct mAudioBuffer src;
 	mAudioBufferInit(&src, 4096, 2);
-	if (audioStretchProcess(&off, &src, rate, false, 1.0, 480) != &src) {
+	if (audioStretchProcess(&off, &src, rate, false, 1.0, 1.0, 480) != &src) {
 		qWarning() << "HOLD TEST: disengaged stretcher did not return the core buffer";
 		++failures;
 	}
@@ -756,9 +756,10 @@ static int audioFfTest() {
 		CASE_4X_STRETCH = 2,
 		CASE_SWITCH = 3,
 		CASE_4X_NATIVE = 4,
+		CASE_4X_RATE2 = 5,
 	};
 
-	for (int scenario = CASE_1X; scenario <= CASE_4X_NATIVE; ++scenario) {
+	for (int scenario = CASE_1X; scenario <= CASE_4X_RATE2; ++scenario) {
 		struct mAudioBuffer coreRing;
 		mAudioBufferInit(&coreRing, coreRate * 4, 2);
 		struct mAudioBuffer out;
@@ -789,6 +790,8 @@ static int audioFfTest() {
 			}
 			lastFeed = now;
 			bool stretched = (scenario == CASE_4X_STRETCH)
+			                 || (scenario == CASE_4X_NATIVE)
+			                 || (scenario == CASE_4X_RATE2)
 			                 || (scenario == CASE_SWITCH && now >= switchAt);
 			double factor = (scenario == CASE_1X || (scenario == CASE_SWITCH && !stretched)) ? 1.0 : speed;			size_t produce = size_t(factor * coreRate * dt);
 			if (produce > chunk.size() / 2) {
@@ -803,8 +806,13 @@ static int audioFfTest() {
 			mAudioBufferWrite(&coreRing, chunk.data(), produce);
 
 			struct mAudioBuffer* src = &coreRing;
+			/* The music's own playback rate: 1 = its own tempo, 2 = twice as
+			 * fast (which is what the tune sounds like when the surplus is
+			 * only compressed by half of the fast-forward factor). */
+			double musicRate = (scenario == CASE_4X_RATE2) ? 2.0 : 1.0;
 			if (stretched) {
-				src = audioStretchProcess(&stretch, &coreRing, coreRate, true, speed, deviceRate);
+				src = audioStretchProcess(&stretch, &coreRing, coreRate, true,
+				                         speed / musicRate, musicRate, deviceRate);
 			}
 			/* The frontend's destination rate: 1x while the stretcher is on
 			 * (the staged audio is already at the console's own rate), and
@@ -814,7 +822,7 @@ static int audioFfTest() {
 			if (scenario == CASE_4X_PLAIN) {
 				destRate = deviceRate / speed;
 			}
-			mAudioResamplerSetSource(&resampler, src, coreRate, true);
+			mAudioResamplerSetSource(&resampler, src, coreRate * (stretched ? musicRate : 1.0), true);
 			mAudioResamplerSetDestination(&resampler, &out, destRate);
 			mAudioResamplerProcess(&resampler);
 
@@ -848,11 +856,16 @@ static int audioFfTest() {
 
 		double seconds = outSamples / double(deviceRate);
 		double pitch = seconds > 0.01 ? crossings / 2.0 / seconds : 0.0;
-		const char* names[] = { "1x", "4x plain", "4x stretcher", "1x->4x switch", "4x native" };
+		const char* names[] = { "1x", "4x plain", "4x stretcher", "1x->4x switch", "4x native", "4x rate 2x" };
 		qInfo().noquote() << QString("AUDIO FF: %1: out %2 s, pitch ~%3 Hz, cuts %4")
 		                     .arg(names[scenario]).arg(seconds, 0, 'f', 2).arg(pitch, 0, 'f', 0)
 		                     .arg(audioStretchCuts(&stretch));
-		double expect = (scenario == CASE_4X_PLAIN) ? 440.0 * speed : 440.0;
+		double expect = 440.0;
+		if (scenario == CASE_4X_PLAIN) {
+			expect = 440.0 * speed;
+		} else if (scenario == CASE_4X_RATE2) {
+			expect = 440.0 * 2.0;
+		}
 		if (pitch < expect * 0.9 || pitch > expect * 1.1) {
 			qWarning().noquote() << QString("AUDIO FF: %1 pitched %2 Hz, expected ~%3 Hz")
 			                        .arg(names[scenario]).arg(pitch, 0, 'f', 0).arg(expect, 0, 'f', 0);

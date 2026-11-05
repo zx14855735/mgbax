@@ -221,7 +221,18 @@ void AudioDevice::update() {
 		emit readyRead();
 	}
 
-	if (mAudioBufferFull(&m_buffer)) {
+	/* While the fast-forward stretcher is running, the emulation thread is
+	 * paced by the audio (its ring has to drain or the game stops), so the
+	 * pump must keep going even when the playback buffer is full: the device
+	 * may be slow to ask for the next block, and a stalled pump would leave
+	 * the emulation thread waiting for audio that never arrives. */
+	bool holdOn = false;
+	double holdStretch = 1.0;
+	double holdRate = 1.0;
+	if (m_controller) {
+		m_controller->audioHoldState(&holdOn, &holdStretch, &holdRate);
+	}
+	if (mAudioBufferFull(&m_buffer) && !holdOn) {
 		m_updateTimer.stop();
 	}
 }
