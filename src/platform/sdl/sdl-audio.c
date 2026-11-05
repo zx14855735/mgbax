@@ -219,6 +219,14 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 			}
 		}
 	}
+	/* Mirror the chosen hold mode into the stretch engine. The engine defaults
+	 * to WSOLA and was never told to switch to NATIVE, so without this the
+	 * "原音高但跳段" option silently ran WSOLA - which is why the music kept
+	 * sounding muffled / 低沉 no matter what. audioStretchSetMode only acts on
+	 * a real change, so calling it every callback is cheap and safe. */
+	if (holdMode != 0) {
+		audioStretchSetMode(&audioContext->stretch, holdMode);
+	}
 	/* Feed the core audio through the fast-forward stretcher when engaged; it
 	 * returns the core buffer unchanged when disengaged. */
 	struct mAudioBuffer* src = audioStretchProcess(&audioContext->stretch, buffer, coreRate, holdOn, holdStretch, holdRate, audioContext->samples * 2);

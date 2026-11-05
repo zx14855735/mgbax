@@ -642,7 +642,7 @@ void CoreController::setAudioHoldMode(int mode) {
 		return;
 	}
 	m_audioHoldMode = mode;
-	featureSettings().setValue("audioHoldMode2", mode);
+	featureSettings().setValue("audioHoldMode3", mode);
 	syncAudioHold();
 	// The fast-forward pacing depends on the mode (the music feature turns the
 	// free-running fast-forward into a controlled one), so re-apply it now.
@@ -747,14 +747,15 @@ void CoreController::audioHoldState(bool* on, double* stretch, double* rate) con
 
 void CoreController::applyPersistedFeatures() {
 	QSettings& settings = featureSettings();
-	/* The key was renamed: the old "audioHoldMode" value could point at the
-	 * cut-a-section mode, which cannot keep a song at its own tempo (at 4x
-	 * it has to drop three quarters of the melody, so the tune races
-	 * forward). The default is now the WSOLA mode, which really does hold
-	 * the tempo. */
-	m_audioHoldMode = settings.value("audioHoldMode2", 1).toInt();
+	/* The key was renamed (audioHoldMode2 -> audioHoldMode3) to force the new
+	 * default for existing configs. The default is now the NATIVE mode
+	 * (audioHoldMode 2): it plays the console audio bit-for-bit at 1x and only
+	 * skips during silent gaps, so the timbre stays original (no WSOLA
+	 * coloration / "低沉"). WSOLA (mode 1) remains selectable for those who
+	 * prefer continuous stretch. */
+	m_audioHoldMode = settings.value("audioHoldMode3", 2).toInt();
 	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
-		m_audioHoldMode = 1;
+		m_audioHoldMode = 2;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
 	/* 1x used to be offered as a fast-forward ratio, but it paced the core at

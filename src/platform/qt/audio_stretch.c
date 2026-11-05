@@ -52,7 +52,7 @@ static double stretchNow(void) {
 
 void audioStretchInit(struct AudioStretch* s) {
 	memset(s, 0, sizeof(*s));
-	s->mode = AUDIO_STRETCH_PITCH;
+	s->mode = AUDIO_STRETCH_NATIVE;
 }
 
 static void deinitHold(struct AudioStretch* s) {
