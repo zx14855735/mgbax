@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mGBAx PC 版完整使用教程</title>
+<style>
+:root{
+  --bg:#f6f8fa; --card:#ffffff; --ink:#16202c; --muted:#5c6b7a;
+  --line:#e3e9ef; --brand:#0d9488; --brand-d:#0f766e; --brand-l:#e6f6f4;
+  --warn:#b45309; --warn-l:#fff7ed; --warn-line:#fcd9a8;
+  --blue:#1d4ed8; --blue-l:#eff6ff;
+  --code:#0f172a; --code-bg:#f1f5f9;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Hiragino Sans GB",sans-serif;
+  font-size:15px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:0 24px 80px}
+a{color:var(--brand-d);text-decoration:none}
+a:hover{text-decoration:underline}
+header.hero{background:linear-gradient(135deg,#0f766e 0%,#115e59 55%,#134e4a 100%);
+  color:#fff;margin:0 -24px 28px;padding:44px 44px 38px;border-radius:0 0 22px 22px}
+.hero .badge{display:inline-block;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);
+  padding:4px 12px;border-radius:99px;font-size:12px;letter-spacing:.06em;margin-bottom:16px}
+.hero h1{margin:0 0 10px;font-size:32px;line-height:1.3;letter-spacing:.01em}
+.hero p{margin:0;max-width:720px;color:#d7f2ee;font-size:15px}
+.hero .meta{display:flex;flex-wrap:wrap;gap:10px;margin-top:24px}
+.hero .meta span{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.2);
+  border-radius:8px;padding:6px 12px;font-size:13px}
+nav.toc{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin-bottom:28px;
+  box-shadow:0 1px 3px rgba(16,32,48,.04)}
+nav.toc strong{display:block;font-size:13px;color:var(--muted);letter-spacing:.08em;margin-bottom:10px}
+nav.toc ol{margin:0;padding-left:20px;columns:2;column-gap:36px}
+nav.toc li{margin:3px 0;break-inside:avoid}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;
+  padding:26px 30px;margin-bottom:20px;box-shadow:0 1px 3px rgba(16,32,48,.04)}
+h2{font-size:22px;margin:0 0 18px;padding-bottom:12px;border-bottom:2px solid var(--brand-l);
+  display:flex;align-items:center;gap:11px;scroll-margin-top:16px}
+h2 .num{display:inline-flex;align-items:center;justify-content:center;width:29px;height:29px;flex:0 0 29px;
+  background:var(--brand);color:#fff;border-radius:8px;font-size:14px;font-weight:700}
+h3{font-size:16px;margin:24px 0 10px;color:var(--brand-d)}
+p{margin:10px 0}
+ul,ol{padding-left:22px;margin:10px 0}
+li{margin:5px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px}
+th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{background:#f3f7f8;font-weight:600;color:#334155}
+tr:nth-child(even) td{background:#fbfcfd}
+kbd{display:inline-block;background:#fff;border:1px solid #cbd5e1;border-bottom-width:2px;
+  border-radius:5px;padding:1px 7px;font:600 12.5px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;
+  color:#1e293b;white-space:nowrap}
+code{background:var(--code-bg);color:var(--code);padding:2px 6px;border-radius:5px;
+  font:13px ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:#0f172a;color:#e2e8f0;border-radius:10px;padding:16px 18px;overflow-x:auto;
+  font:12.5px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;margin:14px 0}
+pre code{background:none;color:inherit;padding:0}
+.box{border-radius:10px;padding:14px 18px;margin:16px 0;border:1px solid}
+.box p{margin:4px 0}
+.tip{background:var(--brand-l);border-color:#a7e3dc;color:#0b4f4a}
+.tip b{color:var(--brand-d)}
+.warn{background:var(--warn-l);border-color:var(--warn-line);color:#7c3f08}
+.warn b{color:var(--warn)}
+.info{background:var(--blue-l);border-color:#bfdbfe;color:#1e40af}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin:16px 0}
+.card{border:1px solid var(--line);border-radius:11px;padding:16px 18px;background:#fcfdfd}
+.card h4{margin:0 0 8px;font-size:15px;color:var(--brand-d)}
+.card p{margin:0;font-size:13.5px;color:var(--muted)}
+.fig{background:#fbfcfd;border:1px solid var(--line);border-radius:11px;padding:16px;margin:18px 0;text-align:center}
+.fig svg{max-width:100%;height:auto}
+.fig figcaption{font-size:13px;color:var(--muted);margin-top:10px}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.pill.def{background:var(--brand);color:#fff}
+.pill.alt{background:#e2e8f0;color:#475569}
+.q{border-left:3px solid var(--brand);padding-left:14px;margin:16px 0}
+.q .qq{font-weight:600;color:var(--ink)}
+.q .aa{color:var(--muted);font-size:14px}
+footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
+@media(max-width:640px){
+  .wrap{padding:0 12px 50px} header.hero{margin:0 -12px 20px;padding:32px 22px}
+  .hero h1{font-size:25px} section{padding:20px 18px} nav.toc ol{columns:1}
+  table{font-size:13px} th,td{padding:7px 8px}
+}
+@media print{
+  body{background:#fff;font-size:12px} .wrap{max-width:none;padding:0}
+  header.hero{background:#0f766e!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;
+    margin:0 0 18px;border-radius:0;padding:26px}
+  section,nav.toc{box-shadow:none;break-inside:avoid;page-break-inside:avoid;margin-bottom:12px}
+  h2{break-after:avoid} table,pre,.fig{break-inside:avoid}
+  nav.toc{display:none}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="badge">mGBAx · Windows 移植版</div>
+  <h1>PC 版完整使用教程</h1>
+  <p>mGBAx 是 mGBA 模拟器的 Windows 移植版，可运行 GBA / GBC / GB 游戏。界面沿用 mGBA 桌面版（菜单为英文），额外加入「模拟器增强」面板——核心是<strong>倍速音乐</strong>：快进刷级时，音乐不再被磁带式升调带跑。</p>
+  <div class="meta">
+    <span>Windows 10/11 · 64 位</span><span>免安装</span><span>支持 .gba / .gbc / .gb / .zip</span><span>无需 VC++ 运行库</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <strong>目录</strong>
+  <ol>
+    <li><a href="#s1">安装与运行</a></li>
+    <li><a href="#s2">打开游戏</a></li>
+    <li><a href="#s3">键位与快捷键</a></li>
+    <li><a href="#s4">倍速音乐（本版核心）</a></li>
+    <li><a href="#s5">其他增强功能</a></li>
+    <li><a href="#s6">联机与云同步</a></li>
+    <li><a href="#s7">文件都放在哪</a></li>
+    <li><a href="#s8">常见问题</a></li>
+    <li><a href="#s9">读诊断日志</a></li>
+    <li><a href="#s10">已知限制</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="s1">
+  <h2><span class="num">1</span>安装与运行</h2>
+  <p>整个程序就是 <b><code>mGBAx.exe</code> 一个文件</b>（约 98 MB），<b>不需要安装</b>，双击即可运行，也可以直接放 U 盘带到别的电脑。Qt、SDL、解码库等依赖都已打包进去，不需要额外装 .NET / VC++ 运行库，也不需要配套文件夹。</p>
+  <table>
+    <tr><th>事项</th><th>说明</th></tr>
+    <tr><td><b>首次启动约 3～10 秒</b></td><td>程序会先把内容解压到系统临时目录再启动，属正常现象，稍等即可。</td></tr>
+    <tr><td><b>SmartScreen / 杀软提示</b></td><td>Windows 可能弹出「已保护你的电脑」，点 <b>更多信息 → 仍要运行</b>。程序由 PyInstaller 打包、无数字签名，误报加白名单即可。</td></tr>
+    <tr><td><b>想换位置</b></td><td>直接移动 exe 就行；配置和存档存在用户目录（见 <a href="#s7">第 7 节</a>），不会跟着 exe 走丢。</td></tr>
+  </table>
+  <p><b>最低要求</b>：Windows 10/11 64 位。</p>
+</section>
+
+<section id="s2">
+  <h2><span class="num">2</span>打开游戏</h2>
+  <ul>
+    <li><b>菜单</b>：<code>File → Load ROM...</code>，选 <code>.gba</code> / <code>.gbc</code> / <code>.gb</code> / <code>.zip</code>。</li>
+    <li><b>拖放</b>：把游戏文件直接拖进窗口。</li>
+    <li><b>命令行 / 文件关联</b>：<code>mGBAx.exe "D:\ROMs\游戏.gba"</code>；也可在资源管理器对 <code>.gba</code> 右键「打开方式」设为 mGBAx，以后双击即开。命令行参数会原样传给模拟器。</li>
+  </ul>
+  <p>支持从 ZIP 内直接读取。GBA BIOS 不是必须的；如需真机 BIOS，在 <code>Tools → Settings... → BIOS</code> 指定。</p>
+</section>
+
+<section id="s3">
+  <h2><span class="num">3</span>键位与快捷键</h2>
+  <h3>游戏按键（默认）</h3>
+  <table>
+    <tr><th>十字键</th><th>A</th><th>B</th><th>L</th><th>R</th><th>START</th><th>SELECT</th></tr>
+    <tr><td>方向键</td><td><kbd>X</kbd></td><td><kbd>Z</kbd></td><td><kbd>A</kbd></td><td><kbd>S</kbd></td><td><kbd>Enter</kbd></td><td><kbd>Backspace</kbd></td></tr>
+  </table>
+  <h3>常用功能键</h3>
+  <table>
+    <tr><th>功能</th><th>快捷键</th></tr>
+    <tr><td><b>临时快进</b>（按住生效，松开恢复）</td><td><kbd>Tab</kbd></td></tr>
+    <tr><td><b>持续快进</b>（按一下开，再按一下关）</td><td><kbd>Shift</kbd>+<kbd>Tab</kbd></td></tr>
+    <tr><td>暂停 / 继续</td><td><kbd>Ctrl</kbd>+<kbd>P</kbd></td></tr>
+    <tr><td>复位游戏</td><td><kbd>Ctrl</kbd>+<kbd>R</kbd></td></tr>
+    <tr><td>逐帧前进 / 后退一帧（倒带）</td><td><kbd>Ctrl</kbd>+<kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>B</kbd></td></tr>
+    <tr><td>打开读档窗口 / 存档窗口</td><td><kbd>F10</kbd> / <kbd>Shift</kbd>+<kbd>F10</kbd></td></tr>
+    <tr><td>撤销读档 / 撤销存档</td><td><kbd>F11</kbd> / <kbd>Shift</kbd>+<kbd>F11</kbd></td></tr>
+    <tr><td>全屏切换 / 隐藏菜单栏</td><td><kbd>Alt</kbd>+<kbd>Enter</kbd> / <kbd>Ctrl</kbd>+<kbd>M</kbd></td></tr>
+  </table>
+  <p>完整列表和自定义：<code>Tools → Settings... → Shortcuts</code>（快捷键）与 <code>Input</code>（键位），手柄也在 <code>Input</code> 里映射。</p>
+</section>
+
+<section id="s4">
+  <h2><span class="num">4</span>倍速音乐（本版核心）</h2>
+  <p>入口：<b><code>Tools → 模拟器增强...</code></b>（菜单里唯一的中文项）。</p>
+
+  <h3>4.1 先理解一个硬约束</h3>
+  <div class="box warn">
+    <p><b>游戏 4× 快进时，核心每秒会产出 4 秒的音乐内容；而声卡每秒只能播 1 秒音频。</b>所以必须丢掉 3/4 —— 「游戏 4× + 音乐严格 1× 原速 + 音乐连续不断」三者无法同时成立，必须选一个取舍。</p>
+  </div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 880 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="三种倍速音乐模式对 4 秒音乐的处理方式对比">
+      <defs>
+        <linearGradient id="gA" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#94a3b8"/><stop offset="1" stop-color="#64748b"/></linearGradient>
+        <linearGradient id="gB" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#0d9488"/><stop offset="1" stop-color="#14b8a6"/></linearGradient>
+        <linearGradient id="gC" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#60a5fa"/></linearGradient>
+      </defs>
+      <text x="8" y="20" font-size="14" font-weight="700" fill="#16202c">原始：游戏 4× 时，1 秒墙钟内产出 4 秒音乐</text>
+      <g>
+        <rect x="8" y="32" width="150" height="34" rx="5" fill="#e2e8f0" stroke="#cbd5e1"/>
+        <rect x="162" y="32" width="150" height="34" rx="5" fill="#e2e8f0" stroke="#cbd5e1"/>
+        <rect x="316" y="32" width="150" height="34" rx="5" fill="#e2e8f0" stroke="#cbd5e1"/>
+        <rect x="470" y="32" width="150" height="34" rx="5" fill="#e2e8f0" stroke="#cbd5e1"/>
+        <text x="83" y="54" font-size="12" fill="#475569" text-anchor="middle">第 1 秒</text>
+        <text x="237" y="54" font-size="12" fill="#475569" text-anchor="middle">第 2 秒</text>
+        <text x="391" y="54" font-size="12" fill="#475569" text-anchor="middle">第 3 秒</text>
+        <text x="545" y="54" font-size="12" fill="#475569" text-anchor="middle">第 4 秒</text>
+        <text x="640" y="54" font-size="12" fill="#64748b">→ 设备只能播 1 秒</text>
+      </g>
+
+      <line x1="8" y1="82" x2="872" y2="82" stroke="#e3e9ef" stroke-width="1"/>
+
+      <text x="8" y="106" font-size="13" font-weight="700" fill="#475569">① 变调</text>
+      <rect x="8" y="116" width="150" height="30" rx="5" fill="url(#gA)"/>
+      <text x="83" y="136" font-size="11" fill="#fff" text-anchor="middle">4 秒全挤进 1 秒</text>
+      <text x="170" y="136" font-size="12" fill="#475569">音高 ×4　旋律 ×4　连续 ✓</text>
+
+      <text x="8" y="176" font-size="13" font-weight="700" fill="#0f766e">② 不变调·连续（WSOLA）</text>
+      <g>
+        <rect x="8" y="186" width="37" height="30" rx="3" fill="url(#gB)"/>
+        <rect x="46" y="186" width="37" height="30" rx="3" fill="url(#gB)"/>
+        <rect x="84" y="186" width="37" height="30" rx="3" fill="url(#gB)"/>
+        <rect x="122" y="186" width="37" height="30" rx="3" fill="url(#gB)"/>
+        <text x="83" y="206" font-size="10" fill="#fff" text-anchor="middle">均匀抽样拼接</text>
+      </g>
+      <text x="170" y="206" font-size="12" fill="#0f766e">音高不变　<tspan font-weight="700">旋律仍 ×4</tspan>　连续 ✓</text>
+
+      <text x="8" y="246" font-size="13" font-weight="700" fill="#1d4ed8">③ 真正 1× 原速（NATIVE，默认）</text>
+      <g>
+        <rect x="8" y="256" width="150" height="30" rx="5" fill="url(#gC)"/>
+        <text x="83" y="276" font-size="11" fill="#fff" text-anchor="middle">原样播第 1 秒</text>
+        <rect x="162" y="256" width="150" height="30" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+        <rect x="316" y="256" width="150" height="30" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+        <rect x="470" y="256" width="150" height="30" rx="5" fill="#f1f5f9" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+        <text x="391" y="276" font-size="11" fill="#94a3b8" text-anchor="middle">整段跳过（落在静音间隙）</text>
+      </g>
+      <text x="632" y="276" font-size="12" fill="#1d4ed8">音高 1×　<tspan font-weight="700">节奏 1×</tspan>　会跳段</text>
+    </svg>
+    <figcaption>同一段 4 秒音乐，设备只能播 1 秒 —— 三种丢法对应三种模式。</figcaption>
+  </figure>
+
+  <table>
+    <tr><th>模式（「快进音乐」）</th><th>怎么处理</th><th>音高</th><th>旋律节奏</th><th>连续性</th></tr>
+    <tr><td><b>变调</b>（原版行为）</td><td>不丢，直接快放</td><td>升 4×</td><td>4×</td><td>连续</td></tr>
+    <tr><td><b>不变调·连续</b>（WSOLA）</td><td>把 4 秒均匀压成 1 秒</td><td>不变</td><td><b>仍 4×</b></td><td>连续</td></tr>
+    <tr><td><b>真正 1× 原速</b>（NATIVE）<span class="pill def">默认</span></td><td>原速播放真实采样，在音符间隙整段跳过冗余</td><td>不变</td><td><b>1×</b></td><td>会跳段</td></tr>
+  </table>
+
+  <div class="box warn">
+    <p><b>最容易误解的一点</b>：设置或日志里的「音乐速度 1×」<b>只代表音高不变，不代表旋律是 1×</b>。WSOLA 保住了音高，但 4 秒旋律仍被塞进 1 秒播放，听感还是"音乐在往前赶"。要严格 1× 原速，请选第三项。</p>
+  </div>
+
+  <h3>4.2 四个设置项</h3>
+  <table>
+    <tr><th>设置项</th><th>可选值</th><th>说明</th></tr>
+    <tr><td><b>快进音乐</b></td><td>3 个模式</td><td>见上表。选「变调」时，下面两项会置灰不生效。</td></tr>
+    <tr><td><b>快进倍率</b></td><td><code>2× / 3× / 4× / 6× / 8×</code><br>默认 <code>4×</code></td><td>游戏本身的加速倍率。<b>倍速音乐开启时以此为准</b>，会覆盖 <code>Emulation → Fast forward speed</code> 菜单里的设置。</td></tr>
+    <tr><td><b>音乐速度</b></td><td><code>1× / 1.5× / 2× / 3×</code><br>默认 <code>1×</code></td><td>只控制<b>音高倍率</b>。<code>1×</code> = 不变调；<code>2×</code> 约升高一个八度（不再是"不变调"）。<b>它不改变旋律推进速率</b>，那由模式决定。</td></tr>
+    <tr><td><b>声道音量</b></td><td>6 条滑杆</td><td>分别调节各音频通道，拖动即时生效。</td></tr>
+  </table>
+  <div class="box info"><p>面板底部有一行状态说明；<b>没有打开游戏时改设置会保存，但要下次打开游戏才即时生效</b>（面板会提示）。</p></div>
+
+  <h3>4.3 推荐配置</h3>
+  <div class="cards">
+    <div class="card"><h4>就要 1× 原速</h4><p>默认即可：<code>真正 1× 原速</code> + <code>4×</code> + <code>1×</code>。能接受偶尔跳一下。</p></div>
+    <div class="card"><h4>嫌跳段太碎</h4><p>把<b>快进倍率降到 2×</b>（丢弃量从 3/4 降到 1/2），或切回「不变调·连续」。</p></div>
+    <div class="card"><h4>要完全连续</h4><p>选「不变调·连续」+ <code>4×</code> + <code>1×</code>，接受旋律跟着快 4×。</p></div>
+    <div class="card"><h4>老式磁带快进</h4><p>选「变调」，音乐随游戏一起升速升调，最原始的行为。</p></div>
+  </div>
+
+  <h3>4.4 生效条件</h3>
+  <ol>
+    <li>「快进音乐」不是「变调」；</li>
+    <li>快进倍率 ≥ <code>2×</code>（<code>1×</code> 会让快进直接失效，旧配置会自动纠正回 <code>4×</code>）；</li>
+    <li>确实处于快进状态 —— 按住 <kbd>Tab</kbd> 或按 <kbd>Shift</kbd>+<kbd>Tab</kbd> 打开持续快进；</li>
+    <li>已经载入游戏。</li>
+  </ol>
+</section>
+
+<section id="s5">
+  <h2><span class="num">5</span>其他增强功能</h2>
+  <p>同一个 <code>Tools → 模拟器增强...</code> 面板里还有：</p>
+  <ul>
+    <li><b>GB 调色板</b>：给 GB/GBC 游戏套用 14 种预设配色（含「核心默认（不覆盖）」）。</li>
+    <li><b>光感太阳能</b>：模拟《口袋妖怪 金/银》等卡带的光敏电阻，滑杆 <code>-1</code> 为关闭，<code>0～10</code> 调节光照强度。</li>
+    <li><b>卡带震动</b>：把卡带震动信号转给手柄震动。</li>
+    <li><b>一键备份（设置+存档 → zip）</b>：点一下选保存位置（默认 <code>用户目录\mgba-backup.zip</code>），把配置文件和存档一起打包，换机 / 重装前用它最省事。</li>
+  </ul>
+</section>
+
+<section id="s6">
+  <h2><span class="num">6</span>联机与云同步</h2>
+  <table>
+    <tr><th>入口</th><th>用途</th></tr>
+    <tr><td><code>File → WiFi link (GBoy/My Boy)...</code></td><td>与手机端 GBoy / My Boy 模拟器联机</td></tr>
+    <tr><td><code>File → Cloud lobby (gboy.top)...</code></td><td>云端联机大厅（房间、账号）</td></tr>
+    <tr><td><code>Tools → WebDAV save sync...</code></td><td>用 WebDAV 在多台设备间同步存档</td></tr>
+  </table>
+</section>
+
+<section id="s7">
+  <h2><span class="num">7</span>文件都放在哪</h2>
+  <table>
+    <tr><th>内容</th><th>位置</th></tr>
+    <tr><td>配置（含 <code>qt.ini</code>）、即时存档、诊断日志</td><td><code>%APPDATA%\mGBA\</code> —— <kbd>Win</kbd>+<kbd>R</kbd> 输入 <code>%APPDATA%\mGBA</code> 直接打开</td></tr>
+    <tr><td>游戏电池存档</td><td>默认生成在<b>游戏文件同目录</b>的同名 <code>.sav</code>；可在设置里改路径</td></tr>
+    <tr><td>音频诊断日志</td><td><code>%APPDATA%\mGBA\audiodiag.log</code></td></tr>
+    <tr><td>启动日志</td><td><code>%TEMP%\mGBAx_launch.log</code>、<code>%TEMP%\mGBAx_stdout.log</code></td></tr>
+  </table>
+  <div class="box tip"><p>配置和存档写在用户目录，不在 exe 所在目录。所以移动 exe 不会丢设置；换电脑时把 <code>%APPDATA%\mGBA</code> 拷过去即可，或直接用面板里的「一键备份」。</p></div>
+</section>
+
+<section id="s8">
+  <h2><span class="num">8</span>常见问题</h2>
+  <div class="q"><div class="qq">Q：按 Tab 没反应 / 快进不加速？</div><div class="aa">检查「快进倍率」是否 ≥ <code>2×</code>、是否选了「变调」、游戏是否已载入。旧版遗留的 <code>1×</code> 配置会自动纠正为 <code>4×</code>。</div></div>
+  <div class="q"><div class="qq">Q：音乐听着还是快，不是 1×？</div><div class="aa">你大概在「不变调·连续」(WSOLA) 模式 —— 它只保音高、不保节奏。切到「真正 1× 原速」即可。</div></div>
+  <div class="q"><div class="qq">Q：音乐一跳一跳的？</div><div class="aa">这是「真正 1× 原速」换取原速的代价（4× 下每约 2 秒跳掉一段）。把「快进倍率」调到 <code>2×</code> 会明显减轻；或改用「不变调·连续」但接受旋律 4×。</div></div>
+  <div class="q"><div class="qq">Q：改了设置没效果？</div><div class="aa">没打开游戏时只保存、不即时生效，重开游戏即可。另外本版升级过配置键名（如 <code>audioHoldMode5</code>、<code>audioHoldRate2</code>），旧值不会覆盖新默认。</div></div>
+  <div class="q"><div class="qq">Q：音乐发闷 / 断续 / 电音？</div><div class="aa">先看 <code>%APPDATA%\mGBA\audiodiag.log</code> 的 <code>on</code> 与 <code>dropped</code>。<b>dropped 在「真正 1× 原速」模式下数值很大是正常的</b> —— 那是按计划跳段丢弃的样本，不是故障。</div></div>
+  <div class="q"><div class="qq">Q：完全没声音？</div><div class="aa">检查系统音量、<code>Tools → Settings... → Audio</code> 里的设备与采样率、以及增强面板的 6 条声道音量是否被拉到 0。</div></div>
+  <div class="q"><div class="qq">Q：首次启动很慢 / 被杀软删了？</div><div class="aa">首次运行要解压约 98 MB 到临时目录，属正常；无数字签名导致的误报加白名单即可。</div></div>
+</section>
+
+<section id="s9">
+  <h2><span class="num">9</span>读诊断日志</h2>
+  <p>日志每秒一行，位于 <code>%APPDATA%\mGBA\audiodiag.log</code>：</p>
+  <pre><code>[AUDIOHOLD] on=1 mode=2 ratio=4.00 rate=1.00 stretch=4.02 fpsTarget=240.0 coreRate=65536 outFreq=44100 expectPitchMul=1.000 dropped=0</code></pre>
+  <table>
+    <tr><th>字段</th><th>含义</th></tr>
+    <tr><td><code>on</code></td><td><code>1</code> = 倍速音乐已接管音频；<code>0</code> = 当前未在快进或功能未启用</td></tr>
+    <tr><td><code>mode</code></td><td><code>0</code> 变调 / <code>1</code> 不变调·连续 / <code>2</code> 真正 1× 原速</td></tr>
+    <tr><td><code>ratio</code></td><td>快进倍率</td></tr>
+    <tr><td><code>rate</code></td><td>音乐速度（只影响音高）</td></tr>
+    <tr><td><code>stretch</code></td><td>实际时间拉伸比</td></tr>
+    <tr><td><code>fpsTarget</code></td><td>目标帧率，<code>240</code> ≈ 4× 原生帧率（原生约 60）</td></tr>
+    <tr><td><code>coreRate</code></td><td>核心音频采样率；部分游戏会通过 SOUNDBIAS 切到 <code>65536</code>，属正常</td></tr>
+    <tr><td><code>outFreq</code></td><td>声卡输出采样率</td></tr>
+    <tr><td><code>expectPitchMul</code></td><td>理论音高倍率，<code>1.000</code> = 不变调</td></tr>
+    <tr><td><code>dropped</code></td><td>WSOLA 丢弃样本数；<b>NATIVE 模式下很大是正常跳段</b></td></tr>
+  </table>
+  <div class="box info"><p>排查时把最近几行发出来即可定位，重点看 <code>on</code> / <code>mode</code> / <code>expectPitchMul</code> / <code>dropped</code>。</p></div>
+</section>
+
+<section id="s10">
+  <h2><span class="num">10</span>已知限制</h2>
+  <ul>
+    <li>三选二硬约束：<b>「游戏 4× + 音乐严格 1× + 连续」不可兼得</b>，见 <a href="#s4">4.1</a>。</li>
+    <li>「真正 1× 原速」会跳段；切点优先落在静音处并做 12 ms 淡入，但几乎没有静音的曲子仍能听出跳跃。</li>
+    <li>高倍速（6× / 8×）下核心音频产出更大，音频延迟会略增。</li>
+    <li>每次启动都要把约 98 MB 解压到临时目录，冷启动会比原生程序略慢。</li>
+    <li>「音乐速度」的 <code>2×</code> / <code>3×</code> 会让音高升高（约一个八度甚至更多），此时已不是"不变调"。</li>
+  </ul>
+</section>
+
+</main>
+
+<footer>mGBAx PC 版使用教程 · 内容对应当前构建（默认「真正 1× 原速」模式）· 可用浏览器直接打印为 PDF</footer>
+
+</div>
+</body>
+</html>
