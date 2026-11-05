@@ -82,7 +82,14 @@ void AudioDevice::pumpAudio() {
 	size_t want = 512;
 	struct mAudioBuffer* coreBuffer = core->getAudioBuffer(core);
 	struct mAudioBuffer* src = audioStretchProcess(&m_stretch, coreBuffer, coreRate, holdOn, holdStretch, want);
+	/* 倍速声音不变开启时，WSOLA/保持引擎已把核心音频压成 1x 的 audioHold，
+	 * 重采样器必须按 1x 目标速率播放；否则这段 1x 音频会被再按倍速重放，
+	 * 表现为音调抬高、断续的「电音」。普通快进（holdOn 为假）仍走原 fauxClock
+	 * 路径：核心以倍速灌入、重采样器以倍速消费，音调保持不变。 */
+	double fauxClock = holdOn ? 1.0
+	                         : mCoreCalculateFramerateRatio(core, m_context->impl->sync.fpsTarget);
 	mAudioResamplerSetSource(&m_resampler, src, coreRate, true);
+	mAudioResamplerSetDestination(&m_resampler, &m_buffer, m_format.sampleRate() * fauxClock);
 	mAudioResamplerProcess(&m_resampler);
 	mCoreSyncConsumeAudio(&m_context->impl->sync);
 }
@@ -171,6 +178,16 @@ void AudioDevice::update() {
 void AudioDevice::adjustResampler() {
 	mCore* core = m_context->core;
 	double fauxClock = mCoreCalculateFramerateRatio(m_context->core, m_context->impl->sync.fpsTarget);
+	/* 倍速声音不变开启时，目标速率必须归一为 1x：拉伸后的音频已是 1x，
+	 * 若仍按快进倍速（fpsTarget）设目标速率，会把它当倍速重放成电音。 */
+	bool holdOn = false;
+	double holdStretch = 1.0;
+	if (m_controller) {
+		m_controller->audioHoldState(&holdOn, &holdStretch);
+	}
+	if (holdOn) {
+		fauxClock = 1.0;
+	}
 	mAudioResamplerSetDestination(&m_resampler, &m_buffer, m_format.sampleRate() * fauxClock);
 	m_context->impl->sync.audioHighWater = m_samples + m_resampler.highWaterMark + m_resampler.lowWaterMark;
 	m_context->impl->sync.audioHighWater *= core->audioSampleRate(core) / (m_format.sampleRate() * fauxClock);
