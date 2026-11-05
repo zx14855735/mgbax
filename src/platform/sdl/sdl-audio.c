@@ -177,9 +177,18 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 		}
 		mCoreSyncLockAudio(sync);
 		audioContext->sync->audioHighWater = audioContext->samples + audioContext->resampler.highWaterMark + audioContext->resampler.lowWaterMark + (audioContext->samples >> 6);
-		/* With the hold engaged the staged audio is already at the console's
-		 * own rate, so the high-water mark uses a 1x clock. */
-		audioContext->sync->audioHighWater *= coreRate / ((holdOn ? 1.0 : fauxClock) * audioContext->obtainedSpec.freq);
+		/* audioHighWater gates how much CORE audio may pile up before
+		 * mCoreSyncProduceAudio throttles the emulation thread. The core
+		 * produces audio at the fast-forward rate (4x) regardless of the rate
+		 * at which the stretcher stages its OUTPUT, so this gate must use the
+		 * same fauxClock a plain 4x fast-forward uses. The old hold-mode
+		 * special case (a 1x clock) set the gate four times too low: with
+		 * audioWait enabled the core was throttled back towards 1x and the
+		 * stretcher was starved of input - the music comes out thin / dull.
+		 * A spectral measurement showed WSOLA itself loses no high frequencies
+		 * (4k and 8k stay within ~1% of 440 Hz at both 2x and 4x stretch), so
+		 * the deficit is on the supply side, not in the stretch algorithm. */
+		audioContext->sync->audioHighWater *= coreRate / (fauxClock * audioContext->obtainedSpec.freq);
 
 		if (audioContext->resampler.source) {
 			size_t destSize = mAudioBufferCapacity(audioContext->resampler.source);

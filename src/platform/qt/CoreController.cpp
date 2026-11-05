@@ -642,7 +642,7 @@ void CoreController::setAudioHoldMode(int mode) {
 		return;
 	}
 	m_audioHoldMode = mode;
-	featureSettings().setValue("audioHoldMode4", mode);
+	featureSettings().setValue("audioHoldMode5", mode);
 	syncAudioHold();
 	// The fast-forward pacing depends on the mode (the music feature turns the
 	// free-running fast-forward into a controlled one), so re-apply it now.
@@ -676,7 +676,7 @@ void CoreController::setAudioHoldRate(double rate) {
 		return;
 	}
 	m_audioHoldRate = rate;
-	featureSettings().setValue("audioHoldRate", rate);
+	featureSettings().setValue("audioHoldRate2", rate);
 	syncAudioHold();
 }
 
@@ -747,16 +747,18 @@ void CoreController::audioHoldState(bool* on, double* stretch, double* rate) con
 
 void CoreController::applyPersistedFeatures() {
 	QSettings& settings = featureSettings();
-	/* The key was renamed (audioHoldMode3 -> audioHoldMode4) to force the new
-	 * default for existing configs. The default is back to the WSOLA mode
-	 * (audioHoldMode 1): it is the proven, stable path that keeps the music at
-	 * its own tempo during fast-forward without the native-cut ring logic,
-	 * which could drift and produce dead fast-forward audio. The NATIVE mode
-	 * (audioHoldMode 2) is still selectable for those who want bit-exact 1x
-	 * audio - its ring handling has been hardened. */
-	m_audioHoldMode = settings.value("audioHoldMode4", 1).toInt();
+	/* Key bumped (audioHoldMode4 -> audioHoldMode5) so configs that stored
+	 * mode 1 pick up the new default. Mode 1 (WSOLA) keeps the PITCH but
+	 * uniformly compresses 4 s of music into 1 s of wall clock, so the melody
+	 * still advances at 4x - it is NOT "1x speed" (audiodiag.log shows
+	 * rate=1.00 stretch=4.02 and the user still hears the tune racing).
+	 * Mode 2 (NATIVE) plays real untransposed samples at exactly 1x
+	 * wall-clock tempo and cuts whole surplus sections at quiet gaps, which is
+	 * what 音乐一倍速 actually means. Its ring-drift bug was fixed earlier
+	 * (natR = natW on the degenerate cut); both hold/audioff tests cover it. */
+	m_audioHoldMode = settings.value("audioHoldMode5", 2).toInt();
 	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
-		m_audioHoldMode = 1;
+		m_audioHoldMode = 2;
 	}
 	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
 	/* 1x used to be offered as a fast-forward ratio, but it paced the core at
@@ -765,7 +767,15 @@ void CoreController::applyPersistedFeatures() {
 	if (m_audioHoldRatio < 2.0 || m_audioHoldRatio > 32.0) {
 		m_audioHoldRatio = 4.0;
 	}
-	m_audioHoldRate = settings.value("audioHoldRate", 1.0).toDouble();
+	/* Key bumped (audioHoldRate -> audioHoldRate2) to drop any stale value.
+	 * The default stays 1.0: only then does WSOLA hold the music at BOTH its
+	 * original tempo and its original pitch. Higher music rates deliberately
+	 * let the pitch follow the game partway - the resampler's source rate is
+	 * scaled by the music rate, so 2x comes out an octave up (880 Hz from a
+	 * 440 Hz tone, proved by the audioff CASE_4X_RATE2 scenario). That is a
+	 * valid "brighter / faster tune" option but it is NOT pitch-held, so it
+	 * must never be the default for a feature whose whole point is 不变调. */
+	m_audioHoldRate = settings.value("audioHoldRate2", 1.0).toDouble();
 	if (m_audioHoldRate < 0.5 || m_audioHoldRate > 4.0) {
 		m_audioHoldRate = 1.0;
 	}

@@ -705,6 +705,193 @@ static int holdTest() {
 		audioStretchDeinit(&stretch);
 	}
 
+	/* Engine-only check of a 2x music rate (stretch 2x instead of 4x). NOTE:
+	 * this deliberately stops BEFORE the resampler. In the real full pipeline
+	 * the resampler's source rate is coreRate * musicRate, so the same 2x rate
+	 * comes out an OCTAVE UP (880 Hz) - see audioFfTest CASE_4X_RATE2. That is
+	 * why 2x must not be the default of a pitch-holding feature. What this case
+	 * verifies: the WSOLA engine itself keeps the pitch and doubles its output
+	 * rate without underruns. The main loop above hard-codes a 1.0 music rate
+	 * and would never catch a regression on this path. */
+	{
+		const double musicRate = 2.0;
+		const double stretchFactor = speed / musicRate; // 2x
+		struct AudioStretch stretch;
+		audioStretchInit(&stretch);
+		audioStretchSetMode(&stretch, AUDIO_STRETCH_PITCH);
+		struct mAudioBuffer source;
+		mAudioBufferInit(&source, rate * 2, 2);
+		std::vector<int16_t> chunk(size_t(speed * rate * 0.1) * 2);
+		std::vector<int16_t> outBuf(rate * 2); // 1 s scratch
+		double phase = 0.0;
+		long long out = 0;
+		long long crossings = 0;
+		int16_t prev = 0;
+		double lastFeed = 0.0;
+		QElapsedTimer clock;
+		clock.start();
+		while (clock.elapsed() < runMs) {
+			double now = clock.elapsed() / 1000.0;
+			double dt = now - lastFeed;
+			size_t produce = size_t(speed * rate * dt);
+			size_t want = size_t(rate * musicRate * dt);
+			if (!produce) {
+				QThread::msleep(1);
+				continue;
+			}
+			if (produce > chunk.size() / 2) {
+				produce = chunk.size() / 2;
+			}
+			if (want > outBuf.size() / 2) {
+				want = outBuf.size() / 2;
+			}
+			lastFeed = now;
+			for (size_t i = 0; i < produce; ++i) {
+				int16_t v = (int16_t) (12000.0 * sin(phase));
+				chunk[i * 2] = v;
+				chunk[i * 2 + 1] = v;
+				phase += 2.0 * 3.14159265358979323846 * 440.0 / rate;
+			}
+			mAudioBufferWrite(&source, chunk.data(), produce);
+			struct mAudioBuffer* staged = audioStretchProcess(&stretch, &source, rate, true, stretchFactor, musicRate, want);
+			size_t avail = mAudioBufferAvailable(staged);
+			if (avail > outBuf.size() / 2) {
+				avail = outBuf.size() / 2;
+			}
+			if (avail) {
+				mAudioBufferRead(staged, outBuf.data(), avail);
+				for (size_t i = 0; i < avail; ++i) {
+					int16_t s = outBuf[i * 2];
+					if ((prev < 0 && s >= 0) || (prev > 0 && s <= 0)) {
+						++crossings;
+					}
+					prev = s;
+				}
+				out += avail;
+			}
+			QThread::msleep(2);
+		}
+		double wall = clock.elapsed() / 1000.0;
+		double seconds = out / double(rate);
+		double pitch = seconds > 0.01 ? crossings / 2.0 / seconds : 0.0;
+		qInfo().noquote() << QString("2x music rate (stretch %1): wall %2 s, out %3 s (expect ~%4 s), pitch ~%5 Hz, dropped %6")
+		                     .arg(stretchFactor, 0, 'f', 1).arg(wall, 0, 'f', 2)
+		                     .arg(seconds, 0, 'f', 2).arg(wall * musicRate, 0, 'f', 2)
+		                     .arg(pitch, 0, 'f', 0).arg(audioStretchDropped(&stretch));
+		if (seconds < wall * musicRate * 0.70 || seconds > wall * musicRate * 1.15) {
+			qWarning() << "HOLD TEST: 2x music rate did not play at 2x";
+			++failures;
+		}
+		if (pitch < 400 || pitch > 480) {
+			qWarning() << "HOLD TEST: 2x music rate changed the pitch" << pitch;
+			++failures;
+		}
+		if (audioStretchDropped(&stretch) > rate / 4) {
+			qWarning() << "HOLD TEST: 2x music rate discarded too much";
+			++failures;
+		}
+		mAudioBufferDeinit(&source);
+		audioStretchDeinit(&stretch);
+	}
+
+	/* Spectral check for the "低沉 / muffled" complaint. A 440 Hz tone with
+	 * 4 kHz and 8 kHz overtones is stretched by 4x (the shipped 4x fast-forward
+	 * at music rate 1x) and by 2x. If the overlap-add phase reference is wrong,
+	 * the high components cancel in the cross-fade and the 8k/440 ratio
+	 * collapses - that is exactly what "dull" sounds like. The 2x case is an
+	 * internal control: less stretching must not lose MORE highs. */
+	{
+		const double toneFs[] = { 440.0, 4000.0, 8000.0 };
+		const double stretchFactors[] = { 4.0, 2.0 };
+		for (double stretchFactor : stretchFactors) {
+			struct AudioStretch stretch;
+			audioStretchInit(&stretch);
+			audioStretchSetMode(&stretch, AUDIO_STRETCH_PITCH);
+			struct mAudioBuffer source;
+			mAudioBufferInit(&source, rate * 2, 2);
+			std::vector<int16_t> chunk(size_t(rate * 0.4) * 2);
+			std::vector<int16_t> outBuf(rate * 2);
+			std::vector<int16_t> captured;
+			double phases[3] = { 0.0, 0.0, 0.0 };
+			double lastFeed = 0.0;
+			QElapsedTimer clock;
+			clock.start();
+			const int runSpectrumMs = 1600;
+			while (clock.elapsed() < runSpectrumMs) {
+				double now = clock.elapsed() / 1000.0;
+				double dt = now - lastFeed;
+				size_t produce = size_t(stretchFactor * rate * dt);
+				if (!produce) {
+					QThread::msleep(1);
+					continue;
+				}
+				if (produce > chunk.size() / 2) {
+					produce = chunk.size() / 2;
+				}
+				lastFeed = now;
+				for (size_t i = 0; i < produce; ++i) {
+					double v = 0.0;
+					for (int t = 0; t < 3; ++t) {
+						v += 3800.0 * sin(phases[t]);
+						phases[t] += 2.0 * 3.14159265358979323846 * toneFs[t] / rate;
+					}
+					int16_t s = (int16_t) v;
+					chunk[i * 2] = s;
+					chunk[i * 2 + 1] = s;
+				}
+				mAudioBufferWrite(&source, chunk.data(), produce);
+				struct mAudioBuffer* staged = audioStretchProcess(&stretch, &source, rate, true, stretchFactor, 1.0, 2048);
+				size_t avail = mAudioBufferAvailable(staged);
+				if (avail > outBuf.size() / 2) {
+					avail = outBuf.size() / 2;
+				}
+				if (avail) {
+					mAudioBufferRead(staged, outBuf.data(), avail);
+					captured.insert(captured.end(), outBuf.data(), outBuf.data() + avail * 2);
+				}
+				QThread::msleep(2);
+			}
+			/* Short-window DFT, averaged over blocks. A single long Goertzel
+			 * recurrence is numerically unstable here (its pole sits near 1 for
+			 * low frequencies) and reported spurious 8x high/low ratios for an
+			 * equal-amplitude input. Fixed 2048-frame blocks keep the reading
+			 * sane; all tones get the same leakage, so the ratio comparison and
+			 * the 4x-vs-2x comparison are both meaningful. */
+			auto mag = [&](double f) {
+				const size_t win = 2048;
+				size_t n = captured.size() / 2;
+				double sum = 0.0;
+				size_t blocks = 0;
+				for (size_t start = 0; start + win <= n; start += win) {
+					double re = 0.0, im = 0.0;
+					for (size_t k = 0; k < win; ++k) {
+						double s = captured[(start + k) * 2] / 32768.0;
+						double a = 2.0 * 3.14159265358979323846 * f * double(k) / rate;
+						re += s * cos(a);
+						im -= s * sin(a);
+					}
+					sum += sqrt(re * re + im * im) * 2.0 / double(win);
+					++blocks;
+				}
+				return blocks ? sum / double(blocks) : 0.0;
+			};
+			double a440 = mag(toneFs[0]);
+			double a4k = mag(toneFs[1]);
+			double a8k = mag(toneFs[2]);
+			qInfo().noquote() << QString("SPECTRUM stretch %1x: frames %2, 440=%3, 4k/440=%4, 8k/440=%5 (input ratios ~1.0)")
+			                     .arg(stretchFactor, 0, 'f', 1).arg(captured.size() / 2)
+			                     .arg(a440, 0, 'f', 1)
+			                     .arg(a440 > 0 ? a4k / a440 : 0.0, 0, 'f', 3)
+			                     .arg(a440 > 0 ? a8k / a440 : 0.0, 0, 'f', 3);
+			if (captured.size() / 2 < size_t(rate / 2)) {
+				qWarning() << "SPECTRUM: stretcher produced too little signal";
+				++failures;
+			}
+			mAudioBufferDeinit(&source);
+			audioStretchDeinit(&stretch);
+		}
+	}
+
 	// Disengaging must hand the core's own buffer straight back.
 	struct AudioStretch off;
 	audioStretchInit(&off);

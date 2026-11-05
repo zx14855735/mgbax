@@ -398,7 +398,7 @@ private:
 	bool m_gbPaletteSet = false;
 	int32_t m_gbPalette[12] = {};
 #endif
-	int m_audioHoldMode = 1;
+	int m_audioHoldMode = 2; // NATIVE: real 1x tempo, not just 1x pitch
 	double m_audioHoldRatio = 4.0;
 	double m_audioHoldRate = 1.0;
 

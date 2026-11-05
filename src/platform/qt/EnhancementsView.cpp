@@ -97,29 +97,36 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 
 	QFormLayout* form = new QFormLayout;
 	m_hold = new QComboBox;
-	m_hold->addItem(tr("变调（跟随游戏加速，原版行为）"));
-	m_hold->addItem(tr("音乐连续不变速（WSOLA 拉伸，默认·高倍速下音色略闷）"));
-	m_hold->addItem(tr("原音高但跳段（整段切割，原声原调，跳段可能不连贯）"));
-	m_hold->setToolTip(tr("快进时音乐怎么办：\n"
-	                       "· 连续不变速：整首曲子按原速连续播放，只有音高不变。\n"
-	                       "· 原音高但跳段：每个音符音高不变，但 4 倍速下必须丢掉 3/4 的曲子，\n"
-	                       "  旋律会明显往前赶，听起来仍像倍速。"));
+	m_hold->addItem(tr("变调（音乐随游戏加速并升调，原版行为）"));
+	m_hold->addItem(tr("不变调·连续（WSOLA：音高不变，但旋律仍随游戏 4× 前进）"));
+	m_hold->addItem(tr("真正 1× 原速（默认·音高与节奏都原速，会跳段）"));
+	m_hold->setToolTip(tr("快进时音乐怎么办（游戏 4× 每秒产出 4 秒音乐，设备每秒只能播 1 秒，\n"
+	                       "所以必须丢掉 3/4，三者无法兼得）：\n"
+	                       "· 变调：连续、旋律 4×、音高升 4×。\n"
+	                       "· 不变调·连续：WSOLA 均匀压缩，音高不变，但旋律仍推进 4×，\n"
+	                       "  并不是 1× 原速（「音乐速度 1×」只代表音高不变）。\n"
+	                       "· 真正 1× 原速：按原速播放真实采样，只在音符间隙整段跳过冗余，\n"
+	                       "  音高和节奏都是 1×，代价是音乐会跳段。"));
 	form->addRow(tr("快进音乐"), m_hold);
 	m_ratio = new QComboBox;
 	for (double ratio : HOLD_RATIOS) {
 		m_ratio->addItem(tr("%1×").arg(ratio, 0, 'g', 2));
 	}
 	m_ratio->setToolTip(tr("开启「倍速音乐」后，游戏按此倍率受控快进（2×~8×）。\n"
-	                       "这是游戏本身的加速倍率；音乐则按下方「音乐速度」播放。\n"
+	                       "倍率越低，WSOLA 拉伸量越小、音色越清亮（音乐仍严格原速原调）。\n"
 	                       "不限速的快进无法保持音乐原速原调：核心产出的音频会溢出缓冲而被丢弃。"));
 	form->addRow(tr("快进倍率"), m_ratio);
 	m_rate = new QComboBox;
 	for (double rate : HOLD_RATES) {
-		m_rate->addItem(tr("%1×").arg(rate, 0, 'g', 2));
+		QString label = tr("%1×").arg(rate, 0, 'g', 2);
+		if (fabs(rate - 1.0) < 0.01) {
+			label += tr("（默认·原调）");
+		}
+		m_rate->addItem(label);
 	}
-	m_rate->setToolTip(tr("快进时音乐本身的播放速度。\n"
-	                      "1× = 音乐保持原速（原声原调），这是最自然的听感。\n"
-	                      "更高的倍率让音乐加快，拉伸量更小、保留的旋律更多。"));
+	m_rate->setToolTip(tr("音乐速度：1× = 音高不变；更高倍率会让音高随之升高。\n"
+	                      "1×（默认）：不变调。2× 约升高一个八度、3× 更高。\n"
+	                      "注意：它不改变旋律推进速率，那由「快进音乐」模式决定。"));
 	form->addRow(tr("音乐速度"), m_rate);
 	m_palette = new QComboBox;
 	m_palette->addItem(tr("核心默认（不覆盖）"));
@@ -217,7 +224,7 @@ EnhancementsView::EnhancementsView(Window* window, QWidget* parent)
 	m_ratio->setEnabled(holdEnabled);
 	m_rate->setEnabled(holdEnabled);
 	m_status->setText(holdEnabled
-		? tr("快进时游戏按「快进倍率」加速，音乐按「音乐速度」播放（1× = 原速原调）。")
+		? tr("游戏按「快进倍率」加速；音乐效果由「快进音乐」模式决定（详见其提示）。")
 		: tr("「快进音乐」当前为「变调」：游戏按常规倍速快进、音乐随游戏升调，下方两项不起作用。"));
 	m_updating = false;
 }
@@ -231,7 +238,7 @@ void EnhancementsView::applyHold(int index) {
 	m_ratio->setEnabled(holdEnabled);
 	m_rate->setEnabled(holdEnabled);
 	m_status->setText(holdEnabled
-		? tr("快进时游戏按「快进倍率」加速，音乐按「音乐速度」播放（1× = 原速原调）。")
+		? tr("游戏按「快进倍率」加速；音乐效果由「快进音乐」模式决定（详见其提示）。")
 		: tr("「快进音乐」当前为「变调」：游戏按常规倍速快进、音乐随游戏升调，下方两项不起作用。"));
 }
 
