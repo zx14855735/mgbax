@@ -600,7 +600,10 @@ static int lanSioTest(const QString& rom) {
 static int holdTest() {
 	const unsigned rate = 48000;
 	const double speed = 4.0;
-	const int runMs = 2000;
+	// Long enough for the native mode's lag ring (6 s of core audio) to fill
+	// at 4x and force a section cut: the surplus accumulates at 3x the play
+	// rate, so the ring needs 2 s of wall clock plus margin.
+	const int runMs = 3200;
 	int failures = 0;
 
 	for (int mode = AUDIO_STRETCH_PITCH; mode <= AUDIO_STRETCH_NATIVE; ++mode) {

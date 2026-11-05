@@ -533,8 +533,12 @@ struct mAudioBuffer* audioStretchProcess(struct AudioStretch* s, struct mAudioBu
 			s->wsolaOutAcc = maxOwed;
 		}
 		size_t budget = (size_t) s->wsolaOutAcc;
-		if (budget > want) {
-			budget = want;
+		/* The cap must never be smaller than one synthesis hop, or a hop
+		 * could never be emitted and the output would starve: the wall-clock
+		 * debt is what paces the engine, the cap only bounds one burst. */
+		size_t cap = want > s->wsolaHs ? want : s->wsolaHs;
+		if (budget > cap) {
+			budget = cap;
 		}
 		size_t made = wsolaGenerate(s, budget);
 		s->wsolaOutAcc -= (double) made;
