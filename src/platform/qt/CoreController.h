@@ -14,6 +14,7 @@
 #include <QObject>
 #include <QSize>
 
+#include "SioLinkHost.h"
 #include "VFileDevice.h"
 
 #include <functional>
@@ -47,7 +48,7 @@ class MemoryAccessLogController;
 class MultiplayerController;
 class Override;
 
-class CoreController : public QObject {
+class CoreController : public QObject, public SioLinkHost {
 Q_OBJECT
 
 public:
@@ -225,6 +226,12 @@ public slots:
 	void lanLinkClose();
 	int lanLinkState() const;
 	int lanLinkPlayer() const;
+
+	// SioLinkHost: the cloud bridge drives the same driver through this
+	// interface so it does not have to link CoreController.
+	bool sioHost(quint16 port) override { return lanLinkHost(port); }
+	bool sioJoin(const QString& host, quint16 port) override { return lanLinkJoin(host, port); }
+	void sioClose() override { lanLinkClose(); }
 #endif
 
 #if defined(M_CORE_GBA) || defined(M_CORE_GB)

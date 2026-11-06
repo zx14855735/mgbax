@@ -31,6 +31,7 @@
 #include "CloudLink.h"
 #include "GbCloud.h"
 #include "KcpChannel.h"
+#include "SioLinkHost.h"
 #endif
 #include "sio_link.h"
 
@@ -218,21 +219,59 @@ static int cloudTest(const QString& user, const QString& password, const QString
 }
 
 /**
+ * Bare sio_link backend for the cloud SIO bridge: no core, but the NetLink
+ * inside comes up, which is what the 分开控制 E2E asserts on.
+ */
+class TestSioHost : public QGBA::SioLinkHost {
+public:
+	~TestSioHost() override {
+		if (m_sio) {
+			sioLinkDestroy(m_sio);
+		}
+	}
+
+	bool sioHost(quint16 port) override {
+		if (!m_sio) {
+			m_sio = sioLinkCreate();
+		}
+		return m_sio && sioLinkHost(m_sio, int(port));
+	}
+
+	bool sioJoin(const QString& host, quint16 port) override {
+		if (!m_sio) {
+			m_sio = sioLinkCreate();
+		}
+		return m_sio && sioLinkJoin(m_sio, host.toUtf8().constData(), int(port));
+	}
+
+	void sioClose() override {
+		if (m_sio) {
+			sioLinkDestroy(m_sio);
+			m_sio = nullptr;
+		}
+	}
+
+	struct SioLink* m_sio = nullptr;
+};
+
+/**
  * Two-instance room test: the host creates a room and writes its id to
- * roomFile; the joiner waits for the file, joins, and both PASS once keys
- * flow through the relay in either direction.
+ * roomFile; the joiner waits for the file, joins, and both PASS once the SIO
+ * link comes up through the tunnel (分开控制: no keys are merged any more).
  */
 static int cloudPairTest(const QString& user, const QString& password,
                          const QString& roomFile, const QString& role, const QString& rom) {
 	int failures = 0;
 	CloudLink link;
+	TestSioHost sio;
+	link.setController(&sio);
 	QEventLoop loop;
 	QStringList log;
 	bool relayConnected = false;
 
 	QObject::connect(&link, &CloudLink::statusMessage, [&](const QString& m) {
 		log << m;
-		if (m.contains(QStringLiteral("云端联机已连接"))) {
+		if (m.contains(QStringLiteral("SIO 链路已建立"))) {
 			relayConnected = true;
 		}
 		if (role == QStringLiteral("host")) {

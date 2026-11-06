@@ -13,6 +13,8 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.security.MessageDigest;
 
 /**
@@ -60,6 +62,9 @@ public final class GBoyCloudLink {
     private static final long KEY_INTERVAL_MS = 50;
     /** Tunnel hello markers are re-sent at this pace until the peer answers. */
     private static final long TUNNEL_HELLO_MS = 2000;
+    /** Local loopback ports for the SIO link bridge (分开控制模式). */
+    private static final int SIO_PORT_BASE = 18765;
+    private static final int SIO_PORT_TRIES = 8;
 
     /**
      * Minimal transport shared by the KCP relay and the websocket tunnel; the
@@ -79,6 +84,9 @@ public final class GBoyCloudLink {
     public interface Hooks {
         String romPath();
 
+        /** The loaded core, for the SIO link driver (分开控制模式). */
+        MgbaCore core();
+
         /** Local key bitmask, GBA style. */
         int localKeys();
 
@@ -96,6 +104,7 @@ public final class GBoyCloudLink {
     private volatile boolean closed;
     private volatile KcpChannel channel;
     private volatile Link wsLink;
+    private volatile java.net.Socket sioSock;
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
     private volatile Thread advertiser;
@@ -157,6 +166,18 @@ public final class GBoyCloudLink {
         wsLink = null;
         if (tunnel != null) {
             tunnel.close();
+        }
+        java.net.Socket sio = sioSock;
+        sioSock = null;
+        if (sio != null) {
+            try {
+                sio.close();
+            } catch (IOException ignored) {
+            }
+        }
+        MgbaCore core = hooks.core();
+        if (core != null) {
+            core.linkClose();
         }
         GbCloud.Session open = session;
         session = null;
@@ -766,14 +787,14 @@ public final class GBoyCloudLink {
     // ---- websocket tunnel ----
 
     /**
-     * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话，
-     * 把 GBoy 帧塞进 send_message 广播推送里发给对方。WS 是出站 TCP，不受
-     * NAT/UDP 限制，跨网天然可用；代价是延迟略高。
+     * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话。
+     * WS 是出站 TCP，不受 NAT/UDP 限制，跨网天然可用；代价是延迟略高。
      *
-     * <p>握手时序：双方互发 hello（room 标记过滤），见到对方即回 accept 并
-     * 进入数据阶段。房主额外先发一帧 READY(2)——中继模式下这一帧由中继发，
-     * 隧道模式下没有中继，得由房主补上，否则双方在 {@link #handshake} 里
-     * 互等 READY 死锁。</p>
+     * <p>配对时序：双方互发 hello（room 标记过滤），见到对方即回 accept。
+     * 配对后进入<b>SIO 联机线模式（分开控制）</b>：按键不再通过网络合并，
+     * 每台设备只控制自己的画面；两台设备的游戏通过 native 联机线驱动
+     * （{@link MgbaCore#linkHost}/{@link MgbaCore#linkJoin}，本机 TCP 环回 +
+     * 这条隧道透传字节）互联，游戏内交换/对战走真正的 SIO。</p>
      */
     private void runTunnel(GbCloud.Session sig, String token, String uuid, Room room,
                            boolean asHost) throws IOException {
@@ -799,16 +820,143 @@ public final class GBoyCloudLink {
             throw new IOException(link.errorMessage() == null
                     ? "隧道等待对方超时" : link.errorMessage());
         }
-        sendRegister(link, room);
-        if (asHost) {
-            // 中继模式下由中继发READY(人数)，这里由房主代劳
-            link.send(GBoyFrames.frame(GBoyFrames.TYPE_READY,
-                    Math.max(2, room.playerCount)));
+        startSioBridge(link, asHost);
+    }
+
+    /**
+     * 分开控制的 SIO 数据阶段：把 native 联机线驱动（NetLink）的字节流原样
+     * 搬过隧道。本机侧用 127.0.0.1 环回与驱动对接，native 完全不用改：
+     *
+     * <pre>
+     *   1P: core.linkHost(P)        native 在本机监听 → app 连上去当客户端
+     *   2P: app 监听 127.0.0.1:P    core.linkJoin("127.0.0.1", P) 连出来
+     *   app 桥: 本地 socket 字节 ↔ WsLink('f' 标记 base64 块) ↔ 对端
+     * </pre>
+     *
+     * <p>桥不解析内容——两端 NetLink 自己握手、自己控节奏；隧道有序可靠，
+     * 固定 20 字节的 Packet 流原样到达。本机按键只进本机控制台，对方的
+     * 输入经由 SIO 链路被对方的游戏看见（游戏的联机语义，不再是按键镜像）。</p>
+     */
+    private void startSioBridge(WsLink link, boolean asHost) throws IOException {
+        MgbaCore core = hooks.core();
+        if (core == null) {
+            throw new IOException("模拟核心未就绪");
         }
-        handshake(link, room);
-        status("云端联机已连接（服务器隧道），你是 " + (asHost ? "1P" : "2P"));
+        status("已配对，正在建立本机联机线（分开控制）…");
+        Socket local = null;
+        ServerSocket server = null;
+        int port = 0;
+        try {
+            if (asHost) {
+                for (int t = 0; t < SIO_PORT_TRIES && local == null; t++) {
+                    port = SIO_PORT_BASE + t;
+                    if (!core.linkHost(port)) {
+                        continue;
+                    }
+                    try {
+                        local = new Socket();
+                        local.connect(new java.net.InetSocketAddress("127.0.0.1", port), 3000);
+                    } catch (IOException e) {
+                        core.linkClose();
+                        local = null;
+                    }
+                }
+            } else {
+                for (int t = 0; t < SIO_PORT_TRIES; t++) {
+                    port = SIO_PORT_BASE + t;
+                    try {
+                        server = new ServerSocket();
+                        server.bind(new java.net.InetSocketAddress(
+                                InetAddress.getByName("127.0.0.1"), port));
+                        break;
+                    } catch (IOException e) {
+                        server = null;
+                    }
+                }
+                if (server == null) {
+                    throw new IOException("本机联机线端口被占用");
+                }
+                if (!core.linkJoin("127.0.0.1", port)) {
+                    throw new IOException("无法启动本机联机线");
+                }
+                server.setSoTimeout(10000);
+                local = server.accept(); // native linkJoin 会连进来
+            }
+        } finally {
+            if (server != null) {
+                try {
+                    server.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+        if (local == null) {
+            throw new IOException("本机联机线建立失败");
+        }
+        local.setTcpNoDelay(true);
+        sioSock = local;
+        status("SIO 链路已建立（分开控制）\n"
+                + "各自操作各自的画面，对方按键不再进入你的游戏\n"
+                + "游戏内联机（交换/对战）走联机线\n"
+                + "云端联机已连接，你是 " + (asHost ? "1P" : "2P"));
         hooks.onConnected(asHost, null);
-        serve(link);
+        final Socket sock = local;
+        Thread out = new Thread(() -> {
+            byte[] buf = new byte[2048];
+            try {
+                java.io.InputStream in = sock.getInputStream();
+                int n;
+                while (!closed && (n = in.read(buf)) > 0) {
+                    byte[] chunk = new byte[n];
+                    System.arraycopy(buf, 0, chunk, 0, n);
+                    link.send(chunk);
+                }
+            } catch (Exception ignored) {
+                // 断线由守望线程统一收尾
+            }
+            closeSio();
+        }, "sio-bridge-out");
+        Thread in = new Thread(() -> {
+            try {
+                java.io.OutputStream os = sock.getOutputStream();
+                while (!closed) {
+                    byte[] pkt = link.recv(100);
+                    if (pkt != null && pkt.length > 0) {
+                        os.write(pkt);
+                        os.flush();
+                    }
+                }
+            } catch (Exception ignored) {
+                // 同上
+            }
+            closeSio();
+        }, "sio-bridge-in");
+        out.setDaemon(true);
+        in.setDaemon(true);
+        out.start();
+        in.start();
+        // 守望：任何一侧断开都收尾
+        while (!closed && !link.isClosed() && !sock.isClosed()) {
+            sleepQuietly(1000);
+        }
+        if (!closed) {
+            fail("联机线连接已断开");
+        }
+    }
+
+    /** 断开 SIO 侧：关本地 socket 与隧道，守望线程随后收尾。 */
+    private void closeSio() {
+        Socket s = sioSock;
+        if (s != null) {
+            try {
+                s.close();
+            } catch (IOException ignored) {
+            }
+        }
+        Link t = wsLink;
+        if (t != null) {
+            t.close();
+        }
     }
 
     /**

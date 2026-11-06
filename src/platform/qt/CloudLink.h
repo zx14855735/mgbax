@@ -16,6 +16,7 @@ namespace QGBA {
 
 class KcpChannel;
 struct ILink;
+struct SioLinkHost;
 namespace GbCloud { class Session; }
 
 /**
@@ -51,6 +52,8 @@ public:
 	void stopLink();
 	void sendReset();
 	void setLocalKeys(int keys) { m_localKeys.store(keys, std::memory_order_relaxed); }
+	/** The running game's SIO driver surface (分开控制模式). */
+	void setController(SioLinkHost* controller) { m_controller = controller; }
 
 signals:
 	void statusMessage(const QString& message);
@@ -84,6 +87,9 @@ private:
 	/** Relay unreachable: serve the match over the signalling websocket. */
 	void runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost);
 	void cleanupTunnel();
+	/** 分开控制：pipe the native SIO link bytes through the tunnel. */
+	void startSioBridge(ILink* link, bool asHost);
+	void closeSio();
 
 	// wire handshake
 	void sendRegister(ILink* link, Room* room);
@@ -122,6 +128,9 @@ private:
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;
 	ILink* m_tunnel = nullptr;
+	SioLinkHost* m_controller = nullptr;
+	/** Local loopback socket to the native SIO link driver (分开控制). */
+	std::atomic<intptr_t> m_sioSock{-1};
 	QString m_authToken;
 	Room m_currentRoom;
 	bool m_hostRole = false;

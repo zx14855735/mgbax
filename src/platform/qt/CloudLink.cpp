@@ -9,6 +9,7 @@
 #include "GbCloud.h"
 #include "GBoyFrames.h"
 #include "KcpChannel.h"
+#include "SioLinkHost.h"
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -21,6 +22,20 @@
 #include <QRandomGenerator>
 
 #include <stdexcept>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+typedef int SOCKET;
+static void closesocket(int s) {
+	close(s);
+}
+#endif
 
 using namespace QGBA;
 
@@ -137,6 +152,137 @@ int firstInt(const QJsonObject& object, const QStringList& keys) {
 		}
 	}
 	return 0;
+}
+
+// ---- local loopback sockets for the SIO bridge (分开控制) ----
+
+#ifdef _WIN32
+
+void sockInit() {
+	static bool done = []() {
+		WSADATA data;
+		return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+	}();
+	(void)done;
+}
+
+#else
+
+void sockInit() {
+}
+
+#endif
+
+void sockClose(intptr_t s) {
+	closesocket(static_cast<SOCKET>(s));
+}
+
+/** Blocks until a local host:port accepts, or ms passes. Returns the socket or -1. */
+intptr_t sockConnectLocal(const char* host, quint16 port, int ms) {
+	sockInit();
+#ifdef _WIN32
+	intptr_t s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+#else
+	intptr_t s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, 0));
+#endif
+	if (s < 0) {
+		return -1;
+	}
+	sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	inet_pton(AF_INET, host, &addr.sin_addr);
+#ifdef _WIN32
+	// Non-blocking connect with a select() wait, so a dead port fails fast.
+	u_long mode = 1;
+	ioctlsocket(static_cast<SOCKET>(s), FIONBIO, &mode);
+	int rc = connect(static_cast<SOCKET>(s), reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+	if (rc != 0) {
+		fd_set wset;
+		FD_ZERO(&wset);
+		FD_SET(static_cast<SOCKET>(s), &wset);
+		timeval tv{ms / 1000, (ms % 1000) * 1000};
+		if (select(0, nullptr, &wset, nullptr, &tv) <= 0) {
+			sockClose(s);
+			return -1;
+		}
+	}
+	mode = 0;
+	ioctlsocket(static_cast<SOCKET>(s), FIONBIO, &mode);
+#else
+	timeval tv{ms / 1000, (ms % 1000) * 1000};
+	if (setsockopt(static_cast<int>(s), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+		sockClose(s);
+		return -1;
+	}
+	if (connect(static_cast<int>(s), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+		sockClose(s);
+		return -1;
+	}
+#endif
+	return s;
+}
+
+/** Listens on 127.0.0.1:port; returns the listener socket or -1. */
+intptr_t sockListenLocal(quint16 port) {
+	sockInit();
+#ifdef _WIN32
+	intptr_t s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+#else
+	intptr_t s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, 0));
+#endif
+	if (s < 0) {
+		return -1;
+	}
+	int one = 1;
+	setsockopt(static_cast<SOCKET>(s), SOL_SOCKET, SO_REUSEADDR,
+	           reinterpret_cast<const char*>(&one), sizeof(one));
+	sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+	if (bind(static_cast<SOCKET>(s), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
+	    || listen(static_cast<SOCKET>(s), 1) != 0) {
+		sockClose(s);
+		return -1;
+	}
+	return s;
+}
+
+/** Blocks up to ms waiting for one connection on the listener. */
+intptr_t sockAccept(intptr_t listener, int ms) {
+	fd_set rset;
+	FD_ZERO(&rset);
+	FD_SET(static_cast<SOCKET>(listener), &rset);
+	timeval tv{ms / 1000, (ms % 1000) * 1000};
+	if (select(static_cast<int>(listener) + 1, &rset, nullptr, nullptr, &tv) <= 0) {
+		return -1;
+	}
+#ifdef _WIN32
+	return static_cast<intptr_t>(accept(static_cast<SOCKET>(listener), nullptr, nullptr));
+#else
+	return static_cast<intptr_t>(accept(static_cast<int>(listener), nullptr, nullptr));
+#endif
+}
+
+/** Sends the whole buffer over the (blocking) socket. */
+bool sockSendAll(intptr_t s, const uint8_t* data, size_t len) {
+	size_t off = 0;
+	while (off < len) {
+#ifdef _WIN32
+		int n = send(static_cast<SOCKET>(s), reinterpret_cast<const char*>(data + off),
+		             static_cast<int>(len - off), 0);
+#else
+		ssize_t n = send(static_cast<int>(s), data + off, len - off, 0);
+#endif
+		if (n <= 0) {
+			return false;
+		}
+		off += static_cast<size_t>(n);
+	}
+	return true;
 }
 
 /**
@@ -726,13 +872,13 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 // ---- websocket tunnel ----
 
 /**
- * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话，把
- * GBoy 帧塞进 send_message 广播推送里发给对方。WS 是出站 TCP，不受 NAT/UDP
- * 限制，跨网天然可用；代价是延迟略高。
+ * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话。
+ * WS 是出站 TCP，不受 NAT/UDP 限制，跨网天然可用；代价是延迟略高。
  *
- * 握手时序：双方互发 hello（room 标记过滤），见到对方即回 accept 并进入数据
- * 阶段。房主额外先发一帧 READY(2)——中继模式下这一帧由中继发，隧道模式下
- * 没有中继，得由房主补上，否则双方在 handshake() 里互等 READY 死锁。
+ * 配对时序：双方互发 hello（room 标记过滤），见到对方即回 accept。配对后
+ * 进入 SIO 联机线模式（分开控制）：按键不再通过网络合并，每台设备只控制
+ * 自己的画面；两台设备的游戏通过 native 联机线驱动（sioLinkHost/Join，本机
+ * TCP 环回 + 这条隧道透传字节）互联，游戏内交换/对战走真正的 SIO。
  */
 void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
 	const QString tag = room->roomId;
@@ -765,25 +911,117 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		fail(detail);
 		return;
 	}
-	sendRegister(link, room);
-	if (asHost) {
-		// 中继模式下由中继发 READY(人数)，这里由房主代劳
-		link->send(GBoyFrames::frame(GBoyFrames::TYPE_READY, qMax(2, room->playerCount)));
-	}
-	try {
-		handshake(link, room);
-	} catch (std::exception& e) {
-		cleanupTunnel();
-		m_tunnelUp = false;
-		fail(QString::fromUtf8(e.what()));
-		return;
-	}
-	status(QStringLiteral("云端联机已连接（服务器隧道），你是 ")
-	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
-	emit connected(asHost);
-	serve(link);
+	startSioBridge(link, asHost);
 	cleanupTunnel();
 	m_tunnelUp = false;
+}
+
+/**
+ * 分开控制的 SIO 数据阶段：把 native 联机线驱动（NetLink）的字节流原样搬过
+ * 隧道。本机侧用 127.0.0.1 环回与驱动对接，native 完全不用改：
+ *
+ *   1P: controller->lanLinkHost(P)   native 在本机监听 → 本线程连上去当客户端
+ *   2P: 本线程监听 127.0.0.1:P       controller->lanLinkJoin("127.0.0.1", P) 连出来
+ *   桥: 本地 socket 字节 ↔ WsLink('f' 标记 base64 块) ↔ 对端
+ *
+ * 桥不解析内容——两端 NetLink 自己握手、自己控节奏；隧道有序可靠，固定
+ * 20 字节的 Packet 流原样到达。sioLinkPump 已在核心线程每帧驱动 SIO。
+ * 整个泵跑在 CloudLink 工作线程上：QWebSocket 只能由创建它的线程使用。
+ */
+void CloudLink::startSioBridge(ILink* link, bool asHost) {
+	SioLinkHost* cc = m_controller;
+	if (!cc) {
+		fail(QStringLiteral("模拟核心未就绪"));
+		return;
+	}
+	status(asHost ? QStringLiteral("已配对，正在建立本机联机线（分开控制）…")
+	              : QStringLiteral("已配对，正在建立本机联机线（分开控制）…"));
+	intptr_t local = -1;
+	constexpr quint16 SIO_PORT_BASE = 18765;
+	constexpr int SIO_PORT_TRIES = 8;
+	if (asHost) {
+		for (int t = 0; t < SIO_PORT_TRIES && local < 0; t++) {
+			quint16 port = quint16(SIO_PORT_BASE + t);
+			if (!cc->sioHost(port)) {
+				continue;
+			}
+			local = sockConnectLocal("127.0.0.1", port, 3000);
+			if (local < 0) {
+				cc->sioClose();
+			}
+		}
+	} else {
+		intptr_t listener = -1;
+		quint16 port = 0;
+		for (int t = 0; t < SIO_PORT_TRIES; t++) {
+			port = quint16(SIO_PORT_BASE + t);
+			listener = sockListenLocal(port);
+			if (listener >= 0) {
+				break;
+			}
+		}
+		if (listener < 0) {
+			fail(QStringLiteral("本机联机线端口被占用"));
+			return;
+		}
+		if (!cc->sioJoin(QStringLiteral("127.0.0.1"), port)) {
+			sockClose(listener);
+			fail(QStringLiteral("无法启动本机联机线"));
+			return;
+		}
+		local = sockAccept(listener, 10000); // native linkJoin 会连进来
+		sockClose(listener);
+	}
+	if (local < 0) {
+		fail(QStringLiteral("本机联机线建立失败"));
+		return;
+	}
+	m_sioSock = local;
+	status(QStringLiteral("SIO 链路已建立（分开控制）\n")
+	       + QStringLiteral("各自操作各自的画面，对方按键不再进入你的游戏\n")
+	       + QStringLiteral("游戏内联机（交换/对战）走联机线\n")
+	       + QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
+	emit connected(asHost);
+	// 单线程泵：select 本地 socket（出向）+ 短超时收隧道（入向）。
+	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
+		fd_set rset;
+		FD_ZERO(&rset);
+		FD_SET(static_cast<SOCKET>(local), &rset);
+		timeval tv{0, 0};
+		if (select(static_cast<int>(local) + 1, &rset, nullptr, nullptr, &tv) > 0) {
+			uint8_t buf[2048];
+#ifdef _WIN32
+			int n = recv(static_cast<SOCKET>(local), reinterpret_cast<char*>(buf), sizeof(buf), 0);
+#else
+			int n = int(recv(static_cast<int>(local), buf, sizeof(buf), 0));
+#endif
+			if (n <= 0) {
+				break;
+			}
+			link->send(QByteArray(reinterpret_cast<const char*>(buf), n));
+		}
+		QByteArray pkt;
+		if (link->recv(&pkt, 20)) {
+			if (!sockSendAll(local, reinterpret_cast<const uint8_t*>(pkt.constData()),
+			                 static_cast<size_t>(pkt.size()))) {
+				break;
+			}
+		}
+	}
+	closeSio();
+	if (!m_closed.load(std::memory_order_relaxed)) {
+		fail(QStringLiteral("联机线连接已断开"));
+	}
+}
+
+void CloudLink::closeSio() {
+	intptr_t s = m_sioSock.exchange(-1);
+	if (s >= 0) {
+		sockClose(s);
+	}
+	if (m_controller) {
+		m_controller->sioClose();
+	}
 }
 
 void CloudLink::cleanupTunnel() {

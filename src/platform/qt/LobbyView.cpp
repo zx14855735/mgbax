@@ -236,6 +236,7 @@ void LobbyView::startRoom(bool asHost) {
 
 	m_controller = m_window->controller();
 	m_link = new CloudLink(this);
+	m_link->setController(m_controller.get());
 	connect(m_link, &CloudLink::statusMessage, this, &LobbyView::status);
 	connect(m_link, &CloudLink::linkEnded, this, &LobbyView::ended);
 	connect(m_link, &CloudLink::remoteKeys, m_controller.get(), &CoreController::setRemoteKeys);

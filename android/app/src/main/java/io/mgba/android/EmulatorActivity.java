@@ -4079,6 +4079,11 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
 
                 @Override
+                public MgbaCore core() {
+                    return core;
+                }
+
+                @Override
                 public int localKeys() {
                     return touchKeys | hwKeys;
                 }
