@@ -647,6 +647,7 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 		const auto objects = GbCloud::jsonObjects(text);
 		for (const QJsonObject& object : objects) {
 			QString type = object.value("type").toString();
+			QString failure = serverError(object);
 			if (type == QStringLiteral("create_game_room")) {
 				QString incomingRoomId = firstString(object, {QStringLiteral("room_id"),
 				                                              QStringLiteral("roomId"),
@@ -670,7 +671,6 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 				if (object.value("base_list").isArray()) {
 					room->baseStateCount = object.value("base_list").toArray().size();
 				}
-				QString failure = serverError(object);
 				if (!failure.isEmpty() && incomingRoomId.isEmpty() && address.isEmpty()) {
 					// The server refused the request outright; there is no
 					// point in waiting for an answer that already arrived.
@@ -728,6 +728,16 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 						}
 					}
 				}
+			}
+			// join_room, ready and friends report failures the same way. The
+			// pushes (send_message, player_joined, user_join, user_leave) are
+			// excluded: they are broadcasts, not the answer to our request.
+			bool isPush = type == QStringLiteral("send_message")
+			              || type == QStringLiteral("player_joined")
+			              || type == QStringLiteral("user_join")
+			              || type == QStringLiteral("user_leave");
+			if (!failure.isEmpty() && type != QStringLiteral("create_game_room") && !isPush) {
+				throw std::runtime_error(failure.toStdString());
 			}
 		}
 		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {

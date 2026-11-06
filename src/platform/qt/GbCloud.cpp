@@ -47,7 +47,12 @@ namespace QGBA {
 namespace GbCloud {
 
 void debugLog(const QString& message) {
-	QFile file(debugLogPath());
+	QString path = debugLogPath();
+	QFile file(path);
+	// Keep the log bounded: a long session would otherwise grow it forever.
+	if (file.size() > 1024 * 1024) {
+		file.remove();
+	}
 	if (!file.open(QIODevice::Append | QIODevice::Text)) {
 		return;
 	}
