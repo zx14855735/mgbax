@@ -50,6 +50,12 @@ void sioLinkStatusText(const struct SioLink* sio, char* out, size_t outLen);
  * the link state changes (and re-attaches after a core reset). */
 void sioLinkPump(struct SioLink* sio, struct mCore* core);
 
+/** Diagnostics: smoothed RTT in µs (0 = unknown) and peer queue counters. */
+uint32_t sioLinkRttUs(const struct SioLink* sio);
+void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drops);
+/** Words queued from the peer but not consumed yet. */
+int sioLinkPeerPending(const struct SioLink* sio);
+
 #ifdef __cplusplus
 }
 #endif

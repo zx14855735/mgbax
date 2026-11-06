@@ -34,6 +34,7 @@
 #include "SioLinkHost.h"
 #endif
 #include "sio_link.h"
+#include "../mobile/link_net.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -819,25 +820,54 @@ static int lanSioLatTest(const QString& rom, int delayMs) {
 	gba1->memory.io[GBA_REG(SIOMLT_SEND)] = 0xBEEF;
 	// Two cores on two threads, like two real devices: the master's blocking
 	// peer wait must never starve the slave (single-threaded loops deadlock
-	// exactly the way a tunnel RTT makes them).
+	// exactly the way a tunnel RTT makes them). Time-bounded: each blocking
+	// take freezes that core's thread for up to the adaptive window, so the
+	// wall clock budget has to live on the main thread.
 	std::atomic<bool> stop{false};
 	auto worker = [&](int i) {
 		struct GBA* gba = (struct GBA*) cores[i]->board;
-		for (int f = 0; f < 600 && !stop.load(); f++) {
+		int f = 0;
+		// No frame cap: the slave's clock races ahead while it spins waiting
+		// for the master's next round (2048-cycle retries), so frame counts
+		// are meaningless under latency - only `stop` ends this loop.
+		while (!stop.load(std::memory_order_relaxed)) {
 			sioLinkPump(links[i], cores[i]);
 			if (f % 25 == 5) {
 				// the game starts a MULTI round periodically
 				GBASIOWriteSIOCNT(&gba->sio, 0x600F);
 			}
 			cores[i]->runFrame(cores[i]);
+			++f;
+			if (f % 2000 == 0) {
+				qInfo().noquote() << QString("worker%1 f=%2 mode=%3").arg(i).arg(f).arg((int) gba->sio.mode);
+			}
 		}
+		qInfo().noquote() << QString("worker%1 EXIT f=%2").arg(i).arg(f);
 	};
 	std::thread ta(worker, 0);
 	std::thread tb(worker, 1);
+	bool ok = false;
+	for (int s = 0; s < 300; s++) {
+		QThread::msleep(100);
+		uint16_t a = gba0->memory.io[GBA_REG(SIOMULTI1)];
+		uint16_t b = gba1->memory.io[GBA_REG(SIOMULTI0)];
+		if (a == 0xBEEF && b == 0x1234) {
+			ok = true;
+			break;
+		}
+	}
+	stop.store(true, std::memory_order_relaxed);
 	ta.join();
 	tb.join();
 	uint16_t m1 = gba0->memory.io[GBA_REG(SIOMULTI1)];
 	uint16_t m0 = gba1->memory.io[GBA_REG(SIOMULTI0)];
+	uint32_t stale0 = 0, drops0 = 0, stale1 = 0, drops1 = 0;
+	sioLinkPeerStats(links[0], &stale0, &drops0);
+	sioLinkPeerStats(links[1], &stale1, &drops1);
+	qInfo().noquote() << QString("rtt master=%1us slave=%2us; stale m=%3 s=%4; drops m=%5 s=%6; pending m=%7 s=%8")
+	                     .arg(sioLinkRttUs(links[0])).arg(sioLinkRttUs(links[1]))
+	                     .arg(stale0).arg(stale1).arg(drops0).arg(drops1)
+	                     .arg(sioLinkPeerPending(links[0])).arg(sioLinkPeerPending(links[1]));
 	qInfo().noquote() << QString("lat=%1ms master SIOMULTI1=%2 (want BEEF), slave SIOMULTI0=%3 (want 1234)")
 	                     .arg(delayMs * 2).arg(m1, 4, 16, QChar('0')).arg(m0, 4, 16, QChar('0'));
 	if (m1 != 0xBEEF) {

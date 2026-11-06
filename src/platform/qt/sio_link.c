@@ -280,6 +280,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	struct SioLink* sio = (struct SioLink*) user;
 	sio->sioSlaveArmed = false;
 	if (!sio->link || !sio->linkAttached || !sio->core) {
+		SIO_LOG("slave event: dead bail link=%p attached=%d", (void*) sio->link, sio->linkAttached);
 		return;
 	}
 	if (sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -287,6 +288,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	if (gba->sio.mode != GBA_SIO_MULTI) {
+		SIO_LOG("slave event: mode=%d not multi, chain stop", (int) gba->sio.mode);
 		return;
 	}
 	int me = netLinkPlayer(sio->link);
@@ -334,6 +336,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	sio->sioHasRemote = true;
 	sio->sioRemote = remote;
 	completeMultiTransfer(sio, remote, true, cyclesLate);
+	SIO_LOG("slave round idx=%u own=%04X -> push", (unsigned) sio->sioIndex, own);
 	/* Push this round's own word back, tagged with the host's round number:
 	 * the host's strict (want == got) matching then always lines up. */
 	struct mTiming* timing2 = coreTiming(sio);
@@ -382,6 +385,9 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	uint32_t remote = 0;
 	uint16_t got = 0;
 	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioWaitMs(sio), &remote, &got, NULL);
+	SIO_LOG("done want=%u have=%d got=%u retries=%u rtt=%u pending=%d",
+	        (unsigned) sio->sioIndex, haveRemote ? 1 : 0, (unsigned) got,
+	        (unsigned) sio->sioRetries, netLinkRttUs(sio->link), netLinkPeerPending(sio->link));
 	if (haveRemote) {
 		if (got != sio->sioIndex) {
 			++sio->sioMisorder;
@@ -793,6 +799,33 @@ void sioLinkDestroy(struct SioLink* sio) {
 	sioLinkClose(sio);
 	netLinkDestroy(sio->link);
 	free(sio);
+}
+
+uint32_t sioLinkRttUs(const struct SioLink* sio) {
+	if (!sio) {
+		return 0;
+	}
+	return netLinkRttUs(sio->link);
+}
+
+void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drops) {
+	if (!sio) {
+		if (stale) {
+			*stale = 0;
+		}
+		if (drops) {
+			*drops = 0;
+		}
+		return;
+	}
+	netLinkPeerStats(sio->link, stale, drops);
+}
+
+int sioLinkPeerPending(const struct SioLink* sio) {
+	if (!sio) {
+		return 0;
+	}
+	return netLinkPeerPending(sio->link);
 }
 
 bool sioLinkHost(struct SioLink* sio, int port) {
