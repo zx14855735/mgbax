@@ -6,6 +6,8 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QList>
+#include <QQueue>
 #include <QString>
 
 class QWebSocket;
@@ -39,6 +41,18 @@ QString registerAccount(const QString& username, const QString& email,
 /** api.php sometimes echoes notices before the JSON line. */
 QJsonObject lastJsonObject(const QString& raw, bool* ok);
 
+/**
+ * Every JSON object carried by one raw frame.
+ *
+ * The room server packs several answers into a single text frame (newline
+ * separated), so looking at the last object only would drop the one that
+ * carries the room id.
+ */
+QList<QJsonObject> jsonObjects(const QString& raw);
+
+/** Append a line to the on-disk lobby debug log (token-free, safe to share). */
+void debugLog(const QString& message);
+
 /** Minimal WebSocket room session (Qt's QWebSocket, TLS errors ignored). */
 class Session {
 public:
@@ -57,16 +71,23 @@ public:
 	/**
 	 * Next text frame, or empty when nothing arrives in time. Qt answers the
 	 * server's pings by itself, which keeps the room alive.
+	 *
+	 * Frames are handed out oldest-first. The room server happily pushes
+	 * several frames inside one event-loop turn (the room_id answer plus a
+	 * keepalive, for instance), so a "last frame wins" buffer would silently
+	 * drop the answer we are waiting for.
 	 */
 	QString recv(int timeoutMs);
+
+	/** Number of frames that arrived but have not been handed out yet. */
+	int pending() const { return m_incoming.size(); }
 
 private:
 	void onText(const QString& text);
 
 	QWebSocket* m_socket = nullptr;
 	bool m_insecure = true;
-	bool m_gotText = false;
-	QString m_lastText;
+	QQueue<QString> m_incoming;
 };
 
 }

@@ -67,6 +67,7 @@ private:
 	};
 
 	// session flow
+	void runLobby();
 	void runManual(const QString& nodeSpec, bool asHost);
 	void hostCreateRoom(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
 	void connectRelay(GbCloud::Session* sig, const QString& token, Room* room, bool asHost);

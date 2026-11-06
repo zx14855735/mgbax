@@ -6,7 +6,9 @@
 #include "GbCloud.h"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDeadlineTimer>
+#include <QDir>
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -15,6 +17,7 @@
 #include <QRegularExpression>
 #include <QStringList>
 #include <QAbstractSocket>
+#include <QTextStream>
 #include <QTimer>
 #include <QSslConfiguration>
 #include <QSslError>
@@ -27,10 +30,32 @@ namespace {
 
 constexpr int HTTP_TIMEOUT_MS = 15000;
 
+/**
+ * The lobby server answers with a couple of dozen frames per room session;
+ * when something goes wrong the exact frames are the only evidence left.
+ * They are written to a plain text file next to the temp dir so a user can
+ * hand the file over without digging through a console.
+ */
+QString debugLogPath() {
+	return QDir::tempPath() + QStringLiteral("/mgba_gboy_lobby.log");
+}
+
 }
 
 namespace QGBA {
 namespace GbCloud {
+
+void debugLog(const QString& message) {
+	QFile file(debugLogPath());
+	if (!file.open(QIODevice::Append | QIODevice::Text)) {
+		return;
+	}
+	QTextStream stream(&file);
+	stream << QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz"))
+	       << QStringLiteral(" ") << message << QStringLiteral("\n");
+	stream.flush();
+	file.close();
+}
 
 const QString& api() {
 	static const QString API = QStringLiteral("https://gboy.top/api/api.php");
@@ -189,8 +214,14 @@ Session::Session()
 }
 
 void Session::onText(const QString& text) {
-	m_lastText = text;
-	m_gotText = true;
+	// Keep every frame: the room server pushes answers and keepalives in the
+	// same turn, and the answer we need is not necessarily the last one.
+	m_incoming.enqueue(text);
+	QString shown = text;
+	if (shown.size() > 400) {
+		shown = shown.left(400) + QStringLiteral("…");
+	}
+	debugLog(QStringLiteral("<- ") + shown);
 }
 
 Session::~Session() {
@@ -244,6 +275,16 @@ bool Session::sendText(const QString& text, QString* error) {
 		return false;
 	}
 	m_socket->sendTextMessage(text);
+	// The auth token must never end up in a file the user may share, so it is
+	// masked before the frame is logged.
+	QString shown = text;
+	static const QRegularExpression tokenField(QStringLiteral("\"token\"\\s*:\\s*\"[^\"]*\""),
+	                                           QRegularExpression::CaseInsensitiveOption);
+	shown.replace(tokenField, QStringLiteral("\"token\":\"***\""));
+	if (shown.size() > 400) {
+		shown = shown.left(400) + QStringLiteral("…");
+	}
+	debugLog(QStringLiteral("-> ") + shown);
 	return true;
 }
 
@@ -251,20 +292,23 @@ QString Session::recv(int timeoutMs) {
 	if (!isOpen()) {
 		return QString();
 	}
-	m_gotText = false;
-	m_lastText.clear();
 	QDeadlineTimer deadline{qint64(timeoutMs)};
-	while (!deadline.hasExpired()) {
+	while (true) {
+		if (!m_incoming.isEmpty()) {
+			return m_incoming.dequeue();
+		}
 		// Spin the local event queue so the socket notifiers fire.
 		QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-		if (m_gotText) {
-			return m_lastText;
+		if (!m_incoming.isEmpty()) {
+			return m_incoming.dequeue();
 		}
 		if (m_socket->state() != QAbstractSocket::ConnectedState) {
 			return QString();
 		}
+		if (deadline.hasExpired()) {
+			return QString();
+		}
 	}
-	return QString();
 }
 
 }

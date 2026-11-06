@@ -141,6 +141,22 @@ bool CloudLink::waitAndProcess(int ms) {
 }
 
 void CloudLink::run() {
+	// The room dance throws std::runtime_error when the server does not answer
+	// in time. Letting that escape QThread::run() calls std::terminate and
+	// takes the whole emulator down with it, so every failure is turned into
+	// a readable status line instead.
+	try {
+		runLobby();
+	} catch (const std::exception& e) {
+		m_session = nullptr;
+		fail(QStringLiteral("联机流程中断：%1").arg(QString::fromUtf8(e.what())));
+	} catch (...) {
+		m_session = nullptr;
+		fail(QStringLiteral("联机流程出现未知错误"));
+	}
+}
+
+void CloudLink::runLobby() {
 	GbCloud::Session sig;
 	if (m_config.roomId.startsWith(QStringLiteral("DBGJ:")) || m_config.roomId.startsWith(QStringLiteral("NODE2:"))) {
 		runManual(m_config.roomId.mid(m_config.roomId.indexOf(':') + 1), false);
