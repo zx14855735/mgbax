@@ -25,6 +25,8 @@ void netLinkStatusText(struct NetLink* link, char* out, size_t outLen);
 bool netLinkBarrier(struct NetLink* link, int timeoutMs);
 /* 持续 RTT 探针（µs 级）：模拟线程高频调用，按 250ms 节奏发 PING。 */
 void netLinkPingTick(struct NetLink* link);
+/* 平滑后的当前 RTT（µs）；还没测到时为 0。等待窗按它自适应。 */
+uint32_t netLinkRttUs(struct NetLink* link);
 bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32_t* remoteOut, int timeoutMs);
 bool netLinkTakeRequest(struct NetLink* link, uint16_t* seq, uint16_t* mode, uint32_t* value, int* player);
 void netLinkReply(struct NetLink* link, uint16_t seq, uint16_t mode, uint32_t value);

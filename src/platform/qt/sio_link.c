@@ -356,6 +356,23 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
  * with empty slots - never with a stale value from the previous round, which
  * is exactly what corrupted checksums in earlier attempts.
  */
+/* 跨网等待窗：局域网 RTT 1-3ms，800ms 绰绰有余；走服务器隧道 RTT 上百毫秒
+ * 还会抖（手机网络尖峰能到秒级），固定 800ms 必然误超时——超时一次就用空槽
+ * 收尾，游戏立刻报「连接发生了错误」。等待窗跟随实测 RTT（20 倍余量），
+ * 下限仍是局域网的 800ms，上限 20s 防死等。等待期间模拟时钟冻结，游戏自己
+ * 不会超时，只是这一轮变慢。 */
+static int sioWaitMs(struct SioLink* sio) {
+	uint32_t rttUs = sio->link ? netLinkRttUs(sio->link) : 0;
+	uint32_t ms = (rttUs / 1000u) * 20u;
+	if (ms < 800) {
+		ms = 800;
+	}
+	if (ms > 20000) {
+		ms = 20000;
+	}
+	return (int) ms;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	UNUSED(timing);
 	struct SioLink* sio = (struct SioLink*) user;
@@ -364,7 +381,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
-	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, 800, &remote, &got, NULL);
+	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioWaitMs(sio), &remote, &got, NULL);
 	if (haveRemote) {
 		if (got != sio->sioIndex) {
 			++sio->sioMisorder;
@@ -376,6 +393,18 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		return;
 	}
 	sio->sioTimeouts++;
+	/* 对端还在线就继续等，别急着用空槽收尾：跨网时对端的字只是迟到（RTT
+	 * 尖峰、手机切基站），不是没有。等待继续冻结模拟时钟，游戏看不见这段
+	 * 时间；真机语义也一样——从机不回字，线路就不动。真正断线（state≠2）
+	 * 或重试次数耗尽才按「这一轮没有对端数据」收尾。 */
+	if (sio->link && netLinkState(sio->link) == 2 && sio->sioRetries < 40) {
+		++sio->sioRetries;
+		struct mTiming* t2 = coreTiming(sio);
+		if (t2) {
+			mTimingSchedule(t2, &sio->sioDone, 100);
+			return;
+		}
+	}
 	sio->sioWaiting = false;
 	completeMultiTransfer(sio, 0, false, cyclesLate);
 }
@@ -606,7 +635,9 @@ static uint8_t gbaLinkFinish8(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA8)] & 0xFFu;
 	uint32_t remote = 0xFFu;
-	netLinkExchange(sio->link, GBA_SIO_NORMAL_8, local, &remote, 800);
+	/* 不能重试：重发 REQ 会让对端的请求队列多出一轮、双方向量错位。等待窗
+	 * 自适应 RTT（见 sioWaitMs），跨网尖峰时宁可慢不可错。 */
+	netLinkExchange(sio->link, GBA_SIO_NORMAL_8, local, &remote, sioWaitMs(sio));
 	return (uint8_t) remote;
 }
 
@@ -615,7 +646,7 @@ static uint32_t gbaLinkFinish32(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA32_LO)] | ((uint32_t) gba->memory.io[GBA_REG(SIODATA32_HI)] << 16);
 	uint32_t remote = 0xFFFFFFFFu;
-	netLinkExchange(sio->link, GBA_SIO_NORMAL_32, local, &remote, 800);
+	netLinkExchange(sio->link, GBA_SIO_NORMAL_32, local, &remote, sioWaitMs(sio));
 	return remote;
 }
 

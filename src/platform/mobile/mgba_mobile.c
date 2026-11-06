@@ -2237,6 +2237,23 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 }
 
 
+/* 跨网等待窗：局域网 RTT 1-3ms，800ms 绰绰有余；走服务器隧道 RTT 上百毫秒
+ * 还会抖（手机网络尖峰能到秒级），固定 800ms 必然误超时——超时一次就用空槽
+ * 收尾，游戏立刻报「连接发生了错误」。等待窗跟随实测 RTT（20 倍余量），
+ * 下限仍是局域网的 800ms，上限 20s 防死等。等待期间模拟时钟冻结，游戏自己
+ * 不会超时，只是这一轮变慢。 */
+static int sioWaitMs(struct MgbaMobile* emu) {
+	uint32_t rttUs = emu->link ? netLinkRttUs(emu->link) : 0;
+	uint32_t ms = (rttUs / 1000u) * 20u;
+	if (ms < 800) {
+		ms = 800;
+	}
+	if (ms > 20000) {
+		ms = 20000;
+	}
+	return (int) ms;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	if (!emu->sioWaiting) {
@@ -2247,15 +2264,9 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
-	 * 一帧就只剩下一次传输，必然被判掉线。
-	 *
-	 * 等待窗口给到 2500ms：本机阻塞期间模拟时钟不动，所以拉长窗口只花真实
-	 * 时间、不会让游戏的 LAG 计数变差；但对端（客机）只要有一次真的卡了
-	 * 几十毫秒——比如渲染通路挤了、被系统调度走了——400ms 就会误判成
-	 * 「对端没回」而用 0xFFFF 收尾，游戏当场报「连接发生了错误」。实测客机
-	 * 卡顿是偶发上百毫秒的，窗口必须留够。 */
+	 * 一帧就只剩下一次传输，必然被判掉线。 */
 	double t0 = (double) wallNowMs();
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 800, &remote, &got, NULL);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioWaitMs(emu), &remote, &got, NULL);
 	double waited = (double) wallNowMs() - t0;
 	if (waited > 3.0) {
 		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
@@ -2290,6 +2301,18 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	LINK_VERBOSE("SIO multi timeout seq=%u", emu->sioSeq);
 	emu->sioTimeouts++;
+	/* 对端还在线就继续等，别急着用空槽收尾：跨网时对端的字只是迟到（RTT
+	 * 尖峰、手机切基站），不是没有。等待继续冻结模拟时钟，游戏看不见这段
+	 * 时间；真机语义也一样——从机不回字，线路就不动。真正断线（state≠2）
+	 * 或重试次数耗尽才按「这一轮没有对端数据」收尾。 */
+	if (emu->link && netLinkState(emu->link) == 2 && emu->sioRetries < 40) {
+		++emu->sioRetries;
+		struct mTiming* t2 = coreTiming(emu);
+		if (t2) {
+			mTimingSchedule(t2, &emu->sioDone, 100);
+			return;
+		}
+	}
 	if (emu->toDbg < 40) {
 		++emu->toDbg;
 		MOBILE_LOGI("TO #%u seq=%u me=%d stashed=%d",
@@ -2625,7 +2648,9 @@ static uint8_t gbaLinkFinish8(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA8)] & 0xFFu;
 	uint32_t remote = 0xFFu;
-	netLinkExchange(emu->link, GBA_SIO_NORMAL_8, local, &remote, 800);
+	/* 不能重试：重发 REQ 会让对端的请求队列多出一轮、双方向量错位。等待窗
+	 * 自适应 RTT（见 sioWaitMs），跨网尖峰时宁可慢不可错。 */
+	netLinkExchange(emu->link, GBA_SIO_NORMAL_8, local, &remote, sioWaitMs(emu));
 	return (uint8_t) remote;
 }
 
@@ -2634,7 +2659,7 @@ static uint32_t gbaLinkFinish32(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA32_LO)] | ((uint32_t) gba->memory.io[GBA_REG(SIODATA32_HI)] << 16);
 	uint32_t remote = 0xFFFFFFFFu;
-	netLinkExchange(emu->link, GBA_SIO_NORMAL_32, local, &remote, 800);
+	netLinkExchange(emu->link, GBA_SIO_NORMAL_32, local, &remote, sioWaitMs(emu));
 	return remote;
 }
 
@@ -2663,13 +2688,13 @@ static void gbLinkWriteSb(struct GBSIODriver* driver, uint8_t value) {
 
 static uint8_t gbLinkWriteSc(struct GBSIODriver* driver, uint8_t value) {
 	struct MgbaMobile* emu = ((struct GbLinkDriver*) driver)->emu;
-	if (GBRegisterSCIsEnable(value) && GBRegisterSCIsShiftClock(value)) {
-		uint8_t local = driver->p->p->memory.io[GB_REG_SB];
-		uint32_t remote = 0xFFu;
-		if (netLinkExchange(emu->link, 0, local, &remote, 800)) {
-			driver->p->pendingSB = (uint8_t) remote;
+		if (GBRegisterSCIsEnable(value) && GBRegisterSCIsShiftClock(value)) {
+			uint8_t local = driver->p->p->memory.io[GB_REG_SB];
+			uint32_t remote = 0xFFu;
+			if (netLinkExchange(emu->link, 0, local, &remote, sioWaitMs(emu))) {
+				driver->p->pendingSB = (uint8_t) remote;
+			}
 		}
-	}
 	return value;
 }
 

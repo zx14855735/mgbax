@@ -42,13 +42,27 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QRegularExpression>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
 #include <QTimer>
+#include <QWaitCondition>
 
 #include <cstdio>
+#include <thread>
+#include <vector>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -531,6 +545,313 @@ static int glslTest(const QString& input) {
  * in both directions. The master writes 0x1234, the slave 0xBEEF; PASS when
  * each core receives the other's word in its SIOMULTI registers.
  */
+/**
+ * A TCP pipe that forwards bytes with a fixed per-direction delay, standing in
+ * for the cloud tunnel's RTT so the SIO driver can be exercised against real
+ * network latency in-process. Two reader threads enqueue chunks with a due
+ * time; one sender thread releases them in order when due.
+ */
+class DelayPipe {
+public:
+	explicit DelayPipe(int delayMs)
+		: m_delay(delayMs)
+	{
+	}
+
+	bool start(int listenPort, const char* connectHost, int connectPort) {
+		sockInitOnce();
+		auto listenSock = listenLocal(listenPort);
+		if (listenSock < 0) {
+			qInfo().noquote() << QString("proxy: listen %1 failed wsa=%2").arg(listenPort).arg(WSAGetLastError());
+			return false;
+		}
+		auto up = connectTo(connectHost, connectPort);
+		if (up < 0) {
+			qInfo().noquote() << QString("proxy: connect %1:%2 failed wsa=%3").arg(connectHost).arg(connectPort).arg(WSAGetLastError());
+			closeSock(listenSock);
+			return false;
+		}
+		// The joiner connects only after this returns; accept on a side thread.
+		m_threads.emplace_back([this, up, listenSock]() {
+			auto down = acceptOne(listenSock);
+			closeSock(listenSock);
+			if (down < 0) {
+				qInfo().noquote() << "proxy: accept timed out";
+				closeSock(up);
+				return;
+			}
+			m_threads.emplace_back([this, up]() { reader(up); });
+			m_threads.emplace_back([this, down]() { reader(down); });
+			m_threads.emplace_back([this]() { sender(); });
+		});
+		return true;
+	}
+
+	~DelayPipe() {
+		for (auto& t : m_threads) {
+			t.detach(); // sockets and queue die with the process; test exit is fine
+		}
+	}
+
+private:
+	void sockInitOnce() {
+#ifdef _WIN32
+		static bool done = []() {
+			WSADATA data;
+			return WSAStartup(MAKEWORD(2, 2), &data) == 0;
+		}();
+		(void)done;
+#endif
+	}
+
+	void reader(intptr_t from) {
+		uint8_t buf[4096];
+		while (true) {
+#ifdef _WIN32
+			int n = recv(static_cast<SOCKET>(from), reinterpret_cast<char*>(buf), sizeof(buf), 0);
+#else
+			int n = int(recv(static_cast<int>(from), buf, sizeof(buf), 0));
+#endif
+			if (n <= 0) {
+				return;
+			}
+			QMutexLocker lock(&m_mu);
+			m_queue.push_back({QDateTime::currentMSecsSinceEpoch() + quint64(m_delay), from, 0,
+			                   QByteArray(reinterpret_cast<const char*>(buf), n)});
+			m_cond.wakeOne();
+		}
+	}
+
+	void sender() {
+		while (true) {
+			QByteArray chunk;
+			intptr_t to = 0;
+			{
+				QMutexLocker lock(&m_mu);
+				while (m_queue.isEmpty()) {
+					m_cond.wait(&m_mu);
+				}
+				quint64 now = QDateTime::currentMSecsSinceEpoch();
+				int due = -1;
+				for (int i = 0; i < m_queue.size(); i++) {
+					if (m_queue[i].due <= now) {
+						due = i;
+						break;
+					}
+				}
+				if (due < 0) {
+					// earliest item still waiting: sleep out the remainder
+					quint64 wait = m_queue[0].due - now;
+					m_cond.wait(&m_mu, unsigned(qMin<quint64>(wait, 50)));
+					continue;
+				}
+				chunk = m_queue[due].data;
+				to = m_queue[due].to;
+				m_queue.removeAt(due);
+			}
+			size_t off = 0;
+			while (off < size_t(chunk.size())) {
+#ifdef _WIN32
+				int n = send(static_cast<SOCKET>(to), chunk.constData() + off,
+				             int(chunk.size() - off), 0);
+#else
+				ssize_t n = send(static_cast<int>(to), chunk.constData() + off, chunk.size() - off, 0);
+#endif
+				if (n <= 0) {
+					return;
+				}
+				off += size_t(n);
+			}
+		}
+	}
+
+	static intptr_t listenLocal(int port) {
+#ifdef _WIN32
+		auto s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+#else
+		auto s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, 0));
+#endif
+		if (s < 0) {
+			return -1;
+		}
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(quint16(port));
+		inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+		int one = 1;
+		setsockopt(static_cast<SOCKET>(s), SOL_SOCKET, SO_REUSEADDR,
+		           reinterpret_cast<const char*>(&one), sizeof(one));
+		if (bind(static_cast<SOCKET>(s), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
+		    || listen(static_cast<SOCKET>(s), 1) != 0) {
+			closeSock(s);
+			return -1;
+		}
+		return s;
+	}
+
+	static intptr_t connectTo(const char* host, int port) {
+#ifdef _WIN32
+		auto s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
+#else
+		auto s = static_cast<intptr_t>(socket(AF_INET, SOCK_STREAM, 0));
+#endif
+		if (s < 0) {
+			return -1;
+		}
+		sockaddr_in addr;
+		memset(&addr, 0, sizeof(addr));
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(quint16(port));
+		inet_pton(AF_INET, host, &addr.sin_addr);
+		if (connect(static_cast<SOCKET>(s), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+			closeSock(s);
+			return -1;
+		}
+		return s;
+	}
+
+	static intptr_t acceptOne(intptr_t listener) {
+		fd_set rset;
+		FD_ZERO(&rset);
+		FD_SET(static_cast<SOCKET>(listener), &rset);
+		timeval tv{5, 0};
+		if (select(static_cast<int>(listener) + 1, &rset, nullptr, nullptr, &tv) <= 0) {
+			return -1;
+		}
+		return static_cast<intptr_t>(accept(static_cast<SOCKET>(listener), nullptr, nullptr));
+	}
+
+	static void closeSock(intptr_t s) {
+#ifdef _WIN32
+		closesocket(static_cast<SOCKET>(s));
+#else
+		close(static_cast<int>(s));
+#endif
+	}
+
+	int m_delay;
+	QMutex m_mu;
+	QWaitCondition m_cond;
+	struct Item {
+		quint64 due;
+		intptr_t from;
+		intptr_t to;
+		QByteArray data;
+	};
+	QList<Item> m_queue;
+	std::vector<std::thread> m_threads;
+};
+
+/**
+ * The LAN SIO test under a tunnel-like RTT: both directions delayed by
+ * delayMs, so the round trip is 2x. Everything else matches lanSioTest - real
+ * MULTI transfers between two cores, asserted on the SIOMULTI registers.
+ */
+static int lanSioLatTest(const QString& rom, int delayMs) {
+	struct mCore* cores[2] = { nullptr, nullptr };
+	struct SioLink* links[2] = { nullptr, nullptr };
+	mColor video[2][240 * 160];
+	int failures = 0;
+
+	QString romAbs = QFileInfo(rom).absoluteFilePath();
+	for (int i = 0; i < 2; i++) {
+		QByteArray romUtf8 = romAbs.toUtf8();
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			qInfo().noquote() << "LAN SIO LAT TEST: FAIL (cannot open rom)";
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			qInfo() << "LAN SIO LAT TEST: FAIL (cannot find core)";
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			qInfo() << "LAN SIO LAT TEST: FAIL (cannot load ROM)";
+			return 1;
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+		links[i] = sioLinkCreate();
+	}
+
+	// master link listens privately; the proxy fronts it on the joiner's port
+	if (!sioLinkHost(links[0], 18767)) {
+		qInfo() << "LAN SIO LAT TEST: FAIL (cannot listen)";
+		return 1;
+	}
+	DelayPipe pipe(delayMs);
+	if (!pipe.start(18766, "127.0.0.1", 18767)) {
+		qInfo() << "LAN SIO LAT TEST: FAIL (proxy could not start)";
+		return 1;
+	}
+	if (!sioLinkJoin(links[1], "127.0.0.1", 18766)) {
+		qInfo() << "LAN SIO LAT TEST: FAIL (cannot connect)";
+		return 1;
+	}
+	for (int i = 0; i < 200 && sioLinkState(links[0]) != 2; i++) {
+		sioLinkPump(links[0], cores[0]);
+		sioLinkPump(links[1], cores[1]);
+		QThread::msleep(50);
+	}
+	if (sioLinkState(links[0]) != 2 || sioLinkState(links[1]) != 2) {
+		qInfo() << "LAN SIO LAT TEST: FAIL (link never connected)";
+		return 1;
+	}
+	sioLinkPump(links[0], cores[0]);
+	sioLinkPump(links[1], cores[1]);
+	struct GBA* gba0 = (struct GBA*) cores[0]->board;
+	struct GBA* gba1 = (struct GBA*) cores[1]->board;
+	if (!gba0->sio.driver || !gba1->sio.driver) {
+		qInfo() << "LAN SIO LAT TEST: FAIL (SIO driver not attached)";
+		return 1;
+	}
+
+	GBASIOWriteRCNT(&gba0->sio, 0);
+	GBASIOWriteRCNT(&gba1->sio, 0);
+	gba0->memory.io[GBA_REG(SIOMLT_SEND)] = 0x1234;
+	gba1->memory.io[GBA_REG(SIOMLT_SEND)] = 0xBEEF;
+	// The 800 ms LAN wait no longer applies: the adaptive window follows the
+	// PING-measured RTT, and rounds simply run slower across the tunnel.
+	for (int round = 0; round < 3; round++) {
+		GBASIOWriteSIOCNT(&gba0->sio, 0x600F);
+		GBASIOWriteSIOCNT(&gba1->sio, 0x600F);
+		for (int f = 0; f < 12; f++) {
+			sioLinkPump(links[1], cores[1]);
+			cores[1]->runFrame(cores[1]);
+			sioLinkPump(links[0], cores[0]);
+			cores[0]->runFrame(cores[0]);
+		}
+	}
+	uint16_t m1 = gba0->memory.io[GBA_REG(SIOMULTI1)];
+	uint16_t m0 = gba1->memory.io[GBA_REG(SIOMULTI0)];
+	qInfo().noquote() << QString("lat=%1ms master SIOMULTI1=%2 (want BEEF), slave SIOMULTI0=%3 (want 1234)")
+	                     .arg(delayMs * 2).arg(m1, 4, 16, QChar('0')).arg(m0, 4, 16, QChar('0'));
+	if (m1 != 0xBEEF) {
+		++failures;
+	}
+	if (m0 != 0x1234) {
+		++failures;
+	}
+	if (failures == 0) {
+		qInfo() << "LAN SIO LAT TEST: PASS (MULTI transfer survived the delay)";
+	} else {
+		qInfo() << "LAN SIO LAT TEST: FAIL" << failures;
+	}
+	for (int i = 0; i < 2; i++) {
+		sioLinkDestroy(links[i]);
+		cores[i]->deinit(cores[i]);
+	}
+	QThread::msleep(100); // let the proxy's detached pumps see the closed sockets
+	return failures;
+}
+
 static int lanSioTest(const QString& rom) {
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
@@ -1151,6 +1472,11 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
 		return lanSioTest(rom);
+	}
+	if (mode == QStringLiteral("laniolat")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
+		int delay = args.size() > 3 ? args[3].toInt() : 80;
+		return lanSioLatTest(rom, delay);
 	}
 	if (mode == QStringLiteral("glsl")) {
 		if (args.size() < 3) {

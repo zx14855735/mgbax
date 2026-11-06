@@ -897,8 +897,14 @@ bool netLinkBarrier(struct NetLink* link, int timeoutMs) {
 	return ok;
 }
 
-bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32_t* remoteOut, int timeoutMs) {
-	if (remoteOut) {
+uint32_t netLinkRttUs(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	return __atomic_load_n(&link->rttUs, __ATOMIC_ACQUIRE);
+}
+
+bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32_t* remoteOut, int timeoutMs) {	if (remoteOut) {
 		*remoteOut = 0xFFFFFFFFu;
 	}
 	if (!link) {
