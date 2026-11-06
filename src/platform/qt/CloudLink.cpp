@@ -81,6 +81,55 @@ QString wsText(const QJsonObject& object) {
 	return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
 }
 
+/**
+ * The room server reports a rejected request as {"success":false,"error":"..."}.
+ * Ignoring that field is what made a refused request look like a dead socket:
+ * the client sat there waiting for a room id that was never going to come.
+ */
+QString serverError(const QJsonObject& object) {
+	if (object.value("success").toBool(true)) {
+		return QString();
+	}
+	QString message = object.value("error").toString().trimmed();
+	if (message.isEmpty()) {
+		message = object.value("message").toString().trimmed();
+	}
+	if (message.isEmpty()) {
+		return QStringLiteral("服务器拒绝了请求");
+	}
+	// "您已有房间" is not a failure: that answer carries the old room id and
+	// its node, and the caller needs it to dissolve the stale room.
+	if (message.contains(QStringLiteral("已有房间"))) {
+		return QString();
+	}
+	return message;
+}
+
+/** First non empty string among the given keys. */
+QString firstString(const QJsonObject& object, const QStringList& keys) {
+	for (const QString& key : keys) {
+		QString value = object.value(key).toString().trimmed();
+		if (!value.isEmpty()) {
+			return value;
+		}
+	}
+	return QString();
+}
+
+/** First positive integer among the given keys. */
+int firstInt(const QJsonObject& object, const QStringList& keys) {
+	for (const QString& key : keys) {
+		QJsonValue value = object.value(key);
+		if (value.isDouble()) {
+			int number = value.toInt(0);
+			if (number > 0) {
+				return number;
+			}
+		}
+	}
+	return 0;
+}
+
 }
 
 namespace QGBA {
@@ -599,18 +648,33 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 		for (const QJsonObject& object : objects) {
 			QString type = object.value("type").toString();
 			if (type == QStringLiteral("create_game_room")) {
-				QString incomingRoomId = object.value("room_id").toString();
+				QString incomingRoomId = firstString(object, {QStringLiteral("room_id"),
+				                                              QStringLiteral("roomId"),
+				                                              QStringLiteral("room"),
+				                                              QStringLiteral("id")});
 				if (!incomingRoomId.isEmpty()) {
 					room->roomId = incomingRoomId;
 				}
-				QString address = object.value("node_address").toString();
-				int port = object.value("node_port").toInt(0);
+				QString address = firstString(object, {QStringLiteral("node_address"),
+				                                       QStringLiteral("nodeAddress"),
+				                                       QStringLiteral("address"),
+				                                       QStringLiteral("ip"),
+				                                       QStringLiteral("host")});
+				int port = firstInt(object, {QStringLiteral("node_port"),
+				                             QStringLiteral("nodePort"),
+				                             QStringLiteral("port")});
 				if (!address.isEmpty() && port > 0) {
 					room->nodeAddress = address;
 					room->nodePort = port;
 				}
 				if (object.value("base_list").isArray()) {
 					room->baseStateCount = object.value("base_list").toArray().size();
+				}
+				QString failure = serverError(object);
+				if (!failure.isEmpty() && incomingRoomId.isEmpty() && address.isEmpty()) {
+					// The server refused the request outright; there is no
+					// point in waiting for an answer that already arrived.
+					throw std::runtime_error(failure.toStdString());
 				}
 			} else if (type == QStringLiteral("player_joined")) {
 				if (object.value("users").isArray()) {
@@ -631,8 +695,14 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 					}
 				}
 			} else if (type == QStringLiteral("room_started") || type == QStringLiteral("game_started")) {
-				QString address = object.value("node_address").toString();
-				int port = object.value("node_port").toInt(0);
+				QString address = firstString(object, {QStringLiteral("node_address"),
+				                                       QStringLiteral("nodeAddress"),
+				                                       QStringLiteral("address"),
+				                                       QStringLiteral("ip"),
+				                                       QStringLiteral("host")});
+				int port = firstInt(object, {QStringLiteral("node_port"),
+				                             QStringLiteral("nodePort"),
+				                             QStringLiteral("port")});
 				if (!address.isEmpty() && port > 0) {
 					room->nodeAddress = address;
 					room->nodePort = port;
@@ -674,17 +744,31 @@ void CloudLink::waitForRoomId(GbCloud::Session* sig, Room* room, int timeoutMs) 
 			continue;
 		}
 		for (const QJsonObject& object : GbCloud::jsonObjects(text)) {
-			if (object.value("type").toString() == QStringLiteral("create_game_room")) {
-				QString roomId = object.value("room_id").toString();
-				if (!roomId.isEmpty()) {
-					room->roomId = roomId;
-				}
-				QString address = object.value("node_address").toString();
-				int port = object.value("node_port").toInt(0);
-				if (!address.isEmpty() && port > 0) {
-					room->nodeAddress = address;
-					room->nodePort = port;
-				}
+			if (object.value("type").toString() != QStringLiteral("create_game_room")) {
+				continue;
+			}
+			QString incomingRoomId = firstString(object, {QStringLiteral("room_id"),
+			                                              QStringLiteral("roomId"),
+			                                              QStringLiteral("room"),
+			                                              QStringLiteral("id")});
+			if (!incomingRoomId.isEmpty()) {
+				room->roomId = incomingRoomId;
+			}
+			QString address = firstString(object, {QStringLiteral("node_address"),
+			                                       QStringLiteral("nodeAddress"),
+			                                       QStringLiteral("address"),
+			                                       QStringLiteral("ip"),
+			                                       QStringLiteral("host")});
+			int port = firstInt(object, {QStringLiteral("node_port"),
+			                             QStringLiteral("nodePort"),
+			                             QStringLiteral("port")});
+			if (!address.isEmpty() && port > 0) {
+				room->nodeAddress = address;
+				room->nodePort = port;
+			}
+			QString failure = serverError(object);
+			if (!failure.isEmpty() && incomingRoomId.isEmpty() && address.isEmpty()) {
+				throw std::runtime_error(failure.toStdString());
 			}
 		}
 		if (!room->roomId.isEmpty()) {

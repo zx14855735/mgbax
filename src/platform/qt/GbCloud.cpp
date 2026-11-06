@@ -10,6 +10,7 @@
 #include <QDeadlineTimer>
 #include <QDir>
 #include <QEventLoop>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
