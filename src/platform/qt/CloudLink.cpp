@@ -175,6 +175,7 @@ void CloudLink::runLobby() {
 		return;
 	}
 	m_authToken = token;
+	GbCloud::debugLog(QStringLiteral("login ok"));
 	if (m_closed.load(std::memory_order_relaxed)) {
 		return;
 	}
@@ -185,6 +186,7 @@ void CloudLink::runLobby() {
 		return;
 	}
 	m_session = &sig;
+	GbCloud::debugLog(QStringLiteral("websocket connected"));
 	status(QStringLiteral("注意：联机大厅端口证书已过期，已降级连接"));
 	if (m_closed.load(std::memory_order_relaxed)) {
 		m_session = nullptr;
@@ -196,6 +198,7 @@ void CloudLink::runLobby() {
 	// server ignores everything that follows.
 	QString uuid = gameUuid();
 	status(QStringLiteral("正在上传游戏身份…"));
+	GbCloud::debugLog(QStringLiteral("upload identity ") + uuid);
 	sig.sendText(wsText(sendMessageJson(token, uuid, QStringLiteral("go"))));
 	waitAndProcess(1200);
 
@@ -247,10 +250,17 @@ void CloudLink::hostCreateRoom(GbCloud::Session* sig, const QString& token, cons
 	//   create (asks for the old room id) -> join -> leave (room dissolves)
 	//   -> create (fresh room + fresh node) -> join/ready/settings
 	//   -> create (asks again, this time the answer carries the relay node)
+	status(QStringLiteral("正在创建房间，等待服务器回应…"));
+	GbCloud::debugLog(QStringLiteral("host: create room, game=") + gameName());
 	sig->sendText(wsText(createJson(token, gameName())));
 	waitAndProcess(2500);
 	waitForRoomId(sig, room, 5000);
 	if (!room->roomId.isEmpty()) {
+		// A room left over from an earlier session has to be dissolved first:
+		// its relay node is a recycled port from the public pool and simply
+		// times out (which looks like "the relay never answers").
+		status(QStringLiteral("正在清理上一次遗留的房间…"));
+		GbCloud::debugLog(QStringLiteral("host: stale room ") + room->roomId);
 		sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
 		waitAndProcess(1500);
 		sig->sendText(wsText(json(QStringLiteral("leave_room"), token, QString())));
@@ -260,27 +270,37 @@ void CloudLink::hostCreateRoom(GbCloud::Session* sig, const QString& token, cons
 		waitAndProcess(800);
 	}
 	Room fresh;
-	sig->sendText(wsText(createJson(token, gameName())));
-	waitAndProcess(2500);
-	waitForRoomId(sig, &fresh, 6000);
+	// The room server drops a create_game_room without game_name in silence,
+	// so a create that does not come back is retried instead of being fatal.
+	for (int attempt = 1; attempt <= 3 && fresh.roomId.isEmpty(); attempt++) {
+		GbCloud::debugLog(QStringLiteral("host: create attempt %1").arg(attempt));
+		sig->sendText(wsText(createJson(token, gameName())));
+		waitAndProcess(2500);
+		waitForRoomId(sig, &fresh, 6000);
+	}
 	if (fresh.roomId.isEmpty()) {
-		throw std::runtime_error("服务器没有创建房间");
+		throw std::runtime_error("服务器没有创建房间（已重试 3 次）");
 	}
 	room->roomId = fresh.roomId;
 	room->nodeAddress.clear();
 	room->nodePort = 0;
+	GbCloud::debugLog(QStringLiteral("host: room ") + room->roomId);
+	status(QStringLiteral("房间已创建，正在初始化联机设置…"));
 	sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
 	waitAndProcess(1500);
 	sig->sendText(wsText(json(QStringLiteral("ready"), token, QString())));
 	waitAndProcess(1200);
 	sig->sendText(wsText(settingsJson(token, room->roomId)));
 	waitAndProcess(1500);
+	status(QStringLiteral("正在获取中继节点…"));
 	sig->sendText(wsText(createJson(token, gameName())));
 	waitAndProcess(2500);
 	waitForRoom(sig, room, QString(), ROOM_WAIT_MS);
 	if (room->nodeAddress.isEmpty() || room->nodePort <= 0) {
 		throw std::runtime_error("服务器没有返回中继节点");
 	}
+	GbCloud::debugLog(QStringLiteral("host: node ") + room->nodeAddress + QStringLiteral(":")
+	                  + QString::number(room->nodePort));
 }
 
 void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
@@ -573,68 +593,68 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 		if (text.isEmpty()) {
 			continue;
 		}
-		bool ok = false;
-		QJsonObject object = GbCloud::lastJsonObject(text, &ok);
-		if (!ok) {
-			continue;
-		}
-		QString type = object.value("type").toString();
-		if (type == QStringLiteral("create_game_room")) {
-			QString incomingRoomId = object.value("room_id").toString();
-			if (!incomingRoomId.isEmpty()) {
-				room->roomId = incomingRoomId;
-			}
-			QString address = object.value("node_address").toString();
-			int port = object.value("node_port").toInt(0);
-			if (!address.isEmpty() && port > 0) {
-				room->nodeAddress = address;
-				room->nodePort = port;
-			}
-			if (object.value("base_list").isArray()) {
-				room->baseStateCount = object.value("base_list").toArray().size();
-			}
-		} else if (type == QStringLiteral("player_joined")) {
-			if (object.value("users").isArray()) {
-				int ready = 0;
-				const auto users = object.value("users").toArray();
-				for (const auto& userValue : users) {
-					QJsonObject user = userValue.toObject();
-					QString name = user.value("username").toString();
-					if (name.isEmpty()) {
-						continue;
+		// One frame can carry several answers, so every object in it has to be
+		// looked at - the node address may not be the last one.
+		const auto objects = GbCloud::jsonObjects(text);
+		for (const QJsonObject& object : objects) {
+			QString type = object.value("type").toString();
+			if (type == QStringLiteral("create_game_room")) {
+				QString incomingRoomId = object.value("room_id").toString();
+				if (!incomingRoomId.isEmpty()) {
+					room->roomId = incomingRoomId;
+				}
+				QString address = object.value("node_address").toString();
+				int port = object.value("node_port").toInt(0);
+				if (!address.isEmpty() && port > 0) {
+					room->nodeAddress = address;
+					room->nodePort = port;
+				}
+				if (object.value("base_list").isArray()) {
+					room->baseStateCount = object.value("base_list").toArray().size();
+				}
+			} else if (type == QStringLiteral("player_joined")) {
+				if (object.value("users").isArray()) {
+					int ready = 0;
+					const auto users = object.value("users").toArray();
+					for (const auto& userValue : users) {
+						QJsonObject user = userValue.toObject();
+						QString name = user.value("username").toString();
+						if (name.isEmpty()) {
+							continue;
+						}
+						if (user.value("started").toInt(0) != 0) {
+							ready++;
+						}
 					}
-					if (user.value("started").toInt(0) != 0) {
-						ready++;
+					if (ready > 0) {
+						room->playerCount = ready;
 					}
 				}
-				if (ready > 0) {
-					room->playerCount = ready;
+			} else if (type == QStringLiteral("room_started") || type == QStringLiteral("game_started")) {
+				QString address = object.value("node_address").toString();
+				int port = object.value("node_port").toInt(0);
+				if (!address.isEmpty() && port > 0) {
+					room->nodeAddress = address;
+					room->nodePort = port;
 				}
-			}
-		} else if (type == QStringLiteral("room_started") || type == QStringLiteral("game_started")) {
-			QString address = object.value("node_address").toString();
-			int port = object.value("node_port").toInt(0);
-			if (!address.isEmpty() && port > 0) {
-				room->nodeAddress = address;
-				room->nodePort = port;
-			}
-		} else if (type == QStringLiteral("send_message")) {
-			// The host advertises its relay endpoint through the broadcast
-			// channel as {"gboy_node":"address:port","room":"<roomId>"}.
-			QString message = object.value("message").toString();
-			if (message.contains(QStringLiteral("gboy_node"))) {
-				bool markerOk = false;
-				QJsonObject marker = GbCloud::lastJsonObject(message, &markerOk);
-				if (markerOk) {
-					QString node = marker.value("gboy_node").toString();
-					QString tagged = marker.value("room").toString();
-					int colon = node.lastIndexOf(':');
-					if (colon > 0 && (tagged.isEmpty() || tagged == roomId)) {
-						bool portOk = false;
-						int port = node.mid(colon + 1).toInt(&portOk);
-						if (portOk && port > 0) {
-							room->nodeAddress = node.left(colon);
-							room->nodePort = port;
+			} else if (type == QStringLiteral("send_message")) {
+				// The host advertises its relay endpoint through the broadcast
+				// channel as {"gboy_node":"address:port","room":"<roomId>"}.
+				QString message = object.value("message").toString();
+				if (message.contains(QStringLiteral("gboy_node"))) {
+					bool markerOk = false;
+					QJsonObject marker = GbCloud::lastJsonObject(message, &markerOk);
+					if (markerOk) {
+						QString node = marker.value("gboy_node").toString();
+						QString tagged = marker.value("room").toString();
+						int colon = node.lastIndexOf(':');
+						if (colon > 0 && (tagged.isEmpty() || tagged == roomId)) {
+							bool portOk = false;
+							int port = node.mid(colon + 1).toInt(&portOk);
+							if (portOk && port > 0) {
+								room->nodeAddress = node.left(colon);
+								room->nodePort = port;
+							}
 						}
 					}
 				}
@@ -653,21 +673,18 @@ void CloudLink::waitForRoomId(GbCloud::Session* sig, Room* room, int timeoutMs) 
 		if (text.isEmpty()) {
 			continue;
 		}
-		bool ok = false;
-		QJsonObject object = GbCloud::lastJsonObject(text, &ok);
-		if (!ok) {
-			continue;
-		}
-		if (object.value("type").toString() == QStringLiteral("create_game_room")) {
-			QString roomId = object.value("room_id").toString();
-			if (!roomId.isEmpty()) {
-				room->roomId = roomId;
-			}
-			QString address = object.value("node_address").toString();
-			int port = object.value("node_port").toInt(0);
-			if (!address.isEmpty() && port > 0) {
-				room->nodeAddress = address;
-				room->nodePort = port;
+		for (const QJsonObject& object : GbCloud::jsonObjects(text)) {
+			if (object.value("type").toString() == QStringLiteral("create_game_room")) {
+				QString roomId = object.value("room_id").toString();
+				if (!roomId.isEmpty()) {
+					room->roomId = roomId;
+				}
+				QString address = object.value("node_address").toString();
+				int port = object.value("node_port").toInt(0);
+				if (!address.isEmpty() && port > 0) {
+					room->nodeAddress = address;
+					room->nodePort = port;
+				}
 			}
 		}
 		if (!room->roomId.isEmpty()) {

@@ -100,6 +100,41 @@ QJsonObject lastJsonObject(const QString& raw, bool* ok) {
 	return QJsonObject();
 }
 
+QList<QJsonObject> jsonObjects(const QString& raw) {
+	QList<QJsonObject> objects;
+	QString trimmed = raw.trimmed();
+	if (trimmed.isEmpty()) {
+		return objects;
+	}
+	QJsonDocument whole = QJsonDocument::fromJson(trimmed.toUtf8());
+	if (whole.isObject()) {
+		objects.append(whole.object());
+		return objects;
+	}
+	if (whole.isArray()) {
+		const auto array = whole.array();
+		for (const auto& value : array) {
+			if (value.isObject()) {
+				objects.append(value.toObject());
+			}
+		}
+		return objects;
+	}
+	// Several newline separated answers share one frame.
+	const QStringList lines = raw.split('\n');
+	for (const QString& rawLine : lines) {
+		QString line = rawLine.trimmed();
+		if (!line.startsWith('{')) {
+			continue;
+		}
+		QJsonDocument doc = QJsonDocument::fromJson(line.toUtf8());
+		if (doc.isObject()) {
+			objects.append(doc.object());
+		}
+	}
+	return objects;
+}
+
 QString post(const QString& body, QString* error) {
 	QNetworkAccessManager manager;
 	QNetworkRequest request((QUrl(api())));
