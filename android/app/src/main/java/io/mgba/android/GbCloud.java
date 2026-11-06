@@ -248,7 +248,12 @@ final class GbCloud {
                 javax.net.ssl.SSLContext context = javax.net.ssl.SSLContext.getInstance("TLS");
                 context.init(null, new javax.net.ssl.TrustManager[]{TRUST_ANY},
                         new java.security.SecureRandom());
-                ((javax.net.ssl.HttpsURLConnection) conn).setSSLSocketFactory(context.getSocketFactory());
+                javax.net.ssl.HttpsURLConnection https = (javax.net.ssl.HttpsURLConnection) conn;
+                https.setSSLSocketFactory(context.getSocketFactory());
+                // TRUST_ANY covers the chain, but hostname verification is a
+                // separate check (a mock server presenting CN=localhost for
+                // 10.0.2.2 fails it); the official client verifies nothing.
+                https.setHostnameVerifier((hostname, session) -> true);
             } catch (Exception e) {
                 throw new IOException("无法建立加密连接");
             }

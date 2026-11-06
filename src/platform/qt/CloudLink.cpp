@@ -151,13 +151,12 @@ int firstInt(const QJsonObject& object, const QStringList& keys) {
 class WsLink : public ILink {
 public:
 	WsLink(GbCloud::Session* sig, const QString& token, const QString& uuid,
-	       const QString& roomTag, const QString& nonce, GBoyFrames::Reader* reader)
+	       const QString& roomTag, const QString& nonce)
 		: m_sig(sig)
 		, m_token(token)
 		, m_uuid(uuid)
 		, m_roomTag(roomTag)
 		, m_nonce(nonce)
-		, m_reader(reader)
 	{
 	}
 
@@ -184,9 +183,8 @@ public:
 	}
 
 	bool recv(QByteArray* out, int timeoutMs) override {
-		QByteArray body = m_reader->next();
-		if (!body.isNull()) {
-			*out = body;
+		if (!m_inbox.isEmpty()) {
+			*out = m_inbox.takeFirst();
 			return true;
 		}
 		qint64 deadline = QDateTime::currentMSecsSinceEpoch() + qMax(timeoutMs, 1);
@@ -201,15 +199,14 @@ public:
 				continue;
 			}
 			demux(text);
+			if (!m_inbox.isEmpty()) {
+				*out = m_inbox.takeFirst();
+				return true;
+			}
 		}
 		if (!m_closed && !m_sig->isOpen()) {
 			m_closed = true;
 			m_error = QStringLiteral("服务器隧道连接中断");
-		}
-		body = m_reader->next();
-		if (!body.isNull()) {
-			*out = body;
-			return true;
 		}
 		return false;
 	}
@@ -258,7 +255,7 @@ private:
 				QByteArray frame = QByteArray::fromBase64(
 				        marker.value(QStringLiteral("d")).toString().toLatin1());
 				if (!frame.isEmpty()) {
-					m_reader->append(frame.constData(), frame.size());
+					m_inbox.append(frame);
 				}
 			} else if (kind == QStringLiteral("hello")) {
 				m_peerSeen = true;
@@ -288,7 +285,7 @@ private:
 	QString m_uuid;
 	QString m_roomTag;
 	QString m_nonce;
-	GBoyFrames::Reader* m_reader;
+	QQueue<QByteArray> m_inbox;
 	bool m_closed = false;
 	bool m_peerSeen = false;
 	QString m_error;
@@ -740,7 +737,7 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
 	const QString tag = room->roomId;
 	status(QStringLiteral("正在通过服务器隧道等待对方进入（跨网可联）…"));
-	WsLink* link = new WsLink(sig, token, m_advertiserUuid, tag, m_wsNonce, &m_reader);
+	WsLink* link = new WsLink(sig, token, m_advertiserUuid, tag, m_wsNonce);
 	m_tunnel = link;
 	m_tunnelUp = true;
 	m_tunnelPeerSeen = false;

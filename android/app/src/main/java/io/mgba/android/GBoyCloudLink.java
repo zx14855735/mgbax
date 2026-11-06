@@ -827,6 +827,13 @@ public final class GBoyCloudLink {
         private final String token;
         private final String uuid;
         private final String roomTag;
+        /**
+         * Decoded frames waiting to be handed out. Own queue on purpose: the
+         * shared {@link #reader} belongs to the serve/expect layer, which
+         * appends whatever recv() returns - pre-appending here would double
+         * every frame.
+         */
+        private final java.util.ArrayDeque<byte[]> inbox = new java.util.ArrayDeque<>();
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
@@ -871,15 +878,15 @@ public final class GBoyCloudLink {
 
         @Override
         public byte[] recv(long timeoutMs) {
-            byte[] pending = reader.next();
-            if (pending != null) {
-                return pending;
+            byte[] frame = inbox.poll();
+            if (frame != null) {
+                return frame;
             }
             long deadline = System.currentTimeMillis() + Math.max(timeoutMs, 1);
             while (!closed && !sig.isClosed()) {
                 long remaining = deadline - System.currentTimeMillis();
                 if (remaining <= 0) {
-                    return reader.next();
+                    return inbox.poll();
                 }
                 maybeHello();
                 String text;
@@ -888,18 +895,22 @@ public final class GBoyCloudLink {
                 } catch (IOException e) {
                     closed = true;
                     error = "服务器隧道连接中断：" + e.getMessage();
-                    return reader.next();
+                    return inbox.poll();
                 }
                 if (text == null) {
                     continue;
                 }
                 demux(text);
+                frame = inbox.poll();
+                if (frame != null) {
+                    return frame;
+                }
             }
             if (!closed && sig.isClosed()) {
                 closed = true;
                 error = "服务器隧道连接中断";
             }
-            return reader.next();
+            return inbox.poll();
         }
 
         @Override
@@ -952,7 +963,7 @@ public final class GBoyCloudLink {
                     byte[] frame = android.util.Base64.decode(
                             marker.optString("d", ""), android.util.Base64.NO_WRAP);
                     if (frame.length > 0) {
-                        reader.append(frame, frame.length);
+                        inbox.add(frame);
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "bad tunnel frame", e);
