@@ -580,8 +580,8 @@ public:
 				closeSock(up);
 				return;
 			}
-			m_threads.emplace_back([this, up]() { reader(up); });
-			m_threads.emplace_back([this, down]() { reader(down); });
+			m_threads.emplace_back([this, up, down]() { reader(up, down); });
+			m_threads.emplace_back([this, down, up]() { reader(down, up); });
 			m_threads.emplace_back([this]() { sender(); });
 		});
 		return true;
@@ -604,7 +604,7 @@ private:
 #endif
 	}
 
-	void reader(intptr_t from) {
+	void reader(intptr_t from, intptr_t to) {
 		uint8_t buf[4096];
 		while (true) {
 #ifdef _WIN32
@@ -616,7 +616,7 @@ private:
 				return;
 			}
 			QMutexLocker lock(&m_mu);
-			m_queue.push_back({QDateTime::currentMSecsSinceEpoch() + quint64(m_delay), from, 0,
+			m_queue.push_back({QDateTime::currentMSecsSinceEpoch() + quint64(m_delay), from, to,
 			                   QByteArray(reinterpret_cast<const char*>(buf), n)});
 			m_cond.wakeOne();
 		}
@@ -817,18 +817,25 @@ static int lanSioLatTest(const QString& rom, int delayMs) {
 	GBASIOWriteRCNT(&gba1->sio, 0);
 	gba0->memory.io[GBA_REG(SIOMLT_SEND)] = 0x1234;
 	gba1->memory.io[GBA_REG(SIOMLT_SEND)] = 0xBEEF;
-	// The 800 ms LAN wait no longer applies: the adaptive window follows the
-	// PING-measured RTT, and rounds simply run slower across the tunnel.
-	for (int round = 0; round < 3; round++) {
-		GBASIOWriteSIOCNT(&gba0->sio, 0x600F);
-		GBASIOWriteSIOCNT(&gba1->sio, 0x600F);
-		for (int f = 0; f < 12; f++) {
-			sioLinkPump(links[1], cores[1]);
-			cores[1]->runFrame(cores[1]);
-			sioLinkPump(links[0], cores[0]);
-			cores[0]->runFrame(cores[0]);
+	// Two cores on two threads, like two real devices: the master's blocking
+	// peer wait must never starve the slave (single-threaded loops deadlock
+	// exactly the way a tunnel RTT makes them).
+	std::atomic<bool> stop{false};
+	auto worker = [&](int i) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		for (int f = 0; f < 600 && !stop.load(); f++) {
+			sioLinkPump(links[i], cores[i]);
+			if (f % 25 == 5) {
+				// the game starts a MULTI round periodically
+				GBASIOWriteSIOCNT(&gba->sio, 0x600F);
+			}
+			cores[i]->runFrame(cores[i]);
 		}
-	}
+	};
+	std::thread ta(worker, 0);
+	std::thread tb(worker, 1);
+	ta.join();
+	tb.join();
 	uint16_t m1 = gba0->memory.io[GBA_REG(SIOMULTI1)];
 	uint16_t m0 = gba1->memory.io[GBA_REG(SIOMULTI0)];
 	qInfo().noquote() << QString("lat=%1ms master SIOMULTI1=%2 (want BEEF), slave SIOMULTI0=%3 (want 1234)")
