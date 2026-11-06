@@ -38,7 +38,7 @@ constexpr int HTTP_TIMEOUT_MS = 15000;
  * hand the file over without digging through a console.
  */
 QString debugLogPath() {
-	return QDir::tempPath() + QStringLiteral("/mgba_gboy_lobby.log");
+	return QDir::tempPath() + QStringLiteral("/mgba_lobby_debug.log");
 }
 
 }

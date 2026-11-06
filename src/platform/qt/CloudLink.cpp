@@ -1506,7 +1506,8 @@ void CloudLink::fail(const QString& text) {
 }
 
 void CloudLink::status(const QString& text) {
-	emit statusMessage(text);
+	// Server-generated texts can carry the upstream brand; never show it.
+	emit statusMessage(GbCloud::lobby(text));
 }
 
 }

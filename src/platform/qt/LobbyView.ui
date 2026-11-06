@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Cloud Lobby (gboy.top)</string>
+   <string>联机大厅</string>
   </property>
   <layout class="QVBoxLayout" name="mainLayout">
    <item>

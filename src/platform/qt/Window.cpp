@@ -1483,12 +1483,12 @@ void Window::setupMenu(QMenuBar* menubar) {
 	auto dolphin = m_actions.addAction(tr("Connect to Dolphin..."), "connectDolphin", openNamedTView<DolphinConnector>(&m_dolphinView, true, this), "file");
 	m_platformActions.insert(mPLATFORM_GBA, dolphin);
 
-	auto gboyLink = m_actions.addAction(tr("WiFi link (GBoy/My Boy)..."), "gboyLink", openNamedTView<LinkView>(&m_linkView, true, this), "file");
+	auto gboyLink = m_actions.addAction(tr("WiFi 联机…"), "gboyLink", openNamedTView<LinkView>(&m_linkView, true, this), "file");
 	m_platformActions.insert(mPLATFORM_GBA, gboyLink);
 #endif
 
 #ifdef BUILD_QT_CLOUD
-	auto cloudLobby = m_actions.addAction(tr("Cloud lobby (gboy.top)..."), "cloudLobby", openNamedTView<LobbyView>(&m_lobbyView, true, this), "file");
+	auto cloudLobby = m_actions.addAction(tr("联机大厅…"), "cloudLobby", openNamedTView<LobbyView>(&m_lobbyView, true, this), "file");
 #ifdef M_CORE_GBA
 	m_platformActions.insert(mPLATFORM_GBA, cloudLobby);
 #else
