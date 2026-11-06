@@ -14,7 +14,11 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QStringList>
+#include <QAbstractSocket>
 #include <QTimer>
+#include <QSslConfiguration>
+#include <QSslError>
+#include <QSslSocket>
 #include <QWebSocket>
 
 using namespace QGBA;
@@ -167,10 +171,18 @@ QString registerAccount(const QString& username, const QString& email,
 Session::Session()
 	: m_socket(new QWebSocket)
 {
-	// gboy.top serves a certificate issued for gameboyfrp.top and the chain it
-	// sends is sometimes incomplete, so a strictly-validating client can never
-	// finish the handshake. The official client tolerates this; we mirror that.
-	m_socket->ignoreSslErrors();
+	// gboy.top serves a certificate issued for gameboyfrp.top (its SAN does not
+	// include gboy.top), and the chain it sends is sometimes incomplete, so a
+	// strictly-validating client can never finish the handshake. The official
+	// client tolerates this; we mirror that. On Qt 6 + the Windows schannel
+	// backend the plain ignoreSslErrors() call is not enough for a hostname
+	// mismatch, so we disable peer certificate verification outright and also
+	// answer the sslErrors signal as a fallback.
+	QSslConfiguration sslConf = m_socket->sslConfiguration();
+	sslConf.setPeerVerifyMode(QSslSocket::VerifyNone);
+	m_socket->setSslConfiguration(sslConf);
+	QObject::connect(m_socket, &QWebSocket::sslErrors, m_socket,
+	                 [this](const QList<QSslError>&) { m_socket->ignoreSslErrors(); });
 	QObject::connect(m_socket, &QWebSocket::textMessageReceived, [this](const QString& text) {
 		onText(text);
 	});
@@ -189,15 +201,25 @@ Session::~Session() {
 bool Session::open(int timeoutMs, QString* error) {
 	QUrl url(QStringLiteral("wss://%1:%2").arg(wsHost()).arg(wsPort()));
 	bool opened = false;
+	QString socketError;
 	QEventLoop loop;
 	QObject::connect(m_socket, &QWebSocket::connected, [&]() { opened = true; loop.quit(); });
 	QObject::connect(m_socket, &QWebSocket::disconnected, &loop, &QEventLoop::quit);
+	QObject::connect(m_socket, &QWebSocket::errorOccurred, [&](QAbstractSocket::SocketError) {
+		socketError = m_socket->errorString();
+		loop.quit();
+	});
 	m_socket->open(url);
 	QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
 	loop.exec();
 	if (!opened) {
 		if (error) {
-			*error = QStringLiteral("WebSocket 握手失败");
+			if (socketError.isEmpty()) {
+				*error = QStringLiteral("WebSocket 连接超时（%1:%2 在 %3 毫秒内无响应）")
+				         .arg(wsHost()).arg(wsPort()).arg(timeoutMs);
+			} else {
+				*error = QStringLiteral("WebSocket 握手失败：%1").arg(socketError);
+			}
 		}
 		return false;
 	}
