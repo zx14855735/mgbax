@@ -1290,10 +1290,18 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 				// channel as {"gboy_node":"address:port","room":"<roomId>"}.
 				// A {"gboy_ws":"hello|accept"} marker instead means the peer is
 				// already waiting on the websocket tunnel - remember that so
-				// the relay window is cut short.
+				// the relay window is cut short. Skip our own echoes (the
+				// server marks them, the marker carries our nonce).
 				QString message = object.value("message").toString();
 				if (message.contains(QStringLiteral("gboy_ws"))) {
-					m_tunnelPeerSeen = true;
+					bool ok = false;
+					QJsonObject marker = GbCloud::lastJsonObject(message, &ok);
+					QString from = ok ? marker.value(QStringLiteral("from")).toString()
+					                  : QString();
+					if (!object.value("self").toBool(false)
+					    && (from.isEmpty() || from != m_wsNonce)) {
+						m_tunnelPeerSeen = true;
+					}
 				}
 				if (message.contains(QStringLiteral("gboy_node"))) {
 					bool markerOk = false;

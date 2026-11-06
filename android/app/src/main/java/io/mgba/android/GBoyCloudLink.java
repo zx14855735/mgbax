@@ -1091,6 +1091,9 @@ public final class GBoyCloudLink {
             if (message == null || message.indexOf("gboy_ws") < 0) {
                 return;
             }
+            Log.i(TAG, "tunnel push: " + message.substring(0,
+                    Math.min(120, message.length()))
+                    + (object.optBoolean("self", false) ? " (self)" : " (peer)"));
             JSONObject marker;
             try {
                 marker = new JSONObject(message);
