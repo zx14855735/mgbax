@@ -25,6 +25,13 @@ const QString& api();
 const QString& wsHost();
 int wsPort();
 
+/**
+ * Redirects the signalling endpoints for tests (a local mock lobby server);
+ * empty string / non-positive port keep the current value. Production code
+ * never calls this.
+ */
+void overrideEndpoints(const QString& apiBase, const QString& host, int port);
+
 /** Rewrites the upstream brand name the lobby server bakes into its replies. */
 QString lobby(QString text);
 

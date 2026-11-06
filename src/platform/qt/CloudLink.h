@@ -15,6 +15,7 @@
 namespace QGBA {
 
 class KcpChannel;
+struct ILink;
 namespace GbCloud { class Session; }
 
 /**
@@ -22,8 +23,12 @@ namespace GbCloud { class Session; }
  *
  * The room itself is matched over HTTPS + WebSocket (GbCloud); the game bytes
  * then travel through the room's relay node using KCP over UDP (KcpChannel)
- * carrying the GBoy frames of GBoyFrames. The key masks are mirrored into the
- * local console (merged-keys mode), matching the Android lobby behavior.
+ * carrying the GBoy frames of GBoyFrames. When the relay node does not answer
+ * (its ports are dead server-side at the moment), the link falls back to the
+ * websocket tunnel: GBoy frames ride the room signalling channel as base64
+ * JSON in send_message pushes, which works across networks without any extra
+ * infrastructure. The key masks are mirrored into the local console
+ * (merged-keys mode), matching the Android lobby behavior.
  */
 class CloudLink : public QThread {
 Q_OBJECT
@@ -70,20 +75,32 @@ private:
 	void runLobby();
 	void runManual(const QString& nodeSpec, bool asHost);
 	void hostCreateRoom(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
-	void connectRelay(GbCloud::Session* sig, const QString& token, Room* room, bool asHost);
+	void connectRelay(GbCloud::Session* sig, const QString& token, const QString& uuid,
+	                  Room* room, bool asHost);
 	QString currentNode(GbCloud::Session* sig, const QString& token, Room* room, bool creator);
 	KcpChannel* startRelayLink(const QString& host, int port, Room* room,
-	                           GbCloud::Session* sig, const QString& token, bool creator);
+	                           GbCloud::Session* sig, const QString& token, const QString& uuid,
+	                           bool creator, qint64 windowMs);
+	/** Relay unreachable: serve the match over the signalling websocket. */
+	void runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost);
+	void cleanupTunnel();
 
 	// wire handshake
-	void sendRegister(KcpChannel* link, Room* room);
-	void handshake(KcpChannel* link, Room* room);
-	QByteArray expect(KcpChannel* link, int type, int timeoutMs);
+	void sendRegister(ILink* link, Room* room);
+	void handshake(ILink* link, Room* room);
+	QByteArray expect(ILink* link, int type, int timeoutMs);
 
 	// game loop
-	void serve(KcpChannel* link);
+	void serve(ILink* link);
 	void handle(const QByteArray& body);
 	void pollSignaling(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
+
+	// websocket tunnel helpers
+	void sendWsMarker(GbCloud::Session* sig, const QString& token, const QString& uuid,
+	                  const QString& kind, const QString& roomId);
+	/** Reads pushes briefly; flags the peer's tunnel hello/accept. */
+	void drainSignaling(GbCloud::Session* sig, int ms);
+	bool isTunnelMarkerText(const QString& text);
 
 	// signalling helpers
 	void waitForRoom(GbCloud::Session* sig, Room* room, const QString& roomId, int timeoutMs);
@@ -104,11 +121,22 @@ private:
 
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;
+	ILink* m_tunnel = nullptr;
 	QString m_authToken;
 	Room m_currentRoom;
 	bool m_hostRole = false;
 	bool m_isAdvertising = false;
 	QString m_advertiserUuid;
+	/** True while the match runs over the websocket tunnel instead of KCP. */
+	bool m_tunnelUp = false;
+	/** The peer has greeted over the tunnel; no need to finish the KCP window. */
+	bool m_tunnelPeerSeen = false;
+	/**
+	 * Random sender tag carried by every tunnel marker: if the server echoes a
+	 * send_message back to its sender, this is what tells our own hello/frames
+	 * apart from the peer's (the game identity is the same on both sides).
+	 */
+	QString m_wsNonce;
 	GBoyFrames::Reader m_reader; // reused only inside the worker thread
 	int m_lastRxKeys = -1;
 };

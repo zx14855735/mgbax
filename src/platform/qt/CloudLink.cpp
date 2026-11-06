@@ -30,6 +30,15 @@ constexpr int STEP_WAIT_MS = 20000;
 constexpr int ROOM_WAIT_MS = 15000;
 /** Public relay slots are recycled slowly; keep retrying for a while. */
 constexpr int RELAY_WAIT_MS = 300000;
+/**
+ * How long to knock on the UDP relay node before giving up on it. The gboy.top
+ * node only answers once both players have registered, but its ports have been
+ * dead server-side for a while, so after this window the link falls back to
+ * the websocket tunnel and play proceeds anyway.
+ */
+constexpr qint64 RELAY_WINDOW_MS = 12000;
+/** Tunnel hello markers are re-sent at this pace until the peer answers. */
+constexpr qint64 TUNNEL_HELLO_MS = 2000;
 /** How long to wait for the peer's first key state before starting anyway. */
 constexpr int PEER_KEY_WAIT_MS = 4000;
 
@@ -130,6 +139,163 @@ int firstInt(const QJsonObject& object, const QStringList& keys) {
 	return 0;
 }
 
+/**
+ * Tunnel transport over the room signalling websocket: every GBoy frame
+ * travels as a base64 JSON marker in a send_message broadcast, the same
+ * channel that already carries the relay advertisement. TCP is ordered and
+ * reliable, so no acks or retransmits are needed; the shared GBoyFrames reader
+ * turns messages back into frames for expect() and serve().
+ *
+ * All reads happen on the worker thread, so the session stays single-consumer.
+ */
+class WsLink : public ILink {
+public:
+	WsLink(GbCloud::Session* sig, const QString& token, const QString& uuid,
+	       const QString& roomTag, const QString& nonce, GBoyFrames::Reader* reader)
+		: m_sig(sig)
+		, m_token(token)
+		, m_uuid(uuid)
+		, m_roomTag(roomTag)
+		, m_nonce(nonce)
+		, m_reader(reader)
+	{
+	}
+
+	bool peerSeen() const { return m_peerSeen; }
+
+	QString errorText() const { return m_error; }
+
+	void send(const QByteArray& payload) override {
+		if (m_closed) {
+			return;
+		}
+		QJsonObject marker;
+		marker.insert(QStringLiteral("gboy_ws"), QStringLiteral("f"));
+		if (!m_roomTag.isEmpty()) {
+			marker.insert(QStringLiteral("room"), m_roomTag);
+		}
+		marker.insert(QStringLiteral("from"), m_nonce);
+		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
+		QString error;
+		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))), &error)) {
+			m_closed = true;
+			m_error = QStringLiteral("服务器隧道发送失败：%1").arg(error);
+		}
+	}
+
+	bool recv(QByteArray* out, int timeoutMs) override {
+		QByteArray body = m_reader->next();
+		if (!body.isNull()) {
+			*out = body;
+			return true;
+		}
+		qint64 deadline = QDateTime::currentMSecsSinceEpoch() + qMax(timeoutMs, 1);
+		while (!m_closed && m_sig->isOpen()) {
+			qint64 remaining = deadline - QDateTime::currentMSecsSinceEpoch();
+			if (remaining <= 0) {
+				break;
+			}
+			maybeHello();
+			QString text = m_sig->recv(int(qMin<qint64>(200, remaining)));
+			if (text.isEmpty()) {
+				continue;
+			}
+			demux(text);
+		}
+		if (!m_closed && !m_sig->isOpen()) {
+			m_closed = true;
+			m_error = QStringLiteral("服务器隧道连接中断");
+		}
+		body = m_reader->next();
+		if (!body.isNull()) {
+			*out = body;
+			return true;
+		}
+		return false;
+	}
+
+	bool isClosed() const override { return m_closed || !m_sig->isOpen(); }
+
+	void close() override { m_closed = true; }
+
+private:
+	/** Greets every 2 seconds until the peer shows up. */
+	void maybeHello() {
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (m_peerSeen || m_closed || now - m_lastHello < TUNNEL_HELLO_MS) {
+			return;
+		}
+		m_lastHello = now;
+		sendMarker(QStringLiteral("hello"));
+	}
+
+	/** Parses one signalling push: tunnel data into the reader, greets answered. */
+	void demux(const QString& text) {
+		const auto objects = GbCloud::jsonObjects(text);
+		for (const QJsonObject& object : objects) {
+			if (object.value("type").toString() != QStringLiteral("send_message")) {
+				continue; // other pushes do not matter once data is flowing
+			}
+			QString message = object.value("message").toString();
+			if (!message.contains(QStringLiteral("gboy_ws"))) {
+				continue;
+			}
+			bool ok = false;
+			QJsonObject marker = GbCloud::lastJsonObject(message, &ok);
+			if (!ok) {
+				continue;
+			}
+			QString kind = marker.value(QStringLiteral("gboy_ws")).toString();
+			QString tagged = marker.value(QStringLiteral("room")).toString();
+			if (!m_roomTag.isEmpty() && !tagged.isEmpty() && tagged != m_roomTag) {
+				continue; // someone else's room
+			}
+			QString from = marker.value(QStringLiteral("from")).toString();
+			if (!from.isEmpty() && from == m_nonce) {
+				continue; // the server echoed our own push back to us
+			}
+			if (kind == QStringLiteral("f")) {
+				QByteArray frame = QByteArray::fromBase64(
+				        marker.value(QStringLiteral("d")).toString().toLatin1());
+				if (!frame.isEmpty()) {
+					m_reader->append(frame.constData(), frame.size());
+				}
+			} else if (kind == QStringLiteral("hello")) {
+				m_peerSeen = true;
+				qint64 now = QDateTime::currentMSecsSinceEpoch();
+				if (now - m_lastAccept >= 1000) {
+					m_lastAccept = now;
+					sendMarker(QStringLiteral("accept"));
+				}
+			} else if (kind == QStringLiteral("accept")) {
+				m_peerSeen = true;
+			}
+		}
+	}
+
+	void sendMarker(const QString& kind) {
+		QJsonObject marker;
+		marker.insert(QStringLiteral("gboy_ws"), kind);
+		if (!m_roomTag.isEmpty()) {
+			marker.insert(QStringLiteral("room"), m_roomTag);
+		}
+		marker.insert(QStringLiteral("from"), m_nonce);
+		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
+	}
+
+	GbCloud::Session* m_sig;
+	QString m_token;
+	QString m_uuid;
+	QString m_roomTag;
+	QString m_nonce;
+	GBoyFrames::Reader* m_reader;
+	bool m_closed = false;
+	bool m_peerSeen = false;
+	QString m_error;
+	qint64 m_lastHello = 0;
+	qint64 m_lastAccept = 0;
+};
+
 }
 
 namespace QGBA {
@@ -197,9 +363,11 @@ void CloudLink::run() {
 	try {
 		runLobby();
 	} catch (const std::exception& e) {
+		cleanupTunnel();
 		m_session = nullptr;
 		fail(QStringLiteral("联机流程中断：%1").arg(QString::fromUtf8(e.what())));
 	} catch (...) {
+		cleanupTunnel();
 		m_session = nullptr;
 		fail(QStringLiteral("联机流程出现未知错误"));
 	}
@@ -246,6 +414,7 @@ void CloudLink::runLobby() {
 	// explicit send_message carrying "GAME_CODE,ROM_MD5"; without it the room
 	// server ignores everything that follows.
 	QString uuid = gameUuid();
+	m_wsNonce = QStringLiteral("%1").arg(QRandomGenerator::global()->generate(), 8, 16, QChar('0'));
 	status(QStringLiteral("正在上传游戏身份…"));
 	GbCloud::debugLog(QStringLiteral("upload identity ") + uuid);
 	sig.sendText(wsText(sendMessageJson(token, uuid, QStringLiteral("go"))));
@@ -270,10 +439,9 @@ void CloudLink::runLobby() {
 		room.roomId = m_config.roomId.trimmed();
 		waitForRoom(&sig, &room, room.roomId, 20000);
 		if (room.nodeAddress.isEmpty() || room.nodePort <= 0) {
-			fail(QStringLiteral("未能自动获取对方的中继地址。"
-			        "请让房主把界面上的「中继 地址:端口」发给你，"
-			        "再用 NODE2:地址:端口 进入（房号框填 NODE2:地址:端口）"));
-			return;
+			// A missing relay address is no longer fatal: the data stage falls
+			// back to the websocket tunnel, which needs no node at all.
+			status(QStringLiteral("未获取到对方的中继地址，将使用服务器隧道模式"));
 		}
 	}
 	if (m_closed.load(std::memory_order_relaxed)) {
@@ -287,7 +455,7 @@ void CloudLink::runLobby() {
 	// The host keeps re-broadcasting its relay endpoint so the joiner finds it
 	// automatically; the worker-side pollSignaling does that every 2 seconds.
 	m_isAdvertising = asHost;
-	connectRelay(&sig, token, &m_currentRoom, asHost);
+	connectRelay(&sig, token, uuid, &m_currentRoom, asHost);
 	m_session = nullptr;
 }
 
@@ -352,31 +520,47 @@ void CloudLink::hostCreateRoom(GbCloud::Session* sig, const QString& token, cons
 	                  + QString::number(room->nodePort));
 }
 
-void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
+void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const QString& uuid,
+                             Room* room, bool asHost) {
 	status((asHost ? QStringLiteral("房间已创建，房号 ") : QStringLiteral("已加入房间 "))
 	       + (room->roomId.isEmpty() ? QString() : room->roomId)
-	       + QStringLiteral("\n中继 ") + room->nodeAddress + ":" + QString::number(room->nodePort)
-	       + QStringLiteral("\n正在连接中继节点，等待对方加入…"));
+	       + (room->nodeAddress.isEmpty()
+	              ? QString()
+	              : QStringLiteral("\n中继 ") + room->nodeAddress + ":" + QString::number(room->nodePort))
+	       + QStringLiteral("\n正在连接数据通道，等待对方…"));
 	// Ask once for the current node: public nodes get recycled by the server,
-	// the room may still exist but the node may have changed.
-	QString fresh = currentNode(sig, token, room, asHost);
-	if (!fresh.isEmpty()) {
-		int colon = fresh.lastIndexOf(':');
-		if (colon > 0) {
-			bool ok = false;
-			int port = fresh.mid(colon + 1).trimmed().toInt(&ok);
-			if (ok) {
-				room->nodeAddress = fresh.left(colon);
-				room->nodePort = port;
+	// the room may still exist but the node may have changed. When the peer is
+	// already waiting on the tunnel, skip straight there.
+	if (!m_tunnelPeerSeen) {
+		QString fresh = currentNode(sig, token, room, asHost);
+		if (!fresh.isEmpty()) {
+			int colon = fresh.lastIndexOf(':');
+			if (colon > 0) {
+				bool ok = false;
+				int port = fresh.mid(colon + 1).trimmed().toInt(&ok);
+				if (ok) {
+					room->nodeAddress = fresh.left(colon);
+					room->nodePort = port;
+				}
 			}
 		}
 	}
-	KcpChannel* link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, asHost);
+	KcpChannel* link = nullptr;
+	if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+		link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
+		                      RELAY_WINDOW_MS);
+	} else {
+		status(QStringLiteral("没有可用的中继地址，直接使用服务器隧道模式"));
+	}
 	if (m_closed.load(std::memory_order_relaxed)) {
 		if (link) {
 			link->close();
 			delete link;
 		}
+		return;
+	}
+	if (!link) {
+		runTunnel(sig, token, room, asHost);
 		return;
 	}
 	QString text = asHost ? QStringLiteral("云端联机已连接，你是 1P") : QStringLiteral("云端联机已连接，你是 2P");
@@ -415,18 +599,29 @@ QString CloudLink::currentNode(GbCloud::Session* sig, const QString& token, Room
  * - The very same session (one conversation id, one UDP port) is reused for
  *   every retry; a retry that builds a brand new session fills the node's
  *   session table with half-open leftovers.
- * - Public nodes usually answer only once the second player has joined, so
- *   the retries run for several minutes.
+ * - The node only answers once the second player has registered, so the first
+ *   handshake waits for the opponent. windowMs bounds how long we knock with
+ *   no answer at all: past it the caller falls back to the websocket tunnel
+ *   (returns null). Once the node did answer (HK), we stay on it and keep
+ *   waiting as before.
  * - A node can be recycled by the server at any time, so every 30 seconds we
- *   re-resolve the node and switch over when it changed.
+ *   re-resolve the node and switch over when it changed. While waiting we also
+ *   watch the signalling stream for the peer's tunnel hello - seeing it means
+ *   the peer has given up on the node, so there is no point in finishing the
+ *   window.
+ *
+ * @return the connected link, or null when the node never answered and the
+ *         caller should use the websocket tunnel instead.
  */
 KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
-                                      GbCloud::Session* sig, const QString& token, bool creator) {
-	QString failure;
+                                      GbCloud::Session* sig, const QString& token,
+                                      const QString& uuid, bool creator, qint64 windowMs) {
 	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + RELAY_WAIT_MS;
+	qint64 windowEnd = QDateTime::currentMSecsSinceEpoch() + windowMs;
 	qint64 started = QDateTime::currentMSecsSinceEpoch();
 	qint64 nextQuery = 0;
 	qint64 lastNotice = 0;
+	qint64 lastHello = 0;
 	QString currentHost = host;
 	int currentPort = port;
 	KcpChannel* link = nullptr;
@@ -436,7 +631,9 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 		if (!link) {
 			link = KcpChannel::open(currentHost, quint16(currentPort), randomConv(), &error);
 			if (!link) {
-				failure = error;
+				if (QDateTime::currentMSecsSinceEpoch() >= windowEnd) {
+					return nullptr;
+				}
 				waitAndProcess(1000);
 				continue;
 			}
@@ -454,7 +651,7 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 			} catch (std::exception& e) {
 				// Already talking to the relay, but the peer has not registered
 				// yet: keep the same session and keep waiting.
-				failure = QString::fromUtf8(e.what());
+				GbCloud::debugLog(QStringLiteral("relay handshake pending: ") + e.what());
 				if (!waitAndProcess(1000)) {
 					break;
 				}
@@ -463,6 +660,29 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 		}
 		if (m_closed.load(std::memory_order_relaxed)) {
 			break;
+		}
+		// Greet over the signalling channel and listen for the peer while the
+		// window lasts; if the peer is already waiting on the tunnel there is
+		// no point in finishing the window.
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (sig && now - lastHello >= TUNNEL_HELLO_MS) {
+			lastHello = now;
+			sendWsMarker(sig, token, uuid, QStringLiteral("hello"), room->roomId);
+		}
+		drainSignaling(sig, 120);
+		if (m_tunnelPeerSeen) {
+			status(QStringLiteral("对方已在服务器隧道上等待，放弃直连中继"));
+			link->close();
+			delete link;
+			m_channel = nullptr;
+			return nullptr;
+		}
+		if (now >= windowEnd) {
+			status(QStringLiteral("中继节点没有回应，自动切换到服务器隧道模式"));
+			link->close();
+			delete link;
+			m_channel = nullptr;
+			return nullptr;
 		}
 		// The node may have been recycled; re-resolve it periodically.
 		if (sig && QDateTime::currentMSecsSinceEpoch() >= nextQuery) {
@@ -494,8 +714,7 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 			long waited = long((QDateTime::currentMSecsSinceEpoch() - started) / 1000);
 			status(QStringLiteral("房号 ") + (room->roomId.isEmpty() ? QString() : room->roomId)
 			       + QStringLiteral("\n中继还没有回应（已等待 ") + QString::number(waited) + QStringLiteral(" 秒）\n")
-			       + QStringLiteral("公共节点要等对方也进入房间才会应答，请把房号发给对方\n")
-			       + QStringLiteral("若对方已进房仍无回应，可能是网络拦截了 UDP（关闭 VPN/加速器，或改用移动数据）"));
+			       + QStringLiteral("稍后将自动改用服务器隧道（跨网可联）"));
 		}
 		waitAndProcess(1000);
 	}
@@ -504,16 +723,139 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 		delete link;
 		m_channel = nullptr;
 	}
-	QString detail = failure.isEmpty() ? QStringLiteral("中继连接被取消") : failure;
 	return nullptr;
 }
 
-void CloudLink::sendRegister(KcpChannel* link, Room* room) {
+// ---- websocket tunnel ----
+
+/**
+ * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话，把
+ * GBoy 帧塞进 send_message 广播推送里发给对方。WS 是出站 TCP，不受 NAT/UDP
+ * 限制，跨网天然可用；代价是延迟略高。
+ *
+ * 握手时序：双方互发 hello（room 标记过滤），见到对方即回 accept 并进入数据
+ * 阶段。房主额外先发一帧 READY(2)——中继模式下这一帧由中继发，隧道模式下
+ * 没有中继，得由房主补上，否则双方在 handshake() 里互等 READY 死锁。
+ */
+void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
+	const QString tag = room->roomId;
+	status(QStringLiteral("正在通过服务器隧道等待对方进入（跨网可联）…"));
+	WsLink* link = new WsLink(sig, token, m_advertiserUuid, tag, m_wsNonce, &m_reader);
+	m_tunnel = link;
+	m_tunnelUp = true;
+	m_tunnelPeerSeen = false;
+	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + RELAY_WAIT_MS;
+	qint64 lastNotice = 0;
+	QByteArray discard;
+	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && !link->peerSeen()
+	       && QDateTime::currentMSecsSinceEpoch() < deadline) {
+		link->recv(&discard, 1000);
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (!link->peerSeen() && now - lastNotice >= 10000) {
+			lastNotice = now;
+			status(QStringLiteral("隧道已就绪，等待对方进入（房号 %1）…").arg(tag));
+		}
+	}
+	if (m_closed.load(std::memory_order_relaxed)) {
+		cleanupTunnel();
+		return;
+	}
+	if (!link->peerSeen()) {
+		QString detail = link->errorText().isEmpty() ? QStringLiteral("隧道等待对方超时")
+		                                             : link->errorText();
+		cleanupTunnel();
+		m_tunnelUp = false;
+		fail(detail);
+		return;
+	}
+	sendRegister(link, room);
+	if (asHost) {
+		// 中继模式下由中继发 READY(人数)，这里由房主代劳
+		link->send(GBoyFrames::frame(GBoyFrames::TYPE_READY, qMax(2, room->playerCount)));
+	}
+	try {
+		handshake(link, room);
+	} catch (std::exception& e) {
+		cleanupTunnel();
+		m_tunnelUp = false;
+		fail(QString::fromUtf8(e.what()));
+		return;
+	}
+	status(QStringLiteral("云端联机已连接（服务器隧道），你是 ")
+	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
+	emit connected(asHost);
+	serve(link);
+	cleanupTunnel();
+	m_tunnelUp = false;
+}
+
+void CloudLink::cleanupTunnel() {
+	if (m_tunnel) {
+		m_tunnel->close();
+		delete m_tunnel;
+		m_tunnel = nullptr;
+	}
+}
+
+void CloudLink::sendWsMarker(GbCloud::Session* sig, const QString& token, const QString& uuid,
+                             const QString& kind, const QString& roomId) {
+	if (!sig || !sig->isOpen()) {
+		return;
+	}
+	QJsonObject marker;
+	marker.insert(QStringLiteral("gboy_ws"), kind);
+	if (!roomId.isEmpty()) {
+		marker.insert(QStringLiteral("room"), roomId);
+	}
+	marker.insert(QStringLiteral("from"), m_wsNonce);
+	sig->sendText(wsText(sendMessageJson(token, uuid, wsText(marker))));
+}
+
+void CloudLink::drainSignaling(GbCloud::Session* sig, int ms) {
+	if (!sig || !sig->isOpen()) {
+		return;
+	}
+	qint64 end = QDateTime::currentMSecsSinceEpoch() + ms;
+	while (QDateTime::currentMSecsSinceEpoch() < end) {
+		QString text = sig->recv(60);
+		if (text.isEmpty()) {
+			return;
+		}
+		if (isTunnelMarkerText(text)) {
+			m_tunnelPeerSeen = true;
+		}
+	}
+}
+
+bool CloudLink::isTunnelMarkerText(const QString& text) {
+	const auto objects = GbCloud::jsonObjects(text);
+	for (const QJsonObject& object : objects) {
+		if (object.value("type").toString() != QStringLiteral("send_message")) {
+			continue;
+		}
+		QString message = object.value("message").toString();
+		if (!message.contains(QStringLiteral("gboy_ws"))) {
+			continue;
+		}
+		bool ok = false;
+		QJsonObject marker = GbCloud::lastJsonObject(message, &ok);
+		if (!ok) {
+			continue;
+		}
+		QString from = marker.value(QStringLiteral("from")).toString();
+		if (from.isEmpty() || from != m_wsNonce) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void CloudLink::sendRegister(ILink* link, Room* room) {
 	int players = qMax(1, room->playerCount);
 	link->send(GBoyFrames::registerFrame(players, room->baseStateCount));
 }
 
-void CloudLink::handshake(KcpChannel* link, Room* room) {
+void CloudLink::handshake(ILink* link, Room* room) {
 	// The cloud handshake of the official client:
 	//   -> type 1, body: int playerCount, short 0, int baseStateCount
 	//   <- type 3, body: int playerCount
@@ -539,7 +881,7 @@ void CloudLink::handshake(KcpChannel* link, Room* room) {
 	link->send(GBoyFrames::frame(GBoyFrames::TYPE_REGISTER));
 }
 
-QByteArray CloudLink::expect(KcpChannel* link, int type, int timeoutMs) {
+QByteArray CloudLink::expect(ILink* link, int type, int timeoutMs) {
 	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
 	while (true) {
 		QByteArray body = m_reader.next();
@@ -562,7 +904,7 @@ QByteArray CloudLink::expect(KcpChannel* link, int type, int timeoutMs) {
 	}
 }
 
-void CloudLink::serve(KcpChannel* link) {
+void CloudLink::serve(ILink* link) {
 	qint64 lastKey = 0;
 	qint64 lastFps = 0;
 	qint64 lastAdvertise = 0;
@@ -585,8 +927,9 @@ void CloudLink::serve(KcpChannel* link) {
 			link->send(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
 		}
 		// Host side: keep the signalling socket alive and re-broadcast the
-		// relay endpoint so the joiner can find it without manual entry.
-		if (m_isAdvertising && m_session && now - lastAdvertise >= 2000) {
+		// relay endpoint so the joiner can find it without manual entry. Not
+		// on the tunnel - there WsLink::recv is the only reader of the socket.
+		if (m_isAdvertising && m_session && !m_tunnelUp && now - lastAdvertise >= 2000) {
 			lastAdvertise = now;
 			pollSignaling(m_session, m_authToken, m_advertiserUuid, &m_currentRoom);
 		}
@@ -601,7 +944,7 @@ void CloudLink::serve(KcpChannel* link) {
 		}
 	}
 	if (link->isClosed() && !m_closed.load(std::memory_order_relaxed)) {
-		fail(QStringLiteral("中继连接已断开"));
+		fail(m_tunnelUp ? QStringLiteral("服务器隧道连接已断开") : QStringLiteral("中继连接已断开"));
 	}
 }
 
@@ -710,7 +1053,13 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 			} else if (type == QStringLiteral("send_message")) {
 				// The host advertises its relay endpoint through the broadcast
 				// channel as {"gboy_node":"address:port","room":"<roomId>"}.
+				// A {"gboy_ws":"hello|accept"} marker instead means the peer is
+				// already waiting on the websocket tunnel - remember that so
+				// the relay window is cut short.
 				QString message = object.value("message").toString();
+				if (message.contains(QStringLiteral("gboy_ws"))) {
+					m_tunnelPeerSeen = true;
+				}
 				if (message.contains(QStringLiteral("gboy_node"))) {
 					bool markerOk = false;
 					QJsonObject marker = GbCloud::lastJsonObject(message, &markerOk);
@@ -741,6 +1090,11 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 			}
 		}
 		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+			return;
+		}
+		// The peer is already waiting on the websocket tunnel; no node is
+		// coming, so stop listening and let the data stage use the tunnel.
+		if (m_tunnelPeerSeen) {
 			return;
 		}
 	}

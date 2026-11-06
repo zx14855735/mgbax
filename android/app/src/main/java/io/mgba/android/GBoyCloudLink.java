@@ -48,9 +48,33 @@ public final class GBoyCloudLink {
     private static final long ROOM_WAIT_MS = 15000;
     /** Public relay slots are recycled slowly; keep retrying for a while. */
     private static final long RELAY_WAIT_MS = 300000;
+    /**
+     * How long to knock on the UDP relay node before giving up on it. The
+     * gboy.top node only answers once both players have registered, but its
+     * ports have been dead server-side for a while, so after this window the
+     * link falls back to the websocket tunnel and play proceeds anyway.
+     */
+    private static final long RELAY_WINDOW_MS = 12000;
     /** How long to wait for the peer's first key state before starting anyway. */
     private static final long PEER_KEY_WAIT_MS = 4000;
     private static final long KEY_INTERVAL_MS = 50;
+    /** Tunnel hello markers are re-sent at this pace until the peer answers. */
+    private static final long TUNNEL_HELLO_MS = 2000;
+
+    /**
+     * Minimal transport shared by the KCP relay and the websocket tunnel; the
+     * handshake and the game loop run unchanged over either one.
+     */
+    interface Link {
+        void send(byte[] frame);
+
+        /** Next message, or null when nothing arrived in time. */
+        byte[] recv(long timeoutMs);
+
+        boolean isClosed();
+
+        void close();
+    }
 
     public interface Hooks {
         String romPath();
@@ -71,6 +95,7 @@ public final class GBoyCloudLink {
     private final Object sendLock = new Object();
     private volatile boolean closed;
     private volatile KcpChannel channel;
+    private volatile Link wsLink;
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
     private volatile Thread advertiser;
@@ -78,6 +103,15 @@ public final class GBoyCloudLink {
     private volatile String authToken;
     private volatile Room currentRoom;
     private volatile boolean hostRole;
+    /** 房间信令要的游戏身份，重连中继时复用。 */
+    private volatile String identity;
+    /**
+     * 本端隧道标记的随机身份：服务器若把 send_message 回显给发送者，
+     * 靠它把自己的 hello/数据帧和对方的区分开（同一 ROM 的游戏身份相同，不能用它）。
+     */
+    private volatile String wsNonce;
+    /** 对方已在隧道上打招呼；KCP 等待窗口里见到就不再等窗口超时。 */
+    private volatile boolean tunnelPeerSeen;
     private final GBoyFrames.Reader reader = new GBoyFrames.Reader();
     /** Last key state received from the peer; only transitions are logged. */
     private int lastRxKeys = Integer.MIN_VALUE;
@@ -118,6 +152,11 @@ public final class GBoyCloudLink {
         channel = null;
         if (current != null) {
             current.close();
+        }
+        Link tunnel = wsLink;
+        wsLink = null;
+        if (tunnel != null) {
+            tunnel.close();
         }
         GbCloud.Session open = session;
         session = null;
@@ -173,6 +212,8 @@ public final class GBoyCloudLink {
         // an explicit send_message carrying "GAME_CODE,ROM_MD5"; without it the
         // room server ignores everything that follows.
         String uuid = gameUuid();
+        identity = uuid;
+        wsNonce = Long.toHexString(java.util.UUID.randomUUID().getMostSignificantBits());
         status("正在上传游戏身份…");
         send(sig, sendMessage(token, uuid, "go"), 1200);
 
@@ -199,28 +240,44 @@ public final class GBoyCloudLink {
             room.roomId = roomId.trim();
             waitForRoom(sig, room, roomId.trim(), 20000);
             if (room.nodeAddress == null || room.nodePort <= 0) {
-                throw new IOException("未能自动获取对方的中继地址。"
-                        + "请让房主把界面上的「中继 地址:端口」发给你，"
-                        + "再用 NODE2:地址:端口 进入（房号框填 NODE2:地址:端口）");
+                // 拿不到中继地址不再失败：数据阶段会自动走服务器隧道。
+                status("未获取到对方的中继地址，将使用服务器隧道模式");
             }
         }
 
         authToken = token;
         currentRoom = room;
         hostRole = asHost;
-        connectRelay(sig, token, room, asHost);
+        connectRelay(sig, token, uuid, room, asHost);
     }
 
     /**
-     * 连上中继并进入对战循环。房间与信令已经就绪，这里只负责数据通道，
+     * 连上数据通道并进入对战循环。房间与信令已经就绪，这里只负责传输，
      * 「重新连接中继」按钮也复用同一段逻辑。
+     *
+     * 先给 UDP 中继节点一个短窗口；它不回应（服务端节点死了是常态）就
+     * 自动切到 websocket 服务器隧道——双方都连着信令服务器，跨网也能通。
      */
-    private void connectRelay(final GbCloud.Session sig, final String token, final Room room,
-                              final boolean asHost) throws IOException {
+    private void connectRelay(final GbCloud.Session sig, final String token, final String uuid,
+                              final Room room, final boolean asHost) throws IOException {
+        if (sig.isClosed()) {
+            // 会话在等待期间被服务器掐掉（游戏进行中节点回收也会走到这里）：
+            // 重开一条会话并重新绑定游戏身份，房间还在服务器上。
+            status("信令连接已断开，正在重新连接…");
+            GbCloud.Session fresh = new GbCloud.Session();
+            session = fresh;
+            try {
+                send(fresh, sendMessage(token, uuid, "go"), 1200);
+            } catch (IOException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(String.valueOf(e.getMessage()));
+            }
+        }
         status((asHost ? "房间已创建，房号 " : "已加入房间 ")
                 + (room.roomId == null ? "" : room.roomId)
-                + "\n中继 " + room.nodeAddress + ":" + room.nodePort
-                + "\n正在连接中继节点，等待对方加入…");
+                + (room.nodeAddress == null ? "" : "\n中继 " + room.nodeAddress + ":" + room.nodePort)
+                + "\n正在连接数据通道，等待对方…");
         // 先问一次当前节点：公共节点会被服务器回收，房间还在但节点可能已经换了
         String fresh = currentNode(sig, token, room, asHost);
         if (fresh != null) {
@@ -234,16 +291,28 @@ public final class GBoyCloudLink {
                 }
             }
         }
-        final String currentRoom = room.roomId;
-        final boolean creator = asHost;
-        KcpChannel link = startRelayLink(room.nodeAddress, room.nodePort, room, new NodeQuery() {
-            @Override
-            public String query() {
-                return currentNode(sig, token, room, creator);
-            }
-        });
+        KcpChannel link = null;
+        if (room.nodeAddress != null && room.nodePort > 0) {
+            final String currentRoom = room.roomId;
+            final boolean creator = asHost;
+            link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
+                    new NodeQuery() {
+                        @Override
+                        public String query() {
+                            return currentNode(sig, token, room, creator);
+                        }
+                    }, RELAY_WINDOW_MS);
+        } else {
+            status("没有可用的中继地址，直接使用服务器隧道模式");
+        }
         if (closed) {
-            link.close();
+            if (link != null) {
+                link.close();
+            }
+            return;
+        }
+        if (link == null) {
+            runTunnel(sig, token, uuid, room, asHost);
             return;
         }
         String text = asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P";
@@ -287,7 +356,8 @@ public final class GBoyCloudLink {
         final String token = authToken;
         final Room room = currentRoom;
         final boolean asHost = hostRole;
-        if (sig == null || token == null || room == null) {
+        final String uuid = identity;
+        if (sig == null || token == null || room == null || uuid == null) {
             status("还没有房间，请先点「云端创建」或「云端加入」");
             return;
         }
@@ -297,10 +367,15 @@ public final class GBoyCloudLink {
         if (old != null) {
             old.close();
         }
-        status("正在重新连接中继…");
+        Link oldTunnel = wsLink;
+        wsLink = null;
+        if (oldTunnel != null) {
+            oldTunnel.close();
+        }
+        status("正在重新连接数据通道…");
         new Thread(() -> {
             try {
-                connectRelay(sig, token, room, asHost);
+                connectRelay(sig, token, uuid, room, asHost);
             } catch (Exception e) {
                 if (!closed) {
                     fail(message(e));
@@ -384,8 +459,14 @@ public final class GBoyCloudLink {
                         + "\n正在等对方进入这个房间（公共节点要两端都接入才会应答）…");
                 // 复用游戏用的 KCP over UDP 传输做真实握手。
                 // 注意：只有自己一个人在房间里时，公共节点是不会应答的，
-                // 所以这里一直等，等对方进来后自然会连上。
-                link = self.startRelayLink(room.nodeAddress, room.nodePort, room, null);
+                // 所以这里一直等（不设隧道窗口），等对方进来后自然会连上。
+                link = self.startRelayLink(room.nodeAddress, room.nodePort, room,
+                        uuid, null, RELAY_WAIT_MS);
+                if (link == null) {
+                    self.status("❌ 联机自检失败：中继没有回应"
+                            + "\n常见原因：网络不通 / VPN 或加速器拦截 UDP / 账号问题。");
+                    return;
+                }
                 self.status("✅ 联机自检通过：\n房号 " + room.roomId
                         + "\n中继 " + room.nodeAddress + ":" + room.nodePort
                         + "\n信令与中继 UDP/KCP 均可达，本机可以云端联机对战。");
@@ -461,7 +542,7 @@ public final class GBoyCloudLink {
             sendRegister(link, room);
             handshake(link, room);
         } else {
-            link = startRelayLink(host, port, room, null);
+            link = startRelayLink(host, port, room, null, null, RELAY_WAIT_MS);
             if (closed) {
                 link.close();
                 return;
@@ -480,20 +561,28 @@ public final class GBoyCloudLink {
      *   a retry that builds a brand new session fills that table with half open
      *   leftovers and the node then silently drops the newcomer - the room
      *   looks permanently dead after one unlucky try.
-     * - Public nodes usually answer only once the second player has joined, so
-     *   the retries run for several minutes and the status tells the user that
-     *   we are waiting for the opponent.
+     * - The node only answers once the second player has registered, so the
+     *   first handshake waits for the opponent. {@code windowMs} bounds how
+     *   long we knock with no answer at all: past it the caller falls back to
+     *   the websocket tunnel (returns {@code null}). Once the node did answer
+     *   (HK), we stay on it and keep waiting as before.
      * - A node can be recycled by the server at any time, so every 30 seconds
      *   we ask the room server for the current node and switch over when it
-     *   changed.
+     *   changed. While waiting we also watch the signalling stream for the
+     *   peer's tunnel hello - seeing it means the peer has given up on the
+     *   node, so there is no point in finishing the window.
+     *
+     * @return the connected link, or {@code null} when the node never answered
+     *         and the caller should use the websocket tunnel instead.
      */
-    private KcpChannel startRelayLink(String host, int port, Room room, NodeQuery query)
-            throws IOException {
-        IOException failure = null;
+    private KcpChannel startRelayLink(String host, int port, Room room, String uuid,
+                                      NodeQuery query, long windowMs) throws IOException {
         long deadline = System.currentTimeMillis() + RELAY_WAIT_MS;
+        long windowEnd = System.currentTimeMillis() + windowMs;
         long started = System.currentTimeMillis();
         long nextQuery = 0;
         long lastNotice = 0;
+        long lastHello = 0;
         String currentHost = host;
         int currentPort = port;
         KcpChannel link = null;
@@ -516,11 +605,30 @@ public final class GBoyCloudLink {
                         return link;
                     } catch (IOException e) {
                         // 已经连上中继，但对方还没注册：保留同一个会话继续等
-                        failure = e;
                         Log.i(TAG, "relay handshake pending: " + e.getMessage());
                         sleepQuietly(1000);
                         continue;
                     }
+                }
+                // 窗口内顺带在信令上打招呼并听对方的动静；
+                // 对方已经在隧道上等我们了就不必等窗口超时
+                long now = System.currentTimeMillis();
+                if (now - lastHello >= TUNNEL_HELLO_MS) {
+                    lastHello = now;
+                    sendWsMarker(sig(), token(), uuid, "hello", room.roomId);
+                }
+                drainSignaling(120);
+                if (tunnelPeerSeen) {
+                    status("对方已在服务器隧道上等待，放弃直连中继");
+                    link.close();
+                    channel = null;
+                    return null;
+                }
+                if (!closed && now >= windowEnd) {
+                    status("中继节点没有回应，自动切换到服务器隧道模式");
+                    link.close();
+                    channel = null;
+                    return null;
                 }
                 // 节点可能被回收了，重新问一次服务器
                 if (query != null && System.currentTimeMillis() >= nextQuery) {
@@ -550,22 +658,94 @@ public final class GBoyCloudLink {
                     long waited = (System.currentTimeMillis() - started) / 1000;
                     status("房号 " + (room.roomId == null ? "" : room.roomId)
                             + "\n中继还没有回应（已等待 " + waited + " 秒）\n"
-                            + "公共节点要等对方也进入房间才会应答，请把房号发给对方\n"
-                            + "若对方已进房仍无回应，可能是网络拦截了 UDP（关闭 VPN/加速器，或改用移动数据）");
+                            + "稍后将自动改用服务器隧道（跨网可联）");
                 }
                 sleepQuietly(1000);
             } catch (IOException e) {
-                failure = e;
                 Log.i(TAG, "relay attempt failed: " + e.getMessage());
                 if (link != null) {
                     link.close();
                     link = null;
                     channel = null;
                 }
+                if (System.currentTimeMillis() >= windowEnd) {
+                    return null;
+                }
             }
         }
-        String detail = failure == null ? "中继连接被取消" : failure.getMessage();
-        throw new IOException(detail + "（开着 VPN/加速器时请先关闭）");
+        return null;
+    }
+
+    /** 当前信令会话；KCP 等待期间发隧道标记用。 */
+    private GbCloud.Session sig() {
+        return session;
+    }
+
+    private String token() {
+        return authToken;
+    }
+
+    /**
+     * 在信令广播上发一个隧道标记（hello/accept），数据帧由 {@link WsLink} 发。
+     * 服务器挂了也不抛：KCP 尝试不该被信令问题打断，隧道阶段会显式处理。
+     */
+    private void sendWsMarker(GbCloud.Session sig, String token, String uuid,
+                              String kind, String roomId) {
+        try {
+            JSONObject marker = new JSONObject();
+            marker.put("gboy_ws", kind);
+            if (roomId != null && !roomId.isEmpty()) {
+                marker.put("room", roomId);
+            }
+            marker.put("from", wsNonce == null ? "" : wsNonce);
+            sig.send(sendMessage(token, uuid, marker.toString()));
+        } catch (Exception e) {
+            Log.i(TAG, "ws marker send failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 排空信令推送一小段（顺带回答服务器 ping）。看到对方的隧道 hello/accept
+     * 就记进 {@link #tunnelPeerSeen}。
+     */
+    private void drainSignaling(long ms) {
+        long end = System.currentTimeMillis() + ms;
+        while (System.currentTimeMillis() < end) {
+            String text;
+            try {
+                GbCloud.Session sig = session;
+                if (sig == null) {
+                    return;
+                }
+                text = sig.recv(Math.min(120, Math.max(20, end - System.currentTimeMillis())));
+            } catch (IOException e) {
+                return; // 会话断了；隧道阶段会重开
+            }
+            if (text == null) {
+                return;
+            }
+            if (isTunnelMarker(text)) {
+                tunnelPeerSeen = true;
+            }
+        }
+    }
+
+    /** 该推送是不是对方的隧道标记（hello/accept/数据帧都算；回显的自己不算）。 */
+    private boolean isTunnelMarker(String text) {
+        JSONObject object = GbCloud.lastJsonObjectOrNull(text);
+        if (object == null || !"send_message".equals(object.optString("type", ""))) {
+            return false;
+        }
+        String message = object.optString("message", null);
+        if (message == null || message.indexOf("gboy_ws") < 0) {
+            return false;
+        }
+        JSONObject marker = GbCloud.lastJsonObjectOrNull(message);
+        if (marker == null) {
+            return false;
+        }
+        String from = marker.optString("from", "");
+        return from.isEmpty() || from.equals(wsNonce == null ? "" : wsNonce) == false;
     }
 
     /** 等一会儿，被打断时安静退出。 */
@@ -583,6 +763,213 @@ public final class GBoyCloudLink {
         String query();
     }
 
+    // ---- websocket tunnel ----
+
+    /**
+     * UDP 中继连不上时的数据通道：直接复用与信令服务器的 websocket 会话，
+     * 把 GBoy 帧塞进 send_message 广播推送里发给对方。WS 是出站 TCP，不受
+     * NAT/UDP 限制，跨网天然可用；代价是延迟略高。
+     *
+     * <p>握手时序：双方互发 hello（room 标记过滤），见到对方即回 accept 并
+     * 进入数据阶段。房主额外先发一帧 READY(2)——中继模式下这一帧由中继发，
+     * 隧道模式下没有中继，得由房主补上，否则双方在 {@link #handshake} 里
+     * 互等 READY 死锁。</p>
+     */
+    private void runTunnel(GbCloud.Session sig, String token, String uuid, Room room,
+                           boolean asHost) throws IOException {
+        String tag = room.roomId == null ? "" : room.roomId;
+        status("正在通过服务器隧道等待对方进入（跨网可联）…");
+        WsLink link = new WsLink(sig, token, uuid, tag);
+        wsLink = link;
+        long deadline = System.currentTimeMillis() + RELAY_WAIT_MS;
+        long lastNotice = 0;
+        while (!closed && !link.isClosed() && !link.peerSeen()
+                && System.currentTimeMillis() < deadline) {
+            link.recv(1000);
+            long now = System.currentTimeMillis();
+            if (!link.peerSeen() && now - lastNotice >= 10000) {
+                lastNotice = now;
+                status("隧道已就绪，等待对方进入（房号 " + tag + "）…");
+            }
+        }
+        if (closed) {
+            return;
+        }
+        if (!link.peerSeen()) {
+            throw new IOException(link.errorMessage() == null
+                    ? "隧道等待对方超时" : link.errorMessage());
+        }
+        sendRegister(link, room);
+        if (asHost) {
+            // 中继模式下由中继发READY(人数)，这里由房主代劳
+            link.send(GBoyFrames.frame(GBoyFrames.TYPE_READY,
+                    Math.max(2, room.playerCount)));
+        }
+        handshake(link, room);
+        status("云端联机已连接（服务器隧道），你是 " + (asHost ? "1P" : "2P"));
+        hooks.onConnected(asHost, null);
+        serve(link);
+    }
+
+    /**
+     * Tunnel transport over the room signalling websocket: every GBoy frame
+     * travels as a base64 JSON marker in a {@code send_message} broadcast, the
+     * same channel that already carries the relay advertisement. TCP ordered
+     * and reliable, so no acks or retransmits are needed; the shared
+     * {@link #reader} turns messages back into frames for {@link #expect} and
+     * {@link #serve}.
+     *
+     * <p>All reads happen on the worker thread (the advertiser never touches
+     * the socket), so the session stays single-consumer.</p>
+     */
+    private final class WsLink implements Link {
+        private final GbCloud.Session sig;
+        private final String token;
+        private final String uuid;
+        private final String roomTag;
+        private volatile boolean closed;
+        private volatile boolean peerSeen;
+        private volatile String error;
+        private long lastHello;
+        private long lastAccept;
+
+        WsLink(GbCloud.Session sig, String token, String uuid, String roomTag) {
+            this.sig = sig;
+            this.token = token;
+            this.uuid = uuid;
+            this.roomTag = roomTag == null ? "" : roomTag;
+        }
+
+        boolean peerSeen() {
+            return peerSeen;
+        }
+
+        String errorMessage() {
+            return error;
+        }
+
+        @Override
+        public void send(byte[] frame) {
+            if (closed) {
+                return;
+            }
+            try {
+                JSONObject marker = new JSONObject();
+                marker.put("gboy_ws", "f");
+                if (!roomTag.isEmpty()) {
+                    marker.put("room", roomTag);
+                }
+                marker.put("from", wsNonce == null ? "" : wsNonce);
+                marker.put("d", android.util.Base64.encodeToString(frame,
+                        android.util.Base64.NO_WRAP));
+                sig.send(sendMessage(token, uuid, marker.toString()));
+            } catch (Exception e) {
+                closed = true;
+                error = "服务器隧道发送失败：" + e.getMessage();
+            }
+        }
+
+        @Override
+        public byte[] recv(long timeoutMs) {
+            byte[] pending = reader.next();
+            if (pending != null) {
+                return pending;
+            }
+            long deadline = System.currentTimeMillis() + Math.max(timeoutMs, 1);
+            while (!closed && !sig.isClosed()) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    return reader.next();
+                }
+                maybeHello();
+                String text;
+                try {
+                    text = sig.recv(Math.min(200, remaining));
+                } catch (IOException e) {
+                    closed = true;
+                    error = "服务器隧道连接中断：" + e.getMessage();
+                    return reader.next();
+                }
+                if (text == null) {
+                    continue;
+                }
+                demux(text);
+            }
+            if (!closed && sig.isClosed()) {
+                closed = true;
+                error = "服务器隧道连接中断";
+            }
+            return reader.next();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return closed || sig.isClosed();
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+
+        /** 在对方现身之前每 2 秒打一次招呼。 */
+        private void maybeHello() {
+            long now = System.currentTimeMillis();
+            if (peerSeen || closed || now - lastHello < TUNNEL_HELLO_MS) {
+                return;
+            }
+            lastHello = now;
+            sendWsMarker(sig, token, uuid, "hello", roomTag);
+        }
+
+        /** 拆一帧信令推送：隧道数据进 reader，握手标记就地应答。 */
+        private void demux(String text) {
+            JSONObject object = GbCloud.lastJsonObjectOrNull(text);
+            if (object == null || !"send_message".equals(object.optString("type", ""))) {
+                return; // 其它推送（player_joined 等）在数据阶段无关紧要
+            }
+            String message = object.optString("message", null);
+            if (message == null || message.indexOf("gboy_ws") < 0) {
+                return;
+            }
+            JSONObject marker;
+            try {
+                marker = new JSONObject(message);
+            } catch (Exception e) {
+                return;
+            }
+            String kind = marker.optString("gboy_ws", "");
+            String tagged = marker.optString("room", "");
+            if (!roomTag.isEmpty() && !tagged.isEmpty() && !tagged.equals(roomTag)) {
+                return; // 别的房间的流量
+            }
+            String from = marker.optString("from", "");
+            if (!from.isEmpty() && from.equals(wsNonce == null ? "" : wsNonce)) {
+                return; // 服务器把自己的推送回显了回来
+            }
+            if ("f".equals(kind)) {
+                try {
+                    byte[] frame = android.util.Base64.decode(
+                            marker.optString("d", ""), android.util.Base64.NO_WRAP);
+                    if (frame.length > 0) {
+                        reader.append(frame, frame.length);
+                    }
+                } catch (Exception e) {
+                    Log.w(TAG, "bad tunnel frame", e);
+                }
+            } else if ("hello".equals(kind)) {
+                peerSeen = true;
+                long now = System.currentTimeMillis();
+                if (now - lastAccept >= 1000) {
+                    lastAccept = now;
+                    sendWsMarker(sig, token, uuid, "accept", roomTag);
+                }
+            } else if ("accept".equals(kind)) {
+                peerSeen = true;
+            }
+        }
+    }
+
     // ---- official wire handshake ----
 
     /**
@@ -596,7 +983,7 @@ public final class GBoyCloudLink {
      *   -&gt; type 1, body: empty             (acknowledgement)
      * </pre>
      */
-    private void handshake(KcpChannel link, Room room) throws IOException {
+    private void handshake(Link link, Room room) throws IOException {
         byte[] count = expect(link, GBoyFrames.TYPE_READY, STEP_WAIT_MS);
         int reported = GBoyFrames.intOf(count);
         if (reported > 0) {
@@ -618,7 +1005,7 @@ public final class GBoyCloudLink {
     }
 
     /** Registers this console at the relay. Sent exactly once per session. */
-    private void sendRegister(KcpChannel link, Room room) {
+    private void sendRegister(Link link, Room room) {
         int players = Math.max(1, room.playerCount);
         link.send(GBoyFrames.registerFrame(players, room.baseStateCount));
     }
@@ -628,7 +1015,7 @@ public final class GBoyCloudLink {
      * the key state (type 0) before the handshake is finished, so unrelated
      * frames are remembered instead of being dropped.
      */
-    private byte[] expect(KcpChannel link, int type, long timeoutMs) throws IOException {
+    private byte[] expect(Link link, int type, long timeoutMs) throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (true) {
             byte[] body = pending();
@@ -741,7 +1128,7 @@ public final class GBoyCloudLink {
 
     // ---- game loop ----
 
-    private void serve(KcpChannel link) {
+    private void serve(Link link) {
         long lastKey = 0;
         long lastFps = 0;
         int sentKeys = Integer.MIN_VALUE;
@@ -884,9 +1271,21 @@ public final class GBoyCloudLink {
                 }
             } else if ("send_message".equals(type)) {
                 // The host advertises its relay endpoint through the broadcast
-                // channel as {"gboy_node":"address:port","room":"<roomId>"}. Pull it
+                // channel as {"gboy_node":"address:port","room":id}. Pull it
                 // out so the joiner can connect without manual NODE2: entry.
+                // A {"gboy_ws":"hello|accept"} marker instead means the peer is
+                // already waiting on the websocket tunnel - remember that so
+                // the relay window is cut short.
                 String message = object.optString("message", null);
+                if (message != null && message.indexOf("gboy_ws") >= 0) {
+                    JSONObject marker = GbCloud.lastJsonObjectOrNull(message);
+                    if (marker != null) {
+                        String from = marker.optString("from", "");
+                        if (from.isEmpty() || !from.equals(wsNonce == null ? "" : wsNonce)) {
+                            tunnelPeerSeen = true;
+                        }
+                    }
+                }
                 if (message != null && message.indexOf("gboy_node") >= 0) {
                     try {
                         JSONObject marker = new JSONObject(message);
@@ -911,12 +1310,16 @@ public final class GBoyCloudLink {
             if (room.nodeAddress != null && room.nodePort > 0) {
                 return;
             }
+            // 对方已经在服务器隧道上等着了，节点不会再来，直接进入数据阶段
+            if (tunnelPeerSeen) {
+                return;
+            }
         }
     }
 
     /**
-     * Keeps the host's signalling socket alive and re-broadcasts the relay
-     * endpoint to the room so a joining player can fill it in automatically.
+     * Re-broadcasts the relay endpoint to the room so a joining player can
+     * fill it in automatically.
      *
      * <p>gboy.top hands the relay node only to the room creator, so a late or
      * slow joiner would otherwise have to type {@code NODE2:address:port} by
@@ -925,9 +1328,10 @@ public final class GBoyCloudLink {
      * The joiner's {@link #waitForRoom} parses that marker and connects without
      * any manual step.</p>
      *
-     * <p>The same thread also drains the websocket (answering pings), which is
-     * required because the host keeps its signalling session open for the whole
-     * match and the server would otherwise time it out.</p>
+     * <p>This thread is send-only on purpose: the worker thread must stay the
+     * only reader of the websocket, otherwise it would swallow tunnel markers
+     * and game frames. Server pings are answered by the worker's own reads
+     * ({@link #drainSignaling}, {@link WsLink#recv}).</p>
      */
     private void startNodeAdvertiser(final GbCloud.Session sig, final String token,
                                      final String uuid, final Room room) {
@@ -935,43 +1339,40 @@ public final class GBoyCloudLink {
             long last = 0;
             while (!closed) {
                 try {
-                    // Keep the websocket alive; recv() answers server pings.
-                    sig.recv(1500);
-                } catch (IOException e) {
-                    if (!closed) {
-                        Log.i(TAG, "node advertiser recv stopped: " + e.getMessage());
-                    }
+                    Thread.sleep(250);
+                } catch (InterruptedException e) {
                     break;
                 }
                 long now = System.currentTimeMillis();
-                if (now - last >= 2000) {
-                    last = now;
-                    // 节点可能被服务器回收并更换，所以每次都读房间里的最新节点
-                    if (room.nodeAddress == null || room.nodePort <= 0) {
-                        continue;
+                if (now - last < 2000) {
+                    continue;
+                }
+                last = now;
+                // 节点可能被服务器回收并更换，所以每次都读房间里的最新节点
+                if (room.nodeAddress == null || room.nodePort <= 0) {
+                    continue;
+                }
+                String node = room.nodeAddress + ":" + room.nodePort;
+                try {
+                    JSONObject marker = new JSONObject();
+                    marker.put("gboy_node", node);
+                    if (room.roomId != null && !room.roomId.isEmpty()) {
+                        marker.put("room", room.roomId);
                     }
-                    String node = room.nodeAddress + ":" + room.nodePort;
-                    try {
-                        JSONObject marker = new JSONObject();
-                        marker.put("gboy_node", node);
-                        if (room.roomId != null && !room.roomId.isEmpty()) {
-                            marker.put("room", room.roomId);
-                        }
-                        JSONObject msg = new JSONObject();
-                        msg.put("action", "send_message");
-                        msg.put("token", token);
-                        msg.put("uuid", uuid);
-                        msg.put("message", marker.toString());
-                        sig.send(msg.toString());
-                        Log.i(TAG, "advertised relay " + node + " for room " + room.roomId);
-                    } catch (IOException e) {
-                        if (!closed) {
-                            Log.i(TAG, "node advertiser send stopped: " + e.getMessage());
-                        }
-                        break;
-                    } catch (Exception ignored) {
-                        // JSON build failure is non-fatal; retry next tick
+                    JSONObject msg = new JSONObject();
+                    msg.put("action", "send_message");
+                    msg.put("token", token);
+                    msg.put("uuid", uuid);
+                    msg.put("message", marker.toString());
+                    sig.send(msg.toString());
+                    Log.i(TAG, "advertised relay " + node + " for room " + room.roomId);
+                } catch (IOException e) {
+                    if (!closed) {
+                        Log.i(TAG, "node advertiser send stopped: " + e.getMessage());
                     }
+                    break;
+                } catch (Exception ignored) {
+                    // JSON build failure is non-fatal; retry next tick
                 }
             }
         }, "lobby-node-advertiser");

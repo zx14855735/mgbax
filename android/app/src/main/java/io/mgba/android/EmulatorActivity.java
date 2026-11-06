@@ -164,7 +164,9 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
      *  --es pass P --es room R` start the gboy.top cloud link without touching the
      *  menu bar (its buttons sit under the game SurfaceView in some emulators, so
-     *  headless tests cannot tap 联机). Room may use the DBG:host:port shortcut. */
+     *  headless tests cannot tap 联机). Room may use the DBG:host:port shortcut.
+     *  Optional `--es ws host:port` / `--es api url` redirect the signalling for
+     *  mock-lobby tests; leave them out for the real gboy.top. */
     private final BroadcastReceiver cloudReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -175,6 +177,18 @@ public class EmulatorActivity extends AppCompatActivity {
             String user = intent.getStringExtra("user");
             String pass = intent.getStringExtra("pass");
             String room = intent.getStringExtra("room");
+            String ws = intent.getStringExtra("ws");
+            String api = intent.getStringExtra("api");
+            if (ws != null && ws.indexOf(':') > 0) {
+                int colon = ws.lastIndexOf(':');
+                try {
+                    GbCloud.overrideEndpoints(api, ws.substring(0, colon),
+                            Integer.parseInt(ws.substring(colon + 1).trim()));
+                    Log.i(TAG, "cloud signalling redirected to " + ws);
+                } catch (NumberFormatException e) {
+                    Log.i(TAG, "bad ws override " + ws);
+                }
+            }
             Log.i(TAG, "cloud broadcast user=" + user + " room=" + room);
             ensureCloud().start(user == null ? "" : user, pass == null ? "" : pass,
                     room == null ? "" : room);

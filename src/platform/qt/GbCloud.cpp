@@ -63,18 +63,49 @@ void debugLog(const QString& message) {
 	file.close();
 }
 
+namespace {
+
+// Mutable endpoint storage: a mock lobby server can stand in for the live
+// service during tests (GbCloud::overrideEndpoints).
+QString& mutableApi() {
+	static QString endpoint = QStringLiteral("https://gboy.top/api/api.php");
+	return endpoint;
+}
+
+QString& mutableWsHost() {
+	static QString endpoint = QStringLiteral("gboy.top");
+	return endpoint;
+}
+
+int& mutableWsPort() {
+	static int port = 23459;
+	return port;
+}
+
+}
+
 const QString& api() {
-	static const QString API = QStringLiteral("https://gboy.top/api/api.php");
-	return API;
+	return mutableApi();
 }
 
 const QString& wsHost() {
-	static const QString HOST = QStringLiteral("gboy.top");
-	return HOST;
+	return mutableWsHost();
 }
 
 int wsPort() {
-	return 23459;
+	return mutableWsPort();
+}
+
+void overrideEndpoints(const QString& apiBase, const QString& host, int port) {
+	if (!apiBase.isEmpty()) {
+		mutableApi() = apiBase;
+	}
+	if (!host.isEmpty()) {
+		mutableWsHost() = host;
+	}
+	if (port > 0) {
+		mutableWsPort() = port;
+	}
 }
 
 QString lobby(QString text) {
@@ -143,10 +174,25 @@ QList<QJsonObject> jsonObjects(const QString& raw) {
 
 QString post(const QString& body, QString* error) {
 	QNetworkAccessManager manager;
+	// Tolerate the same certificate oddities the websocket session does: the
+	// official client never validates either, and a mock lobby server for
+	// tests presents a self-signed certificate. Validation is not what keeps
+	// these credentials safe (they travel in the JSON body of a POST either
+	// way); failing the whole login over an expired chain would just strand
+	// the user.
+	QSslConfiguration tls = QSslConfiguration::defaultConfiguration();
+	tls.setPeerVerifyMode(QSslSocket::VerifyNone);
 	QNetworkRequest request((QUrl(api())));
+	request.setSslConfiguration(tls);
 	request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 	request.setTransferTimeout(HTTP_TIMEOUT_MS);
 	QNetworkReply* reply = manager.post(request, body.toUtf8());
+	QObject::connect(&manager, &QNetworkAccessManager::sslErrors, &manager,
+	                 [](QNetworkReply* errReply, const QList<QSslError>&) {
+		                 if (errReply) {
+			                 errReply->ignoreSslErrors();
+		                 }
+	                 });
 
 	QEventLoop loop;
 	QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);

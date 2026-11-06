@@ -75,7 +75,7 @@
     <string name="link_cloud_reconnect">重新连接中继</string>
     <string name="link_cloud_reconnect_need_room">还没有房间，请先点「云端创建」或「云端加入」</string>
     <string name="link_lobby_no_rom">请先打开一个游戏再联机</string>
-    <string name="link_cloud_help">云端房间（联机大厅）：已注册账号 → 邮箱框填邮箱、密码框填原密码，直接点「云端创建」（拿房间号）或「云端加入」（填对方房号），全程不会收到任何邮件。只有全新账号才需要点「获取验证码」注册。首次注册后账号密码会自动记住，之后免验证码直接登录。创建方是 1P。两边要打开同一个游戏、保持 1 倍速。</string>
+    <string name="link_cloud_help">云端房间（联机大厅）：已注册账号 → 邮箱框填邮箱、密码框填原密码，直接点「云端创建」（拿房间号）或「云端加入」（填对方房号），全程不会收到任何邮件。只有全新账号才需要点「获取验证码」注册。首次注册后账号密码会自动记住，之后免验证码直接登录。创建方是 1P。两边要打开同一个游戏、保持 1 倍速。不同网络（流量/异地）也能联：直连中继不通时会自动改走服务器隧道，无需任何设置。</string>
     <string name="link_cloud_email_hint">邮箱（联机大厅账号）</string>
     <string name="link_cloud_code_hint">验证码</string>
     <string name="link_cloud_get_code">获取验证码</string>

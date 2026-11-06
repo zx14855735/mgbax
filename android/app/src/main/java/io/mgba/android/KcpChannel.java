@@ -41,7 +41,7 @@ import java.util.concurrent.TimeUnit;
  * segmentation, ACK tracking, RTO retransmit, in-order receive with fragment
  * reassembly.
  */
-final class KcpChannel {
+final class KcpChannel implements GBoyCloudLink.Link {
     private static final String TAG = "GBoyKcp";
 
     static final byte[] HS = {'H', 'S'};
@@ -200,7 +200,8 @@ final class KcpChannel {
     }
 
     /** Queues a payload; the pump thread transmits it. */
-    void send(byte[] payload) {
+    @Override
+    public void send(byte[] payload) {
         rawSend(payload);
     }
 
@@ -271,7 +272,8 @@ final class KcpChannel {
     }
 
     /** Next payload from the peer, or null after {@code timeoutMs}. */
-    byte[] recv(long timeoutMs) {
+    @Override
+    public byte[] recv(long timeoutMs) {
         try {
             return inbox.poll(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
@@ -281,11 +283,13 @@ final class KcpChannel {
     }
 
     /** True once the channel was closed (the relay loop must stop). */
-    boolean isClosed() {
+    @Override
+    public boolean isClosed() {
         return !running;
     }
 
-    void close() {
+    @Override
+    public void close() {
         if (!running) {
             return;
         }

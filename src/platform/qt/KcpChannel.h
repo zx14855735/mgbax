@@ -18,6 +18,25 @@
 namespace QGBA {
 
 /**
+ * Minimal transport shared by the KCP relay and the websocket tunnel; the
+ * cloud handshake and the game loop run unchanged over either one. The
+ * signatures match KcpChannel's existing methods on purpose.
+ */
+struct ILink {
+	virtual ~ILink() = default;
+
+	/** Queues a payload for the peer. */
+	virtual void send(const QByteArray& payload) = 0;
+
+	/** Next payload from the peer, or false after {@code timeoutMs}. */
+	virtual bool recv(QByteArray* out, int timeoutMs) = 0;
+
+	virtual bool isClosed() const = 0;
+
+	virtual void close() = 0;
+};
+
+/**
  * KCP over UDP - the transport gboy.top's cloud rooms use, a C++ port of the
  * Android KcpChannel. The parameters and the byte order are taken from the
  * official GBoy client:
@@ -37,7 +56,7 @@ namespace QGBA {
  * tunnel (ssh -R / bore): each payload is framed with a big endian u32
  * length, bypassing KCP entirely - exactly like the Android version.
  */
-class KcpChannel {
+class KcpChannel : public ILink {
 public:
 	static constexpr int UDP_MTU = 512;
 	static constexpr int UDP_WND = 128;
@@ -64,14 +83,14 @@ public:
 	bool retryHandshake(int timeoutMs, QString* error = nullptr);
 
 	/** Queues a payload; the pump thread transmits it. */
-	void send(const QByteArray& payload);
+	void send(const QByteArray& payload) override;
 
 	/** Next payload from the peer, or false after {@code timeoutMs}. */
-	bool recv(QByteArray* out, int timeoutMs);
+	bool recv(QByteArray* out, int timeoutMs) override;
 
-	bool isClosed() const { return !m_running; }
+	bool isClosed() const override { return !m_running; }
 
-	void close();
+	void close() override;
 
 private:
 	/** IPv4 address (network order) + port, resolved once at open. */

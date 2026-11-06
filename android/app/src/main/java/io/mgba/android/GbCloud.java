@@ -32,9 +32,39 @@ import javax.net.ssl.SSLSocketFactory;
  */
 final class GbCloud {
     private static final String TAG = "GBoyCloud";
-    static final String API = "https://gboy.top/api/api.php";
-    static final String WS_HOST = "gboy.top";
-    static final int WS_PORT = 23459;
+    /**
+     * Endpoints of the live service. Overridable at runtime so a local mock
+     * lobby server can stand in during tests (see EmulatorActivity's CLOUD
+     * action "ws"/"api" extras); the defaults are the real gboy.top.
+     */
+    private static volatile String api = "https://gboy.top/api/api.php";
+    private static volatile String wsHost = "gboy.top";
+    private static volatile int wsPort = 23459;
+
+    static String api() {
+        return api;
+    }
+
+    static String wsHost() {
+        return wsHost;
+    }
+
+    static int wsPort() {
+        return wsPort;
+    }
+
+    /** Redirects signalling for tests; pass null to keep a value. */
+    static void overrideEndpoints(String apiBase, String host, Integer port) {
+        if (apiBase != null && !apiBase.isEmpty()) {
+            api = apiBase;
+        }
+        if (host != null && !host.isEmpty()) {
+            wsHost = host;
+        }
+        if (port != null && port > 0) {
+            wsPort = port;
+        }
+    }
 
     /**
      * Trust any certificate. gboy.top serves a certificate issued for
@@ -212,7 +242,7 @@ final class GbCloud {
     }
 
     private static HttpURLConnection openConnection(boolean strict) throws IOException {
-        HttpURLConnection conn = (HttpURLConnection) new URL(API).openConnection();
+        HttpURLConnection conn = (HttpURLConnection) new URL(api()).openConnection();
         if (!strict && conn instanceof javax.net.ssl.HttpsURLConnection) {
             try {
                 javax.net.ssl.SSLContext context = javax.net.ssl.SSLContext.getInstance("TLS");
@@ -239,6 +269,25 @@ final class GbCloud {
             }
         }
         throw new IOException("服务器返回无法解析：" + (raw == null ? "" : raw.trim()));
+    }
+
+    /**
+     * Same as {@link #lastJsonObject(String)} but returns null when the text
+     * holds no JSON at all - the websocket pushes are inspected speculatively,
+     * where a throw per non-JSON frame would be noise.
+     */
+    static JSONObject lastJsonObjectOrNull(String raw) {
+        String[] lines = raw == null ? new String[0] : raw.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (line.startsWith("{")) {
+                try {
+                    return new JSONObject(line);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     private static String readAll(InputStream in) throws IOException {
@@ -279,7 +328,7 @@ final class GbCloud {
                     throw new IOException("无法建立加密连接");
                 }
             }
-            SSLSocket ssl = (SSLSocket) factory.createSocket(WS_HOST, WS_PORT);
+            SSLSocket ssl = (SSLSocket) factory.createSocket(wsHost(), wsPort());
             ssl.startHandshake();
             return ssl;
         }
@@ -306,7 +355,7 @@ final class GbCloud {
             byte[] key = new byte[16];
             new Random().nextBytes(key);
             String handshake = "GET / HTTP/1.1\r\n"
-                    + "Host: " + WS_HOST + ":" + WS_PORT + "\r\n"
+                    + "Host: " + wsHost() + ":" + wsPort() + "\r\n"
                     + "Upgrade: websocket\r\n"
                     + "Connection: Upgrade\r\n"
                     + "Sec-WebSocket-Key: " + android.util.Base64.encodeToString(key,
@@ -329,6 +378,11 @@ final class GbCloud {
 
         boolean insecureTls() {
             return !strictTls;
+        }
+
+        /** True once the underlying socket is gone (closed locally or by the server). */
+        boolean isClosed() {
+            return socket.isClosed();
         }
 
         void send(String text) throws IOException {

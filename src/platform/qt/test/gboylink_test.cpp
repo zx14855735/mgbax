@@ -236,8 +236,10 @@ static int cloudPairTest(const QString& user, const QString& password,
 			relayConnected = true;
 		}
 		if (role == QStringLiteral("host")) {
-			// Publish the room id as soon as the server hands it over.
-			static QRegularExpression roomRe(QStringLiteral("房号\\s*(\\S+)"));
+			// Publish the room id as soon as the server hands it over. Digits
+			// only: tunnel status lines like "（房号 100002）…" would otherwise
+			// leak their closing bracket into the file.
+			static QRegularExpression roomRe(QStringLiteral("房号\\s*(\\d+)"));
 			QRegularExpressionMatch match = roomRe.match(m);
 			if (match.hasMatch()) {
 				QFile out(roomFile);
@@ -286,8 +288,20 @@ static int cloudPairTest(const QString& user, const QString& password,
 	}
 	link.startLink(config);
 
+	// Toggle the local key mask so both sides see a non-zero remote key state
+	// once the link is up - otherwise neither side ever presses anything and
+	// the "keys flowing" assertion could never fire.
+	QTimer keysTimer;
+	bool keyPhase = false;
+	QObject::connect(&keysTimer, &QTimer::timeout, [&]() {
+		keyPhase = !keyPhase;
+		link.setLocalKeys(keyPhase ? 0x0001 : 0x0000);
+	});
+	keysTimer.start(1500);
+
 	QTimer::singleShot(role == QStringLiteral("host") ? 120000 : 90000, &loop, &QEventLoop::quit);
 	loop.exec();
+	keysTimer.stop();
 	link.stopLink();
 
 	qInfo().noquote() << role << "log:" << log.join(" | ");
@@ -1107,6 +1121,18 @@ int main(int argc, char** argv) {
 		return glslTest(args[2]);
 	}
 #ifdef BUILD_QT_CLOUD
+	// Mock-lobby support: MGBAX_CLOUD_WS=host:port and MGBAX_CLOUD_API=url
+	// redirect the signalling endpoints for tests; unset for the real gboy.top.
+	QString ws = qEnvironmentVariable("MGBAX_CLOUD_WS");
+	if (!ws.isEmpty()) {
+		int colon = ws.lastIndexOf(':');
+		if (colon > 0) {
+			GbCloud::overrideEndpoints(qEnvironmentVariable("MGBAX_CLOUD_API"),
+			                           ws.left(colon), ws.mid(colon + 1).toInt());
+			qInfo().noquote() << "signalling redirected to" << ws
+			                  << "(" << qEnvironmentVariable("MGBAX_CLOUD_API") << ")";
+		}
+	}
 	if (mode == QStringLiteral("cloud")) {
 		if (args.size() < 4) {
 			qInfo() << "usage: test-gboylink cloud <user> <pass> [room] [rom]";
