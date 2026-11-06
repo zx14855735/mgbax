@@ -124,7 +124,7 @@ void LobbyView::codeLogin() {
 		QString error;
 		QString token = GbCloud::login(email, password, &error);
 		if (!token.isEmpty()) {
-			saveCredentials(email.section('@', 0, 0), password);
+			saveCredentials(email, password);
 			m_ui.status->appendPlainText(tr("登录成功"));
 			return;
 		}
@@ -141,7 +141,7 @@ void LobbyView::codeLogin() {
 	QString error;
 	QString token = GbCloud::registerAccount(deriveUsername(email), email, passwordToUse, code, &error);
 	if (!token.isEmpty()) {
-		saveCredentials(deriveUsername(email), passwordToUse);
+		saveCredentials(email, passwordToUse);
 		m_ui.password->setText(passwordToUse);
 		m_ui.status->appendPlainText(tr("注册并登录成功，账号信息已保存"));
 		return;
@@ -151,7 +151,7 @@ void LobbyView::codeLogin() {
 		// password that was saved on this device.
 		token = GbCloud::login(email, savedPass, &error);
 		if (!token.isEmpty()) {
-			saveCredentials(cloudSettings().value(SETTING_USER).toString(), savedPass);
+			saveCredentials(email, savedPass);
 			m_ui.status->appendPlainText(tr("已直接登录（邮箱早已注册）"));
 			return;
 		}
@@ -169,24 +169,40 @@ void LobbyView::directLogin() {
 	QString error;
 	QString token = GbCloud::login(email, password, &error);
 	if (!token.isEmpty()) {
-		saveCredentials(email.section('@', 0, 0), password);
+		saveCredentials(email, password);
 		m_ui.status->appendPlainText(tr("登录成功"));
 		return;
 	}
 	m_ui.status->appendPlainText(error);
 }
 
-void LobbyView::saveCredentials(const QString& user, const QString& password) {
-	cloudSettings().setValue(SETTING_EMAIL, m_ui.email->text().trimmed());
-	cloudSettings().setValue(SETTING_USER, user);
+void LobbyView::saveCredentials(const QString& email, const QString& password) {
+	// The room server only accepts the full email as the login identifier
+	// (the bare prefix / derived username it rejects with "用户名或密码错误"),
+	// so the lobby re-login in CloudLink must use exactly the address that
+	// already succeeded here - not the email prefix we once stored.
+	const QString key = email.trimmed();
+	cloudSettings().setValue(SETTING_EMAIL, key);
+	cloudSettings().setValue(SETTING_USER, key);
 	cloudSettings().setValue(SETTING_PASS, password);
-	m_tokenUser = user;
+	m_tokenUser = key;
 	m_tokenPassword = password;
 }
 
 bool LobbyView::ensureLoggedIn() {
-	QString savedUser = cloudSettings().value(SETTING_USER).toString();
+	// Prefer the email field (pre-filled with the saved address); the room
+	// server only accepts the full email as the login identifier, so this is
+	// what the lobby re-login in CloudLink must use. Previously the stored
+	// "user" was the email prefix, which the server rejects.
+	QString email = m_ui.email->text().trimmed();
 	QString savedPass = cloudSettings().value(SETTING_PASS).toString();
+	if (!email.isEmpty() && !savedPass.isEmpty()) {
+		m_tokenUser = email;
+		m_tokenPassword = savedPass;
+		return true;
+	}
+	// Fall back to a stored username + password when the email field is empty.
+	QString savedUser = cloudSettings().value(SETTING_USER).toString();
 	if (!savedUser.isEmpty() && !savedPass.isEmpty()) {
 		m_tokenUser = savedUser;
 		m_tokenPassword = savedPass;
