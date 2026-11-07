@@ -734,6 +734,7 @@ public final class GBoyCloudLink {
                 marker.put("room", roomId);
             }
             marker.put("from", wsNonce == null ? "" : wsNonce);
+            marker.put("e", "h"); // 我能解十六进制载荷（编码协商用）
             sig.send(sendMessage(token, uuid, marker.toString()));
         } catch (Exception e) {
             Log.i(TAG, "ws marker send failed: " + e.getMessage());
@@ -1128,6 +1129,8 @@ public final class GBoyCloudLink {
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
+        /** 对端是否也支持十六进制载荷（标记里带 "e":"h"）。 */
+        private volatile boolean peerHex;
         /** 服务器拒收我们推流的次数（关键词过滤/限流），连挂三帧就收尾。 */
         private int refused;
         private long lastHello;
@@ -1160,13 +1163,16 @@ public final class GBoyCloudLink {
                     marker.put("room", roomTag);
                 }
                 marker.put("from", wsNonce == null ? "" : wsNonce);
-                // 【为什么用十六进制而不是 base64】
-                // 大厅的 send_message 有一层中文关键词过滤，随机 base64 里迟早会拼出
-                // "sb"/"ass" 这类片段（实测服务器直接回 {"success":false,"error":
-                // "请勿发送违规内容。"}），那一条联机线数据就被吞掉，两端随即错位，
-                // 游戏报「连接发生了错误」。十六进制只含 [0-9a-f]，永远不可能命中
-                // 含 s/b 等字母的词，代价是长度翻倍（一帧 20 字节 → 40 字符）。
-                marker.put("d", toHex(frame));
+                // 编码协商：一律带 "e":"h" 表示"我能解十六进制"，但只有确认
+                // 对端也是新版才用十六进制发，否则仍发 base64 —— 免得一边升级、
+                // 另一边还是老版本时整条隧道读不出来。
+                // 为什么优先十六进制：大厅的 send_message 有中文关键词过滤，随机
+                // base64 迟早会拼出 "sb"/"ass" 这类片段（实测服务器直接回
+                // {"success":false,"error":"请勿发送违规内容。"}），那一条联机线
+                // 数据就被吞掉，两端随即错位，游戏报「连接发生了错误」。
+                marker.put("e", "h");
+                marker.put("d", peerHex ? toHex(frame)
+                        : android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
                 sig.send(sendMessage(token, uuid, marker.toString()));
             } catch (Exception e) {
                 closed = true;
@@ -1271,6 +1277,10 @@ public final class GBoyCloudLink {
             String from = marker.optString("from", "");
             if (!from.isEmpty() && from.equals(wsNonce == null ? "" : wsNonce)) {
                 return; // 服务器把自己的推送回显了回来
+            }
+            // 对端带 "e":"h" 说明它也能解十六进制，之后改发 hex（更安全，见 send）。
+            if ("h".equals(marker.optString("e", ""))) {
+                peerHex = true;
             }
             if ("f".equals(kind)) {
                 try {

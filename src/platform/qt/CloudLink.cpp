@@ -339,13 +339,20 @@ public:
 			marker.insert(QStringLiteral("room"), m_roomTag);
 		}
 		marker.insert(QStringLiteral("from"), m_nonce);
-		// 【为什么用十六进制而不是 base64】
-		// 大厅的 send_message 有一层中文关键词过滤，随机 base64 里迟早会拼出
-		// "sb"/"ass" 这类片段（实测服务器直接回 {"success":false,"error":
-		// "请勿发送违规内容。"}），那一条联机线数据就被吞掉，两端随即错位，
-		// 游戏报「连接发生了错误」。十六进制只含 [0-9a-f]，永远不可能命中
-		// 含 s/b/ 等字母的词，代价是长度翻倍（一帧 20 字节 → 40 字符）。
-		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toHex()));
+		// 编码协商：新版一律在标记里带 "e":"h" 表示"我能解十六进制"，
+		// 只有确认对端也是新版才用十六进制发；否则继续发 base64，
+		// 免得一边升级、另一边还是老版本时整条隧道读不出来。
+		marker.insert(QStringLiteral("e"), QStringLiteral("h"));
+		if (m_peerHex) {
+			// 【为什么优先十六进制】大厅的 send_message 有中文关键词过滤，
+			// 随机 base64 迟早会拼出 "sb"/"ass" 这类片段（实测服务器直接回
+			// {"success":false,"error":"请勿发送违规内容。"}），那一条联机线
+			// 数据就被吞掉，两端随即错位，游戏报「连接发生了错误」。
+			// 十六进制只含 [0-9a-f]，不可能命中含 s/b 等字母的词。
+			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toHex()));
+		} else {
+			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
+		}
 		QString error;
 		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))), &error)) {
 			m_closed = true;
@@ -438,6 +445,10 @@ private:
 			if (!from.isEmpty() && from == m_nonce) {
 				continue; // the server echoed our own push back to us
 			}
+			// 对端在标记里带了 "e":"h" 就说明它也能解十六进制，之后改发 hex。
+			if (marker.value(QStringLiteral("e")).toString() == QStringLiteral("h")) {
+				m_peerHex = true;
+			}
 			if (kind == QStringLiteral("f")) {
 				QByteArray frame = decodeTunnelPayload(
 				        marker.value(QStringLiteral("d")).toString().toLatin1());
@@ -464,6 +475,7 @@ private:
 			marker.insert(QStringLiteral("room"), m_roomTag);
 		}
 		marker.insert(QStringLiteral("from"), m_nonce);
+		marker.insert(QStringLiteral("e"), QStringLiteral("h")); // 我能解十六进制
 		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
 	}
 
@@ -475,6 +487,7 @@ private:
 	QQueue<QByteArray> m_inbox;
 	bool m_closed = false;
 	bool m_peerSeen = false;
+	bool m_peerHex = false;
 	int m_refused = 0;
 	QString m_error;
 	qint64 m_lastHello = 0;
