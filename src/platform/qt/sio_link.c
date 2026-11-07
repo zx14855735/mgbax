@@ -235,6 +235,57 @@ static void logLinkDiag(struct GBA* gba) {
 	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF);
 }
 
+/**
+ * 有线俱乐部 standby 卡死的运行时适配（默认关闭，MGBAX_LINK_UNSTICK=1 启用）。
+ *
+ * gen8 的 SetLinkStandbyCallback() 只在 gLinkCallback == NULL 时才安装
+ * LinkCB_Standby；网络链路上这个回调常驻 LinkCB_SendHeldKeys，于是
+ * IsLinkTaskFinished() 永远为 false，游戏停在「等待连接」不进 CB2_InitBattle。
+ * 这里在精确命中该卡死状态时代游戏把回调换成它自己的 LinkCB_Standby，
+ * 保留游戏的 gLastRecvQueueCount 门控，让双端 standby 握手按原时序跑完。
+ * 不改 ROM、不改游戏逻辑、只写一次 IWRAM 的 4 字节函数指针。
+ */
+static int unstickEnabled(void) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char* v = getenv("MGBAX_LINK_UNSTICK");
+		enabled = (v && v[0] == '1') ? 1 : ((v && v[0] == '2') ? 2 : 0);
+	}
+	return enabled;
+}
+
+static void maybeUnstickStandby(struct GBA* gba) {
+	static int done = 0;
+	static int streak = 0;
+	int mode = unstickEnabled();
+	if (done || !mode || !gba || !gba->cpu) {
+		return;
+	}
+	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);          // isMaster, state
+	uint16_t rem16 = GBAView16(gba->cpu, 0x03002AC0u);       // rem at +1
+	uint16_t cbLo = GBAView16(gba->cpu, 0x03002AD4u);
+	uint16_t cbHi = GBAView16(gba->cpu, 0x03002AD6u);
+	uint32_t cb = (uint32_t) cbLo | ((uint32_t) cbHi << 16);
+	uint16_t mu = GBAView16(gba->cpu, 0x0201CFC4u) & 0xFFu;
+	uint16_t brs = GBAView16(gba->cpu, 0x03002A40u);
+	int state = (l0 >> 8) & 0xFF;
+	int rem = (rem16 >> 8) & 0xFF;
+	if (state == 4 && rem == 1 && cb == 0x08151DA9u && mu == 0 && brs == 0) {
+		if (++streak >= 3) {
+			/* mode 1: 换成游戏自带的 LinkCB_Standby，走完双端 standby 握手；
+			 * mode 2: 直接置 NULL，让 IsLinkTaskFinished() 立即成立 ——
+			 * SendBlock 会自己装 LinkCB_BlockSend*，战斗流程不依赖 standby。 */
+			uint32_t target = (mode == 2) ? 0x00000000u : 0x081529BDu;
+			gba->memory.iwram[(0x03002AD4u - 0x03000000u) >> 2] = target;
+			done = 1;
+			SIO_LOG("[unstick] mode=%d cb %08X -> %08X (state=%d rem=%d mu=%u)",
+			        mode, cb, target, state, rem, mu);
+		}
+	} else {
+		streak = 0;
+	}
+}
+
 /* Fill SIOMULTI0..3 with one transfer's data and finish it. */
 static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -266,6 +317,7 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		     me, sio->sioOk, sio->sioLateness / 10, sio->sioLateness % 10,
 		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, data[0], data[1]);
 		logLinkDiag(gba);
+		maybeUnstickStandby(gba);
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
 }

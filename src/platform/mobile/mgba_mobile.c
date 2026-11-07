@@ -12,6 +12,7 @@
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
+#include <mgba/internal/gba/memory.h>
 #include <mgba/internal/gba/savedata.h>
 #include <mgba/internal/gb/gb.h>
 #include <mgba/internal/gb/io.h>
@@ -32,6 +33,7 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <sys/system_properties.h>
 #define MOBILE_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
 #define MOBILE_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "mGBA", __VA_ARGS__)
 #else
@@ -2026,6 +2028,59 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
 }
 
 /* 用一次传输的数据填 SIOMULTI0..3 并结束这次传输。 */
+/**
+ * 有线俱乐部 standby 卡死的运行时适配，与 Qt 版 sio_link.c 对称。
+ * 默认关闭：安卓用系统属性 mgbax.link.unstick=1 打开，桌面用
+ * MGBAX_LINK_UNSTICK=1。只在精确命中 gen8 的卡死状态时写一次
+ * IWRAM 函数指针，把它换成游戏自带的 LinkCB_Standby，保留原来的
+ * gLastRecvQueueCount 门控，不改 ROM、不改游戏逻辑。
+ */
+static int unstickEnabled(void) {
+	static int cached = -1;
+	if (cached < 0) {
+#ifdef __ANDROID__
+		char v[PROP_VALUE_MAX] = {0};
+		__system_property_get("mgbax.link.unstick", v);
+		cached = (v[0] == '1') ? 1 : ((v[0] == '2') ? 2 : 0);
+#else
+		const char* v = getenv("MGBAX_LINK_UNSTICK");
+		cached = (v && v[0] == '1') ? 1 : ((v && v[0] == '2') ? 2 : 0);
+#endif
+	}
+	return cached;
+}
+
+static void maybeUnstickStandby(struct GBA* gba) {
+	static int done = 0;
+	static int streak = 0;
+	int mode = unstickEnabled();
+	if (done || !mode || !gba || !gba->cpu) {
+		return;
+	}
+	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);
+	uint16_t rem16 = GBAView16(gba->cpu, 0x03002AC0u);
+	uint16_t cbLo = GBAView16(gba->cpu, 0x03002AD4u);
+	uint16_t cbHi = GBAView16(gba->cpu, 0x03002AD6u);
+	uint32_t cb = (uint32_t) cbLo | ((uint32_t) cbHi << 16);
+	uint16_t mu = GBAView16(gba->cpu, 0x0201CFC4u) & 0xFFu;
+	uint16_t brs = GBAView16(gba->cpu, 0x03002A40u);
+	int state = (l0 >> 8) & 0xFF;
+	int rem = (rem16 >> 8) & 0xFF;
+	if (state == 4 && rem == 1 && cb == 0x08151DA9u && mu == 0 && brs == 0) {
+		if (++streak >= 3) {
+			/* mode 2 直接置 NULL，跳过 standby，让游戏进 CB2_InitBattle；
+			 * SendBlock 会自行安装 LinkCB_BlockSend* 回调。 */
+			uint32_t target = (mode == 2) ? 0x00000000u : 0x081529BDu;
+			gba->memory.iwram[(0x03002AD4u - 0x03000000u) >> 2] = target;
+			done = 1;
+			MOBILE_LOGI("[unstick] mode=%d cb %08X -> %08X (state=%d rem=%d mu=%u)",
+			            mode, cb, target, state, rem, mu);
+		}
+	} else {
+		streak = 0;
+	}
+}
+
 static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
 	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
 		return;
@@ -2076,6 +2131,7 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
 		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
+		maybeUnstickStandby(gba);
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
 }
