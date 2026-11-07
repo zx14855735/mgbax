@@ -34,7 +34,7 @@ WebDavView::WebDavView(Window* window, QWidget* parent)
 	: QDialog(parent, Qt::WindowTitleHint | Qt::WindowSystemMenuHint | Qt::WindowCloseButtonHint)
 	, m_window(window)
 {
-	setWindowTitle(tr("WebDAV save sync"));
+	setWindowTitle(tr("WebDAV 存档同步"));
 
 	QVBoxLayout* layout = new QVBoxLayout;
 	QFormLayout* form = new QFormLayout;
@@ -43,14 +43,14 @@ WebDavView::WebDavView(Window* window, QWidget* parent)
 	m_user = new QLineEdit(syncSettings().value("sync_user").toString());
 	m_pass = new QLineEdit(syncSettings().value("sync_pass").toString());
 	m_pass->setEchoMode(QLineEdit::Password);
-	m_pass->setPlaceholderText(tr("App password for jianguoyun"));
-	form->addRow(tr("Server"), m_url);
-	form->addRow(tr("Remote directory"), m_dir);
-	form->addRow(tr("User"), m_user);
-	form->addRow(tr("Password"), m_pass);
+	m_pass->setPlaceholderText(tr("坚果云应用密码"));
+	form->addRow(tr("服务器"), m_url);
+	form->addRow(tr("远程目录"), m_dir);
+	form->addRow(tr("用户"), m_user);
+	form->addRow(tr("密码"), m_pass);
 	layout->addLayout(form);
 
-	m_sync = new QPushButton(tr("Sync now"));
+	m_sync = new QPushButton(tr("立即同步"));
 	layout->addWidget(m_sync);
 	m_status = new QPlainTextEdit;
 	m_status->setReadOnly(true);

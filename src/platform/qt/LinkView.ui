@@ -19,7 +19,7 @@
      <item>
       <widget class="QRadioButton" name="radioHost">
        <property name="text">
-        <string>Host room (1P)</string>
+        <string>创建房间（1P）</string>
        </property>
        <property name="checked">
         <bool>true</bool>
@@ -32,7 +32,7 @@
      <item>
       <widget class="QRadioButton" name="radioJoin">
        <property name="text">
-        <string>Join room (2P)</string>
+        <string>加入房间（2P）</string>
        </property>
        <attribute name="buttonGroup">
         <string notr="true">modeGroup</string>
@@ -44,7 +44,7 @@
    <item row="1" column="0">
     <widget class="QLabel" name="ipLabel">
      <property name="text">
-      <string>Host IP</string>
+      <string>主机 IP</string>
      </property>
     </widget>
    </item>
@@ -54,14 +54,14 @@
       <bool>false</bool>
      </property>
      <property name="placeholderText">
-      <string>e.g. 192.168.1.23</string>
+      <string>例如 192.168.1.23</string>
      </property>
     </widget>
    </item>
    <item row="2" column="0">
     <widget class="QLabel" name="portLabel">
      <property name="text">
-      <string>Port</string>
+      <string>端口</string>
      </property>
     </widget>
    </item>
@@ -81,10 +81,10 @@
    <item row="3" column="0" colspan="2">
     <widget class="QCheckBox" name="lanMode">
      <property name="toolTip">
-      <string>Precise SIO link cable over LAN (port 18765). Same protocol as the Android/iOS LAN mode; supports in-game battles and trades.</string>
+      <string>局域网精确 SIO 联机线（端口 18765），与安卓/iOS 局域网模式同协议，支持游戏内对战与交换。</string>
      </property>
      <property name="text">
-      <string>LAN precise SIO cable (instead of WiFi keys merge)</string>
+      <string>局域网精确 SIO 联机线（区别于 WiFi 合并按键）</string>
      </property>
     </widget>
    </item>
@@ -94,7 +94,7 @@
       <bool>true</bool>
      </property>
      <property name="placeholderText">
-      <string>Open a game first, then start the link.</string>
+      <string>请先打开游戏，再开始联机。</string>
      </property>
     </widget>
    </item>
@@ -103,7 +103,7 @@
      <item>
       <widget class="QPushButton" name="start">
        <property name="text">
-        <string>Start</string>
+        <string>开始</string>
        </property>
        <property name="icon">
         <iconset theme="network-connect"/>
@@ -116,7 +116,7 @@
         <bool>false</bool>
        </property>
        <property name="text">
-        <string>Disconnect</string>
+        <string>断开</string>
        </property>
        <property name="icon">
         <iconset theme="network-disconnect"/>
@@ -129,14 +129,14 @@
         <bool>false</bool>
        </property>
        <property name="text">
-        <string>Send reset</string>
+        <string>发送复位</string>
        </property>
       </widget>
      </item>
      <item>
       <widget class="QPushButton" name="close">
        <property name="text">
-        <string>Close</string>
+        <string>关闭</string>
        </property>
        <property name="icon">
         <iconset theme="window-close"/>

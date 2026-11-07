@@ -31,11 +31,11 @@ void LinkView::startLink() {
 		stopLink();
 	}
 	if (!m_window || !m_window->controller()) {
-		m_ui.status->append(tr("Open a game first."));
+		m_ui.status->append(tr("请先打开游戏。"));
 		return;
 	}
 	if (m_window->controller()->platform() != mPLATFORM_GBA) {
-		m_ui.status->append(tr("WiFi link only supports GBA games."));
+		m_ui.status->append(tr("WiFi 联机只支持 GBA 游戏。"));
 		return;
 	}
 	m_controller = m_window->controller();

@@ -17,13 +17,13 @@
    <item>
     <widget class="QGroupBox" name="accountGroup">
      <property name="title">
-      <string>Account</string>
+      <string>账号</string>
      </property>
      <layout class="QGridLayout" name="accountLayout">
       <item row="0" column="0">
        <widget class="QLabel" name="emailLabel">
         <property name="text">
-         <string>Email</string>
+         <string>邮箱</string>
         </property>
        </widget>
       </item>
@@ -33,7 +33,7 @@
       <item row="1" column="0">
        <widget class="QLabel" name="passwordLabel">
         <property name="text">
-         <string>Password</string>
+         <string>密码</string>
         </property>
        </widget>
       </item>
@@ -47,14 +47,14 @@
       <item row="2" column="0">
        <widget class="QLabel" name="codeLabel">
         <property name="text">
-         <string>Mail code</string>
+         <string>邮箱验证码</string>
         </property>
        </widget>
       </item>
       <item row="2" column="1">
        <widget class="QLineEdit" name="code">
         <property name="placeholderText">
-         <string>Only for first-time registration</string>
+         <string>仅首次注册需要</string>
         </property>
        </widget>
       </item>
@@ -63,21 +63,21 @@
         <item>
          <widget class="QPushButton" name="sendCode">
           <property name="text">
-           <string>Send code</string>
+           <string>发送验证码</string>
           </property>
          </widget>
         </item>
         <item>
          <widget class="QPushButton" name="codeLogin">
           <property name="text">
-           <string>Register / login (code)</string>
+           <string>验证码注册/登录</string>
           </property>
          </widget>
         </item>
         <item>
          <widget class="QPushButton" name="directLogin">
           <property name="text">
-           <string>Sign in</string>
+           <string>登录</string>
           </property>
          </widget>
         </item>
@@ -89,20 +89,20 @@
    <item>
     <widget class="QGroupBox" name="roomGroup">
      <property name="title">
-      <string>Room</string>
+      <string>房间</string>
      </property>
      <layout class="QGridLayout" name="roomLayout">
       <item row="0" column="0">
        <widget class="QLabel" name="roomLabel">
         <property name="text">
-         <string>Room code</string>
+         <string>房间号</string>
         </property>
        </widget>
       </item>
       <item row="0" column="1">
        <widget class="QLineEdit" name="roomId">
         <property name="placeholderText">
-         <string>Empty = create; also accepts NODE:/NODE2:/tcp:</string>
+         <string>留空=创建；也可填 NODE:/NODE2:/tcp:</string>
         </property>
        </widget>
       </item>
@@ -111,14 +111,14 @@
         <item>
          <widget class="QPushButton" name="createRoom">
           <property name="text">
-           <string>Create</string>
+           <string>云端创建</string>
           </property>
          </widget>
         </item>
         <item>
          <widget class="QPushButton" name="joinRoom">
           <property name="text">
-           <string>Join</string>
+           <string>云端加入</string>
           </property>
          </widget>
         </item>
@@ -128,7 +128,7 @@
            <bool>false</bool>
           </property>
           <property name="text">
-           <string>Disconnect</string>
+           <string>断开</string>
           </property>
          </widget>
         </item>
@@ -138,7 +138,7 @@
            <bool>false</bool>
           </property>
           <property name="text">
-           <string>Send reset</string>
+           <string>发送复位</string>
           </property>
          </widget>
         </item>
@@ -169,7 +169,7 @@
      <item>
       <widget class="QPushButton" name="close">
        <property name="text">
-        <string>Close</string>
+        <string>关闭</string>
        </property>
       </widget>
      </item>
