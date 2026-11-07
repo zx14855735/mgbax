@@ -313,52 +313,22 @@ public final class GBoyCloudLink {
             }
         }
         KcpChannel link = null;
-        // 【中继节点重生】中继节点时好时坏（有时秒回有时完全不响应）。
-        // 握不上不立刻放弃：解散旧房间重新创建拿新节点再试，最多 3 轮。
-        for (int relayAttempt = 0; relayAttempt < 3 && link == null && !closed; relayAttempt++) {
-            if (relayAttempt > 0) {
-                status("中继节点没有回应（第 " + relayAttempt + " 次），解散旧房间重新创建…");
-                room.nodeAddress = null;
-                room.nodePort = 0;
-                // 解散旧房间拿新节点：join → leave → create
-                try {
-                    if (room.roomId != null && !room.roomId.isEmpty()) {
-                        send(sig, json("join_room", token, room.roomId), 1500);
-                        send(sig, json("leave_room", token, null), 1500);
-                        Thread.sleep(800);
-                    }
-                    send(sig, createJson(token), 2500);
-                    waitForRoomId(sig, room, 6000);
-                    if (room.nodeAddress == null || room.nodePort <= 0) {
-                        send(sig, createJson(token), 2500);
-                        waitForRoom(sig, room, null, ROOM_WAIT_MS);
-                    }
-                    send(sig, json("join_room", token, room.roomId), 1500);
-                    send(sig, json("ready", token, null), 1200);
-                    send(sig, settingsJson(token, room.roomId), 1500);
-                    send(sig, createJson(token), 2500);
-                    waitForRoom(sig, room, null, ROOM_WAIT_MS);
-                } catch (Exception e) {
-                    Log.i(TAG, "relay retry room dance failed: " + e.getMessage());
-                }
-                if (room.nodeAddress == null || room.nodePort <= 0) {
-                    continue;
-                }
-                status("新中继节点 " + room.nodeAddress + ":" + room.nodePort + "，正在重试…");
-            }
-            if (room.nodeAddress != null && room.nodePort > 0) {
-                final String currentRoom = room.roomId;
-                final boolean creator = asHost;
-                link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
-                        new NodeQuery() {
-                            @Override
-                            public String query() {
-                                return currentNode(sig, token, room, creator);
-                            }
-                        }, RELAY_WINDOW_MS);
-            } else {
-                status("没有可用的中继地址，直接使用服务器隧道模式");
-            }
+        // 中继只试一次。以前"握不上就解散房间重建拿新节点"的玩法有两个致命副作用：
+        //   1) 房主重建房间会把已经在房间里等着的对方踢出去（服务器直接解散旧房间）；
+        //   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
+        // 公共节点时好时坏是常态，拿不到节点或节点不应答就直接走服务器隧道——
+        // 隧道不依赖节点，跨网一定能通，只是延迟比中继高一点。
+        if (room.nodeAddress != null && room.nodePort > 0) {
+            final boolean creator = asHost;
+            link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
+                    new NodeQuery() {
+                        @Override
+                        public String query() {
+                            return currentNode(sig, token, room, creator);
+                        }
+                    }, RELAY_WINDOW_MS);
+        } else {
+            status("没有可用的中继地址，直接使用服务器隧道模式");
         }
         if (closed) {
             if (link != null) {
@@ -665,13 +635,15 @@ public final class GBoyCloudLink {
                         registered = true;
                     }
                     try {
-                        handshake(link, room);
+                        // 短探测：节点回了 HK 但对方还没注册时，20 秒的阻塞会让本端
+                        // 完全听不到信令——对方可能已经在隧道上打招呼，本端却要等到
+                        // 5 分钟超时才动。这里几秒一探，然后照常打招呼/看对方动静。
+                        handshake(link, room, 4000);
                         return link;
                     } catch (IOException e) {
-                        // 已经连上中继，但对方还没注册：保留同一个会话继续等
+                        // 已经连上中继，但对方还没注册：保留同一个会话继续等，
+                        // 并落到下面继续打招呼、检查窗口
                         Log.i(TAG, "relay handshake pending: " + e.getMessage());
-                        sleepQuietly(1000);
-                        continue;
                     }
                 }
                 // 窗口内顺带在信令上打招呼并听对方的动静；
@@ -1282,7 +1254,11 @@ public final class GBoyCloudLink {
      * </pre>
      */
     private void handshake(Link link, Room room) throws IOException {
-        byte[] count = expect(link, GBoyFrames.TYPE_READY, STEP_WAIT_MS);
+        handshake(link, room, STEP_WAIT_MS);
+    }
+
+    private void handshake(Link link, Room room, long waitMs) throws IOException {
+        byte[] count = expect(link, GBoyFrames.TYPE_READY, waitMs);
         int reported = GBoyFrames.intOf(count);
         if (reported > 0) {
             Log.i(TAG, "relay reports " + reported + " players");

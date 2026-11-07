@@ -691,64 +691,16 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 		}
 	}
 	KcpChannel* link = nullptr;
-	// 【中继节点重生】中继节点时好时坏（有时秒回有时完全不响应）。
-	// 握不上不立刻放弃：解散旧房间重新创建拿新节点再试，最多 3 轮。
-	for (int relayAttempt = 0; relayAttempt < 3 && !link && !m_closed.load(std::memory_order_relaxed); relayAttempt++) {
-		if (relayAttempt > 0) {
-			status(QStringLiteral("中继节点没有回应（第 %1 次），解散旧房间重新创建…").arg(relayAttempt));
-			room->nodeAddress.clear();
-			room->nodePort = 0;
-			// 解散旧房间拿新节点（和 hostCreateRoom 同一支舞，但不 throw）。
-			try {
-				sig->sendText(wsText(createJson(token, gameName())));
-				waitAndProcess(2500);
-				waitForRoomId(sig, room, 5000);
-				if (!room->roomId.isEmpty()) {
-					sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
-					waitAndProcess(1500);
-					sig->sendText(wsText(json(QStringLiteral("leave_room"), token, QString())));
-					waitAndProcess(1500);
-					waitAndProcess(800);
-				}
-				Room fresh;
-				for (int attempt = 1; attempt <= 3 && fresh.roomId.isEmpty(); attempt++) {
-					sig->sendText(wsText(createJson(token, gameName())));
-					waitAndProcess(2500);
-					waitForRoomId(sig, &fresh, 6000);
-				}
-				if (fresh.roomId.isEmpty()) {
-					status(QStringLiteral("重试创建房间失败"));
-					continue;
-				}
-				room->roomId = fresh.roomId;
-				room->nodeAddress = fresh.nodeAddress;
-				room->nodePort = fresh.nodePort;
-				sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
-				waitAndProcess(1500);
-				sig->sendText(wsText(json(QStringLiteral("ready"), token, QString())));
-				waitAndProcess(1200);
-				sig->sendText(wsText(settingsJson(token, room->roomId)));
-				waitAndProcess(1500);
-				sig->sendText(wsText(createJson(token, gameName())));
-				waitAndProcess(2500);
-				waitForRoom(sig, room, QString(), ROOM_WAIT_MS);
-			} catch (const std::exception& e) {
-				// 房间舞步失败不算致命：继续下一轮或回落隧道
-				status(QStringLiteral("重试创建房间出错：%1").arg(QString::fromUtf8(e.what())));
-				continue;
-			}
-			if (room->nodeAddress.isEmpty() || room->nodePort <= 0) {
-				continue;
-			}
-			status(QStringLiteral("新中继节点 %1:%2，正在重试…")
-			       .arg(room->nodeAddress).arg(room->nodePort));
-		}
-		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
-			link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
-			                      RELAY_WINDOW_MS);
-		} else {
-			status(QStringLiteral("没有可用的中继地址，直接使用服务器隧道模式"));
-		}
+	// 中继只试一次。以前"握不上就解散房间重建拿新节点"的玩法有两个致命副作用：
+	//   1) 房主重建房间会把已经在房间里等着的对方踢出去（服务器直接解散旧房间）；
+	//   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
+	// 公共节点时好时坏是常态，拿不到节点或节点不应答就直接走服务器隧道——
+	// 隧道不依赖节点，跨网一定能通，只是延迟比中继高一点。
+	if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+		link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
+		                      RELAY_WINDOW_MS);
+	} else {
+		status(QStringLiteral("没有可用的中继地址，直接使用服务器隧道模式"));
 	}
 	if (m_closed.load(std::memory_order_relaxed)) {
 		if (link) {
@@ -862,16 +814,18 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 				registered = true;
 			}
 			try {
-				handshake(link, room);
+				// Short probe: the node answered HK but the peer may not have
+				// registered, and a 20 s block here would make this side deaf
+				// to the signalling stream - the peer could sit on the tunnel
+				// (sending hellos this side never reads) until the 5 min
+				// deadline. Probe for a few seconds, then greet and re-check.
+				handshake(link, room, 4000);
 				return link;
 			} catch (std::exception& e) {
 				// Already talking to the relay, but the peer has not registered
-				// yet: keep the same session and keep waiting.
+				// yet: keep the same session and keep waiting. Fall through so
+				// the loop below still greets and watches for the tunnel peer.
 				GbCloud::debugLog(QStringLiteral("relay handshake pending: ") + e.what());
-				if (!waitAndProcess(1000)) {
-					break;
-				}
-				continue;
 			}
 		}
 		if (m_closed.load(std::memory_order_relaxed)) {
@@ -1260,14 +1214,14 @@ void CloudLink::sendRegister(ILink* link, Room* room) {
 	link->send(GBoyFrames::registerFrame(players, room->baseStateCount));
 }
 
-void CloudLink::handshake(ILink* link, Room* room) {
+void CloudLink::handshake(ILink* link, Room* room, int waitMs) {
 	// The cloud handshake of the official client:
 	//   -> type 1, body: int playerCount, short 0, int baseStateCount
 	//   <- type 3, body: int playerCount
 	//   -> type 3, body: empty
 	//   <- type 0, body: int (first key state of the peer)
 	//   -> type 1, body: empty (acknowledgement)
-	QByteArray count = expect(link, GBoyFrames::TYPE_READY, STEP_WAIT_MS);
+	QByteArray count = expect(link, GBoyFrames::TYPE_READY, waitMs);
 	int reported = GBoyFrames::intOf(count);
 	if (reported > 0) {
 		status(QStringLiteral("中继报告 %1 名玩家在线").arg(reported));

@@ -96,7 +96,7 @@ private:
 
 	// wire handshake
 	void sendRegister(ILink* link, Room* room);
-	void handshake(ILink* link, Room* room);
+	void handshake(ILink* link, Room* room, int waitMs = 20000);
 	QByteArray expect(ILink* link, int type, int timeoutMs);
 
 	// game loop
