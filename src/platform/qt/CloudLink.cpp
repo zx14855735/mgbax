@@ -962,11 +962,17 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 	m_tunnelPeerSeen = false;
 	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + RELAY_WAIT_MS;
 	qint64 lastNotice = 0;
+	qint64 lastAdvertise = 0;
 	QByteArray discard;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && !link->peerSeen()
 	       && QDateTime::currentMSecsSinceEpoch() < deadline) {
 		link->recv(&discard, 1000);
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		// 房主在隧道等待期间继续广播中继地址，让加入方有机会走官方中继（快 3-7 倍）
+		if (m_isAdvertising && sig && now - lastAdvertise >= 2000) {
+			lastAdvertise = now;
+			pollSignaling(sig, token, m_advertiserUuid, room);
+		}
 		if (!link->peerSeen() && now - lastNotice >= 10000) {
 			lastNotice = now;
 			status(QStringLiteral("隧道已就绪，等待对方进入（房号 %1）…").arg(tag));
