@@ -161,6 +161,16 @@ public class EmulatorActivity extends AppCompatActivity {
             noteUserKeys(touchKeys, prev);
         }
     };
+    /** Opt back into the GBoy/My Boy "one person drives both consoles" mode.
+     *  Off by default; see gboyRemoteKeysEnabled for why. */
+    private final BroadcastReceiver remoteKeysReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            gboyRemoteKeysEnabled = intent.getBooleanExtra("on", false);
+            Log.i(TAG, "remote keys " + (gboyRemoteKeysEnabled ? "enabled" : "disabled"));
+            publishRemoteKeys();
+        }
+    };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
      *  --es pass P --es room R` start the gboy.top cloud link without touching the
      *  menu bar (its buttons sit under the game SurfaceView in some emulators, so
@@ -380,6 +390,16 @@ public class EmulatorActivity extends AppCompatActivity {
     /** gboy.top cloud room session (KCP relay), same key mask delivery. */
     private GBoyCloudLink cloudLink;
     private volatile int gboyRemoteKeys;
+    /**
+     * GBoy/My Boy lobbies mirror the peer's held keys into our core (one
+     * person drives both consoles). In a real two-player match that is fatal:
+     * the peer's KEY frame is one RTT late, so after our own key is released
+     * its delayed "pressed" frame raises a second press edge locally. The two
+     * consoles then advance their menus by different amounts and pick
+     * different link modes ("连接的伙伴似乎做出了别的选择").
+     * Default false = 分开控制; toggle with action.REMOTE_KEYS --ez on true.
+     */
+    private volatile boolean gboyRemoteKeysEnabled = false;
     /** Tilt cartridge input: device posture fed to the core when enabled. */
     private SensorManager sensorManager;
     private boolean tiltListening;
@@ -465,6 +485,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(keysReceiver, keysFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(keysReceiver, keysFilter);
+        }
+        IntentFilter remoteKeysFilter = new IntentFilter("io.mgba.android.action.REMOTE_KEYS");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(remoteKeysReceiver, remoteKeysFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(remoteKeysReceiver, remoteKeysFilter);
         }
         IntentFilter cloudFilter = new IntentFilter("io.mgba.android.action.CLOUD");
         if (Build.VERSION.SDK_INT >= 33) {
@@ -793,7 +819,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (core == null) {
             return;
         }
-        int mask = touchKeys | hwKeys | gboyRemoteKeys;
+        int mask = touchKeys | hwKeys;
+        if (gboyRemoteKeysEnabled) {
+            mask |= gboyRemoteKeys;
+        }
         if (turboB) {
             mask &= ~ControlsView.B;
         }
@@ -826,7 +855,7 @@ public class EmulatorActivity extends AppCompatActivity {
      * like the GBoy/My Boy lobby (远程按键模式).
      */
     private int userKeys() {
-        return touchKeys | hwKeys | gboyRemoteKeys;
+        return touchKeys | hwKeys | (gboyRemoteKeysEnabled ? gboyRemoteKeys : 0);
     }
 
     private void noteUserKeys(int prevTouch, int prevHw) {
@@ -4096,7 +4125,13 @@ public class EmulatorActivity extends AppCompatActivity {
                     }
                     runOnUiThread(() -> {
                         gboyRemoteKeys = keys;
-                        publishRemoteKeys();
+                        // In 分开控制 mode the peer's mask must not reach the
+                        // core at all, and re-publishing on every 83ms KEY frame
+                        // would also wake the emulation thread at the peer's
+                        // cadence, making the two consoles run at different speeds.
+                        if (gboyRemoteKeysEnabled) {
+                            publishRemoteKeys();
+                        }
                     });
                 }
 
@@ -7443,6 +7478,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(keysReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(remoteKeysReceiver);
         } catch (Exception ignored) {
         }
         try {

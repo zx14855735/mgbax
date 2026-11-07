@@ -589,6 +589,7 @@ static intptr_t attachDriverLoopback(SioLinkHost* cc, bool asHost, QString* erro
 CloudLink::CloudLink(QObject* parent)
 	: QThread(parent)
 {
+	m_remoteKeysEnabled = qgetenv("MGBAX_REMOTE_KEYS").toInt() != 0;
 }
 
 CloudLink::~CloudLink() {
@@ -1709,7 +1710,9 @@ void CloudLink::handle(const QByteArray& body) {
 	int type = GBoyFrames::typeOf(body);
 	if (type == GBoyFrames::TYPE_KEYS || type == GBoyFrames::TYPE_KEYS_LOCAL) {
 		int keys = GBoyFrames::intOf(body);
-		emit remoteKeys(keys);
+		// See m_remoteKeysEnabled: keep receiving the frame (the relay uses it
+		// to confirm the peer is alive) but never feed it to our own core.
+		emit remoteKeys(m_remoteKeysEnabled ? keys : 0);
 	} else if (type == GBoyFrames::TYPE_RESET) {
 		emit remoteReset();
 	}

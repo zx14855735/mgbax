@@ -154,6 +154,16 @@ private:
 	QString m_wsNonce;
 	GBoyFrames::Reader m_reader; // reused only inside the worker thread
 	int m_lastRxKeys = -1;
+	/**
+	 * GBoy/My Boy lobbies mirror the peer's held keys into the local core so
+	 * one person can drive both consoles. That is wrong for a real two-player
+	 * match: the peer's KEY frame is 1 RTT behind, so after the local key is
+	 * released its delayed "pressed" frame raises a SECOND press edge in the
+	 * local game. The two consoles then advance their menus a different number
+	 * of steps and end up picking different link modes ("伙伴做出了别的选择").
+	 * Default off = 分开控制. Set MGBAX_REMOTE_KEYS=1 to restore the old mode.
+	 */
+	bool m_remoteKeysEnabled = false;
 };
 
 }
