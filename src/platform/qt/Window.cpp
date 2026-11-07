@@ -35,6 +35,7 @@
 #include "Display.h"
 #include "DolphinConnector.h"
 #include "EnhancementsView.h"
+#include "ScriptedControl.h"
 #include "CoreController.h"
 #include "ForwarderView.h"
 #include "FrameView.h"
@@ -2271,6 +2272,14 @@ void Window::setController(CoreController* controller) {
 	// 正常使用不会设置这个变量，行为与手动点「联机大厅」完全一致。
 	startAutoCloudLink();
 #endif
+
+	// 测试钩子：MGBAX_SCRIPT_DIR 目录存在时，从 <dir>/keys 读按键掩码、
+	// 从 <dir>/shot 的序号触发截图，让 PC 端也能被脚本驱动（联机对局回归用）。
+	// 正常启动不设置这个变量，完全不参与。
+	if (!qEnvironmentVariableIsEmpty("MGBAX_SCRIPT_DIR")) {
+		m_scripted = new ScriptedControl(m_controller.get(), this);
+		m_scripted->start();
+	}
 
 	connect(this, &Window::shutdown, [this]() {
 		if (!m_controller) {

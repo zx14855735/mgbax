@@ -36,6 +36,7 @@ class CoreManager;
 class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
+class ScriptedControl;
 class EnhancementsView;
 class LinkView;
 class LobbyView;
@@ -206,6 +207,7 @@ private:
 
 	CoreManager* m_manager;
 	std::shared_ptr<CoreController> m_controller;
+	ScriptedControl* m_scripted = nullptr;
 	std::unique_ptr<AudioProcessor> m_audioProcessor;
 
 	std::unique_ptr<QGBA::Display> m_display;

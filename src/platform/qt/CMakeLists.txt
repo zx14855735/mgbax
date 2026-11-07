@@ -183,6 +183,7 @@ set(SOURCE_FILES
 	WebDavView.cpp
 	utils.cpp
 	Window.cpp
+	ScriptedControl.cpp
 	VFileDevice.cpp
 	VideoProxy.cpp
 	VideoView.cpp)
