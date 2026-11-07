@@ -233,6 +233,31 @@ static void logLinkDiag(struct GBA* gba) {
 	        state, brs01, brs23, rem, cb, status,
 	        (l0 >> 8) & 0xFF, (l1 >> 8) & 0xFF, (l2 >> 8) & 0xFF,
 	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF);
+	/* 联机房间按键码握手（overworld.c / link.c）：
+	 * sPlayerTradingStates[4] 每一端都保存所有玩家状态，0x82=UNK_2 表示已准备好，
+	 * sub_8087214() 要求所有玩家都是 0x82 才会切到 Task_StartWiredCableClubBattle。 */
+	uint16_t ts01 = GBAView16(gba->cpu, 0x03004A10u);
+	uint16_t ts23 = GBAView16(gba->cpu, 0x03004A12u);
+	uint32_t intercept = (uint32_t) GBAView16(gba->cpu, 0x03004A14u)
+	                     | ((uint32_t) GBAView16(gba->cpu, 0x03004A16u) << 16);
+	uint16_t hk = GBAView16(gba->cpu, 0x03004A2Cu);   // gHeldKeyCodeToSend
+	uint16_t lidcnt = GBAView16(gba->cpu, 0x03004A38u); // localId, fieldLinkPlayerCount
+	uint16_t sendCmd = GBAView16(gba->cpu, 0x03002AB0u);
+	uint16_t sendKey = GBAView16(gba->cpu, 0x03002AB2u);
+	uint16_t transferring = GBAView16(gba->cpu, 0x03004974u);
+	uint32_t cb2 = (uint32_t) GBAView16(gba->cpu, 0x020290E8u)
+	               | ((uint32_t) GBAView16(gba->cpu, 0x020290EAu) << 16);
+	uint16_t pk0 = GBAView16(gba->cpu, 0x030029E2u);
+	uint16_t pk1 = GBAView16(gba->cpu, 0x030029E4u);
+	uint16_t rc0 = GBAView16(gba->cpu, 0x03002A4Au);
+	uint16_t rc0k = GBAView16(gba->cpu, 0x03002A4Cu);
+	uint16_t rc1 = GBAView16(gba->cpu, 0x03002A5Au);
+	uint16_t rc1k = GBAView16(gba->cpu, 0x03002A5Cu);
+	SIO_LOG("[room] ts=%02X/%02X/%02X/%02X ic=%08X hk=%04X lid=%u cnt=%u"
+	        " send=%04X/%04X tr=%04X cb2=%08X pk=%04X/%04X rc=%04X:%04X,%04X:%04X",
+	        ts01 & 0xFF, ts01 >> 8, ts23 & 0xFF, ts23 >> 8,
+	        intercept, hk, lidcnt & 0xFF, lidcnt >> 8,
+	        sendCmd, sendKey, transferring, cb2, pk0, pk1, rc0, rc0k, rc1, rc1k);
 }
 
 /**

@@ -118,10 +118,10 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
 
     private final List<Candidate> peerCandidates = new ArrayList<>();
     private final List<Candidate> sendTargets = new ArrayList<>();
-    private Candidate peer;
+    private volatile Candidate peer;
     private String peerText = "";
-    private boolean havePeer;
-    private boolean connected;
+    private volatile boolean havePeer;
+    private volatile boolean connected;
     private volatile boolean closed;
     private boolean punching;
     private long lastProbe;
@@ -139,6 +139,15 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     private int ackSeq;
     private int ackBits;
     private boolean ackSeen;
+
+    /**
+     * 保护 {@link #outgoing} 的锁。{@code sio-bridge-out} 线程不断往里
+     * {@code addLast}，而 {@code sio-bridge-in} 线程的 {@code recv()→pump()}
+     * 既要遍历它做重传、又要重建它做确认——两条线程不串行化就会触发
+     * {@code ConcurrentModificationException}，桥接收线程每帧都抛、一个字节
+     * 也转发不出去，直连被看门狗判死、游戏报通信错误。
+     */
+    private final Object lock = new Object();
 
     private int rttUs;
 
@@ -368,11 +377,19 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
         if (closed || socket == null || payload == null || payload.length == 0) {
             return;
         }
-        Outgoing out = new Outgoing(nextSeq, payload, now());
-        nextSeq = (nextSeq + 1) & 0xFFFF;
-        outgoing.addLast(out);
-        if (havePeer) {
-            sendPacket(TYPE_DATA, out.seq, payload, peer);
+        int seq;
+        Candidate target;
+        // 与 recv→pump→flushRetransmits/noteAck 串行化，避免并发改 outgoing。
+        synchronized (lock) {
+            seq = nextSeq;
+            nextSeq = (nextSeq + 1) & 0xFFFF;
+            outgoing.addLast(new Outgoing(seq, payload, now()));
+            target = havePeer ? peer : null;
+        }
+        // 真正的 UDP 发送放到锁外：socket 发送本身线程安全，且不让 IO 阻塞
+        // 接收线程的重传/确认节奏。
+        if (target != null) {
+            sendPacket(TYPE_DATA, seq, payload, target);
         }
     }
 
@@ -573,46 +590,60 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     }
 
     private void noteAck(int ackSeq, int ackBits) {
-        if (outgoing.isEmpty()) {
-            return;
-        }
-        long now = now();
-        ArrayDeque<Outgoing> keep = new ArrayDeque<>();
-        while (!outgoing.isEmpty()) {
-            Outgoing out = outgoing.pollFirst();
-            int delta = (short) (ackSeq - out.seq);
-            boolean acked = delta >= 0;
-            if (!acked && -delta <= 32) {
-                acked = (ackBits & (1 << (-delta - 1))) != 0;
+        synchronized (lock) {
+            if (outgoing.isEmpty()) {
+                return;
             }
-            if (acked) {
-                if (out.firstSent > 0) {
-                    int sample = (int) ((now - out.firstSent) * 1000);
-                    rttUs = rttUs != 0 ? (rttUs * 3 + sample) / 4 : sample;
+            long now = now();
+            ArrayDeque<Outgoing> keep = new ArrayDeque<>();
+            while (!outgoing.isEmpty()) {
+                Outgoing out = outgoing.pollFirst();
+                int delta = (short) (ackSeq - out.seq);
+                boolean acked = delta >= 0;
+                if (!acked && -delta <= 32) {
+                    acked = (ackBits & (1 << (-delta - 1))) != 0;
                 }
-                continue;
+                if (acked) {
+                    if (out.firstSent > 0) {
+                        int sample = (int) ((now - out.firstSent) * 1000);
+                        rttUs = rttUs != 0 ? (rttUs * 3 + sample) / 4 : sample;
+                    }
+                    continue;
+                }
+                keep.addLast(out);
             }
-            keep.addLast(out);
+            outgoing.clear();
+            outgoing.addAll(keep);
         }
-        outgoing.clear();
-        outgoing.addAll(keep);
     }
 
     private void flushRetransmits(long now) {
-        if (outgoing.isEmpty() || !havePeer) {
-            return;
+        List<Outgoing> batch;
+        Candidate target;
+        // 取一份快照再遍历：遍历期间 sio-bridge-out 仍可能 addLast，快照保证
+        // 这里不会触发 ConcurrentModificationException。
+        synchronized (lock) {
+            if (outgoing.isEmpty() || !havePeer) {
+                return;
+            }
+            batch = new ArrayList<>(outgoing);
+            target = peer;
         }
         int rto = rttUs != 0 ? Math.max(20, (rttUs / 1000) * 3 / 2) : 50;
         rto = Math.min(rto, 200);
-        for (Outgoing out : outgoing) {
+        for (Outgoing out : batch) {
             if (now - out.lastSent < rto) {
                 continue;
             }
             if (++out.tries > 40) {
-                closed = true;
+                synchronized (lock) {
+                    closed = true;
+                }
                 return;
             }
-            sendPacket(TYPE_DATA, out.seq, out.payload, peer);
+            if (target != null) {
+                sendPacket(TYPE_DATA, out.seq, out.payload, target);
+            }
             out.lastSent = now;
             if (out.firstSent == 0) {
                 out.firstSent = now;

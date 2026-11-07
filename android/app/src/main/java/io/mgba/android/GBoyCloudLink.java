@@ -1341,14 +1341,25 @@ public final class GBoyCloudLink {
          * shared {@link #reader} belongs to the serve/expect layer, which
          * appends whatever recv() returns - pre-appending here would double
          * every frame.
+         *
+         * 用并发队列：active 从直连切回隧道后，sio-bridge-in 线程与
+         * sio-tunnel-keepalive 线程会并发调本对象的 recv()，两条线程同时
+         * poll/demux 同一个队列会在 ArrayDeque 上触发 CME。
          */
-        private final java.util.ArrayDeque<byte[]> inbox = new java.util.ArrayDeque<>();
+        private final java.util.concurrent.ConcurrentLinkedQueue<byte[]> inbox =
+                new java.util.concurrent.ConcurrentLinkedQueue<>();
         /**
          * 数据帧之外的控制标记（直连协商的 p/s/s2/s3）。单独排队，等
          * {@link #pollControl()} 取——它们不是联机线字节，混进 inbox 会让
          * 游戏收到垃圾。
          */
-        private final java.util.ArrayDeque<JSONObject> control = new java.util.ArrayDeque<>();
+        private final java.util.concurrent.ConcurrentLinkedQueue<JSONObject> control =
+                new java.util.concurrent.ConcurrentLinkedQueue<>();
+        /**
+         * 串行化 WebSocket 读取：同一时刻只允许一个线程调 sig.recv()，否则
+         * 两条线程抢同一个底层连接会互相打乱帧流。
+         */
+        private final Object recvLock = new Object();
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
@@ -1391,7 +1402,7 @@ public final class GBoyCloudLink {
 
         /** 取下一条控制标记，没有就返回 null。 */
         JSONObject pollControl() {
-            return control.pollFirst();
+            return control.poll();
         }
 
         @Override
@@ -1461,14 +1472,21 @@ public final class GBoyCloudLink {
                 if (remaining <= 0) {
                     return inbox.poll();
                 }
-                maybeHello();
                 String text;
-                try {
-                    text = sig.recv(Math.min(200, remaining));
-                } catch (IOException e) {
-                    closed = true;
-                    error = "服务器隧道连接中断：" + e.getMessage();
-                    return inbox.poll();
+                // 同一时刻只允许一个线程读 WebSocket：sio-bridge-in 与
+                // sio-tunnel-keepalive 都会调本方法，抢同一连接会打乱帧流。
+                synchronized (recvLock) {
+                    if (closed || sig.isClosed()) {
+                        break;
+                    }
+                    maybeHello();
+                    try {
+                        text = sig.recv(Math.min(200, remaining));
+                    } catch (IOException e) {
+                        closed = true;
+                        error = "服务器隧道连接中断：" + e.getMessage();
+                        return inbox.poll();
+                    }
                 }
                 if (text == null) {
                     continue;
@@ -1575,7 +1593,7 @@ public final class GBoyCloudLink {
                 try {
                     byte[] frame = fromTunnelPayload(marker.optString("d", ""));
                     if (frame != null && frame.length > 0) {
-                        inbox.add(frame);
+                        inbox.offer(frame);
                     }
                 } catch (Exception e) {
                     Log.w(TAG, "bad tunnel frame", e);
@@ -1591,7 +1609,7 @@ public final class GBoyCloudLink {
                 peerSeen = true;
             } else if (!kind.isEmpty()) {
                 // 直连协商标记：交给 tryDirectLink 处理，别当成联机线字节
-                control.addLast(marker);
+                control.offer(marker);
             }
         }
     }
