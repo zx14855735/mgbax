@@ -7099,4 +7099,130 @@ If it is set to OpenGL and you still see this, your graphics card or drivers may
         <translation>Meta</translation>
     </message>
 </context>
+<context>
+    <name>LobbyView</name>
+    <message>
+        <source>Account</source>
+        <translation>账号</translation>
+    </message>
+    <message>
+        <source>Email</source>
+        <translation>邮箱</translation>
+    </message>
+    <message>
+        <source>Password</source>
+        <translation>密码</translation>
+    </message>
+    <message>
+        <source>Mail code</source>
+        <translation>邮箱验证码</translation>
+    </message>
+    <message>
+        <source>Only for first-time registration</source>
+        <translation>仅首次注册需要</translation>
+    </message>
+    <message>
+        <source>Send code</source>
+        <translation>发送验证码</translation>
+    </message>
+    <message>
+        <source>Register / login (code)</source>
+        <translation>验证码注册/登录</translation>
+    </message>
+    <message>
+        <source>Sign in</source>
+        <translation>登录</translation>
+    </message>
+    <message>
+        <source>Room</source>
+        <translation>房间</translation>
+    </message>
+    <message>
+        <source>Room code</source>
+        <translation>房间号</translation>
+    </message>
+    <message>
+        <source>Empty = create; also accepts NODE:/NODE2:/tcp:</source>
+        <translation>留空=创建；也可填 NODE:/NODE2:/tcp:</translation>
+    </message>
+    <message>
+        <source>Create</source>
+        <translation>云端创建</translation>
+    </message>
+    <message>
+        <source>Join</source>
+        <translation>云端加入</translation>
+    </message>
+    <message>
+        <source>Disconnect</source>
+        <translation>断开</translation>
+    </message>
+    <message>
+        <source>Send reset</source>
+        <translation>发送复位</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>关闭</translation>
+    </message>
+</context>
+<context>
+    <name>LinkView</name>
+    <message>
+        <source>Host room (1P)</source>
+        <translation>创建房间（1P）</translation>
+    </message>
+    <message>
+        <source>Join room (2P)</source>
+        <translation>加入房间（2P）</translation>
+    </message>
+    <message>
+        <source>Host IP</source>
+        <translation>主机 IP</translation>
+    </message>
+    <message>
+        <source>e.g. 192.168.1.23</source>
+        <translation>例如 192.168.1.23</translation>
+    </message>
+    <message>
+        <source>Port</source>
+        <translation>端口</translation>
+    </message>
+    <message>
+        <source>Precise SIO link cable over LAN (port 18765). Same protocol as the Android/iOS LAN mode; supports in-game battles and trades.</source>
+        <translation>局域网精确 SIO 联机线（端口 18765），与安卓/iOS 局域网模式同协议，支持游戏内对战与交换。</translation>
+    </message>
+    <message>
+        <source>LAN precise SIO cable (instead of WiFi keys merge)</source>
+        <translation>局域网精确 SIO 联机线（区别于 WiFi 合并按键）</translation>
+    </message>
+    <message>
+        <source>Open a game first, then start the link.</source>
+        <translation>请先打开游戏，再开始联机。</translation>
+    </message>
+    <message>
+        <source>Start</source>
+        <translation>开始</translation>
+    </message>
+    <message>
+        <source>Disconnect</source>
+        <translation>断开</translation>
+    </message>
+    <message>
+        <source>Send reset</source>
+        <translation>发送复位</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>关闭</translation>
+    </message>
+    <message>
+        <source>Open a game first.</source>
+        <translation>请先打开游戏。</translation>
+    </message>
+    <message>
+        <source>WiFi link only supports GBA games.</source>
+        <translation>WiFi 联机只支持 GBA 游戏。</translation>
+    </message>
+</context>
 </TS>
