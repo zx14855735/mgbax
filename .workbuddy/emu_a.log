@@ -3,18 +3,18 @@ INFO         | Graphics backend: gfxstream
 INFO         | Found systemPath D:\Android\Sdk\system-images\android-34\google_apis\x86_64\
 INFO         | Increasing RAM size to 2560MB
 INFO         | IPv4 server found: 172.18.0.2
-INFO         | Ignore IPv6 address: c8c9:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: c8c9:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: c8c9:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: b8cf:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: b8cf:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: b8cf:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 68da:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 68da:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 68da:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 60e0:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 60e0:db47:bb01:0:50bd:db47:bb01:0
-INFO         | Ignore IPv6 address: 60e0:db47:bb01:0:50bd:db47:bb01:0
+INFO         | Ignore IPv6 address: f8ef:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: f8ef:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: f8ef:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: e8f5:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: e8f5:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: e8f5:1a93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9800:1b93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9800:1b93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9800:1b93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9006:1b93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9006:1b93:1b02:0:80e3:1a93:1b02:0
+INFO         | Ignore IPv6 address: 9006:1b93:1b02:0:80e3:1a93:1b02:0
 INFO         | Guest GLES Driver: Auto (ext controls)
 INFO         | emuglConfig_init: vulkan_mode_selected:swiftshader gles_mode_selected:swiftshader
 INFO         | Checking system compatibility:
@@ -26,7 +26,7 @@ INFO         |   Checking: hasSufficientHwGpu
 INFO         |      Ok: Hardware GPU compatibility checks are not required
 INFO         |   Checking: hasSufficientDiskSpace
 INFO         |      Ok: Disk space requirements to run avd: `mgba_test` are met
-INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 37032
+INFO         | Storing crashdata in: D:\avd-temp\\AndroidEmulator\emu-crash-37.2.12.db, detection is enabled for process: 42744
 INFO         | Initializing gfxstream backend
 INFO         | startOpenglesRendererImpl: gpu info
 INFO         | GPU #1
@@ -96,9 +96,9 @@ INFO         |   androidboot.vbmeta.hash_alg=sha256
 INFO         |   androidboot.vbmeta.size=6656
 INFO         |   androidboot.veritymode=enforcing
 AEHD is operational
-netsim I 11-06 17:26:19.643 netsimd.rs:375 - netsim startup
-netsim I 11-06 17:26:19.646 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
-netsim I 11-06 17:26:19.646 netsimd.rs:386 - Args {
+netsim I 11-06 20:00:01.208 netsimd.rs:375 - netsim startup
+netsim I 11-06 20:00:01.209 netsimd.rs:384 - Artifacts: "D:\\avd-temp\\netsimd"
+netsim I 11-06 20:00:01.209 netsimd.rs:386 - Args {
     fd_startup_str: None,
     connector_instance: None,
     instance: None,
@@ -137,10 +137,10 @@ host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 host doesn't support requested feature: CPUID.01H:ECX.xsave [bit 26]
 host doesn't support requested feature: CPUID.01H:ECX.avx [bit 28]
 INFO         | Monitoring duration of emulator setup.
-INFO         | Activated packet streamer for bluetooth emulation
 INFO         | Successfully initialized netsim WiFi
+INFO         | Activated packet streamer for bluetooth emulation
 INFO         | Setting display: 0 configuration to: 480x800, dpi: 240x240 
 INFO         | setDisplayActiveConfig: id:0, 480x800
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
-INFO         | Boot completed in 29202 ms
+INFO         | Boot completed in 25427 ms

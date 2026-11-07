@@ -221,6 +221,9 @@ static void serviceLink(struct SioLink* sio) {
 		if (player != 0 && !sio->sioSlaveArmed && netLinkPeerPending(sio->link) > 0) {
 			struct mTiming* timing = coreTiming(sio);
 			if (timing) {
+				if (mTimingIsScheduled(timing, &sio->sioSlaveDone)) {
+					SIO_LOG("slave DOUBLE-SCHEDULE caught (armed=%d)", sio->sioSlaveArmed);
+				}
 				mTimingSchedule(timing, &sio->sioSlaveDone, sio->sioSlavePeriod);
 				sio->sioSlaveArmed = true;
 			}
@@ -280,7 +283,6 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	struct SioLink* sio = (struct SioLink*) user;
 	sio->sioSlaveArmed = false;
 	if (!sio->link || !sio->linkAttached || !sio->core) {
-		SIO_LOG("slave event: dead bail link=%p attached=%d", (void*) sio->link, sio->linkAttached);
 		return;
 	}
 	if (sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -288,7 +290,6 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	if (gba->sio.mode != GBA_SIO_MULTI) {
-		SIO_LOG("slave event: mode=%d not multi, chain stop", (int) gba->sio.mode);
 		return;
 	}
 	int me = netLinkPlayer(sio->link);
@@ -307,6 +308,15 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		 * Finishing early would feed the game an empty slot and desync both
 		 * round counters. */
 		++sio->sioTimeouts;
+		if ((sio->sioTimeouts & 0xFF) == 0) {
+			int qCount = 0;
+			unsigned qHead = 0;
+			netLinkPeerHeadInfo(sio->link, &qCount, &qHead);
+			SIO_LOG("slave miss t=%u link=%p idx=%u q=%d head=%u state=%d mode=%d",
+			        (unsigned) mTimingCurrentTime(timing), (void*) sio->link,
+			        (unsigned) sio->sioIndex, qCount, qHead,
+			        netLinkState(sio->link), (int) gba->sio.mode);
+		}
 		if (timing) {
 			mTimingSchedule(timing, &sio->sioSlaveDone, 2048);
 			sio->sioSlaveArmed = true;
@@ -336,7 +346,6 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	sio->sioHasRemote = true;
 	sio->sioRemote = remote;
 	completeMultiTransfer(sio, remote, true, cyclesLate);
-	SIO_LOG("slave round idx=%u own=%04X -> push", (unsigned) sio->sioIndex, own);
 	/* Push this round's own word back, tagged with the host's round number:
 	 * the host's strict (want == got) matching then always lines up. */
 	struct mTiming* timing2 = coreTiming(sio);
@@ -826,6 +835,13 @@ int sioLinkPeerPending(const struct SioLink* sio) {
 		return 0;
 	}
 	return netLinkPeerPending(sio->link);
+}
+
+const void* sioLinkHandle(const struct SioLink* sio) {
+	if (!sio) {
+		return NULL;
+	}
+	return sio->link;
 }
 
 bool sioLinkHost(struct SioLink* sio, int port) {

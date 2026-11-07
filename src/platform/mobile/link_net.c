@@ -1090,6 +1090,26 @@ int netLinkPeerPending(struct NetLink* link) {
 	return n;
 }
 
+void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex) {
+	if (count) {
+		*count = 0;
+	}
+	if (headIndex) {
+		*headIndex = 0;
+	}
+	if (!link) {
+		return;
+	}
+	pthread_mutex_lock(&link->mu);
+	if (count) {
+		*count = link->peerCount;
+	}
+	if (headIndex && link->peerCount > 0) {
+		*headIndex = link->peerQ[link->peerHead].index;
+	}
+	pthread_mutex_unlock(&link->mu);
+}
+
 void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {
 	if (stale) {
 		*stale = 0;

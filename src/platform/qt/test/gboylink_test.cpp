@@ -49,6 +49,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
+#include <QTime>
 #include <QTimer>
 #include <QWaitCondition>
 
@@ -607,6 +608,7 @@ private:
 
 	void reader(intptr_t from, intptr_t to) {
 		uint8_t buf[4096];
+		int seen = 0;
 		while (true) {
 #ifdef _WIN32
 			int n = recv(static_cast<SOCKET>(from), reinterpret_cast<char*>(buf), sizeof(buf), 0);
@@ -615,6 +617,15 @@ private:
 #endif
 			if (n <= 0) {
 				return;
+			}
+			++seen;
+			// packet-level trace: first 40 chunks per direction, then any
+			// PUSH-looking packet (magic "MBL1" at offset 0, type at 4)
+			if (seen <= 40 || (n >= 6 && buf[0] == 'M' && buf[1] == 'B' && buf[2] == 'L' && buf[3] == '1')) {
+				uint16_t type = n >= 6 ? (uint16_t)(buf[4] | (buf[5] << 8)) : 0;
+				qInfo().noquote() << QString("proxy %1 %2->%3 #%4 %5B type=%6")
+				                     .arg(QTime::currentTime().toString("hh:mm:ss.zzz"))
+				                     .arg(from).arg(to).arg(seen).arg(n).arg(type);
 			}
 			QMutexLocker lock(&m_mu);
 			m_queue.push_back({QDateTime::currentMSecsSinceEpoch() + quint64(m_delay), from, to,
@@ -651,6 +662,7 @@ private:
 				m_queue.removeAt(due);
 			}
 			size_t off = 0;
+			bool sent = true;
 			while (off < size_t(chunk.size())) {
 #ifdef _WIN32
 				int n = send(static_cast<SOCKET>(to), chunk.constData() + off,
@@ -659,9 +671,17 @@ private:
 				ssize_t n = send(static_cast<int>(to), chunk.constData() + off, chunk.size() - off, 0);
 #endif
 				if (n <= 0) {
-					return;
+					sent = false;
+					break;
 				}
 				off += size_t(n);
+			}
+			if (!sent || (chunk.size() >= 6 && chunk[0] == 'M' && chunk[1] == 'B'
+			              && chunk[2] == 'L' && chunk[3] == '1' && chunk[4] == 5)) {
+				uint16_t type = chunk.size() >= 6 ? (uint16_t)(chunk[4] | (chunk[5] << 8)) : 0;
+				qInfo().noquote() << QString("proxy SENT %1 to=%2 %3B type=%4 ok=%5")
+				                     .arg(QTime::currentTime().toString("hh:mm:ss.zzz"))
+				                     .arg(to).arg(chunk.size()).arg(type).arg(sent ? 1 : 0);
 			}
 		}
 	}
@@ -831,15 +851,22 @@ static int lanSioLatTest(const QString& rom, int delayMs) {
 		// for the master's next round (2048-cycle retries), so frame counts
 		// are meaningless under latency - only `stop` ends this loop.
 		while (!stop.load(std::memory_order_relaxed)) {
+			qint64 frameStart = QDateTime::currentMSecsSinceEpoch();
 			sioLinkPump(links[i], cores[i]);
-			if (f % 25 == 5) {
+			qint64 pumpMs = QDateTime::currentMSecsSinceEpoch() - frameStart;
+			bool wrote = f % 25 == 5;
+			if (wrote) {
 				// the game starts a MULTI round periodically
 				GBASIOWriteSIOCNT(&gba->sio, 0x600F);
 			}
+			qint64 writeMs = QDateTime::currentMSecsSinceEpoch() - frameStart - pumpMs;
 			cores[i]->runFrame(cores[i]);
+			qint64 frameMs = QDateTime::currentMSecsSinceEpoch() - frameStart;
 			++f;
-			if (f % 2000 == 0) {
-				qInfo().noquote() << QString("worker%1 f=%2 mode=%3").arg(i).arg(f).arg((int) gba->sio.mode);
+			if (frameMs > 400) {
+				qInfo().noquote() << QString("worker%1 SLOW f=%2 pump=%3 write=%4 frame=%5ms mode=%6")
+				                     .arg(i).arg(f).arg(pumpMs).arg(writeMs)
+				                     .arg(frameMs - pumpMs - writeMs).arg((int) gba->sio.mode);
 			}
 		}
 		qInfo().noquote() << QString("worker%1 EXIT f=%2").arg(i).arg(f);
@@ -864,10 +891,12 @@ static int lanSioLatTest(const QString& rom, int delayMs) {
 	uint32_t stale0 = 0, drops0 = 0, stale1 = 0, drops1 = 0;
 	sioLinkPeerStats(links[0], &stale0, &drops0);
 	sioLinkPeerStats(links[1], &stale1, &drops1);
-	qInfo().noquote() << QString("rtt master=%1us slave=%2us; stale m=%3 s=%4; drops m=%5 s=%6; pending m=%7 s=%8")
+	qInfo().noquote() << QString("rtt master=%1us slave=%2us; stale m=%3 s=%4; drops m=%5 s=%6; pending m=%7 s=%8; link m=%9 s=%10")
 	                     .arg(sioLinkRttUs(links[0])).arg(sioLinkRttUs(links[1]))
 	                     .arg(stale0).arg(stale1).arg(drops0).arg(drops1)
-	                     .arg(sioLinkPeerPending(links[0])).arg(sioLinkPeerPending(links[1]));
+	                     .arg(sioLinkPeerPending(links[0])).arg(sioLinkPeerPending(links[1]))
+	                     .arg((quintptr) sioLinkHandle(links[0]), 0, 16)
+	                     .arg((quintptr) sioLinkHandle(links[1]), 0, 16);
 	qInfo().noquote() << QString("lat=%1ms master SIOMULTI1=%2 (want BEEF), slave SIOMULTI0=%3 (want 1234)")
 	                     .arg(delayMs * 2).arg(m1, 4, 16, QChar('0')).arg(m0, 4, 16, QChar('0'));
 	if (m1 != 0xBEEF) {
@@ -1485,6 +1514,8 @@ static int audioFfTest() {
 
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 	QStringList args = app.arguments();
 	if (args.size() < 2) {
 		qInfo() << "usage: test-gboylink wifi [rom] | cloud <user> <pass> [room] [rom]"
