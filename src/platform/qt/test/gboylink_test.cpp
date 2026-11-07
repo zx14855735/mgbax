@@ -29,6 +29,7 @@
 #include "audio_stretch.h"
 #ifdef BUILD_QT_CLOUD
 #include "CloudLink.h"
+#include "DirectLink.h"
 #include "GbCloud.h"
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
@@ -1512,6 +1513,89 @@ static int audioFfTest() {
 	return failures;
 }
 
+/**
+ * 直连通道自测：两个 DirectLink 在同一进程里互相打洞（用 127.0.0.1 当候选，
+ * 绕开路由器回环限制），验证可达性判定、可靠层和时延。
+ */
+static int directLinkTest() {
+	fprintf(stderr, "DIRECT: binding two peers\n");
+	DirectLink a;
+	DirectLink b;
+	QString error;
+	if (!a.bind(&error) || !b.bind(&error)) {
+		fprintf(stderr, "DIRECT: bind failed %s\n", qPrintable(error));
+		return 1;
+	}
+	QStringList candA = a.candidates();
+	QStringList candB = b.candidates();
+	fprintf(stderr, "A candidates: %s (port %u)\n", qPrintable(candA.join(", ")), unsigned(a.localPort()));
+	fprintf(stderr, "B candidates: %s (port %u)\n", qPrintable(candB.join(", ")), unsigned(b.localPort()));
+
+	a.setPeerCandidates({QStringLiteral("127.0.0.1:%1").arg(b.localPort())});
+	b.setPeerCandidates({QStringLiteral("127.0.0.1:%1").arg(a.localPort())});
+	a.startPunching();
+	b.startPunching();
+
+	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + 5000;
+	while (QDateTime::currentMSecsSinceEpoch() < deadline && !(a.connected() && b.connected())) {
+		a.pump(5);
+		b.pump(5);
+	}
+	if (!a.connected() || !b.connected()) {
+		fprintf(stderr, "DIRECT: FAIL - punch incomplete a=%d b=%d\n", a.connected(), b.connected());
+		return 1;
+	}
+	fprintf(stderr, "DIRECT: punched in %lld ms (A rtt %.1f ms, peer %s)\n",
+	        (long long) (QDateTime::currentMSecsSinceEpoch() - a.punchStartMs()),
+	        a.rttUs() / 1000.0, qPrintable(a.peerText()));
+
+	int failures = 0;
+	const int rounds = 200;
+	qint64 worstUs = 0;
+	qint64 totalUs = 0;
+	int received = 0;
+	for (int i = 0; i < rounds; ++i) {
+		QByteArray payload = QByteArray("MBL") + QByteArray::number(i).rightJustified(4, '0');
+		payload.append(QByteArray(16 - payload.size(), '\0'));
+		qint64 t0 = QDateTime::currentMSecsSinceEpoch();
+		a.send(payload);
+		qint64 roundDeadline = t0 + 500;
+		bool got = false;
+		while (QDateTime::currentMSecsSinceEpoch() < roundDeadline) {
+			QByteArray in;
+			if (b.recv(&in, 5)) {
+				if (in.left(7) == payload.left(7)) {
+					got = true;
+					break;
+				}
+				continue;
+			}
+			if (!a.connected() || !b.connected()) {
+				break;
+			}
+		}
+		if (got) {
+			qint64 us = (QDateTime::currentMSecsSinceEpoch() - t0) * 1000;
+			totalUs += us;
+			worstUs = qMax(worstUs, us);
+			++received;
+		}
+	}
+	fprintf(stderr, "DIRECT: %d/%d payloads, avg %lld us, worst %lld us, rtt %d us\n",
+	        received, rounds, received ? (long long) (totalUs / received) : 0LL,
+	        (long long) worstUs, a.rttUs());
+	if (received < rounds) {
+		fprintf(stderr, "DIRECT: FAIL - lost payloads\n");
+		++failures;
+	}
+	if (a.rttUs() > 20000) {
+		fprintf(stderr, "DIRECT: FAIL - loopback rtt too high\n");
+		++failures;
+	}
+	fprintf(stderr, "DIRECT: %s\n", failures ? "FAIL" : "PASS");
+	return failures;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -1530,6 +1614,9 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("webdav")) {
 		return webdavTest();
+	}
+	if (mode == QStringLiteral("direct2")) {
+		return directLinkTest();
 	}
 	if (mode == QStringLiteral("hold")) {
 		return holdTest();

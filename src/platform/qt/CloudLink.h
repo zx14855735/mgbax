@@ -86,6 +86,9 @@ private:
 	                           bool creator, qint64 windowMs);
 	/** Relay unreachable: serve the match over the signalling websocket. */
 	void runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost);
+	/** 隧道配对上后，尝试大厅信令之外的直连（P2P）；失败返回 nullptr。 */
+	ILink* tryDirectLink(GbCloud::Session* sig, const QString& token, Room* room,
+	                     ILink* tunnel, bool asHost);
 	void cleanupTunnel();
 	/** 分开控制：pipe the native SIO link bytes through the tunnel. */
 	void startSioBridge(ILink* link, bool asHost);

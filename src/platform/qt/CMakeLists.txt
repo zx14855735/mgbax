@@ -275,11 +275,11 @@ endif()
 if(TARGET ${QT}::WebSockets)
 	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
 	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
-	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp KcpChannel.cpp LobbyView.cpp)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp KcpChannel.cpp LobbyView.cpp)
 	list(APPEND UI_FILES LobbyView.ui)
 
 	# Console E2E harness: wifi round trip + gboy.top signalling self test.
-	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
 	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets ${BINARY_NAME})
 	if(WIN32)
 		target_link_libraries(test-gboylink ws2_32)

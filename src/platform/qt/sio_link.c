@@ -18,6 +18,8 @@
 #include <mgba/internal/gba/io.h>
 #include <mgba-util/common.h>
 
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -28,7 +30,41 @@
 #include <winsock2.h>
 #endif
 
-#define SIO_LOG(...) do { mLOG(GBA_SIO, INFO, __VA_ARGS__); } while (0)
+/**
+ * 桌面版是 GUI 子系统程序，mGBA 的日志走 Qt 日志窗口、stderr 抓不到，
+ * 实机排查联机时序时需要能落到文件：MGBAX_SIO_LOG=1 时同一条轨迹追加到
+ * %TEMP%/mgba_sio.log（每次打开-关闭，避免崩溃丢尾）。
+ */
+static void sioLogFile(const char* fmt, ...) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		enabled = getenv("MGBAX_SIO_LOG") ? 1 : 0;
+	}
+	if (!enabled) {
+		return;
+	}
+	const char* tmp = getenv("TEMP");
+	if (!tmp) {
+		tmp = getenv("TMP");
+	}
+	if (!tmp) {
+		tmp = ".";
+	}
+	char path[512];
+	snprintf(path, sizeof(path), "%s%cmgba_sio.log", tmp, '/');
+	FILE* f = fopen(path, "a");
+	if (!f) {
+		return;
+	}
+	va_list args;
+	va_start(args, fmt);
+	vfprintf(f, fmt, args);
+	va_end(args);
+	fputc('\n', f);
+	fclose(f);
+}
+
+#define SIO_LOG(...) do { mLOG(GBA_SIO, INFO, __VA_ARGS__); sioLogFile(__VA_ARGS__); } while (0)
 
 static void applyLinkTerminalBits(struct SioLink* sio);
 static void serviceLink(struct SioLink* sio);

@@ -8,6 +8,7 @@
 
 #include "GbCloud.h"
 #include "GBoyFrames.h"
+#include "DirectLink.h"
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
 
@@ -435,6 +436,7 @@ private:
 
 	/** Parses one signalling push: tunnel data into the reader, greets answered. */
 	void demux(const QString& text) {
+
 		const auto objects = GbCloud::jsonObjects(text);
 		for (const QJsonObject& object : objects) {
 			// 服务器拒收我们的推流（关键词过滤/长度限制/限流）。这一帧就丢了，
@@ -460,9 +462,10 @@ private:
 				continue; // other pushes do not matter once data is flowing
 			}
 			QString message = object.value("message").toString();
-			// 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉
+			// 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉；
+			// 直连候选交换/切换标记同样只有短键名（"w":"p"/"s"…）。
 			if (!message.contains(QStringLiteral("gboy_ws"))
-			    && !message.contains(QStringLiteral("\"w\":\"f\""))) {
+			    && !message.contains(QStringLiteral("\"w\":\""))) {
 				continue;
 			}
 			bool ok = false;
@@ -485,8 +488,12 @@ private:
 			if (from.isEmpty()) {
 				from = marker.value(QStringLiteral("o")).toString();
 			}
-			if (!from.isEmpty() && from == m_nonce) {
+			if (!from.isEmpty() && (from == m_nonce || m_nonce.startsWith(from))) {
 				continue; // the server echoed our own push back to us
+			}
+			if (kind != QStringLiteral("f")) {
+				GbCloud::debugLog(QStringLiteral("[mark] me=%1 kind=%2 from=%3 tagged=%4 room=%5")
+				                          .arg(m_nonce, kind, from, tagged, m_roomTag));
 			}
 			// 对端标记带 "c":1 说明它也是新版：能解十六进制、也认短键名信封，
 			// 之后改发 hex 短信封。老版本没有这个键，保持 base64 长信封。
@@ -508,9 +515,38 @@ private:
 				}
 			} else if (kind == QStringLiteral("accept")) {
 				m_peerSeen = true;
+			} else if (!kind.isEmpty()) {
+				// 直连协商标记（候选地址 / 切换指令）：交给工作线程处理。
+				GbCloud::debugLog(QStringLiteral("[demux] w=%1 o=%2 me=%3").arg(kind, from, m_nonce));
+				m_control.append(qMakePair(kind, marker));
 			}
 		}
 	}
+
+public:
+	/**
+	 * 发一条自定义短键名标记（直连候选交换走这里）。载荷必须 ≤100 字符，
+	 * 否则大厅服务器整条拒收。
+	 */
+	void sendRawMarker(const QJsonObject& marker) {
+		if (!m_sig || !m_sig->isOpen()) {
+			return;
+		}
+		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
+	}
+
+	/** 取一条待处理的直连协商标记；没有则返回 false。 */
+	bool takeControl(QString* kind, QJsonObject* payload) {
+		if (m_control.isEmpty()) {
+			return false;
+		}
+		const auto pair = m_control.dequeue();
+		*kind = pair.first;
+		*payload = pair.second;
+		return true;
+	}
+
+private:
 
 	void sendMarker(const QString& kind) {
 		QJsonObject marker;
@@ -533,6 +569,7 @@ private:
 	QString m_roomTag;
 	QString m_nonce;
 	QQueue<QByteArray> m_inbox;
+	QQueue<QPair<QString, QJsonObject>> m_control;
 	bool m_closed = false;
 	bool m_peerSeen = false;
 	bool m_peerCompact = false;
@@ -1011,6 +1048,182 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
  * 自己的画面；两台设备的游戏通过 native 联机线驱动（sioLinkHost/Join，本机
  * TCP 环回 + 这条隧道透传字节）互联，游戏内交换/对战走真正的 SIO。
  */
+/**
+ * 直连加速（P2P）：隧道已经配对上之后，先花几秒试试两个玩家之间能不能
+ * 直接通 UDP，而不是把每个字节都绕一趟 gboy.top。
+ *
+ * 为什么要做：实测大厅隧道单向 89 ms、一个 SIO 回合（1P 发字 → 2P 回字）
+ * 165 ms（`tunnel_rtt.py`）。联机线是严格一问一答，165 ms 的回合直接把
+ * 游戏变成慢放。直连把服务器这一跳砍掉。
+ *
+ * 时序（双方都在新版才走）：
+ *   - 各自把候选地址（网卡 + STUN 公网映射）用 "w":"p" 标记发给对端；
+ *   - 收到对方候选后开始打洞（每 100 ms 一个 PROBE，收到 RESP 即双向可达）；
+ *   - 1P 打通并且 RTT 明显好于隧道 → 发 "s"(switch)；2P 收到且自身也通 →
+ *     回 "s2" 并切换；1P 收到 "s2" 切换。拿不到 "s2" 就发 "s3" 放弃，
+ *     留在隧道里（老版本对端根本不会回 "p"，2.5 秒内直接放弃）。
+ */
+ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Room* room,
+                                ILink* tunnelLink, bool asHost) {
+	Q_UNUSED(sig);
+	Q_UNUSED(token);
+	// 协商是对称的：谁先打通谁先发 s，另一方打通后补 s2。
+	Q_UNUSED(asHost);
+	WsLink* tunnel = dynamic_cast<WsLink*>(tunnelLink);
+	if (!tunnel) {
+		return nullptr;
+	}
+	DirectLink* direct = new DirectLink();
+	QString error;
+	if (!direct->bind(&error)) {
+		delete direct;
+		return nullptr;
+	}
+	const QStringList mine = direct->candidates();
+	const QString tag = m_wsNonce.left(4);
+	GbCloud::debugLog(QStringLiteral("[direct] me=%1 候选 %2 / 本地端口 %3")
+	                          .arg(m_wsNonce, mine.join(QLatin1Char(',')))
+	                          .arg(direct->localPort()));
+	status(QStringLiteral("正在协商直连加速（P2P，避开服务器中转）…"));
+
+	auto sendMarker = [&](const QString& kind, const QString& payload) {
+		QJsonObject marker;
+		marker.insert(QStringLiteral("w"), kind);
+		marker.insert(QStringLiteral("o"), tag);
+		if (!room->roomId.isEmpty()) {
+			marker.insert(QStringLiteral("r"), room->roomId);
+		}
+		if (!payload.isEmpty()) {
+			marker.insert(QStringLiteral("a"), payload);
+		}
+		if (wsText(marker).size() > 94) {
+			// 服务器对聊天内容有 100 字符上限：退到最短信封
+			marker.remove(QStringLiteral("r"));
+		}
+		tunnel->sendRawMarker(marker);
+	};
+
+	qint64 started = QDateTime::currentMSecsSinceEpoch();
+	qint64 deadline = started + 9000;
+	qint64 lastAnnounce = 0;
+	qint64 lastSwitch = 0;
+	qint64 connectedAt = 0;
+	int announceCount = 0;
+	bool peerCandidates = false;
+	bool peerWants = false;    // 对端发过 s：它已经打通，愿意切过来
+	bool peerAgreed = false;   // 对端发过 s2：它已经收到我们的 s
+	bool switchSent = false;
+	bool approved = false;
+	bool aborted = false;
+	QByteArray discard;
+	while (!m_closed.load(std::memory_order_relaxed)) {
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (now >= deadline) {
+			break;
+		}
+		tunnel->recv(&discard, 20);
+		QString kind;
+		QJsonObject marker;
+		while (tunnel->takeControl(&kind, &marker)) {
+			if (kind == QStringLiteral("p")) {
+				if (!peerCandidates) {
+					QStringList peer = marker.value(QStringLiteral("a")).toString()
+					                       .split(QLatin1Char(','), Qt::SkipEmptyParts);
+					if (!peer.isEmpty()) {
+						GbCloud::debugLog(QStringLiteral("[direct] me=%1 对端候选 %2")
+						                          .arg(m_wsNonce, peer.join(QLatin1Char(','))));
+						direct->setPeerCandidates(peer);
+						direct->startPunching();
+						peerCandidates = true;
+					}
+				}
+			} else if (kind == QStringLiteral("s")) {
+				// 对端已打通并请求切过来；我们打通了就立刻答应
+				peerWants = true;
+				if (direct->connected()) {
+					sendMarker(QStringLiteral("s2"), QString());
+				}
+			} else if (kind == QStringLiteral("s2")) {
+				peerAgreed = true;
+			} else if (kind == QStringLiteral("s3")) {
+				aborted = true;
+			}
+		}
+		if (aborted) {
+			break;
+		}
+		if (!peerCandidates && now - started > 6000) {
+			// 对端是老版本，不认识直连协商：不要拖住开局
+			aborted = true;
+			break;
+		}
+		// 候选公告一直发到决定切换为止：单条 send_message 可能因为对端当时
+		// 正在做 STUN（几百毫秒不读 socket）而错过，只发一次就会双方僵住。
+		// 每轮把候选顺序轮换一位，一是内容不同避免被服务器当重复消息丢掉，
+		// 二是让不同网段优先级轮流试一遍（打洞对所有候选并发，顺序只影响取舍）。
+		if (now - started <= 4000 && now - lastAnnounce >= 600) {
+			lastAnnounce = now;
+			QStringList kept = mine.mid(0, 3);
+			if (kept.size() > 1) {
+				int rot = announceCount++ % kept.size();
+				for (int i = 0; i < rot; i++) {
+					kept.append(kept.takeFirst());
+				}
+			}
+			sendMarker(QStringLiteral("p"), kept.join(QLatin1Char(',')));
+		}
+		if (direct->connected()) {
+			if (!connectedAt) {
+				connectedAt = now;
+			}
+			// 双方都连通、且至少有一方表态过，才真切换：
+			// 对称握手，任一条消息丢了下一轮还能补上。
+			if ((peerWants || peerAgreed) && now - connectedAt >= 150) {
+				approved = true;
+			}
+			// RTT 反而更差就留在隧道（例如一端挂着绕远的 VPN）
+			bool better = direct->rttUs() == 0 || direct->rttUs() < 150000;
+			if (!approved && better && now - lastSwitch >= 500) {
+				lastSwitch = now;
+				switchSent = true;
+				sendMarker(QStringLiteral("s"), QString());
+			}
+		}
+		if (approved) {
+			break;
+		}
+		direct->pump(peerCandidates ? 20 : 5);
+	}
+	if (!approved) {
+		GbCloud::debugLog(QStringLiteral("[direct] me=%1 放弃直连：peerCandidates=%2 connected=%3 switchSent=%4 peerWants=%5 peerAgreed=%6 aborted=%7")
+		                          .arg(m_wsNonce).arg(peerCandidates).arg(direct->connected())
+		                          .arg(switchSent).arg(peerWants).arg(peerAgreed).arg(aborted));
+		if (switchSent) {
+			sendMarker(QStringLiteral("s3"), QString());
+		}
+		direct->close();
+		delete direct;
+		return nullptr;
+	}
+	if (!approved) {
+		GbCloud::debugLog(QStringLiteral("[direct] me=%1 放弃直连：peerCandidates=%2 connected=%3 switchSent=%4 aborted=%5")
+		                          .arg(m_wsNonce).arg(peerCandidates).arg(direct->connected())
+		                          .arg(switchSent).arg(aborted));
+		if (asHost && switchSent) {
+			sendMarker(QStringLiteral("s3"), QString());
+		}
+		direct->close();
+		delete direct;
+		return nullptr;
+	}
+	int rttMs = (direct->rttUs() + 500) / 1000;
+	status(QStringLiteral("直连加速已启用（P2P %1，RTT %2 ms）\n")
+	               .arg(direct->peerText())
+	               .arg(rttMs)
+	       + QStringLiteral("数据不再经过服务器中转，延迟比隧道低一个数量级"));
+	return direct;
+}
+
 void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
 	const QString tag = room->roomId;
 	status(QStringLiteral("正在通过服务器隧道等待对方进入（跨网可联）…"));
@@ -1048,7 +1261,16 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		fail(detail);
 		return;
 	}
-	startSioBridge(link, asHost);
+	ILink* chosen = link;
+	DirectLink* direct = static_cast<DirectLink*>(tryDirectLink(sig, token, room, link, asHost));
+	if (direct) {
+		chosen = direct;
+	}
+	startSioBridge(chosen, asHost);
+	if (direct) {
+		direct->close();
+		delete direct;
+	}
 	cleanupTunnel();
 	m_tunnelUp = false;
 }
@@ -1132,7 +1354,15 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 	       + QStringLiteral("游戏内联机（交换/对战）走联机线\n")
 	       + QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	emit connected(asHost);
-	// 单线程泵：select 本地 socket（出向）+ 短超时收隧道（入向）。
+	// 单线程泵：select 本地 socket（出向）+ 短超时收对端（入向）。
+	// 顺带量真实回合延迟：联机线严格一问一答，"本地发出去"到"对端下一块
+	// 数据回到本地"的间隔就是玩家感知的那个延迟，直连和隧道用同一把尺子。
+	qint64 lastTunnelPump = 0;
+	qint64 lastSentMs = 0;
+	qint64 gapSum = 0;
+	int gapCount = 0;
+	int gapPeak = 0;
+	qint64 lastReport = QDateTime::currentMSecsSinceEpoch();
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
 		fd_set rset;
 		FD_ZERO(&rset);
@@ -1148,13 +1378,51 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			if (n <= 0) {
 				break;
 			}
+			if (!lastSentMs) {
+				lastSentMs = QDateTime::currentMSecsSinceEpoch();
+			}
 			link->send(QByteArray(reinterpret_cast<const char*>(buf), n));
 		}
 		QByteArray pkt;
 		if (link->recv(&pkt, 20)) {
+			if (lastSentMs) {
+				int gap = int(QDateTime::currentMSecsSinceEpoch() - lastSentMs);
+				lastSentMs = 0;
+				if (gap >= 0 && gap < 3000) {
+					gapSum += gap;
+					if (gap > gapPeak) {
+						gapPeak = gap;
+					}
+					++gapCount;
+				}
+			}
 			if (!sockSendAll(local, reinterpret_cast<const uint8_t*>(pkt.constData()),
 			                 static_cast<size_t>(pkt.size()))) {
 				break;
+			}
+		}
+		{
+			qint64 now = QDateTime::currentMSecsSinceEpoch();
+			if (now - lastReport >= 5000 && gapCount > 0) {
+				GbCloud::debugLog(QStringLiteral("[sio-rtt] me=%1 n=%2 avg=%3ms peak=%4ms via=%5")
+				                          .arg(m_wsNonce).arg(gapCount).arg(gapSum / gapCount)
+				                          .arg(gapPeak)
+				                          .arg(m_tunnel && m_tunnel != link ? QStringLiteral("p2p")
+				                                                            : QStringLiteral("tunnel")));
+				lastReport = now;
+				gapSum = 0;
+				gapCount = 0;
+				gapPeak = 0;
+			}
+		}
+		// 走直连时隧道本身没人读，定期排空一下，别让服务器认为我们掉线
+		// （大厅会踢掉不响应心跳的连接，而直连断开时要靠隧道继续玩）。
+		if (m_tunnel && m_tunnel != link) {
+			qint64 now = QDateTime::currentMSecsSinceEpoch();
+			if (now - lastTunnelPump >= 500) {
+				lastTunnelPump = now;
+				QByteArray junk;
+				m_tunnel->recv(&junk, 0);
 			}
 		}
 	}
@@ -1749,7 +2017,11 @@ void CloudLink::fail(const QString& text) {
 
 void CloudLink::status(const QString& text) {
 	// Server-generated texts can carry the upstream brand; never show it.
-	emit statusMessage(GbCloud::lobby(text));
+	QString shown = GbCloud::lobby(text);
+	// 状态同时落到 %TEMP%/mgba_lobby_debug.log：Qt 版是 GUI 子系统程序，
+	// Windows 上 stderr 抓不到，没有这一行实机联机就完全没法复盘。
+	GbCloud::debugLog(QStringLiteral("[status] ") + shown.replace(QLatin1Char('\n'), QLatin1Char(' ')));
+	emit statusMessage(shown);
 }
 
 }
