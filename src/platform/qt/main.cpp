@@ -90,6 +90,15 @@ static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
 			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[0],
 			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[1]);
 		}
+		// 调用栈：Release 里没有行号，但符号表还在，把每个返回地址的
+		// "模块内偏移"打出来，再用 addr2line 还原成函数名。
+		void* frames[40];
+		USHORT count = CaptureStackBackTrace(0, 40, frames, nullptr);
+		fprintf(f, "frames=%u\n", count);
+		for (USHORT i = 0; i < count; ++i) {
+			fprintf(f, "frame%u=%llX\n", i,
+			        (unsigned long long) ((uintptr_t) frames[i] - (uintptr_t) base));
+		}
 		fclose(f);
 	}
 	return EXCEPTION_EXECUTE_HANDLER;

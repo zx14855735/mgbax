@@ -321,15 +321,28 @@ bool Session::open(int timeoutMs, QString* error) {
 	bool opened = false;
 	QString socketError;
 	QEventLoop loop;
-	QObject::connect(m_socket, &QWebSocket::connected, [&]() { opened = true; loop.quit(); });
-	QObject::connect(m_socket, &QWebSocket::disconnected, &loop, &QEventLoop::quit);
-	QObject::connect(m_socket, &QWebSocket::errorOccurred, [&](QAbstractSocket::SocketError) {
+	// 这三个连接捕获的都是**栈上**的局部变量，必须在 open() 返回前断开：
+	// 连接的生命周期跟着 m_socket，而不是跟着这个函数。不断开的话，之后
+	// 任何一次 processEvents（例如隧道保活排空）里 socket 抛出 errorOccurred
+	// 都会回调进已经销毁的栈帧，往野地址写 member —— 表现为随机时刻的
+	// 0xC0000005「写入地址 0x1」，跑几分钟才炸，极难复现。
+	auto connectedConn = QObject::connect(m_socket, &QWebSocket::connected, [&]() {
+		opened = true;
+		loop.quit();
+	});
+	auto disconnectedConn = QObject::connect(m_socket, &QWebSocket::disconnected,
+	                                         &loop, &QEventLoop::quit);
+	auto errorConn = QObject::connect(m_socket, &QWebSocket::errorOccurred,
+	                                  [&](QAbstractSocket::SocketError) {
 		socketError = m_socket->errorString();
 		loop.quit();
 	});
 	m_socket->open(url);
 	QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
 	loop.exec();
+	QObject::disconnect(connectedConn);
+	QObject::disconnect(disconnectedConn);
+	QObject::disconnect(errorConn);
 	if (!opened) {
 		if (error) {
 			if (socketError.isEmpty()) {

@@ -59,17 +59,4 @@ void ScriptedControl::poll() {
 			m_maskApplied = true;
 		}
 	}
-
-	QFile shot(m_dir + QStringLiteral("/shot"));
-	if (shot.open(QIODevice::ReadOnly)) {
-		bool ok = false;
-		const int seq = shot.readAll().trimmed().toInt(&ok);
-		shot.close();
-		if (ok && seq != m_shotSeq) {
-			m_shotSeq = seq;
-#ifdef USE_PNG
-			m_controller->screenshot();
-#endif
-		}
-	}
 }
