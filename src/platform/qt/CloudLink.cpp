@@ -333,24 +333,31 @@ public:
 		if (m_closed) {
 			return;
 		}
+		m_lastFrameSend = QDateTime::currentMSecsSinceEpoch();
+		// 两层服务器限制，信封必须同时绕开：
+		// 1) 关键词过滤（"请勿发送违规内容。"）：随机 base64 迟早拼出 "sb"/"ass"
+		//    片段，那一帧被吞、两端错位，游戏报「连接发生了错误」。十六进制只含
+		//    [0-9a-f]，不可能命中含 s/b 等字母的词。
+		// 2) 长度限制（"聊天内容超过100字符。"）：hex 是 40 字符，套长信封
+		//    （gboy_ws/from/room 全拼出来）超过 100 字符，服务器整条拒收——
+		//    13:41 那版就是这么全军覆没的。所以 hex 必须走短键名信封。
+		// 短信封只在双方都是新版时使用（hello/accept 里的 "c":1 协商）：老版本
+		// 只认长键名。老版本在场时退回 base64 长信封——能通，但保留关键词风险
+		//（与老版本对老版本一致），这是唯一能让新旧互通的格式。
 		QJsonObject marker;
-		marker.insert(QStringLiteral("gboy_ws"), QStringLiteral("f"));
-		if (!m_roomTag.isEmpty()) {
-			marker.insert(QStringLiteral("room"), m_roomTag);
-		}
-		marker.insert(QStringLiteral("from"), m_nonce);
-		// 编码协商：新版一律在标记里带 "e":"h" 表示"我能解十六进制"，
-		// 只有确认对端也是新版才用十六进制发；否则继续发 base64，
-		// 免得一边升级、另一边还是老版本时整条隧道读不出来。
-		marker.insert(QStringLiteral("e"), QStringLiteral("h"));
-		if (m_peerHex) {
-			// 【为什么优先十六进制】大厅的 send_message 有中文关键词过滤，
-			// 随机 base64 迟早会拼出 "sb"/"ass" 这类片段（实测服务器直接回
-			// {"success":false,"error":"请勿发送违规内容。"}），那一条联机线
-			// 数据就被吞掉，两端随即错位，游戏报「连接发生了错误」。
-			// 十六进制只含 [0-9a-f]，不可能命中含 s/b 等字母的词。
+		if (m_peerCompact) {
+			marker.insert(QStringLiteral("w"), QStringLiteral("f"));
+			if (!m_roomTag.isEmpty()) {
+				marker.insert(QStringLiteral("r"), m_roomTag);
+			}
+			marker.insert(QStringLiteral("o"), m_nonce);
 			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toHex()));
 		} else {
+			marker.insert(QStringLiteral("gboy_ws"), QStringLiteral("f"));
+			if (!m_roomTag.isEmpty()) {
+				marker.insert(QStringLiteral("room"), m_roomTag);
+			}
+			marker.insert(QStringLiteral("from"), m_nonce);
 			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
 		}
 		QString error;
@@ -408,14 +415,17 @@ private:
 	void demux(const QString& text) {
 		const auto objects = GbCloud::jsonObjects(text);
 		for (const QJsonObject& object : objects) {
-			// 服务器拒收我们的推流（关键词过滤/限流）。这一帧就丢了，联机线
-			// 随即错位，游戏会报「连接发生了错误」。与其让它悄悄烂掉，不如
-			// 记下来、连挂三帧就带明确文案收尾。
+			// 服务器拒收我们的推流（关键词过滤/长度限制/限流）。这一帧就丢了，
+			// 联机线随即错位，游戏会报「连接发生了错误」。与其让它悄悄烂掉，
+			// 不如记下来、连挂三帧就带明确文案收尾。只统计紧跟在隧道帧发送
+			// 之后 3 秒内的失败应答，免得用户手聊触发的错误误杀隧道。
 			if (object.contains(QStringLiteral("success"))
 			    && !object.value("success").toBool(true)) {
 				QString err = object.value("error").toString();
-				if (err.contains(QStringLiteral("违规")) || err.contains(QStringLiteral("频繁"))
-				    || err.contains(QStringLiteral("过快"))) {
+				bool ours = QDateTime::currentMSecsSinceEpoch() - m_lastFrameSend < 3000;
+				if (ours
+				    && (err.contains(QStringLiteral("违规")) || err.contains(QStringLiteral("频繁"))
+				        || err.contains(QStringLiteral("过快")) || err.contains(QStringLiteral("超过")))) {
 					GbCloud::debugLog(QStringLiteral("tunnel push refused: ") + err);
 					if (++m_refused >= 3 && !m_closed) {
 						m_closed = true;
@@ -428,7 +438,9 @@ private:
 				continue; // other pushes do not matter once data is flowing
 			}
 			QString message = object.value("message").toString();
-			if (!message.contains(QStringLiteral("gboy_ws"))) {
+			// 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉
+			if (!message.contains(QStringLiteral("gboy_ws"))
+			    && !message.contains(QStringLiteral("\"w\":\"f\""))) {
 				continue;
 			}
 			bool ok = false;
@@ -437,17 +449,27 @@ private:
 				continue;
 			}
 			QString kind = marker.value(QStringLiteral("gboy_ws")).toString();
+			if (kind.isEmpty()) {
+				kind = marker.value(QStringLiteral("w")).toString();
+			}
 			QString tagged = marker.value(QStringLiteral("room")).toString();
+			if (tagged.isEmpty()) {
+				tagged = marker.value(QStringLiteral("r")).toString();
+			}
 			if (!m_roomTag.isEmpty() && !tagged.isEmpty() && tagged != m_roomTag) {
 				continue; // someone else's room
 			}
 			QString from = marker.value(QStringLiteral("from")).toString();
+			if (from.isEmpty()) {
+				from = marker.value(QStringLiteral("o")).toString();
+			}
 			if (!from.isEmpty() && from == m_nonce) {
 				continue; // the server echoed our own push back to us
 			}
-			// 对端在标记里带了 "e":"h" 就说明它也能解十六进制，之后改发 hex。
-			if (marker.value(QStringLiteral("e")).toString() == QStringLiteral("h")) {
-				m_peerHex = true;
+			// 对端标记带 "c":1 说明它也是新版：能解十六进制、也认短键名信封，
+			// 之后改发 hex 短信封。老版本没有这个键，保持 base64 长信封。
+			if (marker.value(QStringLiteral("c")).toInt() == 1) {
+				m_peerCompact = true;
 			}
 			if (kind == QStringLiteral("f")) {
 				QByteArray frame = decodeTunnelPayload(
@@ -475,7 +497,11 @@ private:
 			marker.insert(QStringLiteral("room"), m_roomTag);
 		}
 		marker.insert(QStringLiteral("from"), m_nonce);
-		marker.insert(QStringLiteral("e"), QStringLiteral("h")); // 我能解十六进制
+		// 能力协商：带 "c":1 表示"新版——能解十六进制、也认短键名信封"。
+		// 不能再带 "e":"h"：13:41 那版看到对端 e:h 会把自己改发成超长 hex
+		// 长信封（>100 字符），被服务器整条吞掉；新版靠 c:1 识别彼此，
+		// 老版本一律回落 base64 长信封。
+		marker.insert(QStringLiteral("c"), 1);
 		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
 	}
 
@@ -487,11 +513,12 @@ private:
 	QQueue<QByteArray> m_inbox;
 	bool m_closed = false;
 	bool m_peerSeen = false;
-	bool m_peerHex = false;
+	bool m_peerCompact = false;
 	int m_refused = 0;
 	QString m_error;
 	qint64 m_lastHello = 0;
 	qint64 m_lastAccept = 0;
+	qint64 m_lastFrameSend = 0;
 };
 
 }
@@ -1222,6 +1249,7 @@ void CloudLink::sendWsMarker(GbCloud::Session* sig, const QString& token, const 
 		marker.insert(QStringLiteral("room"), roomId);
 	}
 	marker.insert(QStringLiteral("from"), m_wsNonce);
+	marker.insert(QStringLiteral("c"), 1); // 新版能力协商（十六进制 + 短信封）
 	sig->sendText(wsText(sendMessageJson(token, uuid, wsText(marker))));
 }
 
@@ -1248,7 +1276,9 @@ bool CloudLink::isTunnelMarkerText(const QString& text) {
 			continue;
 		}
 		QString message = object.value("message").toString();
-		if (!message.contains(QStringLiteral("gboy_ws"))) {
+		// 新版数据帧是短键名信封（"w":"f"），没有 gboy_ws 键
+		if (!message.contains(QStringLiteral("gboy_ws"))
+		    && !message.contains(QStringLiteral("\"w\":\"f\""))) {
 			continue;
 		}
 		bool ok = false;
@@ -1257,6 +1287,9 @@ bool CloudLink::isTunnelMarkerText(const QString& text) {
 			continue;
 		}
 		QString from = marker.value(QStringLiteral("from")).toString();
+		if (from.isEmpty()) {
+			from = marker.value(QStringLiteral("o")).toString();
+		}
 		if (from.isEmpty() || from != m_wsNonce) {
 			return true;
 		}

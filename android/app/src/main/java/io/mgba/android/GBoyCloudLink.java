@@ -734,7 +734,11 @@ public final class GBoyCloudLink {
                 marker.put("room", roomId);
             }
             marker.put("from", wsNonce == null ? "" : wsNonce);
-            marker.put("e", "h"); // 我能解十六进制载荷（编码协商用）
+            // 能力协商：带 "c":1 表示"新版——能解十六进制、也认短键名信封"。
+            // 不能再带 "e":"h"：13:41 那版看到对端 e:h 会把自己改发成超长 hex
+            // 长信封（>100 字符），被服务器整条吞掉；新版靠 c:1 识别彼此，
+            // 老版本一律回落 base64 长信封。
+            marker.put("c", 1);
             sig.send(sendMessage(token, uuid, marker.toString()));
         } catch (Exception e) {
             Log.i(TAG, "ws marker send failed: " + e.getMessage());
@@ -774,7 +778,8 @@ public final class GBoyCloudLink {
             return false;
         }
         String message = object.optString("message", null);
-        if (message == null || message.indexOf("gboy_ws") < 0) {
+        // 新版数据帧是短键名信封（"w":"f"），没有 gboy_ws 键
+        if (message == null || (message.indexOf("gboy_ws") < 0 && !message.contains("\"w\":\"f\""))) {
             return false;
         }
         JSONObject marker = GbCloud.lastJsonObjectOrNull(message);
@@ -782,6 +787,9 @@ public final class GBoyCloudLink {
             return false;
         }
         String from = marker.optString("from", "");
+        if (from.isEmpty()) {
+            from = marker.optString("o", "");
+        }
         return from.isEmpty() || from.equals(wsNonce == null ? "" : wsNonce) == false;
     }
 
@@ -1129,12 +1137,14 @@ public final class GBoyCloudLink {
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
-        /** 对端是否也支持十六进制载荷（标记里带 "e":"h"）。 */
-        private volatile boolean peerHex;
+        /** 对端也是新版（hello/accept 里带 "c":1）：能解十六进制、认短键名信封。 */
+        private volatile boolean peerCompact;
         /** 服务器拒收我们推流的次数（关键词过滤/限流），连挂三帧就收尾。 */
         private int refused;
         private long lastHello;
         private long lastAccept;
+        /** 最近一次隧道帧发送时刻（毫秒），用于判定失败应答是否属于隧道帧。 */
+        private long lastFrameSend;
 
         WsLink(GbCloud.Session sig, String token, String uuid, String roomTag) {
             this.sig = sig;
@@ -1156,23 +1166,35 @@ public final class GBoyCloudLink {
             if (closed) {
                 return;
             }
+            lastFrameSend = System.currentTimeMillis();
+            // 两层服务器限制，信封必须同时绕开：
+            // 1) 关键词过滤（"请勿发送违规内容。"）：随机 base64 迟早拼出 "sb"/"ass"
+            //    片段，那一帧被吞、两端错位，游戏报「连接发生了错误」。十六进制只含
+            //    [0-9a-f]，不可能命中含 s/b 等字母的词。
+            // 2) 长度限制（"聊天内容超过100字符。"）：hex 是 40 字符，套长信封
+            //    （gboy_ws/from/room 全拼出来）超过 100 字符，服务器整条拒收——
+            //    13:41 那版就是这么全军覆没的。所以 hex 必须走短键名信封。
+            // 短信封只在双方都是新版时使用（hello/accept 里的 "c":1 协商）：老版本
+            // 只认长键名。老版本在场时退回 base64 长信封——能通，但保留关键词风险
+            //（与老版本对老版本一致），这是唯一能让新旧互通的格式。
             try {
                 JSONObject marker = new JSONObject();
-                marker.put("gboy_ws", "f");
-                if (!roomTag.isEmpty()) {
-                    marker.put("room", roomTag);
+                if (peerCompact) {
+                    marker.put("w", "f");
+                    if (!roomTag.isEmpty()) {
+                        marker.put("r", roomTag);
+                    }
+                    marker.put("o", wsNonce == null ? "" : wsNonce);
+                    marker.put("d", toHex(frame));
+                } else {
+                    marker.put("gboy_ws", "f");
+                    if (!roomTag.isEmpty()) {
+                        marker.put("room", roomTag);
+                    }
+                    marker.put("from", wsNonce == null ? "" : wsNonce);
+                    marker.put("d",
+                            android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
                 }
-                marker.put("from", wsNonce == null ? "" : wsNonce);
-                // 编码协商：一律带 "e":"h" 表示"我能解十六进制"，但只有确认
-                // 对端也是新版才用十六进制发，否则仍发 base64 —— 免得一边升级、
-                // 另一边还是老版本时整条隧道读不出来。
-                // 为什么优先十六进制：大厅的 send_message 有中文关键词过滤，随机
-                // base64 迟早会拼出 "sb"/"ass" 这类片段（实测服务器直接回
-                // {"success":false,"error":"请勿发送违规内容。"}），那一条联机线
-                // 数据就被吞掉，两端随即错位，游戏报「连接发生了错误」。
-                marker.put("e", "h");
-                marker.put("d", peerHex ? toHex(frame)
-                        : android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
                 sig.send(sendMessage(token, uuid, marker.toString()));
             } catch (Exception e) {
                 closed = true;
@@ -1241,10 +1263,14 @@ public final class GBoyCloudLink {
         private void demux(String text) {
             JSONObject object = GbCloud.lastJsonObjectOrNull(text);
             if (object != null && object.has("success") && !object.optBoolean("success", true)) {
-                // 服务器拒收我们的推流（关键词过滤/限流）：这一帧就丢了，联机线
-                // 随即错位，游戏会报「连接发生了错误」。连挂三帧就带明确文案收尾。
+                // 服务器拒收我们的推流（关键词过滤/长度限制/限流）：这一帧就丢了，
+                // 联机线随即错位，游戏会报「连接发生了错误」。连挂三帧就带明确文案
+                // 收尾。只统计紧跟在隧道帧发送之后 3 秒内的失败应答，免得用户手聊
+                // 触发的错误误杀隧道。
                 String err = object.optString("error", "");
-                if (err.contains("违规") || err.contains("频繁") || err.contains("过快")) {
+                boolean ours = System.currentTimeMillis() - lastFrameSend < 3000;
+                if (ours && (err.contains("违规") || err.contains("频繁") || err.contains("过快")
+                        || err.contains("超过"))) {
                     Log.i(TAG, "tunnel push refused: " + err);
                     if (++refused >= 3 && !closed) {
                         closed = true;
@@ -1257,7 +1283,9 @@ public final class GBoyCloudLink {
                 return; // 其它推送（player_joined 等）在数据阶段无关紧要
             }
             String message = object.optString("message", null);
-            if (message == null || message.indexOf("gboy_ws") < 0) {
+            // 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉
+            if (message == null || (message.indexOf("gboy_ws") < 0
+                    && !message.contains("\"w\":\"f\""))) {
                 return;
             }
             Log.i(TAG, "tunnel push: " + message.substring(0,
@@ -1270,17 +1298,27 @@ public final class GBoyCloudLink {
                 return;
             }
             String kind = marker.optString("gboy_ws", "");
+            if (kind.isEmpty()) {
+                kind = marker.optString("w", "");
+            }
             String tagged = marker.optString("room", "");
+            if (tagged.isEmpty()) {
+                tagged = marker.optString("r", "");
+            }
             if (!roomTag.isEmpty() && !tagged.isEmpty() && !tagged.equals(roomTag)) {
                 return; // 别的房间的流量
             }
             String from = marker.optString("from", "");
+            if (from.isEmpty()) {
+                from = marker.optString("o", "");
+            }
             if (!from.isEmpty() && from.equals(wsNonce == null ? "" : wsNonce)) {
                 return; // 服务器把自己的推送回显了回来
             }
-            // 对端带 "e":"h" 说明它也能解十六进制，之后改发 hex（更安全，见 send）。
-            if ("h".equals(marker.optString("e", ""))) {
-                peerHex = true;
+            // 对端标记带 "c":1 说明它也是新版：能解十六进制、也认短键名信封，
+            // 之后改发 hex 短信封。老版本没有这个键，保持 base64 长信封。
+            if (marker.optInt("c", 0) == 1) {
+                peerCompact = true;
             }
             if ("f".equals(kind)) {
                 try {
@@ -1615,10 +1653,15 @@ public final class GBoyCloudLink {
                 // already waiting on the websocket tunnel - remember that so
                 // the relay window is cut short.
                 String message = object.optString("message", null);
-                if (message != null && message.indexOf("gboy_ws") >= 0) {
+                // 新版数据帧是短键名信封（"w":"f"），没有 gboy_ws 键
+                if (message != null && (message.indexOf("gboy_ws") >= 0
+                        || message.contains("\"w\":\"f\""))) {
                     JSONObject marker = GbCloud.lastJsonObjectOrNull(message);
                     if (marker != null) {
                         String from = marker.optString("from", "");
+                        if (from.isEmpty()) {
+                            from = marker.optString("o", "");
+                        }
                         if (from.isEmpty() || !from.equals(wsNonce == null ? "" : wsNonce)) {
                             tunnelPeerSeen = true;
                         }
