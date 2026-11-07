@@ -35,8 +35,25 @@
 #define MOBILE_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
 #define MOBILE_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "mGBA", __VA_ARGS__)
 #else
-#define MOBILE_LOGI(...) ((void) 0)
-#define MOBILE_LOGE(...) ((void) 0)
+/* 桌面端（Qt 版）默认静默；排查联机时序时设 MGBAX_SIO_LOG=1 就把同一条轨迹打到
+ * stderr，和安卓 logcat 里的 mGBA 标签内容一致。 */
+static int mobileLogEnabled(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char* env = getenv("MGBAX_SIO_LOG");
+		cached = (env && *env && *env != '0') ? 1 : 0;
+	}
+	return cached;
+}
+#define MOBILE_LOGI(...) \
+	do { \
+		if (mobileLogEnabled()) { \
+			fprintf(stderr, __VA_ARGS__); \
+			fputc('\n', stderr); \
+			fflush(stderr); \
+		} \
+	} while (0)
+#define MOBILE_LOGE(...) MOBILE_LOGI(__VA_ARGS__)
 #endif
 
 /* 每次传输都打日志会拖慢联机（一秒钟几十条），排查时再打开。 */

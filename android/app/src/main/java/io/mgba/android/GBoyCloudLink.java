@@ -1078,6 +1078,41 @@ public final class GBoyCloudLink {
      * <p>All reads happen on the worker thread (the advertiser never touches
      * the socket), so the session stays single-consumer.</p>
      */
+    /** 隧道载荷编码：只用 [0-9a-f]，绕开大厅的中文关键词过滤（见 WsLink.send）。 */
+    private static String toHex(byte[] data) {
+        final char[] digits = "0123456789abcdef".toCharArray();
+        char[] out = new char[data.length * 2];
+        for (int i = 0; i < data.length; i++) {
+            int v = data[i] & 0xFF;
+            out[i * 2] = digits[v >>> 4];
+            out[i * 2 + 1] = digits[v & 0x0F];
+        }
+        return new String(out);
+    }
+
+    /** 解码隧道载荷：新版十六进制、旧版 base64，两种都认，避免一边升级就断线。 */
+    private static byte[] fromTunnelPayload(String text) {
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        boolean hex = (text.length() % 2) == 0;
+        for (int i = 0; i < text.length() && hex; i++) {
+            char c = text.charAt(i);
+            boolean ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!ok) {
+                hex = false;
+            }
+        }
+        if (hex) {
+            byte[] out = new byte[text.length() / 2];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = (byte) Integer.parseInt(text.substring(i * 2, i * 2 + 2), 16);
+            }
+            return out;
+        }
+        return android.util.Base64.decode(text, android.util.Base64.NO_WRAP);
+    }
+
     private final class WsLink implements Link {
         private final GbCloud.Session sig;
         private final String token;
@@ -1093,6 +1128,8 @@ public final class GBoyCloudLink {
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
+        /** 服务器拒收我们推流的次数（关键词过滤/限流），连挂三帧就收尾。 */
+        private int refused;
         private long lastHello;
         private long lastAccept;
 
@@ -1123,8 +1160,13 @@ public final class GBoyCloudLink {
                     marker.put("room", roomTag);
                 }
                 marker.put("from", wsNonce == null ? "" : wsNonce);
-                marker.put("d", android.util.Base64.encodeToString(frame,
-                        android.util.Base64.NO_WRAP));
+                // 【为什么用十六进制而不是 base64】
+                // 大厅的 send_message 有一层中文关键词过滤，随机 base64 里迟早会拼出
+                // "sb"/"ass" 这类片段（实测服务器直接回 {"success":false,"error":
+                // "请勿发送违规内容。"}），那一条联机线数据就被吞掉，两端随即错位，
+                // 游戏报「连接发生了错误」。十六进制只含 [0-9a-f]，永远不可能命中
+                // 含 s/b 等字母的词，代价是长度翻倍（一帧 20 字节 → 40 字符）。
+                marker.put("d", toHex(frame));
                 sig.send(sendMessage(token, uuid, marker.toString()));
             } catch (Exception e) {
                 closed = true;
@@ -1192,6 +1234,19 @@ public final class GBoyCloudLink {
         /** 拆一帧信令推送：隧道数据进 reader，握手标记就地应答。 */
         private void demux(String text) {
             JSONObject object = GbCloud.lastJsonObjectOrNull(text);
+            if (object != null && object.has("success") && !object.optBoolean("success", true)) {
+                // 服务器拒收我们的推流（关键词过滤/限流）：这一帧就丢了，联机线
+                // 随即错位，游戏会报「连接发生了错误」。连挂三帧就带明确文案收尾。
+                String err = object.optString("error", "");
+                if (err.contains("违规") || err.contains("频繁") || err.contains("过快")) {
+                    Log.i(TAG, "tunnel push refused: " + err);
+                    if (++refused >= 3 && !closed) {
+                        closed = true;
+                        error = "联机数据被大厅服务器过滤（" + err + "），请换个房间重试";
+                    }
+                }
+                return;
+            }
             if (object == null || !"send_message".equals(object.optString("type", ""))) {
                 return; // 其它推送（player_joined 等）在数据阶段无关紧要
             }
@@ -1219,9 +1274,8 @@ public final class GBoyCloudLink {
             }
             if ("f".equals(kind)) {
                 try {
-                    byte[] frame = android.util.Base64.decode(
-                            marker.optString("d", ""), android.util.Base64.NO_WRAP);
-                    if (frame.length > 0) {
+                    byte[] frame = fromTunnelPayload(marker.optString("d", ""));
+                    if (frame != null && frame.length > 0) {
                         inbox.add(frame);
                     }
                 } catch (Exception e) {

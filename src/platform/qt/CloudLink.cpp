@@ -286,6 +286,25 @@ bool sockSendAll(intptr_t s, const uint8_t* data, size_t len) {
 }
 
 /**
+ * 隧道载荷解码：新版发十六进制，旧版发 base64。两种都认，省得一边升级一边断。
+ * 纯 [0-9a-f] 且偶数长度 → 十六进制；否则按 base64 解。
+ */
+static QByteArray decodeTunnelPayload(const QByteArray& text) {
+	if (text.isEmpty()) {
+		return QByteArray();
+	}
+	bool hex = (text.size() % 2) == 0;
+	for (char c : text) {
+		bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+		if (!isHex) {
+			hex = false;
+			break;
+		}
+	}
+	return hex ? QByteArray::fromHex(text) : QByteArray::fromBase64(text);
+}
+
+/**
  * Tunnel transport over the room signalling websocket: every GBoy frame
  * travels as a base64 JSON marker in a send_message broadcast, the same
  * channel that already carries the relay advertisement. TCP is ordered and
@@ -320,7 +339,13 @@ public:
 			marker.insert(QStringLiteral("room"), m_roomTag);
 		}
 		marker.insert(QStringLiteral("from"), m_nonce);
-		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
+		// 【为什么用十六进制而不是 base64】
+		// 大厅的 send_message 有一层中文关键词过滤，随机 base64 里迟早会拼出
+		// "sb"/"ass" 这类片段（实测服务器直接回 {"success":false,"error":
+		// "请勿发送违规内容。"}），那一条联机线数据就被吞掉，两端随即错位，
+		// 游戏报「连接发生了错误」。十六进制只含 [0-9a-f]，永远不可能命中
+		// 含 s/b/ 等字母的词，代价是长度翻倍（一帧 20 字节 → 40 字符）。
+		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toHex()));
 		QString error;
 		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))), &error)) {
 			m_closed = true;
@@ -376,6 +401,22 @@ private:
 	void demux(const QString& text) {
 		const auto objects = GbCloud::jsonObjects(text);
 		for (const QJsonObject& object : objects) {
+			// 服务器拒收我们的推流（关键词过滤/限流）。这一帧就丢了，联机线
+			// 随即错位，游戏会报「连接发生了错误」。与其让它悄悄烂掉，不如
+			// 记下来、连挂三帧就带明确文案收尾。
+			if (object.contains(QStringLiteral("success"))
+			    && !object.value("success").toBool(true)) {
+				QString err = object.value("error").toString();
+				if (err.contains(QStringLiteral("违规")) || err.contains(QStringLiteral("频繁"))
+				    || err.contains(QStringLiteral("过快"))) {
+					GbCloud::debugLog(QStringLiteral("tunnel push refused: ") + err);
+					if (++m_refused >= 3 && !m_closed) {
+						m_closed = true;
+						m_error = QStringLiteral("联机数据被大厅服务器过滤（%1），请换个房间重试").arg(err);
+					}
+				}
+				continue;
+			}
 			if (object.value("type").toString() != QStringLiteral("send_message")) {
 				continue; // other pushes do not matter once data is flowing
 			}
@@ -398,7 +439,7 @@ private:
 				continue; // the server echoed our own push back to us
 			}
 			if (kind == QStringLiteral("f")) {
-				QByteArray frame = QByteArray::fromBase64(
+				QByteArray frame = decodeTunnelPayload(
 				        marker.value(QStringLiteral("d")).toString().toLatin1());
 				if (!frame.isEmpty()) {
 					m_inbox.append(frame);
@@ -434,6 +475,7 @@ private:
 	QQueue<QByteArray> m_inbox;
 	bool m_closed = false;
 	bool m_peerSeen = false;
+	int m_refused = 0;
 	QString m_error;
 	qint64 m_lastHello = 0;
 	qint64 m_lastAccept = 0;

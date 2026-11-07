@@ -49,6 +49,10 @@
 #include "LinkView.h"
 #ifdef BUILD_QT_CLOUD
 #include "LobbyView.h"
+#ifdef BUILD_QT_CLOUD
+#include "CloudLink.h"
+#include <QLoggingCategory>
+#endif
 #endif
 #include "LoadSaveState.h"
 #include "LogView.h"
@@ -2261,6 +2265,13 @@ void Window::setController(CoreController* controller) {
 	m_controller->setInputController(&m_inputController);
 	m_controller->setLogger(&m_log);
 
+#ifdef BUILD_QT_CLOUD
+	// 测试钩子：MGBAX_AUTOLINK="邮箱:密码[:房号]" 时，游戏一载入就自动进云端联机，
+	// 好让真实对局能在无人值守的情况下跑起来（导播台/SIO 轨迹都进 stdout）。
+	// 正常使用不会设置这个变量，行为与手动点「联机大厅」完全一致。
+	startAutoCloudLink();
+#endif
+
 	connect(this, &Window::shutdown, [this]() {
 		if (!m_controller) {
 			return;
@@ -2471,3 +2482,39 @@ void WindowBackground::paintEvent(QPaintEvent* event) {
 	QRect full(clampSize(QSize(m_aspectWidth, m_aspectHeight), size(), true, false));
 	painter.drawPixmap(full, logo);
 }
+
+#ifdef BUILD_QT_CLOUD
+/*
+ * 联机自动化钩子（测试用，不影响正常流程）：环境变量
+ *   MGBAX_AUTOLINK="邮箱:密码[:房号]"
+ * 会让游戏一载入就按与「联机大厅」相同的路径启动云端联机，房号留空即建房。
+ * 目的是让真实对局能在无界面的情况下复现/抓 SIO 轨迹（stdout 会带上状态与诊断）。
+ */
+void Window::startAutoCloudLink() {
+	QString spec = qEnvironmentVariable("MGBAX_AUTOLINK");
+	if (spec.isEmpty() || !m_controller) {
+		return;
+	}
+	QStringList parts = spec.split(':');
+	if (parts.size() < 2 || parts.at(0).isEmpty()) {
+		qWarning() << "[AUTOLINK] 需要 邮箱:密码[:房号]，收到的是" << spec;
+		return;
+	}
+	CloudLink::Config config;
+	config.user = parts.at(0);
+	config.password = parts.at(1);
+	config.roomId = parts.size() > 2 ? parts.at(2) : QString();
+	config.romPath = m_controller->path();
+
+	CloudLink* link = new CloudLink(this);
+	link->setController(m_controller.get());
+	connect(link, &CloudLink::statusMessage, this, [](const QString& text) {
+		qInfo().noquote() << "[AUTOLINK]" << text;
+	});
+	connect(link, &CloudLink::linkEnded, this, [](const QString& text) {
+		qInfo().noquote() << "[AUTOLINK] ended:" << text;
+	});
+	qInfo().noquote() << "[AUTOLINK] 启动云端联机，房号" << (config.roomId.isEmpty() ? QStringLiteral("(建房)") : config.roomId);
+	link->startLink(config);
+}
+#endif

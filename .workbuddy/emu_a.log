@@ -144,3 +144,16 @@ INFO         | setDisplayActiveConfig: id:0, 480x800
 INFO         | emulatorSetupEnvironment: Environment scene is not required
 USER_INFO    | Emulator is performing a full startup. This may take upto two minutes, or more.
 INFO         | Boot completed in 26770 ms
+INFO         | Increasing screen off timeout, logcat buffer size to 2M.
+ERROR        | Failed to find ColorBuffer: 209
+ERROR        | Failed to bind to texture: invalid color buffer.
+ERROR        | Failed to find ColorBuffer: 268
+ERROR        | Failed to bind to texture: invalid color buffer.
+INFO         | Wait for emulator (pid 44272) 20 seconds to shutdown gracefully before kill;you can set environment variable ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL(in seconds) to change the default value (20 seconds)
+
+WARNING      | Not saving state: RAM not mapped as shared
+INFO         | Saving snapshot 'default_boot' took 4 ms
+WARNING      | Emulator client has not yet been configured.. Call configure me first!
+D:\Android\Sdk\emulator\qemu\windows-x86_64\qemu-system-x86_64-headless.exe: Unable to connect character device modem: Failed to connect socket: Input/output error
+INFO         | removeAll
+WARNING      | Netsim Wifi dns:///localhost:2520 is gone due to Stream removed (CANCELLED)

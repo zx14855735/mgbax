@@ -289,6 +289,11 @@ private:
 
 	std::unique_ptr<QGBA::Display> m_cleanupDisplay;
 	std::shared_ptr<CoreController> m_cleanupController;
+
+#ifdef BUILD_QT_CLOUD
+	/** MGBAX_AUTOLINK 测试钩子：载入游戏后自动进云端联机，见 Window.cpp。 */
+	void startAutoCloudLink();
+#endif
 };
 
 class WindowBackground : public QWidget {
