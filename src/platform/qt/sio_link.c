@@ -16,6 +16,7 @@
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/sio.h>
 #include <mgba/internal/gba/io.h>
+#include <mgba/internal/gba/memory.h>
 #include <mgba-util/common.h>
 
 #include <stdarg.h>
@@ -198,6 +199,42 @@ static void finishIncoming(struct SioLink* sio, uint16_t mode, uint32_t remote, 
 	}
 }
 
+/**
+ * 只读诊断：把 gen8 ROM 的联机对战状态变量打进 SIO 日志，用来判断游戏
+ * 到底停在 CB2_HandleStartBattle 的哪个 case。地址取自 /d/gen8/rom.map，
+ * 只对这个 ROM 有效；默认完全关闭，MGBAX_LINK_DIAG=1 才启用。
+ * 用 GBAView16 而不是 GBALoad16，避免给模拟时钟引入额外周期。
+ */
+static void logLinkDiag(struct GBA* gba) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		enabled = getenv("MGBAX_LINK_DIAG") ? 1 : 0;
+	}
+	if (!enabled || !gba || !gba->cpu) {
+		return;
+	}
+	uint16_t state = GBAView16(gba->cpu, 0x0201CFC4u) & 0xFFu; // gBattleCommunication[MULTIUSE_STATE]
+	uint16_t brs01 = GBAView16(gba->cpu, 0x03002A40u);          // gBlockReceivedStatus[0..1]
+	uint16_t brs23 = GBAView16(gba->cpu, 0x03002A42u);          // gBlockReceivedStatus[2..3]
+	uint16_t rem = GBAView16(gba->cpu, 0x03002AC0u) >> 8;       // gReceivedRemoteLinkPlayers
+	uint32_t cb = (uint32_t) GBAView16(gba->cpu, 0x03002AD4u)
+	              | ((uint32_t) GBAView16(gba->cpu, 0x03002AD6u) << 16); // gLinkCallback
+	uint32_t status = (uint32_t) GBAView16(gba->cpu, 0x03002A9Cu)
+	                  | ((uint32_t) GBAView16(gba->cpu, 0x03002A9Eu) << 16); // gLinkStatus
+	/* gLink @ 0x03002AF4：state +1、playerCount +3、receivedNothing +0xC、
+	 * serialIntrCounter +0xD、lag +0x13、sendCmdIndex +0x16、recvCmdIndex +0x17。 */
+	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);
+	uint16_t l1 = GBAView16(gba->cpu, 0x03002AF6u);
+	uint16_t l2 = GBAView16(gba->cpu, 0x03002B00u);
+	uint16_t l3 = GBAView16(gba->cpu, 0x03002B06u);
+	uint16_t l4 = GBAView16(gba->cpu, 0x03002B0Au);
+	SIO_LOG("[diag] mu=%u brs=%04X/%04X rem=%u cb=%08X st=%08X"
+	        " lstate=%u pc=%u intr=%u ridx=%u sidx=%u lag=%u rn=%u qf=%u",
+	        state, brs01, brs23, rem, cb, status,
+	        (l0 >> 8) & 0xFF, (l1 >> 8) & 0xFF, (l2 >> 8) & 0xFF,
+	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF);
+}
+
 /* Fill SIOMULTI0..3 with one transfer's data and finish it. */
 static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -228,6 +265,7 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		SIO_LOG("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums to=%u fb=%u m0=%04X m1=%04X",
 		     me, sio->sioOk, sio->sioLateness / 10, sio->sioLateness % 10,
 		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, data[0], data[1]);
+		logLinkDiag(gba);
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
 }
