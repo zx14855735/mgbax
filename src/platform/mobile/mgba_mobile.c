@@ -2107,12 +2107,16 @@ static void maybeRearmHandshake(struct GBA* gba) {
 	if (!enabled || !gba || !gba->cpu) {
 		return;
 	}
-	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);         // isMaster, state
-	int isMaster = l0 & 0xFF;
-	int state = (l0 >> 8) & 0xFF;
-	int players = (l0 >> 24) & 0xFF;
+	/* 逐字节读 struct Link（不能从 uint16 右移 24 位取 playerCount，会恒为 0）。 */
+	int isMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
+	int state = GBAView8(gba->cpu, 0x03002AF4u + 0x01u);
+	int players = GBAView8(gba->cpu, 0x03002AF4u + 0x03u);
 	int hs = GBAView8(gba->cpu, 0x03002AF4u + 0x0Eu);       // handshakeAsMaster
-	if (isMaster != 8 || state != 2 || players < 2 || hs != 0) {
+	if (state != 2 || players < 2 || hs != 0) {
+		return;
+	}
+	if (isMaster != 8) {
+		MOBILE_LOGI("[rearm] waiting: isMaster=%d (need 8) players=%d", isMaster, players);
 		return;
 	}
 	/* gShouldAdvanceLinkState @ 0x03002AD8：只置最低字节的最低位。 */
