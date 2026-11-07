@@ -140,7 +140,13 @@ final class KcpChannel implements GBoyCloudLink.Link {
     boolean retryHandshake(long timeoutMs) throws IOException {
         long deadline = System.currentTimeMillis() + Math.max(timeoutMs, 1);
         while (System.currentTimeMillis() < deadline) {
-            rawSend(HS);
+            // 【裸 HS】中继的握手是裸数据报（2026-11-07 对新中继实测：裸 HS
+            // 立刻回裸 HK；KCP 段承载的 HS 反而没有回应）。数据帧仍走 KCP。
+            if (kcp != null) {
+                rawDatagramSend(HS);
+            } else {
+                rawSend(HS);
+            }
             long stepEnd = Math.min(deadline, System.currentTimeMillis() + 2000);
             while (System.currentTimeMillis() < stepEnd) {
                 if (handshakeDone) {
@@ -211,22 +217,16 @@ final class KcpChannel implements GBoyCloudLink.Link {
             kcp.send(payload);
             return;
         }
-        if (stream == null || stream.isClosed()) {
-            return;
-        }
-        byte[] head = new byte[4];
-        putInt(head, 0, payload.length);
+        rawDatagramSend(payload);
+    }
+
+    /** UDP send that bypasses KCP entirely: the relay's HS/HK control datagrams
+     * are raw, not KCP segments (verified against the live relay 2026-11-07). */
+    private void rawDatagramSend(byte[] payload) {
         try {
-            synchronized (stream) {
-                java.io.OutputStream out = stream.getOutputStream();
-                out.write(head);
-                out.write(payload);
-                out.flush();
-            }
+            socket.send(new DatagramPacket(payload, payload.length, address, port));
         } catch (IOException e) {
-            Log.i(TAG, "tcp send failed " + e);
-            dead = true;
-            running = false;
+            Log.i(TAG, "raw datagram send failed " + e);
         }
     }
 
@@ -337,6 +337,12 @@ final class KcpChannel implements GBoyCloudLink.Link {
             try {
                 socket.receive(packet);
                 byte[] data = Arrays.copyOf(packet.getData(), packet.getLength());
+                // 【裸控制报】中继的 HS/HK/PING/PONG 是裸数据报（不是 KCP 段）：
+                // 直接喂 kcp.input 会因为过不了 KCP 头解析而被静默丢弃。HK 必须
+                // 在这里认领，否则握手永远完不成（2026-11-07 对新中继实测）。
+                if (handleRawControl(data)) {
+                    continue;
+                }
                 if (TRACE && data.length >= OVERHEAD) {
                     Log.d(TAG, "in cmd=" + (data[4] & 0xFF) + " sn=" + getInt(data, 12)
                             + " len=" + getInt(data, 20) + " size=" + data.length
@@ -371,6 +377,25 @@ final class KcpChannel implements GBoyCloudLink.Link {
                 return;
             }
         }
+    }
+
+    /** 裸控制报（HK/PING/PONG）识别与应答；返回 true 表示已消费、不要进 KCP。 */
+    private boolean handleRawControl(byte[] data) {
+        if (data.length == 0) {
+            return false;
+        }
+        if (data.length == 2 && data[0] == 'H' && data[1] == 'K') {
+            handshakeDone = true;
+            return true;
+        }
+        if (Arrays.equals(data, PING)) {
+            rawDatagramSend(PONG);
+            return true;
+        }
+        if (Arrays.equals(data, PONG)) {
+            return true;
+        }
+        return false;
     }
 
     private void deliver(byte[] message) {

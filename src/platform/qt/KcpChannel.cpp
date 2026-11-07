@@ -420,7 +420,9 @@ bool KcpChannel::openSockets(QString* error) {
 
 bool KcpChannel::handshake(int tries, int waitMs, QString* error) {
 	for (int attempt = 0; attempt < tries && !m_handshakeDone; attempt++) {
-		send(QByteArray(reinterpret_cast<const char*>(HS), sizeof(HS)));
+		// 【裸 HS】中继的握手是裸数据报（2026-11-07 对新中继实测：裸 HS 立刻
+		// 回裸 HK；KCP 段承载的 HS 反而没有回应）。数据帧仍走 KCP。
+		rawDatagramSend(QByteArray(reinterpret_cast<const char*>(HS), sizeof(HS)));
 		qint64 deadline = QDateTime::currentMSecsSinceEpoch() + waitMs;
 		while (QDateTime::currentMSecsSinceEpoch() < deadline) {
 			if (m_handshakeDone) {
@@ -447,7 +449,7 @@ bool KcpChannel::handshake(int tries, int waitMs, QString* error) {
 bool KcpChannel::retryHandshake(int timeoutMs, QString* error) {
 	qint64 deadline = QDateTime::currentMSecsSinceEpoch() + qMax(timeoutMs, 1);
 	while (QDateTime::currentMSecsSinceEpoch() < deadline) {
-		send(QByteArray(reinterpret_cast<const char*>(HS), sizeof(HS)));
+		rawDatagramSend(QByteArray(reinterpret_cast<const char*>(HS), sizeof(HS)));
 		qint64 stepEnd = qMin(deadline, QDateTime::currentMSecsSinceEpoch() + 2000);
 		while (QDateTime::currentMSecsSinceEpoch() < stepEnd) {
 			if (m_handshakeDone) {
@@ -471,6 +473,27 @@ void KcpChannel::send(const QByteArray& payload) {
 		return;
 	}
 	tcpSend(payload);
+}
+
+void KcpChannel::rawDatagramSend(const QByteArray& payload) {
+	if (m_socket < 0 || !m_running) {
+		return;
+	}
+	if (m_tcp) {
+		tcpSend(payload);
+		return;
+	}
+	sockaddr_in addr{};
+	addr.sin_family = AF_INET;
+	addr.sin_addr.s_addr = m_endpoint.ip;
+	addr.sin_port = m_endpoint.port;
+#ifdef _WIN32
+	::sendto(SOCKET(m_socket), payload.constData(), int(payload.size()), 0,
+	         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+#else
+	::sendto(m_socket, payload.constData(), payload.size(), 0,
+	         reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+#endif
 }
 
 bool KcpChannel::tcpSend(const QByteArray& payload) {
@@ -590,7 +613,19 @@ void KcpChannel::pumpLoop() {
 			int n = int(::recvfrom(m_socket, buffer, sizeof(buffer), 0, reinterpret_cast<sockaddr*>(&from), &fromLen));
 #endif
 			if (n > 0) {
-				m_kcp->input(QByteArray(buffer, n));
+				// 【裸控制报】中继的 HS/HK/PING/PONG 是裸数据报（不是 KCP 段）：
+				// 直接喂 kcp.input 会因为过不了 KCP 头解析而被静默丢弃。HK 必须
+				// 在这里认领，否则握手永远完不成（2026-11-07 对新中继实测）。
+				QByteArray datagram(buffer, int(n));
+				if (datagram.size() == 2 && datagram.at(0) == 'H' && datagram.at(1) == 'K') {
+					m_handshakeDone = true;
+				} else if (datagram.size() == 4 && memcmp(datagram.constData(), PING, 4) == 0) {
+					send(QByteArray(reinterpret_cast<const char*>(PONG), sizeof(PONG)));
+				} else if (datagram.size() == 4 && memcmp(datagram.constData(), PONG, 4) == 0) {
+					// keepalive echo; nothing to do
+				} else {
+					m_kcp->input(datagram);
+				}
 			}
 		}
 		QByteArray message;

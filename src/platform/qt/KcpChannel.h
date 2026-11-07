@@ -157,6 +157,9 @@ private:
 	void pumpLoop();
 	void deliver(const QByteArray& message);
 	bool tcpSend(const QByteArray& payload);
+	/** UDP send that bypasses KCP entirely (the relay's raw HS/HK/PING control
+	 * datagrams). On the TCP transport falls back to the framed send. */
+	void rawDatagramSend(const QByteArray& payload);
 	void closeSocket();
 
 	static bool resolve(const QString& host, quint16 port, Endpoint* endpoint, bool tcp, QString* error);
