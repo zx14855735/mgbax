@@ -81,5 +81,7 @@ uint32_t netLinkPeerAge(struct NetLink* link);
 int netLinkPeerPending(struct NetLink* link);
 /* 诊断：原子读 {队列字数, 队头轮次号}。 */
 void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex);
+/* 距对端最近一次 PUSH 到达过了多少真实毫秒（从没收到过则返回极大值）。 */
+uint32_t netLinkPushAgeMs(struct NetLink* link);
 
 #endif

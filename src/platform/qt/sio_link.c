@@ -279,6 +279,8 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
  * entry (netLinkTakePeerWordAny), adopts the host's index and pushes its own
  * word back tagged with it - the host's strict match then never misses.
  */
+static int sioWaitMs(struct SioLink* sio);
+
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct SioLink* sio = (struct SioLink*) user;
 	sio->sioSlaveArmed = false;
@@ -299,9 +301,21 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	uint16_t got = 0;
 	uint32_t remote = 0;
 	uint32_t peerCycles = 0;
-	/* Never block the emulated thread here: take the earliest unconsumed
-	 * word (loose entry) without waiting; on a miss retry 2048 cycles later. */
-	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, 0, &remote, &got, &peerCycles);
+	/* Take the earliest unconsumed word (loose entry). Across a tunnel the
+	 * master's next push is a round trip away; while a battle/trade exchange
+	 * is actively flowing (the master's pushes arriving every couple hundred
+	 * ms), BLOCK the emulated clock for the wait - otherwise the slave's game
+	 * VBlanks hundreds of times per master round, the per-frame round counts
+	 * collapse below the game's 9-per-frame requirement and the game reports
+	 * a connection error at the start of every battle/trade. Outside an
+	 * active exchange keep the historical non-blocking spin so an idle link
+	 * never drags the game's frame rate down. */
+	int waitMs = 0;
+	if (sio->link && netLinkState(sio->link) == 2 &&
+	    netLinkPushAgeMs(sio->link) < 500) {
+		waitMs = sioWaitMs(sio);
+	}
+	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, waitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* A slave never finishes without peer data: on real hardware the
 		 * round simply does not end until the host's clock touches it.

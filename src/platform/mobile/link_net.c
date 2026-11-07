@@ -294,6 +294,9 @@ struct NetLink {
 	uint32_t rttUs;
 	uint32_t rttUsMax;
 	uint32_t rttUsN;
+	/* 对端最近一次 PUSH 到达的真实时刻（nowMs）：从机用它判断「交换正在进行」
+	 * （主控的轮次在密集到达），只有此时才允许阻塞等下一个字。 */
+	uint32_t pushSeenAt;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -473,6 +476,7 @@ static void* readerMain(void* arg) {
 		}
 		if (pkt.type == PKT_PUSH) {
 			pthread_mutex_lock(&link->mu);
+			link->pushSeenAt = nowMs();
 			if (link->peerCount == PEER_QUEUE) {
 				/* 队列满了说明有一轮的推送永远收不到（对端多推/丢包），
 				 * 丢掉最老的一条继续跑，至少别把整条链路卡死。 */
@@ -1108,6 +1112,20 @@ void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex) 
 		*headIndex = link->peerQ[link->peerHead].index;
 	}
 	pthread_mutex_unlock(&link->mu);
+}
+
+uint32_t netLinkPushAgeMs(struct NetLink* link) {
+	if (!link) {
+		return 0xFFFFFFFFu;
+	}
+	pthread_mutex_lock(&link->mu);
+	uint32_t seen = link->pushSeenAt;
+	pthread_mutex_unlock(&link->mu);
+	if (!seen) {
+		return 0xFFFFFFFFu;
+	}
+	uint32_t now = nowMs();
+	return now >= seen ? now - seen : 0;
 }
 
 void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {

@@ -2098,6 +2098,8 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  *   - 直接采用主机给的轮次号当作自己的 sioIndex；
  *   - 回推时也用这个号，主机那边严格匹配就一定对得上。
  */
+static int sioWaitMs(struct MgbaMobile* emu);
+
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	emu->sioSlaveArmed = false;
@@ -2150,8 +2152,24 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 *
 	 * 现在改成**非阻塞取字 + 短周期重试**：取不到就 2048 个模拟周期后再试，
 	 * 一次也不阻塞。主机每轮推一个字、从机照单全收（队列是 FIFO，轮次天然
-	 * 一一对应），从机的时钟不再被墙钟拖住。 */
-	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, 0, &remote, &got, &peerCycles);
+	 * 一一对应），从机的时钟不再被墙钟拖住。
+	 *
+	 * 【跨网例外：从机的游戏有传输在飞时必须阻塞等】
+	 * 走服务器隧道时主控每轮要等一个网络往返（实测 142ms 均值、250ms 尖峰），
+	 * 主控的模拟时钟在等待里冻结，它的游戏一帧要走 9×160ms 真实时间；而从机
+	 * 的游戏照常 60fps 跑——从机一帧只摊到 ~0.1 次 SIO 中断，gen8 的
+	 * LinkVSync 数出「每帧不足 9 次」就置 gLink.lag = LAG_MASTER，游戏当场报
+	 * 「连接发生了错误」。真机语义是：从机的传输挂着，线路就一直等主机的时
+	 * 钟沿。所以这里在**主控的轮次还在密集到达（交换正在进行）**时改为阻塞
+	 * 等（窗口自适应 RTT）：从机的一帧因此包含主控一帧的全部轮次，LAG 消
+	 * 除，两边的游戏速率重新锁死。交换停了（对端 500ms 没推字）就回到自旋，
+	 * 模拟帧率不受影响。 */
+	int slaveWaitMs = 0;
+	if (emu->link && netLinkState(emu->link) == 2 &&
+	    netLinkPushAgeMs(emu->link) < 500) {
+		slaveWaitMs = sioWaitMs(emu);
+	}
+	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* 【从机没有对端数据时绝不收尾】
 		 *
