@@ -311,6 +311,43 @@ static void maybeUnstickStandby(struct GBA* gba) {
 	}
 }
 
+/**
+ * 联机房间握手「主从选举」补触发（默认开启，MGBAX_LINK_REARM=0 关闭）。
+ *
+ * gen8 的 LinkMain1 只在 gShouldAdvanceLinkState==1 的那一帧做一次主从选举
+ * （Task_TriggerHandshake 在 OpenLink 后第 5 帧把它置 1），并且要求那一瞬间
+ * gLink.playerCount > 1。局域网/网络联机时两端进房间必然相差几十帧以上，
+ * 主机端选举时对方还没出现，于是两端都退化成从机、都只发从机握手字 0xB9A0，
+ * DoHandshake() 永远等不到 0x8FFF，双端永久卡在「等待连接」画面。
+ * 这里在「双方已连上(playerCount>=2)、仍在握手态(state==2)、但还没选出主机
+ * (handshakeAsMaster==0)」时，代游戏把 gShouldAdvanceLinkState 置 1，
+ * 让它重新做一次选举。只对 localId==0 的主机位有效（从机侧游戏自己会忽略），
+ * 不改 ROM、只写 IWRAM 的 1 个字节标志。
+ */
+static void maybeRearmHandshake(struct GBA* gba) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char* v = getenv("MGBAX_LINK_REARM");
+		enabled = (v && v[0] == '0') ? 0 : 1;
+	}
+	if (!enabled || !gba || !gba->cpu) {
+		return;
+	}
+	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);         // isMaster, state
+	int isMaster = l0 & 0xFF;
+	int state = (l0 >> 8) & 0xFF;
+	int players = (l0 >> 24) & 0xFF;
+	int hs = GBAView8(gba->cpu, 0x03002AF4u + 0x0Eu);       // handshakeAsMaster
+	if (isMaster != 8 || state != 2 || players < 2 || hs != 0) {
+		return;
+	}
+	/* gShouldAdvanceLinkState @ 0x03002AD8：只置最低字节的最低位，
+	 * 同字其余字节原样保留。 */
+	uint32_t idx = (0x03002AD8u - 0x03000000u) >> 2;
+	gba->memory.iwram[idx] |= 0x00000001u;
+	SIO_LOG("[rearm] handshake election retriggered (players=%d)", players);
+}
+
 /* Fill SIOMULTI0..3 with one transfer's data and finish it. */
 static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -343,6 +380,7 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, data[0], data[1]);
 		logLinkDiag(gba);
 		maybeUnstickStandby(gba);
+		maybeRearmHandshake(gba);
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
 }
