@@ -30,7 +30,7 @@ bool ScriptedControl::start() {
 }
 
 void ScriptedControl::poll() {
-	if (!m_controller || !m_controller->isLoaded()) {
+	if (!m_controller) {
 		return;
 	}
 
