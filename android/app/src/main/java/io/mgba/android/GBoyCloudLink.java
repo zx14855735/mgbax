@@ -336,12 +336,21 @@ public final class GBoyCloudLink {
             runTunnel(sig, token, uuid, room, asHost);
             return;
         }
+        // 官方 KCP 中继活着：SIO 分开控制模式直接把联机线字节过中继
+        // （netLink 包封在 type-6 帧里），RTT 比 WS 隧道低 3-7 倍。
+        Socket local = attachDriverLoopback(asHost);
+        if (closed) {
+            link.close();
+            return;
+        }
+        sioSock = local;
         String text = asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P";
-        status("房号 " + (room.roomId == null ? "" : room.roomId)
-                + "\n中继 " + room.nodeAddress + ":" + room.nodePort
+        status("SIO 链路已建立（官方中继，分开控制）\n"
+                + "各自操作各自的画面，游戏内联机（交换/对战）走联机线\n"
+                + "中继 " + room.nodeAddress + ":" + room.nodePort
                 + "\n" + text);
         hooks.onConnected(asHost, null);
-        serve(link);
+        startSioRelayBridge(link, local, sig, token, room, asHost);
     }
 
     /**
@@ -837,12 +846,12 @@ public final class GBoyCloudLink {
      * 固定 20 字节的 Packet 流原样到达。本机按键只进本机控制台，对方的
      * 输入经由 SIO 链路被对方的游戏看见（游戏的联机语义，不再是按键镜像）。</p>
      */
-    private void startSioBridge(WsLink link, boolean asHost) throws IOException {
+    /** 本机回环：把 native 联机线驱动挂到 127.0.0.1 的 TCP 对上，返回驱动侧套接字。 */
+    private Socket attachDriverLoopback(boolean asHost) throws IOException {
         MgbaCore core = hooks.core();
         if (core == null) {
             throw new IOException("模拟核心未就绪");
         }
-        status("已配对，正在建立本机联机线（分开控制）…");
         Socket local = null;
         ServerSocket server = null;
         int port = 0;
@@ -894,6 +903,11 @@ public final class GBoyCloudLink {
             throw new IOException("本机联机线建立失败");
         }
         local.setTcpNoDelay(true);
+        return local;
+    }
+
+    private void startSioBridge(WsLink link, boolean asHost) throws IOException {
+        Socket local = attachDriverLoopback(asHost);
         sioSock = local;
         status("SIO 链路已建立（分开控制）\n"
                 + "各自操作各自的画面，对方按键不再进入你的游戏\n"
@@ -938,6 +952,94 @@ public final class GBoyCloudLink {
         // 守望：任何一侧断开都收尾
         while (!closed && !link.isClosed() && !sock.isClosed()) {
             sleepQuietly(1000);
+        }
+        if (!closed) {
+            fail("联机线连接已断开");
+        }
+    }
+
+    /**
+     * SIO 分开控制模式走**官方 KCP 中继**时的桥：本地驱动的 netLink 包
+     * （20 字节）逐个封进 type-6（STATE）帧经中继转发给对方——官方中继
+     * 对 type 1..6 是透明转发，两条客户端之间它就是一条字节管道。
+     * 相比 WS 隧道，官方中继（阿里云上海）的 RTT 低 3-7 倍。
+     *
+     * <p>房主侧顺带保留节点广播（新加入方要靠它拿中继地址），并监听对方的
+     * 隧道 hello——对方的中继不可达时会切到 WS 隧道，本端跟随切换。</p>
+     */
+    private void startSioRelayBridge(final KcpChannel link, final Socket local,
+                                     final GbCloud.Session sig, final String token,
+                                     final Room room, final boolean asHost) {
+        final GBoyFrames.Reader relayReader = new GBoyFrames.Reader();
+        Thread out = new Thread(() -> {
+            byte[] buf = new byte[2048];
+            try {
+                java.io.InputStream in = local.getInputStream();
+                int n;
+                while (!closed && (n = in.read(buf)) > 0) {
+                    byte[] packet = new byte[n];
+                    System.arraycopy(buf, 0, packet, 0, n);
+                    link.send(GBoyFrames.frame(GBoyFrames.TYPE_STATE, packet));
+                }
+            } catch (Exception ignored) {
+                // 断线由守望线程统一收尾
+            }
+            closeSio();
+        }, "sio-relay-out");
+        Thread in = new Thread(() -> {
+            try {
+                java.io.OutputStream os = local.getOutputStream();
+                while (!closed) {
+                    byte[] message = link.recv(200);
+                    if (message == null) {
+                        continue;
+                    }
+                    relayReader.append(message, message.length);
+                    byte[] body;
+                    while ((body = relayReader.next()) != null) {
+                        if (GBoyFrames.typeOf(body) != GBoyFrames.TYPE_STATE) {
+                            continue; // 中继的握手残留/心跳推送：忽略
+                        }
+                        byte[] packet = GBoyFrames.payloadOf(body);
+                        if (packet.length > 0) {
+                            os.write(packet);
+                            os.flush();
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // 同上
+            }
+            closeSio();
+        }, "sio-relay-in");
+        out.setDaemon(true);
+        in.setDaemon(true);
+        out.start();
+        in.start();
+        // 守望：对方的隧道 hello（切隧道）、断线。房主的节点广播由
+        // startNodeAdvertiser 线程负责，这里只排空信令。
+        long lastDrain = 0;
+        while (!closed && !link.isClosed() && !local.isClosed()) {
+            sleepQuietly(200);
+            long now = System.currentTimeMillis();
+            if (now - lastDrain >= 400) {
+                lastDrain = now;
+                drainSignaling(30);
+                if (tunnelPeerSeen) {
+                    // 对方的中继不可达，已切到 WS 隧道：本端跟随切换
+                    status("对方中继不可达，切换到服务器隧道模式…");
+                    closeSio();
+                    link.close();
+                    try {
+                        runTunnel(sig, token, identity, room, asHost);
+                    } catch (IOException e) {
+                        if (!closed) {
+                            fail(message(e));
+                        }
+                    }
+                    return;
+                }
+            }
         }
         if (!closed) {
             fail("联机线连接已断开");

@@ -25,6 +25,22 @@ QByteArray frame(int type, int value) {
 	return out;
 }
 
+QByteArray frame(int type, const QByteArray& payload) {
+	QByteArray out;
+	out.resize(int(4 + 2 + payload.size()));
+	putInt(&out, 0, quint32(2 + payload.size()));
+	putShort(&out, 4, type);
+	out.replace(6, payload.size(), payload);
+	return out;
+}
+
+QByteArray payloadOf(const QByteArray& body) {
+	if (body.size() <= 2) {
+		return QByteArray();
+	}
+	return body.mid(2);
+}
+
 QByteArray registerFrame(int playerCount, int baseStateCount) {
 	QByteArray out(16, 0);
 	putInt(&out, 0, 12);

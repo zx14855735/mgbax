@@ -44,6 +44,9 @@ QByteArray frame(int type);
 /** Frame carrying a single big endian int. */
 QByteArray frame(int type, int value);
 
+/** Frame carrying a raw payload (the length counts the two type bytes). */
+QByteArray frame(int type, const QByteArray& payload);
+
 /**
  * The registration frame the official client sends the moment the KCP
  * handshake completes: type 1, body: int playerCount, short 0, int
@@ -56,6 +59,9 @@ int typeOf(const QByteArray& body);
 
 /** The int that follows the message type, or 0 when the body is short. */
 int intOf(const QByteArray& body);
+
+/** The payload of a frame body, i.e. everything behind the type. */
+QByteArray payloadOf(const QByteArray& body);
 
 void putInt(QByteArray* out, int offset, quint32 value);
 void putShort(QByteArray* out, int offset, quint32 value);

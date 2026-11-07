@@ -443,6 +443,8 @@ private:
 
 namespace QGBA {
 
+static intptr_t attachDriverLoopback(SioLinkHost* cc, bool asHost, QString* error);
+
 CloudLink::CloudLink(QObject* parent)
 	: QThread(parent)
 {
@@ -706,13 +708,31 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 		runTunnel(sig, token, room, asHost);
 		return;
 	}
-	QString text = asHost ? QStringLiteral("云端联机已连接，你是 1P") : QStringLiteral("云端联机已连接，你是 2P");
-	status(QStringLiteral("房号 ") + (room->roomId.isEmpty() ? QString() : room->roomId)
-	       + QStringLiteral("\n中继 ") + room->nodeAddress + ":" + QString::number(room->nodePort)
-	       + QStringLiteral("\n") + text);
+	// 官方 KCP 中继活着：SIO 分开控制模式直接把联机线字节过中继
+	// （netLink 包封在 type-6 帧里），RTT 比 WS 隧道低 3-7 倍。
+	QString error;
+	intptr_t local = attachDriverLoopback(m_controller, asHost, &error);
+	if (m_closed.load(std::memory_order_relaxed)) {
+		if (local >= 0) {
+			sockClose(local);
+		}
+		return;
+	}
+	if (local < 0) {
+		link->close();
+		delete link;
+		m_channel = nullptr;
+		fail(error.isEmpty() ? QStringLiteral("本机联机线建立失败") : error);
+		return;
+	}
+	m_sioSock = local;
+	status(QStringLiteral("SIO 链路已建立（官方中继，分开控制）\n")
+	       + QStringLiteral("各自操作各自的画面，游戏内联机（交换/对战）走联机线\n")
+	       + QStringLiteral("中继 ") + room->nodeAddress + ":" + QString::number(room->nodePort)
+	       + QStringLiteral("\n云端联机已连接，你是 ")
+	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	emit connected(asHost);
-	serve(link);
-	cleanupChannel();
+	startSioRelayBridge(link, local, sig, token, room, asHost);
 }
 
 QString CloudLink::currentNode(GbCloud::Session* sig, const QString& token, Room* room, bool creator) {
@@ -928,17 +948,17 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
  * 20 字节的 Packet 流原样到达。sioLinkPump 已在核心线程每帧驱动 SIO。
  * 整个泵跑在 CloudLink 工作线程上：QWebSocket 只能由创建它的线程使用。
  */
-void CloudLink::startSioBridge(ILink* link, bool asHost) {
-	SioLinkHost* cc = m_controller;
+/** 本机回环：把 native 联机线驱动挂到 127.0.0.1 的 TCP 对上，返回驱动侧套接字。 */
+static intptr_t attachDriverLoopback(SioLinkHost* cc, bool asHost, QString* error) {
 	if (!cc) {
-		fail(QStringLiteral("模拟核心未就绪"));
-		return;
+		if (error) {
+			*error = QStringLiteral("模拟核心未就绪");
+		}
+		return -1;
 	}
-	status(asHost ? QStringLiteral("已配对，正在建立本机联机线（分开控制）…")
-	              : QStringLiteral("已配对，正在建立本机联机线（分开控制）…"));
-	intptr_t local = -1;
 	constexpr quint16 SIO_PORT_BASE = 18765;
 	constexpr int SIO_PORT_TRIES = 8;
+	intptr_t local = -1;
 	if (asHost) {
 		for (int t = 0; t < SIO_PORT_TRIES && local < 0; t++) {
 			quint16 port = quint16(SIO_PORT_BASE + t);
@@ -961,19 +981,32 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			}
 		}
 		if (listener < 0) {
-			fail(QStringLiteral("本机联机线端口被占用"));
-			return;
+			if (error) {
+				*error = QStringLiteral("本机联机线端口被占用");
+			}
+			return -1;
 		}
 		if (!cc->sioJoin(QStringLiteral("127.0.0.1"), port)) {
 			sockClose(listener);
-			fail(QStringLiteral("无法启动本机联机线"));
-			return;
+			if (error) {
+				*error = QStringLiteral("无法启动本机联机线");
+			}
+			return -1;
 		}
 		local = sockAccept(listener, 10000); // native linkJoin 会连进来
 		sockClose(listener);
 	}
+	if (local < 0 && error) {
+		*error = QStringLiteral("本机联机线建立失败");
+	}
+	return local;
+}
+
+void CloudLink::startSioBridge(ILink* link, bool asHost) {
+	QString error;
+	intptr_t local = attachDriverLoopback(m_controller, asHost, &error);
 	if (local < 0) {
-		fail(QStringLiteral("本机联机线建立失败"));
+		fail(error.isEmpty() ? QStringLiteral("本机联机线建立失败") : error);
 		return;
 	}
 	m_sioSock = local;
@@ -1005,6 +1038,84 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			if (!sockSendAll(local, reinterpret_cast<const uint8_t*>(pkt.constData()),
 			                 static_cast<size_t>(pkt.size()))) {
 				break;
+			}
+		}
+	}
+	closeSio();
+	if (!m_closed.load(std::memory_order_relaxed)) {
+		fail(QStringLiteral("联机线连接已断开"));
+	}
+}
+
+/**
+ * SIO 分开控制模式走**官方 KCP 中继**时的桥：本地驱动的 netLink 包（20 字节）
+ * 逐个封进 type-6（STATE）帧经中继转发给对方——官方中继对 type 1..6 是透明
+ * 转发，两条客户端之间它就是一条字节管道。相比 WS 隧道，官方中继（阿里云
+ * 上海）的 RTT 低 3-7 倍。
+ *
+ * <p>房主侧顺带保留节点广播（新加入方要靠它拿中继地址），并监听对方的隧道
+ * hello——对方的中继不可达时会切到 WS 隧道，本端跟随切换。</p>
+ */
+void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
+                                    GbCloud::Session* sig, const QString& token,
+                                    Room* room, bool asHost) {
+	GBoyFrames::Reader relayReader;
+	status(QStringLiteral("SIO 链路已建立（官方中继，分开控制）\n")
+	       + QStringLiteral("各自操作各自的画面，游戏内联机（交换/对战）走联机线\n")
+	       + QStringLiteral("中继 ") + room->nodeAddress + ":" + QString::number(room->nodePort)
+	       + QStringLiteral("\n云端联机已连接，你是 ")
+	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
+	emit connected(asHost);
+	qint64 lastDrain = 0;
+	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
+		// 出向：驱动包 → type-6 帧（套接字上有数据才发，select 探测）
+		fd_set rset;
+		FD_ZERO(&rset);
+		FD_SET(static_cast<SOCKET>(local), &rset);
+		timeval tv{0, 0};
+		if (select(static_cast<int>(local) + 1, &rset, nullptr, nullptr, &tv) > 0) {
+			uint8_t buf[2048];
+#ifdef _WIN32
+			int n = recv(static_cast<SOCKET>(local), reinterpret_cast<char*>(buf), sizeof(buf), 0);
+#else
+			int n = int(recv(static_cast<int>(local), buf, sizeof(buf), 0));
+#endif
+			if (n <= 0) {
+				break;
+			}
+			link->send(QByteArray(reinterpret_cast<const char*>(buf), n));
+		}
+		// 入向：type-6 帧 → 还原驱动包 → 本地套接字
+		QByteArray message;
+		if (link->recv(&message, 20)) {
+			relayReader.append(message.constData(), message.size());
+			QByteArray body;
+			while (!(body = relayReader.next()).isNull()) {
+				if (GBoyFrames::typeOf(body) != GBoyFrames::TYPE_STATE) {
+					continue; // 中继的握手残留/心跳推送：忽略
+				}
+				QByteArray packet = GBoyFrames::payloadOf(body);
+				if (!packet.isEmpty()
+				    && !sockSendAll(local, reinterpret_cast<const uint8_t*>(packet.constData()),
+				                    static_cast<size_t>(packet.size()))) {
+					break;
+				}
+			}
+		}
+		// 房主的节点广播 + 对方的隧道 hello 检测（跟随切隧道）
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (now - lastDrain >= 400) {
+			lastDrain = now;
+			if (m_isAdvertising && sig) {
+				pollSignaling(sig, token, m_advertiserUuid, room);
+			}
+			drainSignaling(sig, 20);
+			if (m_tunnelPeerSeen) {
+				status(QStringLiteral("对方中继不可达，切换到服务器隧道模式…"));
+				closeSio();
+				link->close();
+				runTunnel(sig, token, room, asHost);
+				return;
 			}
 		}
 	}

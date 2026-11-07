@@ -72,6 +72,15 @@ final class GBoyFrames {
         return out;
     }
 
+    /** Frame carrying a raw payload (the length counts the two type bytes). */
+    static byte[] frame(int type, byte[] payload) {
+        byte[] out = new byte[4 + 2 + payload.length];
+        putInt(out, 0, 2 + payload.length);
+        putShort(out, 4, type);
+        System.arraycopy(payload, 0, out, 6, payload.length);
+        return out;
+    }
+
     /**
      * The registration frame the official client sends the moment the KCP
      * handshake completes:
