@@ -1203,9 +1203,15 @@ public final class GBoyCloudLink {
                     marker.put("room", roomTag);
                 }
                 marker.put("from", wsNonce == null ? "" : wsNonce);
-                marker.put("d",
-                        android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
-                sig.send(sendMessage(token, uuid, marker.toString()));
+                // base64 路径同样切片：多帧拼包时 28 字符会变 56，长信封也会破
+                // 100。每片独立 base64，对端逐条解码后按顺序喂回流式拆包器。
+                for (int off = 0; off < frame.length; off += TUNNEL_CHUNK_BYTES) {
+                    int end = Math.min(off + TUNNEL_CHUNK_BYTES, frame.length);
+                    marker.put("d", android.util.Base64.encodeToString(
+                            java.util.Arrays.copyOfRange(frame, off, end),
+                            android.util.Base64.NO_WRAP));
+                    sig.send(sendMessage(token, uuid, marker.toString()));
+                }
             } catch (Exception e) {
                 closed = true;
                 error = "服务器隧道发送失败：" + e.getMessage();

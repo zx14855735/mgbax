@@ -374,11 +374,18 @@ public:
 			marker.insert(QStringLiteral("room"), m_roomTag);
 		}
 		marker.insert(QStringLiteral("from"), m_nonce);
-		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
-		QString error;
-		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))), &error)) {
-			m_closed = true;
-			m_error = QStringLiteral("服务器隧道发送失败：%1").arg(error);
+		// base64 路径同样切片：多帧拼包时 28 字符会变 56，长信封也会破 100。
+		// 每片独立 base64，对端逐条解码后按顺序喂回流式拆包器。
+		for (int off = 0; off < payload.size(); off += TUNNEL_CHUNK_BYTES) {
+			QJsonObject chunk = marker;
+			chunk.insert(QStringLiteral("d"), QString::fromLatin1(
+			                                    payload.mid(off, TUNNEL_CHUNK_BYTES).toBase64()));
+			QString error;
+			if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(chunk))), &error)) {
+				m_closed = true;
+				m_error = QStringLiteral("服务器隧道发送失败：%1").arg(error);
+				return;
+			}
 		}
 	}
 
