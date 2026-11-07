@@ -313,18 +313,52 @@ public final class GBoyCloudLink {
             }
         }
         KcpChannel link = null;
-        if (room.nodeAddress != null && room.nodePort > 0) {
-            final String currentRoom = room.roomId;
-            final boolean creator = asHost;
-            link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
-                    new NodeQuery() {
-                        @Override
-                        public String query() {
-                            return currentNode(sig, token, room, creator);
-                        }
-                    }, RELAY_WINDOW_MS);
-        } else {
-            status("没有可用的中继地址，直接使用服务器隧道模式");
+        // 【中继节点重生】中继节点时好时坏（有时秒回有时完全不响应）。
+        // 握不上不立刻放弃：解散旧房间重新创建拿新节点再试，最多 3 轮。
+        for (int relayAttempt = 0; relayAttempt < 3 && link == null && !closed; relayAttempt++) {
+            if (relayAttempt > 0) {
+                status("中继节点没有回应（第 " + relayAttempt + " 次），解散旧房间重新创建…");
+                room.nodeAddress = null;
+                room.nodePort = 0;
+                // 解散旧房间拿新节点：join → leave → create
+                try {
+                    if (room.roomId != null && !room.roomId.isEmpty()) {
+                        send(sig, json("join_room", token, room.roomId), 1500);
+                        send(sig, json("leave_room", token, null), 1500);
+                        Thread.sleep(800);
+                    }
+                    send(sig, createJson(token), 2500);
+                    waitForRoomId(sig, room, 6000);
+                    if (room.nodeAddress == null || room.nodePort <= 0) {
+                        send(sig, createJson(token), 2500);
+                        waitForRoom(sig, room, null, ROOM_WAIT_MS);
+                    }
+                    send(sig, json("join_room", token, room.roomId), 1500);
+                    send(sig, json("ready", token, null), 1200);
+                    send(sig, settingsJson(token, room.roomId), 1500);
+                    send(sig, createJson(token), 2500);
+                    waitForRoom(sig, room, null, ROOM_WAIT_MS);
+                } catch (Exception e) {
+                    Log.i(TAG, "relay retry room dance failed: " + e.getMessage());
+                }
+                if (room.nodeAddress == null || room.nodePort <= 0) {
+                    continue;
+                }
+                status("新中继节点 " + room.nodeAddress + ":" + room.nodePort + "，正在重试…");
+            }
+            if (room.nodeAddress != null && room.nodePort > 0) {
+                final String currentRoom = room.roomId;
+                final boolean creator = asHost;
+                link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
+                        new NodeQuery() {
+                            @Override
+                            public String query() {
+                                return currentNode(sig, token, room, creator);
+                            }
+                        }, RELAY_WINDOW_MS);
+            } else {
+                status("没有可用的中继地址，直接使用服务器隧道模式");
+            }
         }
         if (closed) {
             if (link != null) {

@@ -691,11 +691,64 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 		}
 	}
 	KcpChannel* link = nullptr;
-	if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
-		link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
-		                      RELAY_WINDOW_MS);
-	} else {
-		status(QStringLiteral("没有可用的中继地址，直接使用服务器隧道模式"));
+	// 【中继节点重生】中继节点时好时坏（有时秒回有时完全不响应）。
+	// 握不上不立刻放弃：解散旧房间重新创建拿新节点再试，最多 3 轮。
+	for (int relayAttempt = 0; relayAttempt < 3 && !link && !m_closed.load(std::memory_order_relaxed); relayAttempt++) {
+		if (relayAttempt > 0) {
+			status(QStringLiteral("中继节点没有回应（第 %1 次），解散旧房间重新创建…").arg(relayAttempt));
+			room->nodeAddress.clear();
+			room->nodePort = 0;
+			// 解散旧房间拿新节点（和 hostCreateRoom 同一支舞，但不 throw）。
+			try {
+				sig->sendText(wsText(createJson(token, gameName())));
+				waitAndProcess(2500);
+				waitForRoomId(sig, room, 5000);
+				if (!room->roomId.isEmpty()) {
+					sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
+					waitAndProcess(1500);
+					sig->sendText(wsText(json(QStringLiteral("leave_room"), token, QString())));
+					waitAndProcess(1500);
+					waitAndProcess(800);
+				}
+				Room fresh;
+				for (int attempt = 1; attempt <= 3 && fresh.roomId.isEmpty(); attempt++) {
+					sig->sendText(wsText(createJson(token, gameName())));
+					waitAndProcess(2500);
+					waitForRoomId(sig, &fresh, 6000);
+				}
+				if (fresh.roomId.isEmpty()) {
+					status(QStringLiteral("重试创建房间失败"));
+					continue;
+				}
+				room->roomId = fresh.roomId;
+				room->nodeAddress = fresh.nodeAddress;
+				room->nodePort = fresh.nodePort;
+				sig->sendText(wsText(json(QStringLiteral("join_room"), token, room->roomId)));
+				waitAndProcess(1500);
+				sig->sendText(wsText(json(QStringLiteral("ready"), token, QString())));
+				waitAndProcess(1200);
+				sig->sendText(wsText(settingsJson(token, room->roomId)));
+				waitAndProcess(1500);
+				sig->sendText(wsText(createJson(token, gameName())));
+				waitAndProcess(2500);
+				waitForRoom(sig, room, QString(), ROOM_WAIT_MS);
+			} catch (const std::exception& e) {
+				// 房间舞步失败不算致命：继续下一轮或回落隧道
+				status(QStringLiteral("重试创建房间出错：%1").arg(QString::fromUtf8(e.what())));
+				continue;
+			}
+			if (room->nodeAddress.isEmpty() || room->nodePort <= 0) {
+				continue;
+			}
+			status(QStringLiteral("新中继节点 %1:%2，正在重试…")
+			       .arg(room->nodeAddress).arg(room->nodePort));
+		}
+		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+			link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
+			                      RELAY_WINDOW_MS);
+		} else {
+			status(QStringLiteral("没有可用的中继地址，直接使用服务器隧道模式"));
+		}
 	}
 	if (m_closed.load(std::memory_order_relaxed)) {
 		if (link) {
