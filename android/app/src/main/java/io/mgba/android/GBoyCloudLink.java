@@ -62,6 +62,8 @@ public final class GBoyCloudLink {
     private static final long KEY_INTERVAL_MS = 50;
     /** Tunnel hello markers are re-sent at this pace until the peer answers. */
     private static final long TUNNEL_HELLO_MS = 2000;
+    /** 紧凑信封单条最大载荷：20 字节 → 40 hex，整条 84 字符 < 100 字符上限。 */
+    private static final int TUNNEL_CHUNK_BYTES = 20;
     /** Local loopback ports for the SIO link bridge (分开控制模式). */
     private static final int SIO_PORT_BASE = 18765;
     private static final int SIO_PORT_TRIES = 8;
@@ -1185,16 +1187,24 @@ public final class GBoyCloudLink {
                         marker.put("r", roomTag);
                     }
                     marker.put("o", wsNonce == null ? "" : wsNonce);
-                    marker.put("d", toHex(frame));
-                } else {
-                    marker.put("gboy_ws", "f");
-                    if (!roomTag.isEmpty()) {
-                        marker.put("room", roomTag);
+                    // SIO 层可能一次吐出多帧拼在一起的载荷（实测两帧 40 字节 →
+                    // 80 个 hex 字符 → 整条 124 字符被服务器拒收）。信道有序可靠，
+                    // 按 20 字节切片分条发送，对端把字节按到达顺序喂回流式拆包器
+                    // 即可无损还原。
+                    for (int off = 0; off < frame.length; off += TUNNEL_CHUNK_BYTES) {
+                        int end = Math.min(off + TUNNEL_CHUNK_BYTES, frame.length);
+                        marker.put("d", toHex(java.util.Arrays.copyOfRange(frame, off, end)));
+                        sig.send(sendMessage(token, uuid, marker.toString()));
                     }
-                    marker.put("from", wsNonce == null ? "" : wsNonce);
-                    marker.put("d",
-                            android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
+                    return;
                 }
+                marker.put("gboy_ws", "f");
+                if (!roomTag.isEmpty()) {
+                    marker.put("room", roomTag);
+                }
+                marker.put("from", wsNonce == null ? "" : wsNonce);
+                marker.put("d",
+                        android.util.Base64.encodeToString(frame, android.util.Base64.NO_WRAP));
                 sig.send(sendMessage(token, uuid, marker.toString()));
             } catch (Exception e) {
                 closed = true;

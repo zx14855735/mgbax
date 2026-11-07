@@ -54,6 +54,8 @@ constexpr int RELAY_WAIT_MS = 300000;
 constexpr qint64 RELAY_WINDOW_MS = 12000;
 /** Tunnel hello markers are re-sent at this pace until the peer answers. */
 constexpr qint64 TUNNEL_HELLO_MS = 2000;
+/** 紧凑信封单条最大载荷：20 字节 → 40 hex，整条 84 字符 < 100 字符上限。 */
+constexpr int TUNNEL_CHUNK_BYTES = 20;
 /** How long to wait for the peer's first key state before starting anyway. */
 constexpr int PEER_KEY_WAIT_MS = 4000;
 
@@ -351,15 +353,28 @@ public:
 				marker.insert(QStringLiteral("r"), m_roomTag);
 			}
 			marker.insert(QStringLiteral("o"), m_nonce);
-			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toHex()));
-		} else {
-			marker.insert(QStringLiteral("gboy_ws"), QStringLiteral("f"));
-			if (!m_roomTag.isEmpty()) {
-				marker.insert(QStringLiteral("room"), m_roomTag);
+			// SIO 层可能一次吐出多帧拼在一起的载荷（实测两帧 40 字节 → 80 个
+			// hex 字符 → 整条 124 字符被服务器拒收）。信道有序可靠，按 20 字节
+			// 切片分条发送，对端把字节按到达顺序喂回流式拆包器即可无损还原。
+			for (int off = 0; off < payload.size(); off += TUNNEL_CHUNK_BYTES) {
+				QJsonObject chunk = marker;
+				chunk.insert(QStringLiteral("d"), QString::fromLatin1(
+				                                    payload.mid(off, TUNNEL_CHUNK_BYTES).toHex()));
+				QString error;
+				if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(chunk))), &error)) {
+					m_closed = true;
+					m_error = QStringLiteral("服务器隧道发送失败：%1").arg(error);
+					return;
+				}
 			}
-			marker.insert(QStringLiteral("from"), m_nonce);
-			marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
+			return;
 		}
+		marker.insert(QStringLiteral("gboy_ws"), QStringLiteral("f"));
+		if (!m_roomTag.isEmpty()) {
+			marker.insert(QStringLiteral("room"), m_roomTag);
+		}
+		marker.insert(QStringLiteral("from"), m_nonce);
+		marker.insert(QStringLiteral("d"), QString::fromLatin1(payload.toBase64()));
 		QString error;
 		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))), &error)) {
 			m_closed = true;
