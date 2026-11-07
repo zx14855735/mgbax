@@ -1069,6 +1069,11 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 	Q_UNUSED(token);
 	// 协商是对称的：谁先打通谁先发 s，另一方打通后补 s2。
 	Q_UNUSED(asHost);
+	// 排障开关：设了 MGBAX_NO_DIRECT=1 就只用服务器隧道（对称 NAT、
+	// 企业网、或者怀疑直连有问题时用）。
+	if (!qEnvironmentVariableIsEmpty("MGBAX_NO_DIRECT")) {
+		return nullptr;
+	}
 	WsLink* tunnel = dynamic_cast<WsLink*>(tunnelLink);
 	if (!tunnel) {
 		return nullptr;
@@ -1363,7 +1368,22 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 	int gapCount = 0;
 	int gapPeak = 0;
 	qint64 lastReport = QDateTime::currentMSecsSinceEpoch();
-	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
+	// 直连是"锦上添花"层：它断了不该让整局游戏结束。下面的 cur 指向当前
+	// 真正在用的通道，直连被看门狗关掉时自动滑回服务器隧道，本地驱动那
+	// 个 socket 一直开着，对游戏来说只是变慢，不是断线。
+	ILink* cur = link;
+	while (!m_closed.load(std::memory_order_relaxed) && m_sioSock >= 0) {
+		if (cur->isClosed()) {
+			if (cur != m_tunnel && m_tunnel && !m_tunnel->isClosed()) {
+				GbCloud::debugLog(QStringLiteral("[sio-bridge] me=%1 直连已断开，回落到服务器隧道")
+				                          .arg(m_wsNonce));
+				status(QStringLiteral("直连已断开，已自动回落到服务器隧道\n")
+				       + QStringLiteral("联机不会中断，只是延迟会变高"));
+				cur = m_tunnel;
+				continue;
+			}
+			break;
+		}
 		fd_set rset;
 		FD_ZERO(&rset);
 		FD_SET(static_cast<SOCKET>(local), &rset);
@@ -1381,10 +1401,10 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			if (!lastSentMs) {
 				lastSentMs = QDateTime::currentMSecsSinceEpoch();
 			}
-			link->send(QByteArray(reinterpret_cast<const char*>(buf), n));
+			cur->send(QByteArray(reinterpret_cast<const char*>(buf), n));
 		}
 		QByteArray pkt;
-		if (link->recv(&pkt, 20)) {
+		if (cur->recv(&pkt, 20)) {
 			if (lastSentMs) {
 				int gap = int(QDateTime::currentMSecsSinceEpoch() - lastSentMs);
 				lastSentMs = 0;
@@ -1407,8 +1427,8 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 				GbCloud::debugLog(QStringLiteral("[sio-rtt] me=%1 n=%2 avg=%3ms peak=%4ms via=%5")
 				                          .arg(m_wsNonce).arg(gapCount).arg(gapSum / gapCount)
 				                          .arg(gapPeak)
-				                          .arg(m_tunnel && m_tunnel != link ? QStringLiteral("p2p")
-				                                                            : QStringLiteral("tunnel")));
+				                          .arg(cur != m_tunnel ? QStringLiteral("p2p")
+				                                               : QStringLiteral("tunnel")));
 				lastReport = now;
 				gapSum = 0;
 				gapCount = 0;
@@ -1417,7 +1437,7 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 		}
 		// 走直连时隧道本身没人读，定期排空一下，别让服务器认为我们掉线
 		// （大厅会踢掉不响应心跳的连接，而直连断开时要靠隧道继续玩）。
-		if (m_tunnel && m_tunnel != link) {
+		if (m_tunnel && m_tunnel != cur) {
 			qint64 now = QDateTime::currentMSecsSinceEpoch();
 			if (now - lastTunnelPump >= 500) {
 				lastTunnelPump = now;

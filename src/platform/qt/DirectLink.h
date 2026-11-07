@@ -124,6 +124,7 @@ private:
 	qint64 m_punchStart = 0;
 	qint64 m_lastProbe = 0;
 	qint64 m_lastKeepalive = 0;
+	qint64 m_lastRecv = 0;
 	quint16 m_probeSeq = 0;
 
 	quint16 m_nextSeq = 0;

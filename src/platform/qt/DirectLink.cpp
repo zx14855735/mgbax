@@ -42,6 +42,11 @@ constexpr int HEADER_BYTES = 18;
 constexpr qint64 PROBE_MS = 100;
 /** 连通后的保活间隔（同时维持 NAT 映射）。 */
 constexpr qint64 KEEPALIVE_MS = 1000;
+/**
+ * 连通后多久收不到任何包就判定直连已死。保活是 1 秒一发，正常只会丢
+ * 三五包，6 秒还没东西回来基本可以断定对端真的不可达了。
+ */
+constexpr qint64 IDLE_CLOSE_MS = 6000;
 
 void put16(char* p, quint16 v) {
 	p[0] = char((v >> 8) & 0xFF);
@@ -389,9 +394,11 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 		m_peer = from;
 		m_peerText = candidateText(from.ip, from.port);
 		m_havePeer = true;
+		m_lastRecv = nowMs();
 	}
 	m_peer = from;
 	m_havePeer = true;
+	m_lastRecv = nowMs();
 
 	if (type == TYPE_RESP) {
 		if (payload.size() >= 4) {
@@ -513,6 +520,12 @@ bool DirectLink::pump(int timeoutMs) {
 		sendPacket(TYPE_PROBE, 0, stamp, m_peer);
 	}
 	flushRetransmits(now);
+	// 空闲看门狗：对端掉线（切基站、NAT 表被清、程序退出）时 UDP 不会
+	// 报错，只会在重传里越耗越久。超过 IDLE_CLOSE_MS 一个包都没收到就
+	// 主动关掉，让上层回落到服务器隧道——总比游戏卡在等对端强。
+	if (m_connected && m_lastRecv && now - m_lastRecv > IDLE_CLOSE_MS) {
+		m_closed = true;
+	}
 	return got;
 }
 

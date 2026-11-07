@@ -846,7 +846,170 @@ public final class GBoyCloudLink {
             throw new IOException(link.errorMessage() == null
                     ? "隧道等待对方超时" : link.errorMessage());
         }
-        startSioBridge(link, asHost);
+        GBoyDirectLink direct = tryDirectLink(link, room);
+        startSioBridge(direct != null ? direct : link, link, asHost);
+        if (direct != null) {
+            direct.close();
+        }
+    }
+
+    /**
+     * 直连（P2P）协商：拿 UDP 打洞换掉服务器中转那一跳。协议与 PC 侧
+     * {@code DirectLink.cpp} 完全一致，安卓↔PC 也能互连。
+     *
+     * <p>标记都走隧道那条 send_message：{@code p}=我的候选地址，{@code s}=我
+     * 已打通请切过来，{@code s2}=我同意，{@code s3}=放弃。协商是对称的——
+     * 谁先打通谁先发 {@code s}，两边都表态才切，单条消息丢了下一轮能补上。</p>
+     *
+     * <p>返回 {@code null} 表示继续用隧道（对称 NAT、企业网、对端是老版本）。</p>
+     */
+    private GBoyDirectLink tryDirectLink(WsLink tunnel, Room room) {
+        if (System.getenv("MGBAX_NO_DIRECT") != null) {
+            return null;
+        }
+        GBoyDirectLink direct = new GBoyDirectLink();
+        if (!direct.bind()) {
+            return null;
+        }
+        java.util.List<String> mine = direct.candidates();
+        Log.i(TAG, "[direct] me=" + wsNonce + " 候选 " + mine + " / 本地端口 " + direct.localPort());
+        status("正在协商直连加速（P2P，避开服务器中转）…");
+
+        long started = System.currentTimeMillis();
+        long deadline = started + 9000;
+        long lastAnnounce = 0;
+        long lastSwitch = 0;
+        long connectedAt = 0;
+        int announceCount = 0;
+        boolean peerCandidates = false;
+        boolean peerWants = false;
+        boolean peerAgreed = false;
+        boolean switchSent = false;
+        boolean approved = false;
+        boolean aborted = false;
+        try {
+            while (!closed && System.currentTimeMillis() < deadline) {
+                long now = System.currentTimeMillis();
+                tunnel.recv(20);
+                JSONObject marker;
+                while ((marker = tunnel.pollControl()) != null) {
+                    String kind = marker.optString("w", "");
+                    if ("p".equals(kind)) {
+                        if (!peerCandidates) {
+                            String raw = marker.optString("a", "");
+                            java.util.List<String> peer = new java.util.ArrayList<>();
+                            for (String part : raw.split(",")) {
+                                if (!part.trim().isEmpty()) {
+                                    peer.add(part.trim());
+                                }
+                            }
+                            if (!peer.isEmpty()) {
+                                Log.i(TAG, "[direct] me=" + wsNonce + " 对端候选 " + peer);
+                                direct.setPeerCandidates(peer);
+                                direct.startPunching();
+                                peerCandidates = true;
+                            }
+                        }
+                    } else if ("s".equals(kind)) {
+                        peerWants = true;
+                        if (direct.isConnected()) {
+                            sendDirectMarker(tunnel, room, "s2", "");
+                        }
+                    } else if ("s2".equals(kind)) {
+                        peerAgreed = true;
+                    } else if ("s3".equals(kind)) {
+                        aborted = true;
+                    }
+                }
+                if (aborted) {
+                    break;
+                }
+                if (!peerCandidates && now - started > 6000) {
+                    // 对端是老版本，不认识直连协商：不要拖住开局
+                    aborted = true;
+                    break;
+                }
+                // 候选公告一直发到决定切换为止：单条 send_message 可能因为对端
+                // 当时正在做 STUN（几百毫秒不读 socket）而错过，只发一次就会
+                // 双方僵住。每轮轮换候选顺序，内容不同，不会被当重复消息丢掉。
+                if (now - started <= 4000 && now - lastAnnounce >= 600) {
+                    lastAnnounce = now;
+                    java.util.List<String> kept = new java.util.ArrayList<>(
+                            mine.subList(0, Math.min(3, mine.size())));
+                    if (kept.size() > 1) {
+                        int rot = announceCount++ % kept.size();
+                        for (int i = 0; i < rot; i++) {
+                            kept.add(kept.remove(0));
+                        }
+                    }
+                    StringBuilder joined = new StringBuilder();
+                    for (String part : kept) {
+                        if (joined.length() > 0) {
+                            joined.append(',');
+                        }
+                        joined.append(part);
+                    }
+                    sendDirectMarker(tunnel, room, "p", joined.toString());
+                }
+                if (direct.isConnected()) {
+                    if (connectedAt == 0) {
+                        connectedAt = now;
+                    }
+                    // 双方都连通、且至少有一方表态过才真切换
+                    if ((peerWants || peerAgreed) && now - connectedAt >= 150) {
+                        approved = true;
+                    }
+                    // RTT 反而更差就留在隧道（例如一端挂着绕远的 VPN）
+                    boolean better = direct.rttMs() <= 0 || direct.rttMs() < 150;
+                    if (!approved && better && now - lastSwitch >= 500) {
+                        lastSwitch = now;
+                        switchSent = true;
+                        sendDirectMarker(tunnel, room, "s", "");
+                    }
+                }
+                if (approved) {
+                    break;
+                }
+                direct.pump(peerCandidates ? 20 : 5);
+            }
+        } catch (Exception e) {
+            Log.i(TAG, "[direct] 协商异常：" + e.getMessage());
+        }
+        if (!approved) {
+            Log.i(TAG, "[direct] me=" + wsNonce + " 放弃直连：peerCandidates=" + peerCandidates
+                    + " connected=" + direct.isConnected() + " switchSent=" + switchSent
+                    + " peerWants=" + peerWants + " peerAgreed=" + peerAgreed
+                    + " aborted=" + aborted);
+            if (switchSent) {
+                sendDirectMarker(tunnel, room, "s3", "");
+            }
+            direct.close();
+            return null;
+        }
+        status("直连加速已启用（P2P " + direct.peerText() + "，RTT " + direct.rttMs() + " ms）\n"
+                + "数据不再经过服务器中转，延迟比隧道低一个数量级");
+        return direct;
+    }
+
+    /** 发一条直连协商标记；超过 100 字符先把房间标记去掉（服务器有长度上限）。 */
+    private void sendDirectMarker(WsLink tunnel, Room room, String kind, String payload) {
+        try {
+            JSONObject marker = new JSONObject();
+            marker.put("w", kind);
+            marker.put("o", wsNonce == null ? "" : wsNonce);
+            if (room != null && room.roomId != null && !room.roomId.isEmpty()) {
+                marker.put("r", room.roomId);
+            }
+            if (payload != null && !payload.isEmpty()) {
+                marker.put("a", payload);
+            }
+            if (marker.toString().length() > 94) {
+                marker.remove("r");
+            }
+            tunnel.sendMarker(marker);
+        } catch (Exception e) {
+            Log.i(TAG, "direct marker failed: " + e.getMessage());
+        }
     }
 
     /**
@@ -923,7 +1086,7 @@ public final class GBoyCloudLink {
         return local;
     }
 
-    private void startSioBridge(WsLink link, boolean asHost) throws IOException {
+    private void startSioBridge(Link link, WsLink tunnel, boolean asHost) throws IOException {
         Socket local = attachDriverLoopback(asHost);
         sioSock = local;
         status("SIO 链路已建立（分开控制）\n"
@@ -932,6 +1095,11 @@ public final class GBoyCloudLink {
                 + "云端联机已连接，你是 " + (asHost ? "1P" : "2P"));
         hooks.onConnected(asHost, null);
         final Socket sock = local;
+        // 直连是"锦上添花"层：它断了不该让整局结束。active 指向当前真正在
+        // 用的通道，直连被看门狗关掉时滑回服务器隧道，本地驱动那个 socket
+        // 一直开着，对游戏来说只是变慢，不是断线。
+        final java.util.concurrent.atomic.AtomicReference<Link> active =
+                new java.util.concurrent.atomic.AtomicReference<>(link);
         Thread out = new Thread(() -> {
             byte[] buf = new byte[2048];
             try {
@@ -940,7 +1108,7 @@ public final class GBoyCloudLink {
                 while (!closed && (n = in.read(buf)) > 0) {
                     byte[] chunk = new byte[n];
                     System.arraycopy(buf, 0, chunk, 0, n);
-                    link.send(chunk);
+                    active.get().send(chunk);
                 }
             } catch (Exception ignored) {
                 // 断线由守望线程统一收尾
@@ -951,7 +1119,7 @@ public final class GBoyCloudLink {
             try {
                 java.io.OutputStream os = sock.getOutputStream();
                 while (!closed) {
-                    byte[] pkt = link.recv(100);
+                    byte[] pkt = active.get().recv(100);
                     if (pkt != null && pkt.length > 0) {
                         os.write(pkt);
                         os.flush();
@@ -966,8 +1134,38 @@ public final class GBoyCloudLink {
         in.setDaemon(true);
         out.start();
         in.start();
-        // 守望：任何一侧断开都收尾
-        while (!closed && !link.isClosed() && !sock.isClosed()) {
+        // 走直连时隧道本身没人读，定期排空一下，别让服务器认为我们掉线
+        // （大厅会踢掉不响应心跳的连接，而直连断开时要靠隧道继续玩）。
+        if (tunnel != null) {
+            Thread keepalive = new Thread(() -> {
+                while (!closed) {
+                    sleepQuietly(500);
+                    if (closed) {
+                        return;
+                    }
+                    if (active.get() != tunnel) {
+                        try {
+                            tunnel.recv(0);
+                        } catch (Exception ignored) {
+                            return;
+                        }
+                    }
+                }
+            }, "sio-tunnel-keepalive");
+            keepalive.setDaemon(true);
+            keepalive.start();
+        }
+        // 守望：任何一侧断开都收尾；直连先死就先回落隧道
+        while (!closed && !sock.isClosed()) {
+            if (active.get().isClosed()) {
+                if (active.get() != tunnel && tunnel != null && !tunnel.isClosed()) {
+                    Log.i(TAG, "[sio-bridge] 直连已断开，回落到服务器隧道");
+                    status("直连已断开，已自动回落到服务器隧道\n联机不会中断，只是延迟会变高");
+                    active.set(tunnel);
+                    continue;
+                }
+                break;
+            }
             sleepQuietly(1000);
         }
         if (!closed) {
@@ -1136,6 +1334,12 @@ public final class GBoyCloudLink {
          * every frame.
          */
         private final java.util.ArrayDeque<byte[]> inbox = new java.util.ArrayDeque<>();
+        /**
+         * 数据帧之外的控制标记（直连协商的 p/s/s2/s3）。单独排队，等
+         * {@link #pollControl()} 取——它们不是联机线字节，混进 inbox 会让
+         * 游戏收到垃圾。
+         */
+        private final java.util.ArrayDeque<JSONObject> control = new java.util.ArrayDeque<>();
         private volatile boolean closed;
         private volatile boolean peerSeen;
         private volatile String error;
@@ -1161,6 +1365,24 @@ public final class GBoyCloudLink {
 
         String errorMessage() {
             return error;
+        }
+
+        /** 直接推一条自定义标记（直连协商用），走同一个 send_message 信道。 */
+        void sendMarker(JSONObject marker) {
+            if (closed) {
+                return;
+            }
+            try {
+                lastFrameSend = System.currentTimeMillis();
+                sig.send(sendMessage(token, uuid, marker.toString()));
+            } catch (Exception e) {
+                Log.i(TAG, "marker send failed: " + e.getMessage());
+            }
+        }
+
+        /** 取下一条控制标记，没有就返回 null。 */
+        JSONObject pollControl() {
+            return control.pollFirst();
         }
 
         @Override
@@ -1299,9 +1521,10 @@ public final class GBoyCloudLink {
                 return; // 其它推送（player_joined 等）在数据阶段无关紧要
             }
             String message = object.optString("message", null);
-            // 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉
+            // 短信封数据帧没有 gboy_ws 键，只认它会把新版流量全漏掉；
+            // 直连协商的 p/s/s2/s3 也没有 gboy_ws，所以这里只按 "w" 键放行。
             if (message == null || (message.indexOf("gboy_ws") < 0
-                    && !message.contains("\"w\":\"f\""))) {
+                    && !message.contains("\"w\":\""))) {
                 return;
             }
             Log.i(TAG, "tunnel push: " + message.substring(0,
@@ -1328,8 +1551,11 @@ public final class GBoyCloudLink {
             if (from.isEmpty()) {
                 from = marker.optString("o", "");
             }
-            if (!from.isEmpty() && from.equals(wsNonce == null ? "" : wsNonce)) {
-                return; // 服务器把自己的推送回显了回来
+            // 服务器会把自己的推送回显回来。直连协商的 o 只带自己 nonce 的前缀，
+            // 所以两种比法都要认。
+            String self = wsNonce == null ? "" : wsNonce;
+            if (!from.isEmpty() && (from.equals(self) || self.startsWith(from))) {
+                return;
             }
             // 对端标记带 "c":1 说明它也是新版：能解十六进制、也认短键名信封，
             // 之后改发 hex 短信封。老版本没有这个键，保持 base64 长信封。
@@ -1354,6 +1580,9 @@ public final class GBoyCloudLink {
                 }
             } else if ("accept".equals(kind)) {
                 peerSeen = true;
+            } else if (!kind.isEmpty()) {
+                // 直连协商标记：交给 tryDirectLink 处理，别当成联机线字节
+                control.addLast(marker);
             }
         }
     }
