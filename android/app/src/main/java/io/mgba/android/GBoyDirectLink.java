@@ -75,7 +75,9 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     /** 连通后的保活间隔（同时维持 NAT 映射）。 */
     private static final long KEEPALIVE_MS = 1000;
     /** 连通后多久收不到任何包就判定直连已死，交给上层回落隧道。 */
-    private static final long IDLE_CLOSE_MS = 6000;
+    // 宝可梦进对战时会转场并加载双方队伍，游戏有几秒完全不发 SIO 字；
+    // 6s 会把这段静默误判成掉线，导致两端一个回落隧道一个还在直连。
+    private static final long IDLE_CLOSE_MS = 30000;
     /** STUN 最多等这么久；手机切网/无 STUN 出口时不要拖住开局。 */
     private static final int STUN_TIMEOUT_MS = 900;
 

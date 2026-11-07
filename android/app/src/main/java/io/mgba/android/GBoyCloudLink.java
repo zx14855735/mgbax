@@ -1119,16 +1119,25 @@ public final class GBoyCloudLink {
             try {
                 java.io.OutputStream os = sock.getOutputStream();
                 while (!closed) {
-                    byte[] pkt = active.get().recv(100);
-                    if (pkt != null && pkt.length > 0) {
-                        os.write(pkt);
-                        os.flush();
+                    try {
+                        byte[] pkt = active.get().recv(100);
+                        if (pkt != null && pkt.length > 0) {
+                            os.write(pkt);
+                            os.flush();
+                        }
+                    } catch (Exception e) {
+                        // 直连 recv 的一次瞬时异常绝不能终结整局：以前这里
+                        // 直接 closeSio()，会把本地驱动 socket 和隧道一起关掉，
+                        // 守望线程随即判「联机线连接已断开」，而此时 PC 端往往
+                        // 只是刚回落到隧道、还好好地在发帧。吞掉并短暂重试，
+                        // 由守望线程统一做直连→隧道切换。
+                        Log.i(TAG, "[sio-bridge] recv transient: " + e);
+                        sleepQuietly(50);
                     }
                 }
             } catch (Exception ignored) {
-                // 同上
+                // 只有本地 socket 本身不可用了才走到这里
             }
-            closeSio();
         }, "sio-bridge-in");
         out.setDaemon(true);
         in.setDaemon(true);

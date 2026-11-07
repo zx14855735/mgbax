@@ -46,7 +46,11 @@ constexpr qint64 KEEPALIVE_MS = 1000;
  * 连通后多久收不到任何包就判定直连已死。保活是 1 秒一发，正常只会丢
  * 三五包，6 秒还没东西回来基本可以断定对端真的不可达了。
  */
-constexpr qint64 IDLE_CLOSE_MS = 6000;
+/* 宝可梦进入对战时会先转场、加载双方队伍数据，期间游戏有几秒完全不发
+ * SIO 字。原来 6s 的空闲看门狗会把它误判成掉线，一端先回落隧道、另一端
+ * 还在直连，两边通道就此错开，游戏随即报「通信错误」。30s 足够覆盖转场，
+ * PROBE 心跳每 1s 一次仍会持续给 NAT 映射保活。 */
+constexpr qint64 IDLE_CLOSE_MS = 30000;
 
 void put16(char* p, quint16 v) {
 	p[0] = char((v >> 8) & 0xFF);
