@@ -932,7 +932,7 @@ static int dualTest(const QString& rom, const QString& sav) {
 					} else {
 						sd->dir = (py > sd->ty) ? 64 : 128;
 					}
-					hold = 18;
+					hold = 40;   /* 一格走路动画约 16 帧，留足余量 */
 					keys = sd->dir;
 				}
 				if (phase == 2) {
