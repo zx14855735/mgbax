@@ -486,6 +486,7 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
  * word back tagged with it - the host's strict match then never misses.
  */
 static int sioWaitMs(struct SioLink* sio);
+static int sioPeerWaitMs(struct SioLink* sio);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct SioLink* sio = (struct SioLink*) user;
@@ -516,14 +517,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * a connection error at the start of every battle/trade. Outside an
 	 * active exchange keep the historical non-blocking spin so an idle link
 	 * never drags the game's frame rate down. */
-	int waitMs = 0;
-	/* 判据不能是「本机 500ms 内推过字」：第一轮从机还没推过任何字，必然
-	 * 判为不活跃而走自旋，自旋会把模拟时钟推进得比墙钟快几百倍，游戏的
-	 * 帧计数瞬间超出 LAG 门限，直接报通信错误。此事件只有在主机推过字时
-	 * 才会被挂上，所以连上就等于「交换正在进行」，按 RTT 窗口阻塞等即可。 */
-	if (sio->link && netLinkState(sio->link) == 2) {
-		waitMs = sioWaitMs(sio);
-	}
+	int waitMs = sioPeerWaitMs(sio);
 	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, waitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* A slave never finishes without peer data: on real hardware the
@@ -596,6 +590,28 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
  * 收尾，游戏立刻报「连接发生了错误」。等待窗跟随实测 RTT（20 倍余量），
  * 下限仍是局域网的 800ms，上限 20s 防死等。等待期间模拟时钟冻结，游戏自己
  * 不会超时，只是这一轮变慢。 */
+/* 本轮到底允不允许阻塞模拟线程（与安卓侧 sioPeerWaitMs 同一条判据）。
+ *
+ * 隧道连着（state==2）不等于对端在跑联机：对端停在开机/标题画面时一个字都
+ * 不推，这边若照 sioWaitMs（RTT×20，实测能到 3s）死等，模拟线程就被按在
+ * 超时窗里，整帧不动——安卓侧就是这么假死掉的，PC 侧在握手期同样会 0.7fps。
+ *   - 队列里有对端字   → 最多 400ms（实际就是取队列）
+ *   - 对端 800ms 内推过 → 最多 400ms（覆盖 150ms 级 RTT 的晚到）
+ *   - 对端完全没动静   → 0，立刻用空槽收尾
+ */
+static int sioPeerWaitMs(struct SioLink* sio) {
+	if (!sio->link || netLinkState(sio->link) != 2) {
+		return 0;
+	}
+	if (netLinkPeerPending(sio->link) > 0) {
+		return 1200;
+	}
+	if (netLinkPushAgeMs(sio->link) < 800) {
+		return 900;
+	}
+	return 0;
+}
+
 static int sioWaitMs(struct SioLink* sio) {
 	uint32_t rttUs = sio->link ? netLinkRttUs(sio->link) : 0;
 	uint32_t ms = (rttUs / 1000u) * 20u;
@@ -616,7 +632,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
-	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioWaitMs(sio), &remote, &got, NULL);
+	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPeerWaitMs(sio), &remote, &got, NULL);
 	/* 这里是每轮传输必经点：无条件打印会变成每帧上千行 IO，直接拖垮帧率。
 	 * 只在「没拿到对端数据」或显式打开 MGBAX_SIO_TRACE 时才落日志。 */
 	if (!haveRemote || getenv("MGBAX_SIO_TRACE")) {

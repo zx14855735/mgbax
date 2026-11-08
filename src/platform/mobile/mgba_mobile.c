@@ -2217,6 +2217,7 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  *   - 回推时也用这个号，主机那边严格匹配就一定对得上。
  */
 static int sioWaitMs(struct MgbaMobile* emu);
+static int sioPeerWaitMs(struct MgbaMobile* emu);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
@@ -2299,10 +2300,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 着，就按 RTT 自适应窗口阻塞等——模拟时钟冻结，游戏看不见这段墙钟
 	 * 时间，从机的每帧轮次数与主机严格一致，LAG 不会触发。
 	 * 真正没联机时事件根本不会被挂上，帧率不受影响。 */
-	int slaveWaitMs = 0;
-	if (emu->link && netLinkState(emu->link) == 2) {
-		slaveWaitMs = sioWaitMs(emu);
-	}
+	int slaveWaitMs = sioPeerWaitMs(emu);
 	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* 【从机没有对端数据时绝不收尾】
@@ -2394,6 +2392,35 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
  * 收尾，游戏立刻报「连接发生了错误」。等待窗跟随实测 RTT（20 倍余量），
  * 下限仍是局域网的 800ms，上限 20s 防死等。等待期间模拟时钟冻结，游戏自己
  * 不会超时，只是这一轮变慢。 */
+static int sioWaitMs(struct MgbaMobile* emu);
+
+/* 本轮到底允不允许阻塞模拟线程。
+ *
+ * 隧道连着（state==2）不等于对端在跑联机：当对端还停在开机/标题画面时它
+ * 一个字都不推，这边若照旧按 sioWaitMs 死等，模拟线程就被按在超时窗里，
+ * 整帧不动——实测整屏 4 秒逐字节一致、按键完全不响应，驱动层只能看着它
+ * 「假死」。所以只有「对端确实在这条链路上交换字」时才阻塞：
+ *   1) 队列里已有对端字 → 阻塞（实际只是取队列，几乎不耗时）；
+ *   2) 对端 800ms 内推过字 → 阻塞，但只给半个秒窗（这一轮只是晚到）；
+ *   3) 对端完全没动静 → 立刻用空槽收尾，模拟线程照常跑。
+ * 第 3 条是这次假死的解药；它不会污染握手以外的轮次，因为握手期对端一定
+ * 在推字，条件 1/2 必然命中。 */
+static int sioPeerWaitMs(struct MgbaMobile* emu) {
+	if (!emu->link || netLinkState(emu->link) != 2) {
+		return 0;
+	}
+	if (netLinkPeerPending(emu->link) > 0) {
+		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
+		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
+		 * 覆盖实测 150ms 均值 / 441ms 尖峰的隧道 RTT。 */
+		return 1200;
+	}
+	if (netLinkPushAgeMs(emu->link) < 800) {
+		return 900;                 /* 对端仍在活跃交换，这一轮只是晚到 */
+	}
+	return 0;                       /* 对端没在交换：立刻收尾，别冻住模拟线程 */
+}
+
 static int sioWaitMs(struct MgbaMobile* emu) {
 	uint32_t rttUs = emu->link ? netLinkRttUs(emu->link) : 0;
 	uint32_t ms = (rttUs / 1000u) * 20u;
@@ -2418,7 +2445,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
 	 * 一帧就只剩下一次传输，必然被判掉线。 */
 	double t0 = (double) wallNowMs();
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioWaitMs(emu), &remote, &got, NULL);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPeerWaitMs(emu), &remote, &got, NULL);
 	double waited = (double) wallNowMs() - t0;
 	if (waited > 3.0) {
 		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
