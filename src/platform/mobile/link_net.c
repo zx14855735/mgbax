@@ -1082,7 +1082,8 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
 
 /* 从队列里取对端的一个字。
  *
- * strict = true  —— 严格按轮次号匹配（主机用）。比 want 老的推送当过期丢掉。
+ * strict = true  —— 严格按轮次号匹配（主机用）：比 want 老的丢弃，比 want 新的
+ *                   原地等（不动队首）直到本轮到达或等待窗耗尽后按恢复路径取走。
  * strict = false —— 宽松模式（从机用）：不比 want，只要求轮次号比 minIndex 新
  *                   （即本机还没消费过的那一轮）。这样启动阶段堆积的旧推送会被
  *                   跳过，不会把从机拖慢一格；取到的轮次号由主机决定，从机直接
@@ -1095,23 +1096,41 @@ static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint1
 	pthread_mutex_lock(&link->mu);
 	uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
 	for (;;) {
+		bool ahead = false;
 		while (link->peerCount > 0) {
 			struct PeerWord w = link->peerQ[link->peerHead];
-			link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
-			link->peerCount--;
 			if (strict) {
-				if ((int16_t) (w.index - want) < 0) {
+				int16_t d = (int16_t) (w.index - want);
+				if (d < 0) {
 					/* 比本轮还老的推送：本机早就超时收尾过了，丢掉，
 					 * 否则后面的每一轮都会被这条拖慢一格。 */
+					link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+					--link->peerCount;
 					++link->peerStale;
 					continue;
+				}
+				if (d > 0) {
+					/* 队首是**后续**轮次：本轮的字还在路上。以前这里
+					 * 直接把后续轮次交出去（只记 misorder 不拦），按帧
+					 * 流水线一帧批量到达时，训练家卡片块交换的数据片段
+					 * 就被喂进了错轮次 —— 游戏校验不过，块接收状态
+					 * brs 恒 0000、进房间路径不执行、ST 4->0 断开。
+					 * 现在原地不动它，等本轮的字到达（真机语义：这一
+					 * 轮没到，线就不动）。 */
+					ahead = true;
+					break;
 				}
 			} else if ((int16_t) (w.index - minIndex) <= 0) {
 				/* 已经消费过的轮次（含启动阶段堆积的旧推送）。丢掉，
 				 * 从机只跟随主机给的、还没见过的轮次。 */
+				link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+				--link->peerCount;
 				++link->peerStale;
 				continue;
 			}
+			/* 命中：消费掉队首。 */
+			link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+			--link->peerCount;
 			if (value) {
 				*value = w.value;
 			}
@@ -1133,6 +1152,26 @@ static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint1
 		}
 		uint32_t now = nowMs();
 		if ((int32_t) (expireAt - now) <= 0) {
+			/* 等待窗耗尽：若队首是后续轮次，说明对端已经跳过去了（它自己
+			 * 超时收尾过、或从机刚加入时对齐），本轮永远不会再来。这时把
+			 * 队首交出去（调用方记一次 misorder）比死等/喂空槽都好 ——
+			 * 既不会卡住整条链路，也不会用 0 破坏游戏的块校验。 */
+			if (ahead && link->peerCount > 0) {
+				struct PeerWord w = link->peerQ[link->peerHead];
+				link->peerHead = (link->peerHead + 1) % PEER_QUEUE;
+				--link->peerCount;
+				if (value) {
+					*value = w.value;
+				}
+				if (indexOut) {
+					*indexOut = w.index;
+				}
+				if (cyclesOut) {
+					*cyclesOut = w.cycles;
+				}
+				link->lastPeerStamp = w.stamp;
+				ok = true;
+			}
 			break;
 		}
 		struct timespec ts;

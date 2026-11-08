@@ -122,6 +122,13 @@ struct MgbaMobile {
 	bool sioWaiting;
 	uint16_t sioSeq;
 	int sioRetries;
+	uint32_t sioRetryWall;
+	/* 从机本轮要回推的字：游戏写 SIOCNT 起轮那一刻扣下来。等到本轮完成
+	 * 再读 SIOMLT_SEND，游戏往往已写入下一轮的字 —— 16bit 错一位就会让
+	 * gLink 的字节流命令队列（SendBlockRequest / 块校验）整体偏移，现象是
+	 * 链路连着、gBlockReceivedStatus 恒 0、对战起不来。 */
+	uint16_t sioRoundWord;
+	bool sioRoundWordValid;
 	bool sioHasRemote;
 	uint32_t sioRemote;
 	/* 联机传输统计：真机/游戏里排查时对着 logcat 看这几项就够 ——
@@ -2169,12 +2176,26 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		            emu->sioTimeouts);
 	}
 	if ((emu->sioOk & 0x3F) == 0) {
-		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u mis=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
-		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
-		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, emu->sioMisorder, data[0], data[1]);
+		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u mis=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
-		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, emu->sioMisorder, data[0], data[1]);
+		/* 联机协议层诊断：链路「连着」不等于数据在走。gen8 的 LINKUP 结果、
+		 * 远端玩家标志、块接收状态、收发命令索引都在内存里，一次打全，
+		 * 就能区分「命令没到」和「到了但校验不过」。 */
+		MOBILE_LOGI("GLINK res=%u rem=%u bad=%u qf=%u lid=%u pc=%u sc=%u rc=%u brs=%04X st=%04X",
+		            (unsigned) GBAView16(gba->cpu, 0x0202197Cu),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AC1u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B05u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B06u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AF6u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AF7u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B0Au),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B0Bu),
+		            (unsigned) GBAView16(gba->cpu, 0x03002A40u),
+		            (unsigned) GBAView16(gba->cpu, 0x03002A9Cu));
 		maybeUnstickStandby(gba);
 		maybeRearmHandshake(gba);
 	}
@@ -2218,7 +2239,7 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  */
 static int sioWaitMs(struct MgbaMobile* emu);
 static int sioPeerWaitMs(struct MgbaMobile* emu);
-static int sioPipelineWaitMs(struct MgbaMobile* emu);
+static int sioPipelineWaitMs(struct MgbaMobile* emu, int want);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
@@ -2312,7 +2333,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 着，就按 RTT 自适应窗口阻塞等——模拟时钟冻结，游戏看不见这段墙钟
 	 * 时间，从机的每帧轮次数与主机严格一致，LAG 不会触发。
 	 * 真正没联机时事件根本不会被挂上，帧率不受影响。 */
-	int slaveWaitMs = sioPipelineWaitMs(emu);
+	int slaveWaitMs = sioPipelineWaitMs(emu, -1);
 	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* 【从机没有对端数据时绝不收尾】
@@ -2363,7 +2384,9 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		emu->sioPeerCycles = peerCycles;
 		emu->sioPeerCyclesValid = true;
 	}
-	uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	uint16_t own = emu->sioRoundWordValid ? emu->sioRoundWord
+	                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	emu->sioRoundWordValid = false;
 	if (got != emu->sioIndex) {
 		/* 轮次跳跃：主机那边跳过了几轮（或者从机刚接上）。不影响正确性
 		 * —— 从机跟随主机的号，双方仍然一一对应。 */
@@ -2479,7 +2502,7 @@ static bool sioPipelineMode(void) {
 	return enabled != 0;
 }
 
-static int sioPipelineWaitMs(struct MgbaMobile* emu) {
+static int sioPipelineWaitMs(struct MgbaMobile* emu, int want) {
 	if (!sioPipelineMode()) {
 		return sioPeerWaitMs(emu);
 	}
@@ -2487,14 +2510,25 @@ static int sioPipelineWaitMs(struct MgbaMobile* emu) {
 		return 0;
 	}
 	if (netLinkPeerPending(emu->link) > 0) {
-		return 0;
+		/* 队列非空不等于**本轮**的字已经到：队首常常是后续轮次。只有队首
+		 * 正是本轮才零等待，否则照样按 RTT 给等待窗（取字函数自己按轮次
+		 * 严格匹配，不再把后续轮次的字喂给这一轮）。 */
+		if (want < 0) {
+			return 0;
+		}
+		int qCount = 0;
+		unsigned qHead = 0;
+		netLinkPeerHeadInfo(emu->link, &qCount, &qHead);
+		if (qCount > 0 && (int) qHead == want) {
+			return 0;
+		}
 	}
-	uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 2u;
-	if (ms < 300u) {
-		ms = 300u;
+	uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+	if (ms < 500u) {
+		ms = 500u;
 	}
-	if (ms > 1500u) {
-		ms = 1500u;
+	if (ms > 4000u) {
+		ms = 4000u;
 	}
 	return (int) ms;
 }
@@ -2511,7 +2545,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
 	 * 一帧就只剩下一次传输，必然被判掉线。 */
 	double t0 = (double) wallNowMs();
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu), &remote, &got, NULL);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL);
 	double waited = (double) wallNowMs() - t0;
 	if (waited > 3.0) {
 		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
@@ -2550,7 +2584,13 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 尖峰、手机切基站），不是没有。等待继续冻结模拟时钟，游戏看不见这段
 	 * 时间；真机语义也一样——从机不回字，线路就不动。真正断线（state≠2）
 	 * 或重试次数耗尽才按「这一轮没有对端数据」收尾。 */
-	if (emu->link && netLinkState(emu->link) == 2 && emu->sioRetries < 40) {
+	/* 墙钟上限看的是**这一轮**累计等了多久：等待窗现在能到 4s，光靠 40 次
+	 * 重试计数会变成 160s 的死等，一个僵死的对端就能把整帧按住不放。 */
+	if (emu->sioRetries == 0) {
+		emu->sioRetryWall = wallNowMs();
+	}
+	if (emu->link && netLinkState(emu->link) == 2 && emu->sioRetries < 40 &&
+	    (uint32_t) (wallNowMs() - emu->sioRetryWall) < 20000u) {
 		++emu->sioRetries;
 		struct mTiming* t2 = coreTiming(emu);
 		if (t2) {
@@ -2750,6 +2790,12 @@ static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 				/* 只有 1P 真的发起传输；从机的传输由 1P 的那一次驱动，
 				 * 见 serviceLink。 */
 				beginMultiTransfer(emu, driver, nowBusy ? "busy" : "irq");
+			}
+			else if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
+			         emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+				struct GBA* g = (struct GBA*) emu->core->board;
+				emu->sioRoundWord = g->memory.io[GBA_REG(SIOMLT_SEND)];
+				emu->sioRoundWordValid = true;
 			}
 		}
 		uint16_t out = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));

@@ -107,6 +107,7 @@ struct SioLink {
 	bool sioPeerCyclesValid;
 	bool sioWaiting;
 	int sioRetries;
+	uint32_t sioRetryWall;
 	bool sioHasRemote;
 	uint32_t sioRemote;
 	uint32_t sioOk;
@@ -119,6 +120,13 @@ struct SioLink {
 	bool sioInitSeen;
 	bool sioStashValid;
 	uint32_t sioStash;
+	/* 从机本轮要回推的字：在游戏写 SIOCNT 起轮的**那一刻**扣下来。
+	 * 若等到本轮完成（收完主机字）再去读 SIOMLT_SEND，游戏很可能已经把
+	 * 下一轮的字写进去了 —— 一个 16bit 的错位就足以让 gLink 的字节流
+	 * 命令队列（SendBlockRequest / 块校验）整体偏移，表现为链路连着、
+	 * 但 gBlockReceivedStatus 永远是 0、对战起不来。 */
+	uint16_t sioRoundWord;
+	bool sioRoundWordValid;
 	uint32_t sioPushValue;
 	uint16_t sioPushIndex;
 	bool sioPushed;
@@ -402,9 +410,9 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 	sio->sioBusyCycle = 0;
 	sio->sioStashValid = false;
 	if ((sio->sioOk & 0x3F) == 0) {
-		SIO_LOG("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums to=%u fb=%u m0=%04X m1=%04X",
+		SIO_LOG("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums to=%u fb=%u mis=%u m0=%04X m1=%04X",
 		     me, sio->sioOk, sio->sioLateness / 10, sio->sioLateness % 10,
-		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, data[0], data[1]);
+		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, sio->sioMisorder, data[0], data[1]);
 		logLinkDiag(gba);
 		maybeUnstickStandby(gba);
 		maybeRearmHandshake(gba);
@@ -511,7 +519,7 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
  */
 static int sioWaitMs(struct SioLink* sio);
 static int sioPeerWaitMs(struct SioLink* sio);
-static int sioPipelineWaitMs(struct SioLink* sio);
+static int sioPipelineWaitMs(struct SioLink* sio, int want);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct SioLink* sio = (struct SioLink*) user;
@@ -530,7 +538,6 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 走云端房间时两端链路层都是 TCP 主机、player 号都停在 0，用它判会让
 	 * **两端都走这个分支直接 return**，谁都不当从机、谁都不回推字
 	 *（现场：两端日志同时报 me=0，主机侧 done want=1 have=0 永远等不到）。 */
-	int me = netLinkPlayer(sio->link);
 	if (GBAView8(gba->cpu, 0x03002AF4u + 0x00u) == 8) {
 		return;
 	}
@@ -546,7 +553,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * a connection error at the start of every battle/trade. Outside an
 	 * active exchange keep the historical non-blocking spin so an idle link
 	 * never drags the game's frame rate down. */
-	int waitMs = sioPipelineWaitMs(sio);
+	int waitMs = sioPipelineWaitMs(sio, -1);
 	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, waitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* A slave never finishes without peer data: on real hardware the
@@ -582,7 +589,9 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		sio->sioPeerCycles = peerCycles;
 		sio->sioPeerCyclesValid = true;
 	}
-	uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	uint16_t own = sio->sioRoundWordValid ? sio->sioRoundWord
+	                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	sio->sioRoundWordValid = false;
 	if (got != sio->sioIndex) {
 		/* Round jump (host skipped rounds, or the slave just joined): adopt
 		 * the host's number, the pairing stays one-to-one. */
@@ -693,7 +702,7 @@ static bool sioPipelineMode(void) {
 	return enabled != 0;
 }
 
-static int sioPipelineWaitMs(struct SioLink* sio) {
+static int sioPipelineWaitMs(struct SioLink* sio, int want) {
 	if (!sioPipelineMode()) {
 		return sioPeerWaitMs(sio);
 	}
@@ -701,14 +710,25 @@ static int sioPipelineWaitMs(struct SioLink* sio) {
 		return 0;
 	}
 	if (netLinkPeerPending(sio->link) > 0) {
-		return 0;
+		/* 队列非空不等于**本轮**的字已经到：按帧流水线一帧批量到达时队首
+		 * 常常是后续轮次。只有队首正是本轮才零等待消费，否则照样得等
+		 * 本轮的字（交给 takePeerWord 自己判，等待窗按 RTT 给）。 */
+		if (want < 0) {
+			return 0;
+		}
+		int qCount = 0;
+		unsigned qHead = 0;
+		netLinkPeerHeadInfo(sio->link, &qCount, &qHead);
+		if (qCount > 0 && (int) qHead == want) {
+			return 0;
+		}
 	}
-	uint32_t ms = (netLinkRttUs(sio->link) / 1000u) * 2u;
-	if (ms < 300u) {
-		ms = 300u;
+	uint32_t ms = (netLinkRttUs(sio->link) / 1000u) * 3u;
+	if (ms < 500u) {
+		ms = 500u;
 	}
-	if (ms > 1500u) {
-		ms = 1500u;
+	if (ms > 4000u) {
+		ms = 4000u;
 	}
 	return (int) ms;
 }
@@ -721,7 +741,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
-	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPipelineWaitMs(sio), &remote, &got, NULL);
+	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPipelineWaitMs(sio, (int) sio->sioIndex), &remote, &got, NULL);
 	/* 这里是每轮传输必经点：无条件打印会变成每帧上千行 IO，直接拖垮帧率。
 	 * 只在「没拿到对端数据」或显式打开 MGBAX_SIO_TRACE 时才落日志。 */
 	if (!haveRemote || getenv("MGBAX_SIO_TRACE")) {
@@ -743,8 +763,15 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	/* 对端还在线就继续等，别急着用空槽收尾：跨网时对端的字只是迟到（RTT
 	 * 尖峰、手机切基站），不是没有。等待继续冻结模拟时钟，游戏看不见这段
 	 * 时间；真机语义也一样——从机不回字，线路就不动。真正断线（state≠2）
-	 * 或重试次数耗尽才按「这一轮没有对端数据」收尾。 */
-	if (sio->link && netLinkState(sio->link) == 2 && sio->sioRetries < 40) {
+	 * 或重试次数/墙钟上限耗尽才按「这一轮没有对端数据」收尾。
+	 *
+	 * 墙钟上限看的是**这一轮**累计等了多久：每轮等待窗现在能到 4s，光靠
+	 * 40 次重试计数会变成 160s 的死等，一个僵死的对端就能把整帧按住不放。 */
+	if (sio->sioRetries == 0) {
+		sio->sioRetryWall = wallNowMs();
+	}
+	if (sio->link && netLinkState(sio->link) == 2 && sio->sioRetries < 40 &&
+	    (uint32_t) (wallNowMs() - sio->sioRetryWall) < 20000u) {
 		++sio->sioRetries;
 		struct mTiming* t2 = coreTiming(sio);
 		if (t2) {
@@ -898,6 +925,15 @@ static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 				/* Only 1P actually starts the transfer; the slave's round is
 				 * driven by 1P's push (see serviceLink/sioSlaveDoneEvent). */
 				beginMultiTransfer(sio, driver);
+			}
+			else if (!sio->sioWaiting && netLinkPlayer(sio->link) != 0) {
+				/* 从机起轮：此刻 SIOMLT_SEND 里就是本轮要发出去的字，扣下来
+				 * 独占给本轮（见 sioRoundWord 注释）。 */
+				if (sio->core && sio->core->platform(sio->core) == mPLATFORM_GBA) {
+					struct GBA* g = (struct GBA*) sio->core->board;
+					sio->sioRoundWord = g->memory.io[GBA_REG(SIOMLT_SEND)];
+					sio->sioRoundWordValid = true;
+				}
 			}
 		}
 		uint16_t out = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
