@@ -2218,6 +2218,7 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  */
 static int sioWaitMs(struct MgbaMobile* emu);
 static int sioPeerWaitMs(struct MgbaMobile* emu);
+static int sioPipelineWaitMs(struct MgbaMobile* emu);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
@@ -2311,7 +2312,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 着，就按 RTT 自适应窗口阻塞等——模拟时钟冻结，游戏看不见这段墙钟
 	 * 时间，从机的每帧轮次数与主机严格一致，LAG 不会触发。
 	 * 真正没联机时事件根本不会被挂上，帧率不受影响。 */
-	int slaveWaitMs = sioPeerWaitMs(emu);
+	int slaveWaitMs = sioPipelineWaitMs(emu);
 	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* 【从机没有对端数据时绝不收尾】
@@ -2466,6 +2467,38 @@ static int sioWaitMs(struct MgbaMobile* emu) {
 	return (int) ms;
 }
 
+/* 与 Qt 侧同一条按帧流水线：系统属性 mgbax.sio.pipeline=1 开启。
+ * 队列里有对端字就零等待消费，队列空才给一次整批预算；字严格按轮次配对。 */
+static bool sioPipelineMode(void) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		char v[92] = {0};
+		__system_property_get("mgbax.sio.pipeline", v);
+		enabled = (v[0] == '1') ? 1 : 0;
+	}
+	return enabled != 0;
+}
+
+static int sioPipelineWaitMs(struct MgbaMobile* emu) {
+	if (!sioPipelineMode()) {
+		return sioPeerWaitMs(emu);
+	}
+	if (!emu->link || netLinkState(emu->link) != 2) {
+		return 0;
+	}
+	if (netLinkPeerPending(emu->link) > 0) {
+		return 0;
+	}
+	uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 2u;
+	if (ms < 300u) {
+		ms = 300u;
+	}
+	if (ms > 1500u) {
+		ms = 1500u;
+	}
+	return (int) ms;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	if (!emu->sioWaiting) {
@@ -2478,7 +2511,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
 	 * 一帧就只剩下一次传输，必然被判掉线。 */
 	double t0 = (double) wallNowMs();
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPeerWaitMs(emu), &remote, &got, NULL);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu), &remote, &got, NULL);
 	double waited = (double) wallNowMs() - t0;
 	if (waited > 3.0) {
 		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
