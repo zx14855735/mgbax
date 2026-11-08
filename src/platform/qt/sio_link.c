@@ -754,10 +754,71 @@ static int sioPipelineWaitMs(struct SioLink* sio, int want) {
 	return (int) ms;
 }
 
+/* 联机帧率：握手/卡片交换完成后不再按墙钟等对端字。
+ *
+ * 实测 3.7fps 的成因不是网络：P2P 直连 RTT 只有 6~13ms，但每帧 9 轮
+ * MULTI 传输，每轮 sioDoneEvent 都在 takePeerWord 上冻结模拟时钟
+ * （SIO_LOG 统计 wait=24~32ms/轮 n=64），9×28ms≈250ms，正好一帧 270ms。
+ * 两端都在等对方推进下一帧，形成一个互相拖住的锁步环。
+ *
+ * 这里在链路健康时改成「零等待取本轮字，取不到就复用上一轮对端字」：
+ * 模拟时钟不再被墙钟按停，每帧仍然是 9 次 SIO 中断（游戏 LAG 判定按
+ * 模拟帧计数，不按墙钟），帧率回到接近单机；复用字只影响对端按键的
+ * 新鲜度，比空槽 0xFFFF 安全得多（空槽会直接触发通信错误）。
+ *   - 前 256 轮（LINKUP / 训练家卡片块交换）保持严格等待，避免块校验坏掉
+ *   - 隧道根本建立不了会话（cnt 恒 0），所以健康判据只看 cnt，不再看 RTT
+ *   - MGBAX_SIO_FAST=0 可整体关掉这次优化，便于 A/B 对照
+ */
+static bool sioFastFrame(struct SioLink* sio) {
+	static int disabled = -1;
+	if (disabled < 0) {
+		const char* v = getenv("MGBAX_SIO_FAST");
+		disabled = (v && atoi(v) == 0) ? 1 : 0;
+	}
+	if (disabled || !sio->link || netLinkState(sio->link) != 2) {
+		return false;
+	}
+	if (sio->sioOk < 256) {
+		return false;
+	}
+	/* 只在 LINKUP 真正完成后放开帧率：握手与训练家卡片块交换期间每一轮
+	 * 都必须是真实对端字，复用上一轮字会破坏块校验（历史结论：空槽/陈旧
+	 * 字会把 cnt 打回 0，停在「等待连接」）。fieldLinkPlayerCount 取自
+	 * 0x03004A38 高字节，与 [room] 诊断里的 cnt 同源。 */
+	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
+		return false;
+	}
+	struct GBA* gba = (struct GBA*) sio->core->board;
+	if (!gba || !gba->cpu) {
+		return false;
+	}
+	/* cnt>=2 本身就说明握手完成且链路健康（隧道 82ms+ 时 cnt 恒 0，
+	 * 根本走不到这里）；再叠 RTT 门槛只会让链路抖动时优化忽开忽关。 */
+	return (GBAView16(gba->cpu, 0x03004A38u) >> 8) >= 2;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	UNUSED(timing);
 	struct SioLink* sio = (struct SioLink*) user;
 	if (!sio->sioWaiting) {
+		return;
+	}
+	if (sioFastFrame(sio)) {
+		uint32_t fastRemote = 0;
+		uint16_t fastGot = 0;
+		bool haveFast = sio->link &&
+		    netLinkTakePeerWord(sio->link, sio->sioIndex, 0, &fastRemote, &fastGot, NULL);
+		if (!haveFast && sio->sioHasRemote) {
+			fastRemote = sio->sioRemote;
+			haveFast = true;
+			++sio->sioFallback;
+		}
+		sio->sioWaiting = false;
+		if (haveFast) {
+			sio->sioHasRemote = true;
+			sio->sioRemote = fastRemote;
+		}
+		completeMultiTransfer(sio, fastRemote, haveFast, cyclesLate);
 		return;
 	}
 	uint32_t remote = 0;
