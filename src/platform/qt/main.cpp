@@ -108,6 +108,20 @@ static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
 int main(int argc, char* argv[]) {
 #ifdef Q_OS_WIN
 	AttachConsole(ATTACH_PARENT_PROCESS);
+	/* 联机锁步时每一轮 SIO 都要在两个线程之间来回唤醒一次，一帧 9 轮。
+	 * Windows 默认定时器精度 15.6ms，condvar/select 的毫秒级等待会被拖到
+	 * 一个 tick 才醒来 —— 9×15.6≈140ms/帧，实测只有 4.6fps。把系统定时器
+	 * 提到 1ms 后等待才能真正按毫秒返回。动态加载 winmm，避免改链接配置。 */
+	{
+		typedef UINT (WINAPI *TimePeriodFn)(UINT);
+		HMODULE winmm = LoadLibraryA("winmm.dll");
+		if (winmm) {
+			TimePeriodFn begin = (TimePeriodFn) (void*) GetProcAddress(winmm, "timeBeginPeriod");
+			if (begin) {
+				begin(1);
+			}
+		}
+	}
 	if (!qEnvironmentVariableIsEmpty("MGBAX_CRASH_LOG")) {
 		SetUnhandledExceptionFilter(crashFilter);
 	}
