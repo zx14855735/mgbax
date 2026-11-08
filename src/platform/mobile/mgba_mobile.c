@@ -2199,6 +2199,16 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		maybeUnstickStandby(gba);
 		maybeRearmHandshake(gba);
 	}
+	/* 玩家格坐标（gSaveBlock1Ptr→SaveBlock1.pos）：走位闭环导航的输入，走位
+	 * 阶段每 16 轮打一次就够了（9 轮/帧），不打会让按键步数与实际位移脱钩。 */
+	if ((emu->sioOk & 0x0F) == 0) {
+		uint32_t sb1 = GBAView32(gba->cpu, 0x03004964u);
+		if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+			MOBILE_LOGI("POS x=%d y=%d",
+			            (int) (int16_t) GBAView16(gba->cpu, sb1 + 0u),
+			            (int) (int16_t) GBAView16(gba->cpu, sb1 + 2u));
+		}
+	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
 }
 
