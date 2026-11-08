@@ -770,6 +770,257 @@ private:
  * delayMs, so the round trip is 2x. Everything else matches lanSioTest - real
  * MULTI transfers between two cores, asserted on the SIOMULTI registers.
  */
+/* 双核心基线（GBoy 架构的可行性验证）
+ *
+ * 一台设备里跑**两个** mGBA 核心，两者用 127.0.0.1 环回 SIO 互联（0.1ms 级），
+ * 外网只传按键掩码。这一步要回答的是：两个核心在本机环回下能不能真的走完
+ * 「大竞技场 → 单打 → LINKUP → 训练家卡片块交换 → 站位 → 进对战」。
+ *
+ * 帧驱动：每帧先跑从机再跑主机（与 lanSioTest 相同的顺序，避免主机先跑把
+ * 从机的 serviceLink 关在门外），每帧两边各 pump 一次环回链路。
+ * 按键脚本用帧号切分，帧号可通过环境变量微调，不用重编。
+ */
+static int dualTest(const QString& rom, const QString& sav) {
+	struct mCore* cores[2] = { nullptr, nullptr };
+	struct SioLink* links[2] = { nullptr, nullptr };
+	static mColor video[2][240 * 160];
+	int failures = 0;
+
+	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
+	auto envInt = [](const char* k, int dflt) {
+		bool ok = false;
+		int v = qEnvironmentVariableIntValue(k, &ok);
+		return ok ? v : dflt;
+	};
+
+	QString romAbs = QFileInfo(rom).absoluteFilePath();
+	QString savAbs = QFileInfo(sav).absoluteFilePath();
+	for (int i = 0; i < 2; i++) {
+		QByteArray romUtf8 = romAbs.toUtf8();
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			qInfo().noquote() << "DUAL TEST: FAIL (cannot open rom)";
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			qInfo() << "DUAL TEST: FAIL (no core)";
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			qInfo() << "DUAL TEST: FAIL (loadROM)";
+			return 1;
+		}
+		/* 两个核心必须从同一份存档起步（GBoy 的 STATE 同步等价物）。 */
+		if (QFile::exists(savAbs)) {
+			VFile* sv = VFileOpen(savAbs.toUtf8().constData(), O_RDWR);
+			if (sv && !cores[i]->loadSave(cores[i], sv)) {
+				qInfo() << "DUAL TEST: WARN (loadSave failed)";
+			}
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+		links[i] = sioLinkCreate();
+	}
+
+	const quint16 port = (quint16) envInt("DUAL_PORT", 18791);
+	if (!sioLinkHost(links[0], port)) {
+		qInfo() << "DUAL TEST: FAIL (cannot listen)";
+		return 1;
+	}
+	if (!sioLinkJoin(links[1], "127.0.0.1", port)) {
+		qInfo() << "DUAL TEST: FAIL (cannot connect)";
+		return 1;
+	}
+	for (int i = 0; i < 100 && sioLinkState(links[0]) != 2; i++) {
+		sioLinkPump(links[0], cores[0]);
+		sioLinkPump(links[1], cores[1]);
+		QThread::msleep(20);
+	}
+	if (sioLinkState(links[0]) != 2 || sioLinkState(links[1]) != 2) {
+		qInfo() << "DUAL TEST: FAIL (link never connected)";
+		return 1;
+	}
+
+	struct GBA* gba[2] = { (struct GBA*) cores[0]->board, (struct GBA*) cores[1]->board };
+	GBASIOWriteRCNT(&gba[0]->sio, 0);
+	GBASIOWriteRCNT(&gba[1]->sio, 0);
+
+	/* 帧脚本（默认值按 60fps 估）：boot → START×2 → A 连打进场 → 菜单 DOWN+A
+	 * → 战斗模式 UP/LEFT 钳到单打 → A → 存档确认 A 连打 → 等待连接 A 连打 */
+	int bootFrames = envInt("DUAL_BOOT", 240);
+	int menuAt = envInt("DUAL_MENU_AT", 1500);   /* 到达联机菜单的帧号 */
+	int saveAt = envInt("DUAL_SAVE_AT", menuAt + 240);
+	int totalFrames = envInt("DUAL_FRAMES", 12000);
+
+	/* 两个核心必须各跑一个线程。
+	 *
+	 * 单线程轮流 runFrame 会死锁：主机在 sioDone 里阻塞等对端字时，从机核心
+	 * 根本没在跑（实测卡在 want=42，retries 一路涨到 33）。真机/产品形态本来
+	 * 就是「两个核心、两条执行流，SIO 锁步自然把它们对齐」，这里照抄该结构。
+	 */
+	struct Side {
+		struct mCore* core;
+		struct SioLink* link;
+		std::atomic<int>* frames;
+		int total;
+		int boot, menuAt, saveAt;
+		int tx, ty;      /* 座位格：1P=(3,5) 2P=(10,5) */
+		int dir;
+		int warm;
+	};
+	static std::atomic<bool> gStop(false);
+	std::atomic<int> frames[2];
+	frames[0] = 0;
+	frames[1] = 0;
+	gStop = false;
+
+	Side sides[2] = {
+		{ cores[0], links[0], &frames[0], totalFrames, bootFrames, menuAt, saveAt, 3, 5, 0 },
+		{ cores[1], links[1], &frames[1], totalFrames, bootFrames, menuAt, saveAt, 10, 5, 0 },
+	};
+	auto body = [](Side* sd) {
+		int hold = 0;
+		int phase = 0;   /* 0=菜单脚本，1=闭环走位，2=按 A 收尾 */
+		for (int f = 0; f < sd->total && !gStop; f++) {
+			uint32_t keys = 0;
+			struct GBA* g = (struct GBA*) sd->core->board;
+			uint32_t sb = GBAView32(g->cpu, 0x03004964u);
+			int px = 0, py = 0;
+			if (sb >= 0x02000000u && sb < 0x03000000u) {
+				px = (int16_t) GBAView16(g->cpu, sb);
+				py = (int16_t) GBAView16(g->cpu, sb + 2);
+			}
+			uint16_t ts = GBAView16(g->cpu, 0x03004A10u);
+			int cnt = (GBAView16(g->cpu, 0x03004A38u) >> 8) & 0xFF;
+			/* 触发点：LINKUP 一成功（cnt>=2）就开始走位，不要等卡片交换跑完
+			 * （ts=0x80）。ts=80 时游戏已经进了竞技场房间的 standby 脚本，
+			 * 方向键会被锁住 —— 21:10/21:14 两轮 px/py 死死停在 (5,8) 就是这个
+			 * 原因；而真机流程本来就是「先站到座位，再等卡片交换完成」。 */
+			if (phase == 0 && cnt >= 2) {
+				phase = 1;
+			}
+			if (phase == 1 || phase == 2) {
+				if (px == sd->tx && py == sd->ty) {
+					phase = 2;
+				} else if (hold > 0) {
+					hold--;
+					keys = sd->dir;   /* 维持当前方向键 */
+				} else {
+					if (py > sd->ty) {
+						sd->dir = 64;   /* UP */
+					} else if (py < sd->ty) {
+						sd->dir = 128;  /* DOWN */
+					} else if (px > sd->tx) {
+						sd->dir = 32;   /* LEFT */
+					} else {
+						sd->dir = 16;   /* RIGHT */
+					}
+					hold = 18;
+					keys = sd->dir;
+				}
+				if (phase == 2) {
+					keys = ((f % 40) < 20) ? 1u : 0u;   /* 站位后按 A 开打 */
+				}
+			}
+			if (f >= sd->boot && f < sd->boot + 6) {
+				keys = 8;                       /* START */
+			} else if (f >= sd->boot + 10 && f < sd->boot + 16) {
+				keys = 8;
+			} else if (f >= sd->boot + 20 && f < sd->menuAt) {
+				keys = ((f % 45) < 30) ? 1u : 0u;   /* A 连打 */
+			} else if (f >= sd->menuAt && f < sd->menuAt + 8) {
+				keys = 128;                     /* DOWN：交换中心 → 大竞技场 */
+			} else if (f >= sd->menuAt + 30 && f < sd->menuAt + 40) {
+				keys = 1;
+			} else if (f >= sd->menuAt + 40 && f < sd->menuAt + 60) {
+				keys = 64;                      /* UP：钳到单打 */
+			} else if (f >= sd->menuAt + 60 && f < sd->menuAt + 80) {
+				keys = 32;                      /* LEFT：钳到单打 */
+			} else if (f >= sd->menuAt + 80 && f < sd->menuAt + 92) {
+				keys = 1;
+			} else if (f >= sd->saveAt) {
+				keys = ((f % 40) < 25) ? 1u : 0u;
+			}
+			sd->core->setKeys(sd->core, keys);
+			sioLinkPump(sd->link, sd->core);
+			sd->core->runFrame(sd->core);
+			*sd->frames = f + 1;
+		}
+	};
+	std::thread t1(body, &sides[0]);
+	std::thread t2(body, &sides[1]);
+
+	int cntSeen = 0, battleSeen = 0, printed = 0;
+	for (int guard = 0; guard < totalFrames * 40; guard++) {
+		int a = frames[0].load();
+		int b = frames[1].load();
+		if ((a >= totalFrames && b >= totalFrames) || (a == 0 && b == 0 && guard > 10)) {
+			break;
+		}
+		if (printed < 200 && (a / 60) != (printed)) {
+			/* 每 60 帧打一次（以主机帧号为准） */
+			uint16_t l0 = GBAView16(gba[0]->cpu, 0x03002AF4u);
+			uint16_t l1 = GBAView16(gba[0]->cpu, 0x03002AF6u);
+			uint16_t lidcnt = GBAView16(gba[0]->cpu, 0x03004A38u);
+			uint16_t ts = GBAView16(gba[0]->cpu, 0x03004A10u);
+			uint16_t brs = GBAView16(gba[0]->cpu, 0x03002A40u);
+			uint32_t cb2 = (uint32_t) GBAView16(gba[0]->cpu, 0x03002AD4u) |
+			               ((uint32_t) GBAView16(gba[0]->cpu, 0x03002AD6u) << 16);
+			uint32_t sb1 = GBAView32(gba[0]->cpu, 0x03004964u);
+			int px = 0, py = 0;
+			if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+				px = (int16_t) GBAView16(gba[0]->cpu, sb1);
+				py = (int16_t) GBAView16(gba[0]->cpu, sb1 + 2);
+			}
+			fprintf(stderr, "f=%d/%d lst=%u lid=%u pc=%u cnt=%d ts=%04X brs=%04X cb=%08X px=%d py=%d\n",
+			        a, b, (l0 >> 8) & 0xFF, l1 & 0xFF, GBAView8(gba[0]->cpu, 0x03002AF7u),
+			        (lidcnt >> 8) & 0xFF, ts, brs, cb2, px, py);
+			fflush(stderr);
+			printed = a / 60;
+			if (((lidcnt >> 8) & 0xFF) >= 2) {
+				cntSeen = 1;
+			}
+			if (cb2 == 0x0809A241u) {
+				battleSeen = 1;
+			}
+		}
+		QThread::msleep(30);
+	}
+	gStop = true;
+	t1.join();
+	t2.join();
+
+	{
+		uint16_t lidcnt = GBAView16(gba[0]->cpu, 0x03004A38u);
+		if (((lidcnt >> 8) & 0xFF) >= 2) {
+			cntSeen = 1;
+		}
+	}
+	uint32_t cb2 = (uint32_t) GBAView16(gba[0]->cpu, 0x03002AD4u) |
+	               ((uint32_t) GBAView16(gba[0]->cpu, 0x03002AD6u) << 16);
+	if (cb2 == 0x0809A241u) {
+		battleSeen = 1;
+	}
+	qInfo().noquote() << QString("DUAL TEST: cnt=%1 battle=%2 final cb2=%3")
+	                     .arg(cntSeen).arg(battleSeen)
+	                     .arg(cb2, 8, 16, QChar('0'));
+	if (!cntSeen) {
+		++failures;
+	}
+	for (int i = 0; i < 2; i++) {
+		sioLinkDestroy(links[i]);
+		cores[i]->deinit(cores[i]);
+	}
+	qInfo() << (failures ? "DUAL TEST: FAIL" : "DUAL TEST: PASS (2 cores linked on loopback)");
+	return failures;
+}
+
 static int lanSioLatTest(const QString& rom, int delayMs) {
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
@@ -1627,6 +1878,11 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
 		return lanSioTest(rom);
+	}
+	if (mode == QStringLiteral("dual")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
+		QString sav = args.size() > 3 ? args[3] : rom + QStringLiteral(".sav");
+		return dualTest(rom, sav);
 	}
 	if (mode == QStringLiteral("laniolat")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
