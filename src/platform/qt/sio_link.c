@@ -116,6 +116,12 @@ struct SioLink {
 	uint32_t sioStartCycle;
 	uint32_t sioPeak;
 	uint32_t sioLateness;
+	/* 每轮在 takePeerWord 上阻塞了多久（墙钟 ms）。联机帧率的唯一大头就是
+	 * 它 —— 一帧 9 轮，每轮阻塞多少就乘以 9。有这组数才能判断到底是对端
+	 * 模拟太慢、还是网络太远，而不是凭感觉调参数。 */
+	uint32_t sioWaitSumMs;
+	uint32_t sioWaitMaxMs;
+	uint32_t sioWaitN;
 	uint16_t sioIndex;
 	bool sioInitSeen;
 	bool sioStashValid;
@@ -420,9 +426,14 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 	sio->sioBusyCycle = 0;
 	sio->sioStashValid = false;
 	if ((sio->sioOk & 0x3F) == 0) {
-		SIO_LOG("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums to=%u fb=%u mis=%u m0=%04X m1=%04X",
+		uint32_t wAvg = sio->sioWaitN ? sio->sioWaitSumMs / sio->sioWaitN : 0;
+		SIO_LOG("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums to=%u fb=%u mis=%u m0=%04X m1=%04X wait=%u/%ums n=%u",
 		     me, sio->sioOk, sio->sioLateness / 10, sio->sioLateness % 10,
-		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, sio->sioMisorder, data[0], data[1]);
+		     sio->sioPeak / 10, sio->sioPeak % 10, sio->sioTimeouts, sio->sioFallback, sio->sioMisorder, data[0], data[1],
+		     wAvg, sio->sioWaitMaxMs, sio->sioWaitN);
+		sio->sioWaitSumMs = 0;
+		sio->sioWaitMaxMs = 0;
+		sio->sioWaitN = 0;
 		logLinkDiag(gba);
 		maybeUnstickStandby(gba);
 		maybeRearmHandshake(gba);
@@ -751,7 +762,16 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
+	uint32_t waitT0 = wallNowMs();
 	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPipelineWaitMs(sio, (int) sio->sioIndex), &remote, &got, NULL);
+	{
+		uint32_t dw = (uint32_t) (wallNowMs() - waitT0);
+		sio->sioWaitSumMs += dw;
+		++sio->sioWaitN;
+		if (dw > sio->sioWaitMaxMs) {
+			sio->sioWaitMaxMs = dw;
+		}
+	}
 	/* 这里是每轮传输必经点：无条件打印会变成每帧上千行 IO，直接拖垮帧率。
 	 * 只在「没拿到对端数据」或显式打开 MGBAX_SIO_TRACE 时才落日志。 */
 	if (!haveRemote || getenv("MGBAX_SIO_TRACE")) {
@@ -1110,6 +1130,9 @@ static void attachLink(struct SioLink* sio) {
 	if (sio->linkAttached) {
 		sio->sioOk = 0;
 		sio->sioPeak = 0;
+		sio->sioWaitSumMs = 0;
+		sio->sioWaitMaxMs = 0;
+		sio->sioWaitN = 0;
 		sio->sioTimeouts = 0;
 		sio->sioFallback = 0;
 		sio->sioWaiting = false;
