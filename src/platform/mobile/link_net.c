@@ -299,8 +299,6 @@ struct NetLink {
 	int peerCount;
 	uint32_t peerStale;
 	uint32_t peerDrops;
-	/* 流水线严格按轮配对开关（见 netLinkSetStrictPairing）。 */
-	int strictPairing;
 	/* 上一条取走的对端字的到达时刻（真实毫秒），用来量「排队时延」。 */
 	uint32_t lastPeerStamp;
 
@@ -1108,15 +1106,6 @@ static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint1
 					++link->peerStale;
 					continue;
 				}
-				if (__atomic_load_n(&link->strictPairing, __ATOMIC_ACQUIRE)
-				    && (int16_t) (w.index - want) > 0) {
-					/* 流水线批量到达时队首可能是后续轮次。提前消费会把
-					 * 训练家卡片块的数据片段按错轮次交给游戏，校验必挂。
-					 * 放回队首等本轮的字（等待窗由调用方按 RTT 给）。 */
-					link->peerHead = (link->peerHead + PEER_QUEUE - 1) % PEER_QUEUE;
-					++link->peerCount;
-					break;
-				}
 			} else if ((int16_t) (w.index - minIndex) <= 0) {
 				/* 已经消费过的轮次（含启动阶段堆积的旧推送）。丢掉，
 				 * 从机只跟随主机给的、还没见过的轮次。 */
@@ -1175,13 +1164,6 @@ int netLinkPeerPending(struct NetLink* link) {
 	int n = link->peerCount;
 	pthread_mutex_unlock(&link->mu);
 	return n;
-}
-
-void netLinkSetStrictPairing(struct NetLink* link, bool on) {
-	if (!link) {
-		return;
-	}
-	__atomic_store_n(&link->strictPairing, on ? 1 : 0, __ATOMIC_RELEASE);
 }
 
 void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex) {

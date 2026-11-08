@@ -79,10 +79,6 @@ uint32_t netLinkPeerAge(struct NetLink* link);
  * 需要挂上自己的轮次事件。没联机的时候主机一个字都不推，从机就完全不用
  * 挂 —— 这正是把从机的模拟帧率从 1.4fps 救回 60fps 的关键。 */
 int netLinkPeerPending(struct NetLink* link);
-/* 流水线模式开关：开启后主机严格按轮次号取字，队首是后续轮次时放回队首
- * 等本轮，避免一帧批量到达把训练家卡片块的数据片段按错轮次交给游戏。
- * 默认关闭，锁步路径行为不变。 */
-void netLinkSetStrictPairing(struct NetLink* link, bool on);
 /* 诊断：原子读 {队列字数, 队头轮次号}。 */
 void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex);
 /* 距对端最近一次 PUSH 到达过了多少真实毫秒（从没收到过则返回极大值）。 */
