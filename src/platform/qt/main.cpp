@@ -90,14 +90,34 @@ static LONG WINAPI crashFilter(EXCEPTION_POINTERS* info) {
 			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[0],
 			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[1]);
 		}
-		// 调用栈：Release 里没有行号，但符号表还在，把每个返回地址的
-		// "模块内偏移"打出来，再用 addr2line 还原成函数名。
+		/* 出错地址可能在 libmgba.dll / Qt DLL 里，不能一律减 exe 基址：
+		 * 23:01 那次战斗崩溃的 frame1..6 全被算成 0x6Axxxxxxxx 这种
+		 * 无意义的巨大偏移，就是因为把 DLL 地址减了 mGBA.exe 的基址。 */
+		void* fault = info->ExceptionRecord ? (void*) info->ExceptionRecord->ExceptionAddress : nullptr;
+		HMODULE faultMod = NULL;
+		char faultName[MAX_PATH] = "?";
+		if (fault && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+		                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                               (LPCSTR) fault, &faultMod)) {
+			GetModuleFileNameA(faultMod, faultName, MAX_PATH);
+		}
+		fprintf(f, "faultModule=%s+%llX\n", faultName,
+		        (unsigned long long) ((uintptr_t) fault - (uintptr_t) faultMod));
+		// 调用栈：Release 里没有行号，但符号表还在；每个返回地址都单独
+		// 解析所属模块，输出「模块名 + 模块内偏移」，再用 nm 还原函数名。
 		void* frames[40];
 		USHORT count = CaptureStackBackTrace(0, 40, frames, nullptr);
 		fprintf(f, "frames=%u\n", count);
 		for (USHORT i = 0; i < count; ++i) {
-			fprintf(f, "frame%u=%llX\n", i,
-			        (unsigned long long) ((uintptr_t) frames[i] - (uintptr_t) base));
+			HMODULE mod = NULL;
+			char name[MAX_PATH] = "?";
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+			                       | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                       (LPCSTR) frames[i], &mod)) {
+				GetModuleFileNameA(mod, name, MAX_PATH);
+			}
+			fprintf(f, "frame%u=%p module=%s+%llX\n", i, frames[i], name,
+			        (unsigned long long) ((uintptr_t) frames[i] - (uintptr_t) mod));
 		}
 		fclose(f);
 	}
