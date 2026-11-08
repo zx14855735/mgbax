@@ -1368,6 +1368,12 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 	qint64 gapSum = 0;
 	int gapCount = 0;
 	int gapPeak = 0;
+	// 隧道片计数器：用来判定「PC 端对端队列恒为 0」到底是没收到字节，
+	// 还是收到了但 20 字节包边界错位（netLink 读线程会打印 desync）。
+	quint64 txBytes = 0;
+	quint64 rxBytes = 0;
+	int txShort = 0;
+	int rxShort = 0;
 	qint64 lastReport = QDateTime::currentMSecsSinceEpoch();
 	// 直连是"锦上添花"层：它断了不该让整局游戏结束。下面的 cur 指向当前
 	// 真正在用的通道，直连被看门狗关掉时自动滑回服务器隧道，本地驱动那
@@ -1402,10 +1408,19 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			if (!lastSentMs) {
 				lastSentMs = QDateTime::currentMSecsSinceEpoch();
 			}
-			cur->send(QByteArray(reinterpret_cast<const char*>(buf), n));
+			QByteArray payload(reinterpret_cast<const char*>(buf), n);
+			txBytes += static_cast<quint64>(n);
+			if (n % TUNNEL_CHUNK_BYTES != 0) {
+				++txShort;
+			}
+			cur->send(payload);
 		}
 		QByteArray pkt;
 		if (cur->recv(&pkt, 20)) {
+			rxBytes += static_cast<quint64>(pkt.size());
+			if (pkt.size() % TUNNEL_CHUNK_BYTES != 0) {
+				++rxShort;
+			}
 			if (lastSentMs) {
 				int gap = int(QDateTime::currentMSecsSinceEpoch() - lastSentMs);
 				lastSentMs = 0;
@@ -1430,6 +1445,9 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 				                          .arg(gapPeak)
 				                          .arg(cur != m_tunnel ? QStringLiteral("p2p")
 				                                               : QStringLiteral("tunnel")));
+				GbCloud::debugLog(QStringLiteral("[sio-io] me=%1 tx=%2B rx=%3B short(tx/rx)=%4/%5")
+				                          .arg(m_wsNonce).arg(txBytes).arg(rxBytes)
+				                          .arg(txShort).arg(rxShort));
 				lastReport = now;
 				gapSum = 0;
 				gapCount = 0;

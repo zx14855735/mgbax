@@ -13,7 +13,32 @@
 #include <android/log.h>
 #define LINK_LOG(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
 #else
-#define LINK_LOG(...) ((void) 0)
+#include <stdarg.h>
+/* 桌面端过去把 LINK_LOG 编译成空操作，PC 侧链路完全是黑盒：联机失败时
+ * 看不到「读线程有没有起来 / 有没有收到 PUSH / 字节流有没有错位」。
+ * 现在改成写文件，FILE* 只打开一次（每条日志都 fopen 会重演 11-07
+ * 那次 0.7fps 事故）。路径由 MGBAX_LINK_LOG 指定，未设置时保持静默。 */
+static FILE* s_linkLogFile;
+static pthread_once_t s_linkLogOnce = PTHREAD_ONCE_INIT;
+static void linkLogOpen(void) {
+	const char* path = getenv("MGBAX_LINK_LOG");
+	if (path && *path) {
+		s_linkLogFile = fopen(path, "a");
+	}
+}
+static void linkLogPrintf(const char* fmt, ...) {
+	pthread_once(&s_linkLogOnce, linkLogOpen);
+	if (!s_linkLogFile) {
+		return;
+	}
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(s_linkLogFile, fmt, ap);
+	va_end(ap);
+	fputc('\n', s_linkLogFile);
+	fflush(s_linkLogFile);
+}
+#define LINK_LOG(...) linkLogPrintf(__VA_ARGS__)
 #endif
 
 /* 每条请求打一行日志会把 60 帧联机拖成幻灯片，默认关掉。 */
@@ -412,15 +437,55 @@ static void* pingMain(void* arg);
 
 static void* readerMain(void* arg) {
 	struct NetLink* link = (struct NetLink*) arg;
+	unsigned packets = 0;
+	unsigned pushes = 0;
+	unsigned resyncs = 0;
 	int fd;
 	pthread_mutex_lock(&link->mu);
 	fd = link->sock;
 	pthread_mutex_unlock(&link->mu);
+	LINK_LOG("Link reader started fd=%d", fd);
 	while (!link->stop && fd >= 0) {
 		struct Packet pkt;
-		if (!readAll(fd, &pkt, sizeof(pkt)) || pkt.magic != kMagic) {
+		if (!readAll(fd, &pkt, sizeof(pkt))) {
 			break;
 		}
+		if (pkt.magic != kMagic) {
+			/* 隧道丢片/半包会让 20 字节包边界错位。以前这里直接 break：读线程
+			 * 一死，对端队列恒为 0（现场就是 rtt=0、pending=0、主机
+			 * done want=1 have=0 retries=27）。按字节滑动找下一个 MBL1 魔数
+			 * 重新对齐，丢 1~19 字节时都能把链路救回来；丢整包（20 的倍数）
+			 * 本来就不会错位。 */
+			unsigned char raw[sizeof(struct Packet)];
+			memcpy(raw, &pkt, sizeof(pkt));
+			int shift = -1;
+			for (size_t i = 1; i + sizeof(uint32_t) <= sizeof(raw); ++i) {
+				uint32_t magic;
+				memcpy(&magic, raw + i, sizeof(magic));
+				if (magic == kMagic) {
+					shift = (int) i;
+					break;
+				}
+			}
+			LINK_LOG("Link reader desync magic=%08X head=%02X%02X%02X%02X shift=%d",
+			         (unsigned) pkt.magic, (unsigned) raw[0], (unsigned) raw[1],
+			         (unsigned) raw[2], (unsigned) raw[3], shift);
+			if (shift < 0) {
+				if (++resyncs > 64) {
+					break;
+				}
+				continue;
+			}
+			size_t have = sizeof(raw) - (size_t) shift;
+			memmove(raw, raw + shift, have);
+			if (!readAll(fd, raw + have, sizeof(raw) - have)) {
+				break;
+			}
+			memcpy(&pkt, raw, sizeof(pkt));
+			++resyncs;
+			LINK_LOG("Link reader resynced after %d stray bytes", shift);
+		}
+		++packets;
 		if (pkt.type == PKT_BYE) {
 			break;
 		}
@@ -475,6 +540,12 @@ static void* readerMain(void* arg) {
 			continue;
 		}
 		if (pkt.type == PKT_PUSH) {
+			++pushes;
+			if (pushes <= 12 || (pushes % 100) == 0) {
+				LINK_LOG("Link PUSH #%u seq=%u mode=%u value=%04X",
+				         pushes, (unsigned) pkt.seq, (unsigned) pkt.mode,
+				         (unsigned) pkt.value);
+			}
 			pthread_mutex_lock(&link->mu);
 			link->pushSeenAt = nowMs();
 			if (link->peerCount == PEER_QUEUE) {
@@ -530,7 +601,8 @@ static void* readerMain(void* arg) {
 	link->waiting = false;
 	pthread_cond_broadcast(&link->cv);
 	pthread_mutex_unlock(&link->mu);
-	LINK_LOG("Link reader stopped");
+	LINK_LOG("Link reader stopped: packets=%u pushes=%u resync=%u",
+	         packets, pushes, resyncs);
 	return NULL;
 }
 
