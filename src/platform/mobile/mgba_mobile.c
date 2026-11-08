@@ -2466,9 +2466,39 @@ static int sioWaitMs(struct MgbaMobile* emu) {
 	return (int) ms;
 }
 
+/* 与 Qt 侧同一条流水线原型：系统属性 mgbax.sio.async=1 开启。
+ * 主机收尾不等本轮对端字，队列里没有就用上一轮已确认的字补槽，
+ * 把每帧 9 个网络往返从关键路径移出。默认关闭，两端必须同时开启。 */
+static bool sioAsyncMode(void) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		char v[92] = {0};
+		__system_property_get("mgbax.sio.async", v);
+		enabled = (v[0] == '1') ? 1 : 0;
+	}
+	return enabled != 0;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	if (!emu->sioWaiting) {
+		return;
+	}
+	if (sioAsyncMode()) {
+		uint32_t word = 0;
+		uint16_t gotWord = 0;
+		bool have = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 0,
+		                                            &word, &gotWord, NULL);
+		if (have) {
+			emu->sioHasRemote = true;
+			emu->sioRemote = word;
+		} else if (emu->sioHasRemote) {
+			word = emu->sioRemote;
+			have = true;
+			++emu->sioFallback;
+		}
+		emu->sioWaiting = false;
+		completeMultiTransfer(emu, word, have, cyclesLate);
 		return;
 	}
 	uint32_t remote = 0;
