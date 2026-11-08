@@ -2429,6 +2429,14 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	if (netLinkPushAgeMs(emu->link) < 800) {
 		return 900;                 /* 对端仍在活跃交换，这一轮只是晚到 */
 	}
+	/* 与 Qt 侧同一条修正：链路刚建立时两端都还没推过字，pushSeenAt=0
+	 * 会让上面两条全部落空，于是最需要等一个公网 RTT 的第一轮反而零等待，
+	 * 主机按空槽收尾 → 从机回字迟到后无人认领 → 握手停在 START0/START1。
+	 * 前 8 轮、头 3 次重试给 900ms 预算；之后恢复 0，避免对端根本没进
+	 * 联机时把模拟线程按死（11-08 的假死）。 */
+	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
+		return 900;
+	}
 	return 0;                       /* 对端没在交换：立刻收尾，别冻住模拟线程 */
 }
 

@@ -462,6 +462,20 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
 	UNUSED(cyclesLate);
 	struct SioLink* sio = (struct SioLink*) user;
 	serviceLink(sio);
+	/* [room] 只读诊断不能只挂在「传输成功」路径：主机第一轮就卡住时
+	 * sioOk 永远是 0，诊断一行都不打，走位脚本全程 ic/ts/cb2 都是 "-"，
+	 * 根本判断不了有没有踩到座位（12:44 那轮实测就是这样）。改在每帧
+	 * 轮询里按墙钟节流输出，与 SIO 传输是否成功无关；未设 MGBAX_LINK_DIAG
+	 * 时 logLinkDiag 会立刻返回，开销可忽略。 */
+	static uint32_t lastDiagMs;
+	if (sio->linkAttached && sio->core
+	    && sio->core->platform(sio->core) == mPLATFORM_GBA) {
+		uint32_t now = wallNowMs();
+		if ((uint32_t) (now - lastDiagMs) >= 250u) {
+			lastDiagMs = now;
+			logLinkDiag((struct GBA*) sio->core->board);
+		}
+	}
 	if (sio->linkAttached) {
 		mTimingSchedule(timing, &sio->linkEvent, 8192);
 	}
@@ -611,6 +625,18 @@ static int sioPeerWaitMs(struct SioLink* sio) {
 		return 1200;
 	}
 	if (netLinkPushAgeMs(sio->link) < 800) {
+		return 900;
+	}
+	/* 链路刚建立的前几轮，对端一个字都还没推过：pushSeenAt=0 →
+	 * netLinkPushAgeMs 返回极大值，上面两条都不命中，这里就会返回 0。
+	 * 可这恰恰是最需要等一个 RTT 的时刻——主机已经把本轮字推出去了，
+	 * 从机的回字还在隧道上（实测 RTT 231ms）。零等待配上 100 cycles
+	 * 的重试间隔，27 次重试在不到 1ms 内耗尽，主机按空槽收尾；等从机
+	 * 字到达时已经没人取了。现场证据：PC 只收到 PUSH #1、安卓只有
+	 * HSP #1，两端 ST 在 0/1 之间反复，done want=1 retries=27。
+	 * 给前 8 轮、且只在头 3 次重试里开 900ms 预算（避免 40×900ms 的
+	 * 新假死）；之后仍无对端字说明它根本没进联机，恢复 0。 */
+	if (sio->sioWaiting && sio->sioIndex <= 8 && sio->sioRetries < 3) {
 		return 900;
 	}
 	return 0;
