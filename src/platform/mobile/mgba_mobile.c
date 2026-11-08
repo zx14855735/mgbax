@@ -2282,9 +2282,25 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 等（窗口自适应 RTT）：从机的一帧因此包含主控一帧的全部轮次，LAG 消
 	 * 除，两边的游戏速率重新锁死。交换停了（对端 500ms 没推字）就回到自旋，
 	 * 模拟帧率不受影响。 */
+	/* 【跨网时从机必须阻塞等；判据不能是本机推字时间】
+	 *
+	 * 这里原来用「本机 500ms 内推过字」当作「交换正在进行」的判据。可这个
+	 * 判据在**第一轮**必然为假：从机还没完成过任何一轮，自然没推过字 →
+	 * 走下面的自旋分支 → 每次自旋把模拟时钟推进 2048 cycles（≈0.12ms），
+	 * 而墙钟只过去几微秒，等于模拟时间以约 300 倍真实速度狂奔。主机那一个
+	 * 字还在路上（一个 RTT），从机这边已经空转出几百上千个游戏帧，gen8 的
+	 * LinkVSync 数出「这些帧一次 SIO 中断都没有」→ gLink.lag = LAG_MASTER
+	 * → 当场「通信错误……请检查所有的连接」，link 任务直接停掉，之后从机
+	 * 再也不写 SIOMLT_SEND，主机收到的全是 0x0000（RECEIVED_NOTHING）。
+	 * 实测从机自旋计数 to=1721192，与这个推断完全吻合。
+	 *
+	 * 而这个事件只有在 netLinkPeerPending() > 0（主机确实推过字）时才会被
+	 * 挂上，也就是说「进到这里」本身就证明交换正在进行。所以只要链路还连
+	 * 着，就按 RTT 自适应窗口阻塞等——模拟时钟冻结，游戏看不见这段墙钟
+	 * 时间，从机的每帧轮次数与主机严格一致，LAG 不会触发。
+	 * 真正没联机时事件根本不会被挂上，帧率不受影响。 */
 	int slaveWaitMs = 0;
-	if (emu->link && netLinkState(emu->link) == 2 &&
-	    netLinkPushAgeMs(emu->link) < 500) {
+	if (emu->link && netLinkState(emu->link) == 2) {
 		slaveWaitMs = sioWaitMs(emu);
 	}
 	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);

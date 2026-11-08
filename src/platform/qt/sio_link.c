@@ -36,33 +36,44 @@
  * 实机排查联机时序时需要能落到文件：MGBAX_SIO_LOG=1 时同一条轨迹追加到
  * %TEMP%/mgba_sio.log（每次打开-关闭，避免崩溃丢尾）。
  */
+/* 曾经每条日志都 fopen/fclose：主机每帧上千次传输、每次都要写一条，
+ * Windows 上配上杀软实时扫描直接把帧率压到 0.7fps，反过来饿死从机。
+ * 现在只开一次、攒够一批再 flush；崩溃最多丢 32 行，换回满帧。 */
 static void sioLogFile(const char* fmt, ...) {
 	static int enabled = -1;
+	static FILE* f = NULL;
+	static int pending = 0;
 	if (enabled < 0) {
 		enabled = getenv("MGBAX_SIO_LOG") ? 1 : 0;
 	}
 	if (!enabled) {
 		return;
 	}
-	const char* tmp = getenv("TEMP");
-	if (!tmp) {
-		tmp = getenv("TMP");
-	}
-	if (!tmp) {
-		tmp = ".";
-	}
-	char path[512];
-	snprintf(path, sizeof(path), "%s%cmgba_sio.log", tmp, '/');
-	FILE* f = fopen(path, "a");
 	if (!f) {
-		return;
+		const char* tmp = getenv("TEMP");
+		if (!tmp) {
+			tmp = getenv("TMP");
+		}
+		if (!tmp) {
+			tmp = ".";
+		}
+		char path[512];
+		snprintf(path, sizeof(path), "%s%cmgba_sio.log", tmp, '/');
+		f = fopen(path, "a");
+		if (!f) {
+			enabled = 0;
+			return;
+		}
 	}
 	va_list args;
 	va_start(args, fmt);
 	vfprintf(f, fmt, args);
 	va_end(args);
 	fputc('\n', f);
-	fclose(f);
+	if (++pending >= 32) {
+		fflush(f);
+		pending = 0;
+	}
 }
 
 #define SIO_LOG(...) do { mLOG(GBA_SIO, INFO, __VA_ARGS__); sioLogFile(__VA_ARGS__); } while (0)
@@ -506,8 +517,11 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * active exchange keep the historical non-blocking spin so an idle link
 	 * never drags the game's frame rate down. */
 	int waitMs = 0;
-	if (sio->link && netLinkState(sio->link) == 2 &&
-	    netLinkPushAgeMs(sio->link) < 500) {
+	/* 判据不能是「本机 500ms 内推过字」：第一轮从机还没推过任何字，必然
+	 * 判为不活跃而走自旋，自旋会把模拟时钟推进得比墙钟快几百倍，游戏的
+	 * 帧计数瞬间超出 LAG 门限，直接报通信错误。此事件只有在主机推过字时
+	 * 才会被挂上，所以连上就等于「交换正在进行」，按 RTT 窗口阻塞等即可。 */
+	if (sio->link && netLinkState(sio->link) == 2) {
 		waitMs = sioWaitMs(sio);
 	}
 	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, waitMs, &remote, &got, &peerCycles);
@@ -603,9 +617,13 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	uint32_t remote = 0;
 	uint16_t got = 0;
 	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioWaitMs(sio), &remote, &got, NULL);
-	SIO_LOG("done want=%u have=%d got=%u retries=%u rtt=%u pending=%d",
-	        (unsigned) sio->sioIndex, haveRemote ? 1 : 0, (unsigned) got,
-	        (unsigned) sio->sioRetries, netLinkRttUs(sio->link), netLinkPeerPending(sio->link));
+	/* 这里是每轮传输必经点：无条件打印会变成每帧上千行 IO，直接拖垮帧率。
+	 * 只在「没拿到对端数据」或显式打开 MGBAX_SIO_TRACE 时才落日志。 */
+	if (!haveRemote || getenv("MGBAX_SIO_TRACE")) {
+		SIO_LOG("done want=%u have=%d got=%u retries=%u rtt=%u pending=%d",
+		        (unsigned) sio->sioIndex, haveRemote ? 1 : 0, (unsigned) got,
+		        (unsigned) sio->sioRetries, netLinkRttUs(sio->link), netLinkPeerPending(sio->link));
+	}
 	if (haveRemote) {
 		if (got != sio->sioIndex) {
 			++sio->sioMisorder;
