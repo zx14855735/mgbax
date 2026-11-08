@@ -872,7 +872,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 		int boot, menuAt, saveAt;
 		int tx, ty;      /* 座位格：1P=(3,5) 2P=(10,5) */
 		int dir;
-		int warm;
+		int stuck;
+		int lastX, lastY;
 	};
 	static std::atomic<bool> gStop(false);
 	std::atomic<int> frames[2];
@@ -881,8 +882,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 	gStop = false;
 
 	Side sides[2] = {
-		{ cores[0], links[0], &frames[0], totalFrames, bootFrames, menuAt, saveAt, 3, 5, 0 },
-		{ cores[1], links[1], &frames[1], totalFrames, bootFrames, menuAt, saveAt, 10, 5, 0 },
+		{ cores[0], links[0], &frames[0], totalFrames, bootFrames, menuAt, saveAt, 3, 5, 0, 0, -1, -1 },
+		{ cores[1], links[1], &frames[1], totalFrames, bootFrames, menuAt, saveAt, 10, 5, 0, 0, -1, -1 },
 	};
 	auto body = [](Side* sd) {
 		int hold = 0;
@@ -902,8 +903,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 			 * （ts=0x80）。ts=80 时游戏已经进了竞技场房间的 standby 脚本，
 			 * 方向键会被锁住 —— 21:10/21:14 两轮 px/py 死死停在 (5,8) 就是这个
 			 * 原因；而真机流程本来就是「先站到座位，再等卡片交换完成」。 */
-			if (phase == 0 && cnt >= 2) {
-				phase = 1;
+			if (phase == 0 && cnt >= 2 && (ts & 0xFF) == 0x80) {
+				phase = 1;   /* 卡片交换完成、已被 warp 进竞技场，此时才可自由行走 */
 			}
 			if (phase == 1 || phase == 2) {
 				if (px == sd->tx && py == sd->ty) {
@@ -912,14 +913,24 @@ static int dualTest(const QString& rom, const QString& sav) {
 					hold--;
 					keys = sd->dir;   /* 维持当前方向键 */
 				} else {
-					if (py > sd->ty) {
-						sd->dir = 64;   /* UP */
-					} else if (py < sd->ty) {
-						sd->dir = 128;  /* DOWN */
-					} else if (px > sd->tx) {
-						sd->dir = 32;   /* LEFT */
+					/* 先按差得多的轴走；连续两次没位移就换另一个轴。
+					 * 21:39 实测：站在 (5,8) 时正上方是柜台，固定先走 Y 轴会
+					 * 一直顶着柜台不动（px/py 整轮不变），而真机路线是
+					 * 先横移到空列再上。 */
+					if (px != sd->lastX || py != sd->lastY) {
+						sd->stuck = 0;
+						sd->lastX = px;
+						sd->lastY = py;
+					} else if (sd->stuck < 4) {
+						sd->stuck++;
+					}
+					bool preferX = sd->stuck >= 2;
+					if (preferX ? (px != sd->tx) : (py == sd->ty)) {
+						sd->dir = (px > sd->tx) ? 32 : 16;      /* LEFT / RIGHT */
+					} else if (preferX) {
+						sd->dir = (py > sd->ty) ? 64 : 128;     /* UP / DOWN */
 					} else {
-						sd->dir = 16;   /* RIGHT */
+						sd->dir = (py > sd->ty) ? 64 : 128;
 					}
 					hold = 18;
 					keys = sd->dir;
@@ -978,9 +989,24 @@ static int dualTest(const QString& rom, const QString& sav) {
 				px = (int16_t) GBAView16(gba[0]->cpu, sb1);
 				py = (int16_t) GBAView16(gba[0]->cpu, sb1 + 2);
 			}
-			fprintf(stderr, "f=%d/%d lst=%u lid=%u pc=%u cnt=%d ts=%04X brs=%04X cb=%08X px=%d py=%d\n",
+			uint32_t ic0 = (uint32_t) GBAView16(gba[0]->cpu, 0x03004A14u) |
+			               ((uint32_t) GBAView16(gba[0]->cpu, 0x03004A16u) << 16);
+			/* 从机侧同项，用来判断两端是否停在同一个游戏状态 */
+			uint32_t ts1v = GBAView16(gba[1]->cpu, 0x03004A10u);
+			uint32_t ic1 = (uint32_t) GBAView16(gba[1]->cpu, 0x03004A14u) |
+			               ((uint32_t) GBAView16(gba[1]->cpu, 0x03004A16u) << 16);
+			int cnt1 = (GBAView16(gba[1]->cpu, 0x03004A38u) >> 8) & 0xFF;
+			uint32_t sbB = GBAView32(gba[1]->cpu, 0x03004964u);
+			int qx = 0, qy = 0;
+			if (sbB >= 0x02000000u && sbB < 0x03000000u) {
+				qx = (int16_t) GBAView16(gba[1]->cpu, sbB);
+				qy = (int16_t) GBAView16(gba[1]->cpu, sbB + 2);
+			}
+			fprintf(stderr, "f=%d/%d P1[lst=%u lid=%u pc=%u cnt=%d ts=%04X ic=%08X cb=%08X %d,%d]"
+			        " P2[cnt=%d ts=%04X ic=%08X %d,%d]\n",
 			        a, b, (l0 >> 8) & 0xFF, l1 & 0xFF, GBAView8(gba[0]->cpu, 0x03002AF7u),
-			        (lidcnt >> 8) & 0xFF, ts, brs, cb2, px, py);
+			        (lidcnt >> 8) & 0xFF, ts, ic0, cb2, px, py,
+			        cnt1, ts1v, ic1, qx, qy);
 			fflush(stderr);
 			printed = a / 60;
 			if (((lidcnt >> 8) & 0xFF) >= 2) {
