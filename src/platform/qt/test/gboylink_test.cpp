@@ -61,11 +61,14 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
+
+#include <cstdlib>
 
 #include <mgba/core/core.h>
 #include <mgba/core/config.h>
@@ -812,6 +815,9 @@ static int dualTest(const QString& rom, const QString& sav) {
 		}
 		cores[i]->init(cores[i]);
 		mCoreConfigInit(&cores[i]->config, NULL);
+		/* 默认 filter 是 mLOG_ALL，一次完整对局能刷出 47MB 日志，两个线程
+		 * 的 stderr 还会互相插行。只保留 WARN 以上，基线输出才可读。 */
+		mCoreConfigSetIntValue(&cores[i]->config, "logLevel", mLOG_WARN);
 		if (!cores[i]->loadROM(cores[i], romVf)) {
 			qInfo() << "DUAL TEST: FAIL (loadROM)";
 			return 1;
@@ -876,10 +882,15 @@ static int dualTest(const QString& rom, const QString& sav) {
 		int lastX, lastY;
 	};
 	static std::atomic<bool> gStop(false);
+	/* 两端都站上座位后才允许按 A。23:46 基线里 1P 先到 (3,5) 就立刻连打 A，
+	 * 此时 2P 还在 (8,6) 走位，进程在约 12000 帧处直接消失。真机驱动是
+	 * 「两端都到位，再由主机按 A」，这里照抄，避免用未同步的座位状态开打。 */
+	static std::atomic<int> gSeated(0);
 	std::atomic<int> frames[2];
 	frames[0] = 0;
 	frames[1] = 0;
 	gStop = false;
+	gSeated = 0;
 
 	Side sides[2] = {
 		{ cores[0], links[0], &frames[0], totalFrames, bootFrames, menuAt, saveAt, 3, 5, 0, 0, -1, -1 },
@@ -906,9 +917,36 @@ static int dualTest(const QString& rom, const QString& sav) {
 			if (phase == 0 && cnt >= 2 && (ts & 0xFF) == 0x80) {
 				phase = 1;   /* 卡片交换完成、已被 warp 进竞技场，此时才可自由行走 */
 			}
+			/* 菜单脚本只能在 phase 0 生效。此前这里没有条件，saveAt 之后的
+			 * A 连打会覆盖 phase 1 刚设好的方向键，两端因此永远停在 (5,8)/
+			 * (6,8)（23:32 基线实测：cnt=2、ts=8080，但坐标 40 秒不动）。 */
+			if (phase == 0) {
+				if (f >= sd->boot && f < sd->boot + 6) {
+					keys = 8;                       /* START */
+				} else if (f >= sd->boot + 10 && f < sd->boot + 16) {
+					keys = 8;
+				} else if (f >= sd->boot + 20 && f < sd->menuAt) {
+					keys = ((f % 45) < 30) ? 1u : 0u;   /* A 连打 */
+				} else if (f >= sd->menuAt && f < sd->menuAt + 8) {
+					keys = 128;                     /* DOWN：交换中心 → 大竞技场 */
+				} else if (f >= sd->menuAt + 30 && f < sd->menuAt + 40) {
+					keys = 1;
+				} else if (f >= sd->menuAt + 40 && f < sd->menuAt + 60) {
+					keys = 64;                      /* UP：钳到单打 */
+				} else if (f >= sd->menuAt + 60 && f < sd->menuAt + 80) {
+					keys = 32;                      /* LEFT：钳到单打 */
+				} else if (f >= sd->menuAt + 80 && f < sd->menuAt + 92) {
+					keys = 1;
+				} else if (f >= sd->saveAt) {
+					keys = ((f % 40) < 25) ? 1u : 0u;
+				}
+			}
 			if (phase == 1 || phase == 2) {
 				if (px == sd->tx && py == sd->ty) {
-					phase = 2;
+					if (phase != 2) {
+						phase = 2;
+						gSeated.fetch_add(1);
+					}
 				} else if (hold > 0) {
 					hold--;
 					keys = sd->dir;   /* 维持当前方向键 */
@@ -935,28 +973,9 @@ static int dualTest(const QString& rom, const QString& sav) {
 					hold = 40;   /* 一格走路动画约 16 帧，留足余量 */
 					keys = sd->dir;
 				}
-				if (phase == 2) {
-					keys = ((f % 40) < 20) ? 1u : 0u;   /* 站位后按 A 开打 */
+				if (phase == 2 && gSeated.load() >= 2) {
+					keys = ((f % 40) < 20) ? 1u : 0u;   /* 两端都到位后按 A 开打 */
 				}
-			}
-			if (f >= sd->boot && f < sd->boot + 6) {
-				keys = 8;                       /* START */
-			} else if (f >= sd->boot + 10 && f < sd->boot + 16) {
-				keys = 8;
-			} else if (f >= sd->boot + 20 && f < sd->menuAt) {
-				keys = ((f % 45) < 30) ? 1u : 0u;   /* A 连打 */
-			} else if (f >= sd->menuAt && f < sd->menuAt + 8) {
-				keys = 128;                     /* DOWN：交换中心 → 大竞技场 */
-			} else if (f >= sd->menuAt + 30 && f < sd->menuAt + 40) {
-				keys = 1;
-			} else if (f >= sd->menuAt + 40 && f < sd->menuAt + 60) {
-				keys = 64;                      /* UP：钳到单打 */
-			} else if (f >= sd->menuAt + 60 && f < sd->menuAt + 80) {
-				keys = 32;                      /* LEFT：钳到单打 */
-			} else if (f >= sd->menuAt + 80 && f < sd->menuAt + 92) {
-				keys = 1;
-			} else if (f >= sd->saveAt) {
-				keys = ((f % 40) < 25) ? 1u : 0u;
 			}
 			sd->core->setKeys(sd->core, keys);
 			sioLinkPump(sd->link, sd->core);
@@ -971,7 +990,7 @@ static int dualTest(const QString& rom, const QString& sav) {
 	for (int guard = 0; guard < totalFrames * 40; guard++) {
 		int a = frames[0].load();
 		int b = frames[1].load();
-		if ((a >= totalFrames && b >= totalFrames) || (a == 0 && b == 0 && guard > 10)) {
+		if ((a >= totalFrames && b >= totalFrames) || (a == 0 && b == 0 && guard > 300)) {
 			break;
 		}
 		if (printed < 200 && (a / 60) != (printed)) {
@@ -1036,6 +1055,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 	qInfo().noquote() << QString("DUAL TEST: cnt=%1 battle=%2 final cb2=%3")
 	                     .arg(cntSeen).arg(battleSeen)
 	                     .arg(cb2, 8, 16, QChar('0'));
+	fprintf(stderr, "DUAL TEST: cnt=%d battle=%d final cb2=%08X\n", cntSeen, battleSeen, cb2);
+	fflush(stderr);
 	if (!cntSeen) {
 		++failures;
 	}
@@ -1044,6 +1065,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 		cores[i]->deinit(cores[i]);
 	}
 	qInfo() << (failures ? "DUAL TEST: FAIL" : "DUAL TEST: PASS (2 cores linked on loopback)");
+	fprintf(stderr, "DUAL TEST: %s\n", failures ? "FAIL" : "PASS (2 cores linked on loopback)");
+	fflush(stderr);
 	return failures;
 }
 
@@ -1873,10 +1896,54 @@ static int directLinkTest() {
 	return failures;
 }
 
+#ifdef _WIN32
+/* 测试进程崩溃现场：与 mGBA.exe 的 crashFilter 相同，但每个返回地址都额外
+ * 记录所属模块和模块内偏移 —— Release 构建里 libmgba.dll 与 exe 各有一套
+ * 地址空间，只减 exe 基址会把 DLL 帧全算错。 */
+static LONG WINAPI testCrashFilter(EXCEPTION_POINTERS* info) {
+	char path[MAX_PATH];
+	const char* temp = getenv("TEMP");
+	snprintf(path, sizeof(path), "%s\\mgba_crash_test.txt", temp ? temp : ".");
+	FILE* f = fopen(path, "w");
+	if (f) {
+		HMODULE base = GetModuleHandle(nullptr);
+		fprintf(f, "code=%08lX\n", info->ExceptionRecord ? info->ExceptionRecord->ExceptionCode : 0);
+		fprintf(f, "address=%p\n", info->ExceptionRecord ? info->ExceptionRecord->ExceptionAddress : nullptr);
+		fprintf(f, "base=%p\n", (void*) base);
+		if (info->ExceptionRecord && info->ExceptionRecord->NumberParameters >= 2) {
+			fprintf(f, "param0=%llX\nparam1=%llX\n",
+			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[0],
+			        (unsigned long long) info->ExceptionRecord->ExceptionInformation[1]);
+		}
+		void* frames[40];
+		USHORT count = CaptureStackBackTrace(0, 40, frames, nullptr);
+		fprintf(f, "frames=%u\n", count);
+		for (USHORT i = 0; i < count; ++i) {
+			HMODULE mod = NULL;
+			char name[MAX_PATH] = "?";
+			if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+			                           | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			                       (LPCSTR) frames[i], &mod)) {
+				GetModuleFileNameA(mod, name, MAX_PATH);
+			}
+			fprintf(f, "frame%u=%p module=%s+%llX\n", i, frames[i], name,
+			        (unsigned long long) ((uintptr_t) frames[i] - (uintptr_t) mod));
+		}
+		fclose(f);
+	}
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
+#ifdef _WIN32
+	if (!qEnvironmentVariableIsEmpty("MGBAX_CRASH_LOG")) {
+		SetUnhandledExceptionFilter(testCrashFilter);
+	}
+#endif
 	QStringList args = app.arguments();
 	if (args.size() < 2) {
 		qInfo() << "usage: test-gboylink wifi [rom] | cloud <user> <pass> [room] [rom]"
