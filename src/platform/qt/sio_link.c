@@ -772,7 +772,7 @@ static int sioPipelineWaitMs(struct SioLink* sio, int want) {
  * 模拟帧计数，不按墙钟），帧率回到接近单机；复用字只影响对端按键的
  * 新鲜度，比空槽 0xFFFF 安全得多（空槽会直接触发通信错误）。
  *   - 前 256 轮（LINKUP / 训练家卡片块交换）保持严格等待，避免块校验坏掉
- *   - 隧道根本建立不了会话（cnt 恒 0），所以健康判据只看 cnt，不再看 RTT
+ *   - 会话判据用 gLink.state + playerCount + 玩家数三者同时满足，不看 RTT
  *   - MGBAX_SIO_FAST=0 可整体关掉这次优化，便于 A/B 对照
  */
 static bool sioFastFrame(struct SioLink* sio) {
@@ -802,6 +802,17 @@ static bool sioFastFrame(struct SioLink* sio) {
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	if (!gba || !gba->cpu) {
+		return false;
+	}
+	/* 只看 cnt 会误判：02:03 轮 [diag] lstate=1 pc=0（gLink 会话根本没
+	 * 建立）却出现 [room] cnt=2，那是上一局遗留的内存值，结果快速帧在
+	 * 握手/块交换阶段就被触发、复用旧字，末尾 [diag] linkup=6（连接错误）。
+	 * gLink.state（0x03002AF5）与 playerCount（0x03002AF7）才是真实判据：
+	 * 历史成功轮为 lstate=4 pc=2，未建立时为 lstate=1 pc=0。
+	 * 三个条件同时满足才认定会话已建立，避免损坏 LINKUP 块校验。 */
+	uint16_t gl0 = GBAView16(gba->cpu, 0x03002AF4u);
+	uint16_t gl1 = GBAView16(gba->cpu, 0x03002AF6u);
+	if (((gl0 >> 8) & 0xFF) < 2 || ((gl1 >> 8) & 0xFF) < 2) {
 		return false;
 	}
 	if ((GBAView16(gba->cpu, 0x03004A38u) >> 8) < 2) {
