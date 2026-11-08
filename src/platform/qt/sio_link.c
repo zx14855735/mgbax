@@ -511,7 +511,7 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
  */
 static int sioWaitMs(struct SioLink* sio);
 static int sioPeerWaitMs(struct SioLink* sio);
-static int sioPipelineWaitMs(struct SioLink* sio);
+static int sioPipelineWaitMs(struct SioLink* sio, bool exact);
 
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct SioLink* sio = (struct SioLink*) user;
@@ -546,7 +546,7 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * a connection error at the start of every battle/trade. Outside an
 	 * active exchange keep the historical non-blocking spin so an idle link
 	 * never drags the game's frame rate down. */
-	int waitMs = sioPipelineWaitMs(sio);
+	int waitMs = sioPipelineWaitMs(sio, false);
 	bool have = netLinkTakePeerWordAny(sio->link, sio->sioIndex, waitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* A slave never finishes without peer data: on real hardware the
@@ -693,15 +693,26 @@ static bool sioPipelineMode(void) {
 	return enabled != 0;
 }
 
-static int sioPipelineWaitMs(struct SioLink* sio) {
+static int sioPipelineWaitMs(struct SioLink* sio, bool exact) {
 	if (!sioPipelineMode()) {
 		return sioPeerWaitMs(sio);
 	}
 	if (!sio->link || netLinkState(sio->link) != 2) {
 		return 0;
 	}
-	if (netLinkPeerPending(sio->link) > 0) {
-		return 0;
+	netLinkSetStrictPairing(sio->link, true);
+	/* 队列非空还不够：流水线批量到达时队首可能是后续轮次，提前消费会
+	 * 把块数据片段错序。只有队首正好是（主机）/ 新于（从机）本轮才零等待。 */
+	int qCount = 0;
+	unsigned qHead = 0;
+	netLinkPeerHeadInfo(sio->link, &qCount, &qHead);
+	if (qCount > 0) {
+		uint16_t want = (uint16_t) sio->sioIndex;
+		bool ready = exact ? ((uint16_t) qHead == want)
+		                   : ((int16_t) ((uint16_t) qHead - want) > 0);
+		if (ready) {
+			return 0;
+		}
 	}
 	uint32_t ms = (netLinkRttUs(sio->link) / 1000u) * 2u;
 	if (ms < 300u) {
@@ -721,7 +732,7 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
-	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPipelineWaitMs(sio), &remote, &got, NULL);
+	bool haveRemote = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, sioPipelineWaitMs(sio, true), &remote, &got, NULL);
 	/* 这里是每轮传输必经点：无条件打印会变成每帧上千行 IO，直接拖垮帧率。
 	 * 只在「没拿到对端数据」或显式打开 MGBAX_SIO_TRACE 时才落日志。 */
 	if (!haveRemote || getenv("MGBAX_SIO_TRACE")) {
