@@ -681,39 +681,10 @@ static int sioWaitMs(struct SioLink* sio) {
 	return (int) ms;
 }
 
-/* 流水线原型：MGBAX_SIO_ASYNC=1 时主机收尾不再阻塞等本轮对端字。
- * 队列里有本轮字就正常消费；没有就用上一轮已确认的字补槽，让模拟线程
- * 按真机节奏继续推进，把「每轮一个网络往返」从关键路径移出。
- * 默认关闭，两端必须同时开启（安卓侧系统属性 mgbax.sio.async=1）。 */
-static bool sioAsyncMode(void) {
-	static int enabled = -1;
-	if (enabled < 0) {
-		enabled = getenv("MGBAX_SIO_ASYNC") ? 1 : 0;
-	}
-	return enabled != 0;
-}
-
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	UNUSED(timing);
 	struct SioLink* sio = (struct SioLink*) user;
 	if (!sio->sioWaiting) {
-		return;
-	}
-	if (sioAsyncMode()) {
-		uint32_t word = 0;
-		uint16_t gotWord = 0;
-		bool have = sio->link && netLinkTakePeerWord(sio->link, sio->sioIndex, 0,
-		                                            &word, &gotWord, NULL);
-		if (have) {
-			sio->sioHasRemote = true;
-			sio->sioRemote = word;
-		} else if (sio->sioHasRemote) {
-			word = sio->sioRemote;
-			have = true;
-			++sio->sioFallback;
-		}
-		sio->sioWaiting = false;
-		completeMultiTransfer(sio, word, have, cyclesLate);
 		return;
 	}
 	uint32_t remote = 0;
