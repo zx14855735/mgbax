@@ -138,6 +138,12 @@ struct SioLink {
 	bool sioPushed;
 	uint32_t sioMisorder;
 	uint32_t sioBusyCycle;
+	/* 快速帧锁存：会话建立（cnt>=2）过一次就一直走零等待路径，直到链路
+	 * 断开或连续多轮拿不到任何新字。02:03 实测不锁存时 cnt 抖动会让
+	 * 判定时开时关，64 次传输里只有 22 次走快速路径（fb=22 / n=42），
+	 * 其余 42 次仍按 23~32ms/轮 阻塞，帧率被反复拖回去。 */
+	bool sioFastLatched;
+	uint32_t sioFastMiss;
 };
 
 static uint32_t wallNowMs(void) {
@@ -775,8 +781,14 @@ static bool sioFastFrame(struct SioLink* sio) {
 		const char* v = getenv("MGBAX_SIO_FAST");
 		disabled = (v && atoi(v) == 0) ? 1 : 0;
 	}
+	/* 链路断开或优化被关掉：解除锁存，下次重新等到 cnt>=2 才放开。 */
 	if (disabled || !sio->link || netLinkState(sio->link) != 2) {
+		sio->sioFastLatched = false;
+		sio->sioFastMiss = 0;
 		return false;
+	}
+	if (sio->sioFastLatched) {
+		return true;
 	}
 	if (sio->sioOk < 256) {
 		return false;
@@ -792,9 +804,14 @@ static bool sioFastFrame(struct SioLink* sio) {
 	if (!gba || !gba->cpu) {
 		return false;
 	}
-	/* cnt>=2 本身就说明握手完成且链路健康（隧道 82ms+ 时 cnt 恒 0，
-	 * 根本走不到这里）；再叠 RTT 门槛只会让链路抖动时优化忽开忽关。 */
-	return (GBAView16(gba->cpu, 0x03004A38u) >> 8) >= 2;
+	if ((GBAView16(gba->cpu, 0x03004A38u) >> 8) < 2) {
+		return false;
+	}
+	/* 会话建立过一次就锁存。02:03 实测 cnt 会抖动，不锁存时同一个 64 次
+	 * 传输窗口里只有 22 次走快速路径（fb=22 / n=42），其余 42 次仍按
+	 * 23~32ms/轮 阻塞，帧率被反复拖回去。 */
+	sio->sioFastLatched = true;
+	return true;
 }
 
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
@@ -808,10 +825,21 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		uint16_t fastGot = 0;
 		bool haveFast = sio->link &&
 		    netLinkTakePeerWord(sio->link, sio->sioIndex, 0, &fastRemote, &fastGot, NULL);
+		if (haveFast) {
+			sio->sioFastMiss = 0;
+		} else {
+			++sio->sioFastMiss;
+		}
 		if (!haveFast && sio->sioHasRemote) {
 			fastRemote = sio->sioRemote;
 			haveFast = true;
 			++sio->sioFallback;
+		}
+		/* 连续 240 轮（约 27 帧）一个新字都没拿到，说明对端停摆：解除
+		 * 锁存，下一轮回到严格等待，不用越来越旧的字一直喂游戏。 */
+		if (sio->sioFastMiss >= 240) {
+			sio->sioFastLatched = false;
+			sio->sioFastMiss = 0;
 		}
 		sio->sioWaiting = false;
 		if (haveFast) {
