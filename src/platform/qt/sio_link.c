@@ -239,11 +239,21 @@ static void logLinkDiag(struct GBA* gba) {
 	uint16_t l2 = GBAView16(gba->cpu, 0x03002B00u);
 	uint16_t l3 = GBAView16(gba->cpu, 0x03002B06u);
 	uint16_t l4 = GBAView16(gba->cpu, 0x03002B0Au);
+	/* LINKUP 结果码（/d/gen8/rom.map）：gSpecialVar_Result=0x0202197C，
+	 * gLinkType=0x02027B82，gWirelessCommType=0x03002AAD。
+	 * 常量见 include/constants/cable_club.h：0=进行中 1=成功
+	 * 3=两端选择不同 4=人数不对 7/9=有玩家未准备好 6=连接错误。
+	 * 打出来才能区分「按 A 时机不对」和「两端选了不同项目」。 */
+	uint16_t linkup = GBAView16(gba->cpu, 0x0202197Cu);
+	uint16_t ltype = GBAView16(gba->cpu, 0x02027B82u);
+	uint8_t wireless = GBAView8(gba->cpu, 0x03002AADu);
 	SIO_LOG("[diag] mu=%u brs=%04X/%04X rem=%u cb=%08X st=%08X"
-	        " lstate=%u pc=%u intr=%u ridx=%u sidx=%u lag=%u rn=%u qf=%u",
+	        " lstate=%u pc=%u intr=%u ridx=%u sidx=%u lag=%u rn=%u qf=%u"
+	        " linkup=%u ltype=%u wl=%u",
 	        state, brs01, brs23, rem, cb, status,
 	        (l0 >> 8) & 0xFF, (l1 >> 8) & 0xFF, (l2 >> 8) & 0xFF,
-	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF);
+	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF,
+	        (unsigned) linkup, (unsigned) ltype, (unsigned) wireless);
 	/* 联机房间按键码握手（overworld.c / link.c）：
 	 * sPlayerTradingStates[4] 每一端都保存所有玩家状态，0x82=UNK_2 表示已准备好，
 	 * sub_8087214() 要求所有玩家都是 0x82 才会切到 Task_StartWiredCableClubBattle。 */
