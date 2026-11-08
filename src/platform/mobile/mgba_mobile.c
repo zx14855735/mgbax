@@ -2437,6 +2437,20 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
 		return 900;
 	}
+	/* 与 Qt 侧同一条修正：隧道抖动会让「对端 800ms 内推过字」间歇失效，
+	 * 零等待 + 100 cycles 重试间隔会在极短时间内耗尽 40 次重试并按空槽
+	 * 收尾，破坏玩家数据块校验（隧道轮 brs 全 0 / cnt 恒 0）。游戏确实
+	 * 发起了本轮 MULTI 且链路还连着时，给一个跟随实测 RTT 的最小预算。 */
+	if (emu->sioWaiting) {
+		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (ms < 300u) {
+			ms = 300u;
+		}
+		if (ms > 1200u) {
+			ms = 1200u;
+		}
+		return (int) ms;
+	}
 	return 0;                       /* 对端没在交换：立刻收尾，别冻住模拟线程 */
 }
 

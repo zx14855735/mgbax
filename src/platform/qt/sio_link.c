@@ -649,6 +649,23 @@ static int sioPeerWaitMs(struct SioLink* sio) {
 	if (sio->sioWaiting && sio->sioIndex <= 8 && sio->sioRetries < 3) {
 		return 900;
 	}
+	/* 隧道往返 82~231ms 且抖动明显，对端 PUSH 的到达间隔会间歇超过 800ms。
+	 * 此时若返回 0，40 次重试（间隔仅 100 cycles）会在极短时间内耗尽并按
+	 * 空槽收尾，把玩家数据块的校验搅坏 —— 隧道轮实测 brs=0000/0000、
+	 * cnt 恒 0、LINKUP 停在「等待连接…」，而直连 12ms 轮能跑 4416 轮零超时。
+	 * 只要游戏确实发起了本轮 MULTI 传输（sioWaiting）且链路还连着，就给
+	 * 一个跟随实测 RTT 的最小预算（300~1200ms）。链路断开或游戏没在传
+	 * MULTI 时仍是 0，不会重现 11-08 那种整帧假死。 */
+	if (sio->sioWaiting) {
+		uint32_t ms = (netLinkRttUs(sio->link) / 1000u) * 3u;
+		if (ms < 300u) {
+			ms = 300u;
+		}
+		if (ms > 1200u) {
+			ms = 1200u;
+		}
+		return (int) ms;
+	}
 	return 0;
 }
 
