@@ -501,8 +501,12 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	if (gba->sio.mode != GBA_SIO_MULTI) {
 		return;
 	}
+	/* 角色看游戏（gLink.isMaster==8 = 主机），不看链路层的 player 号：
+	 * 走云端房间时两端链路层都是 TCP 主机、player 号都停在 0，用它判会让
+	 * **两端都走这个分支直接 return**，谁都不当从机、谁都不回推字
+	 *（现场：两端日志同时报 me=0，主机侧 done want=1 have=0 永远等不到）。 */
 	int me = netLinkPlayer(sio->link);
-	if (me == 0) {
+	if (GBAView8(gba->cpu, 0x03002AF4u + 0x00u) == 8) {
 		return;
 	}
 	uint16_t got = 0;

@@ -2233,9 +2233,20 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		/* 游戏还没进多人传输（或者已经退出）：不收尾，等下一次轮询再挂。 */
 		return;
 	}
+	/* 【主从角色看游戏，不看链路层的 player 号】
+	 *
+	 * 原来这里用 netLinkPlayer()==0 判「我是主机，不用管」。可走云端房间时
+	 * 两端的链路层都是 TCP 主机（播放器号都停在初值 0），于是**两边都走这个
+	 * 分支直接 return**：谁都不执行从机收尾、谁都不回推字。现场证据就是
+	 * 两端日志同时报 me=0，主机侧 `done want=1 have=0 retries=27` 永远等不到
+	 * 回字，`m1=0000`、`pc=0` 一路到底。
+	 *
+	 * gen8 自己会选举主从：gLink(+0)=isMaster 为 8 表示主机，(+2)=localId。
+	 * 这里只认 gLink.isMaster：不是主机就必须走从机路径。 */
 	int me = netLinkPlayer(emu->link);
-	if (me == 0) {
-		/* 主机自己驱动轮次，这里不管。 */
+	int gameMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
+	if (gameMaster == 8) {
+		/* 游戏认定自己是主机：轮次由它驱动，这里不管。 */
 		return;
 	}
 	uint16_t got = 0;
