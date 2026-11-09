@@ -95,6 +95,9 @@ Java_io_mgba_android_MgbaCore_nativeRewind(JNIEnv*, jobject, jlong handle, jint 
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeRunFrames(JNIEnv*, jobject, jlong handle, jint, jint count) {
+	/* 核心锁现在已经下沉到 C 层（mgbaMobileRunFrames 内部），iOS 直接调用
+	 * 那个函数同样受保护 —— 它不经过这里。这层加锁保留是为了让 JNI 侧的行
+	 * 为与历史版本一致；锁是递归的，重复加锁不会自死锁。 */
 	struct MgbaMobile* emu = (struct MgbaMobile*) handle;
 	mgbaMobileLock(emu);
 	bool ok = mgbaMobileRunFrames(emu, count);
