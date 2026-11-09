@@ -1809,6 +1809,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (core == null || !core.isLoaded()) {
             return false;
         }
+        // In the official layout the mirror console consumes remote keys; the
+        // "separate control" debug switch would inject them into P1 as well.
+        gboyRemoteKeysEnabled = false;
+        gboyRemoteKeys = 0;
         GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
         GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
         boolean ok = set.start(core, session);
@@ -4215,7 +4219,31 @@ public class EmulatorActivity extends AppCompatActivity {
 
                 @Override
                 public void onConnected(boolean asHost, String note) {
-                    // The session status lands through onStatus right after.
+                    // Switch to the official layout: a hidden second console on
+                    // loopback SIO, with only key masks crossing the network.
+                    // gboy_official_link=false restores the legacy SIO bridge.
+                    runOnUiThread(() -> {
+                        if (cloudLink == null || !cloudLink.officialMode()) {
+                            return;
+                        }
+                        String path = getPreferences(MODE_PRIVATE)
+                                .getString("lastRom", null);
+                        if (path == null || core == null || !core.isLoaded()) {
+                            return;
+                        }
+                        File save = defaultSaveDir != null
+                                ? defaultSaveDir : getFilesDir();
+                        File state = defaultStateDir != null
+                                ? defaultStateDir : new File(getFilesDir(), "state");
+                        if (!startGBoyLink(new File(path), save, state, 18781)) {
+                            toast("多核心联机启动失败：" + gboyLinkFailure());
+                        }
+                    });
+                }
+
+                @Override
+                public void onDisconnected() {
+                    runOnUiThread(() -> stopGBoyLink());
                 }
 
                 @Override
@@ -4229,6 +4257,8 @@ public class EmulatorActivity extends AppCompatActivity {
                     });
                 }
             });
+            cloudLink.setOfficialMode(getPreferences(MODE_PRIVATE)
+                    .getBoolean("gboy_official_link", true));
         }
         return cloudLink;
     }

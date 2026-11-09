@@ -98,6 +98,9 @@ public final class GBoyCloudLink {
 
         void onConnected(boolean asHost, String note);
 
+        /** The link is closing: stop the local mirror console and its thread. */
+        void onDisconnected();
+
         void onRemoteReset();
     }
 
@@ -128,11 +131,25 @@ public final class GBoyCloudLink {
     private int lastRxKeys = Integer.MIN_VALUE;
     private Thread worker;
     /** Ported GBoy session: 12 Hz key cadence, slot dispatch, state and reset. */
-    private volatile GBoyLinkSession session;
+    private volatile GBoyLinkSession linkSession;
     /** Link currently served, used by the session's transport. */
     private volatile Link servingLink;
     /** When true the emulation loop drives key sends instead of the 50 ms timer. */
     private volatile boolean frameDriven;
+    /**
+     * Official layout: local multi-console link, network carries only keys.
+     * Mutually exclusive with the legacy SIO bridge, which also binds the
+     * visible core's link handle - running both would close the other one.
+     */
+    private volatile boolean officialMode;
+
+    public void setOfficialMode(boolean on) {
+        officialMode = on;
+    }
+
+    public boolean officialMode() {
+        return officialMode;
+    }
     private final GBoyLinkSession.Events sessionEvents = new GBoyLinkSession.Events() {
         @Override
         public void onReset() {
@@ -186,6 +203,12 @@ public final class GBoyCloudLink {
 
     public void close() {
         closed = true;
+        linkSession = null;
+        frameDriven = false;
+        servingLink = null;
+        // Stop the mirror core before the visible core's link is closed, so
+        // its SIO wait cannot outlive the session.
+        hooks.onDisconnected();
         KcpChannel current = channel;
         channel = null;
         if (current != null) {
@@ -369,6 +392,18 @@ public final class GBoyCloudLink {
             runTunnel(sig, token, uuid, room, asHost);
             return;
         }
+        if (officialMode) {
+            // No SIO bridge: the second console lives on this device and only
+            // key masks travel over the relay. The session must be created
+            // before the (asynchronous) onConnected callback starts the cores.
+            ensureSession(link);
+            status("云端联机已连接，你是 " + (asHost ? "1P" : "2P")
+                    + "（本机多核，网络仅传按键）\n中继 "
+                    + room.nodeAddress + ":" + room.nodePort);
+            hooks.onConnected(asHost, null);
+            serve(link);
+            return;
+        }
         // 官方 KCP 中继活着：SIO 分开控制模式直接把联机线字节过中继
         // （netLink 包封在 type-6 帧里），RTT 比 WS 隧道低 3-7 倍。
         Socket local = attachDriverLoopback(asHost);
@@ -424,7 +459,10 @@ public final class GBoyCloudLink {
             status("还没有房间，请先点「云端创建」或「云端加入」");
             return;
         }
-        // 关掉旧通道，让旧的 serve 循环退出
+        // 关掉旧通道，让旧的 serve 循环退出；新连接要用全新的会话状态，
+        // 否则帧号、按键队列和 slot 掩码会从上一条链路继承下来。
+        linkSession = null;
+        frameDriven = false;
         KcpChannel old = channel;
         channel = null;
         if (old != null) {
@@ -872,6 +910,14 @@ public final class GBoyCloudLink {
         if (!link.peerSeen()) {
             throw new IOException(link.errorMessage() == null
                     ? "隧道等待对方超时" : link.errorMessage());
+        }
+        if (officialMode) {
+            ensureSession(link);
+            status("云端联机已连接，你是 " + (asHost ? "1P" : "2P")
+                    + "（本机多核，服务器隧道）");
+            hooks.onConnected(asHost, null);
+            serve(link);
+            return;
         }
         GBoyDirectLink direct = tryDirectLink(link, room);
         startSioBridge(direct != null ? direct : link, link, asHost);
@@ -1810,7 +1856,7 @@ public final class GBoyCloudLink {
      * old behaviour and the handshake still works.
      */
     public void onLocalFrame(long frame, int localKeys) {
-        GBoyLinkSession s = session;
+        GBoyLinkSession s = linkSession;
         if (s == null) {
             return;
         }
@@ -1820,12 +1866,12 @@ public final class GBoyCloudLink {
 
     /** Session used by the local multi-console driver, or null before serve(). */
     public GBoyLinkSession linkSession() {
-        return session;
+        return linkSession;
     }
 
-    private void serve(Link link) {
+    private GBoyLinkSession newSession(Link link) {
         servingLink = link;
-        session = new GBoyLinkSession(frame -> {
+        return new GBoyLinkSession(frame -> {
             synchronized (sendLock) {
                 Link current = servingLink;
                 if (!closed && current != null) {
@@ -1833,6 +1879,20 @@ public final class GBoyCloudLink {
                 }
             }
         }, sessionEvents, 1, 2);
+    }
+
+    /** The onConnected callback is posted to the UI thread, so the session has
+     * to exist before it runs or the mirror console would see no keys. */
+    private void ensureSession(Link link) {
+        if (linkSession == null) {
+            linkSession = newSession(link);
+        } else {
+            servingLink = link;
+        }
+    }
+
+    private void serve(Link link) {
+        ensureSession(link);
         long lastKey = 0;
         long lastFps = 0;
         int sentKeys = Integer.MIN_VALUE;
@@ -1868,7 +1928,7 @@ public final class GBoyCloudLink {
 
     private void handle(byte[] body) {
         int type = GBoyFrames.typeOf(body);
-        GBoyLinkSession s = session;
+        GBoyLinkSession s = linkSession;
         if (s != null) {
             // Session handles slot dispatch, counter/fps, state and handshake.
             // The switch below stays as the compatibility path for the UI.
