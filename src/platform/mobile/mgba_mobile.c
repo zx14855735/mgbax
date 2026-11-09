@@ -2869,10 +2869,19 @@ static bool gbaLinkHandles(struct GBASIODriver* driver, enum GBASIOMode mode) {
 }
 
 static int gbaLinkDevices(struct GBASIODriver* driver) {
-	UNUSED(driver);
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	/* 与 gbp.c 的语义一致：连着的“对端”数量（不含自己）。两边 2 人联机
 	 * 时这里是 1，内核才会用 2P 的传输周期；填 2 会按 3P 算，每次传输
-	 * 比真机慢 50%，游戏的超时窗口就对不上了。 */
+	 * 比真机慢 50%，游戏的超时窗口就对不上了。
+	 *
+	 * 3/4 人总线按实际人数上报（players-1），内核才会用 3P/4P 的周期 ——
+	 * 一直返回 1 会让每一轮都比真机短，游戏数出的每帧轮次数对不上。 */
+	if (emu && netLinkBusActive(emu->link)) {
+		int players = netLinkBusPlayers(emu->link);
+		if (players > 2) {
+			return players - 1;
+		}
+	}
 	return 1;
 }
 

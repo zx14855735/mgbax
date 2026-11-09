@@ -1070,6 +1070,170 @@ static int dualTest(const QString& rom, const QString& sav) {
 	return failures;
 }
 
+
+/**
+ * 3/4 人总线端到端：N 个真实内核、各占一个线程，主机每轮起一次 MULTI 传输。
+ *
+ * 与 lanSioTest 的区别：两人用例是单线程交替 pump（谁都不会阻塞太久）；总线里
+ * 从机的轮次事件要等主机的广播，单线程交替必然在某一端空等满窗口，所以必须
+ * 一个内核一个线程 —— 和安卓那边「双核心必须两核两线程」是同一条硬约束。
+ *
+ * 断言：
+ *   1. N 条链路全部 state==2、SIO 驱动全部挂上、设备号 0..N-1；
+ *   2. 每个从机的 SIOMULTI0 里是**主机某一轮的字**（0x7000..0x7007）——
+ *      这就是「主机广播真的过了总线、进了游戏的接收寄存器」。
+ */
+static int busSioTest(const QString& rom, int players) {
+	if (players < 3) {
+		players = 3;
+	}
+	if (players > 4) {
+		players = 4;
+	}
+	const int port = 18766;
+	struct mCore* cores[4] = { nullptr, nullptr, nullptr, nullptr };
+	struct SioLink* links[4] = { nullptr, nullptr, nullptr, nullptr };
+	static mColor video[4][240 * 160];
+	int failures = 0;
+
+	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
+	for (int i = 0; i < players; i++) {
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			qInfo().noquote() << "BUS TEST: FAIL (cannot open" << rom << ")";
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			qInfo().noquote() << "BUS TEST: FAIL (cannot find core)";
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			qInfo() << "BUS TEST: FAIL (cannot load ROM)";
+			return 1;
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+		links[i] = sioLinkCreate();
+	}
+
+	if (!sioLinkHostPlayers(links[0], port, players)) {
+		qInfo() << "BUS TEST: FAIL (cannot listen)";
+		return 1;
+	}
+	for (int i = 1; i < players; i++) {
+		if (!sioLinkJoinPlayers(links[i], "127.0.0.1", port, players)) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (cannot connect %1)").arg(i);
+			return 1;
+		}
+	}
+	for (int k = 0; k < 300; k++) {
+		bool all = true;
+		for (int i = 0; i < players; i++) {
+			sioLinkPump(links[i], cores[i]);
+			if (sioLinkState(links[i]) != 2) {
+				all = false;
+			}
+		}
+		if (all) {
+			break;
+		}
+		QThread::msleep(20);
+	}
+	for (int i = 0; i < players; i++) {
+		sioLinkPump(links[i], cores[i]);
+		if (sioLinkState(links[i]) != 2) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (link %1 state %2)").arg(i).arg(sioLinkState(links[i]));
+			++failures;
+		}
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		if (!gba->sio.driver) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (driver not attached on %1)").arg(i);
+			++failures;
+			continue;
+		}
+		gba->sio.rcnt = 0;   /* 真 ROM 会先写 RCNT 把引脚切出 GPIO */
+		int id = gba->sio.driver->deviceId(gba->sio.driver);
+		if (id != i) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (core %1 got device id %2)").arg(i).arg(id);
+			++failures;
+		}
+	}
+	if (failures) {
+		return failures;
+	}
+	qInfo().noquote() << QString("BUS TEST: all %1 links up, device ids 0..%2").arg(players).arg(players - 1);
+
+	/* 每个内核都要先切到 MULTI 模式：从机的轮次事件只在 mode==GBA_SIO_MULTI
+	 * 时才跑（sioSlaveDoneEvent 开头就 return）。只让主机写 SIOCNT 的话从机
+	 * 永远停在 NORMAL/GPIO，一个字都不会推上来 —— 现场就是主机 got=0、2.5 秒
+	 * 只起了 2 轮。两人用例里从机也写过这一句，这里是同样的事。 */
+	for (int i = 0; i < players; i++) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		GBASIOWriteSIOCNT(&gba->sio, 0x600F);
+	}
+
+	std::atomic<bool> stop(false);
+	std::atomic<int> rounds(0);
+	std::vector<std::thread> threads;
+	for (int i = 0; i < players; i++) {
+		threads.emplace_back([&, i]() {
+			while (!stop.load()) {
+				sioLinkPump(links[i], cores[i]);
+				cores[i]->runFrame(cores[i]);
+				if (i == 0) {
+					/* 主机自己起传输：0x600F = MULTI + IRQ + 115200。 */
+					struct GBA* gba = (struct GBA*) cores[0]->board;
+					int r = rounds.load();
+					gba->memory.io[GBA_REG(SIOMLT_SEND)] = (uint16_t) (0x7000 + (r & 7));
+					GBASIOWriteSIOCNT(&gba->sio, 0x600F);
+					rounds.fetch_add(1);
+				}
+			}
+		});
+	}
+	QThread::msleep(2500);
+	stop.store(true);
+	for (auto& t : threads) {
+		t.join();
+	}
+
+	int gotRounds = rounds.load();
+	if (gotRounds < 4) {
+		qInfo().noquote() << QString("BUS TEST: FAIL (host only started %1 rounds)").arg(gotRounds);
+		++failures;
+	}
+	/* 从机侧：SIOMULTI0 必须是主机某一轮的字。 */
+	for (int i = 1; i < players; i++) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		uint16_t w = gba->memory.io[GBA_REG(SIOMULTI0)];
+		if (w < 0x7000 || w > 0x7007) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (core %1 SIOMULTI0=%2, want 0x7000..0x7007)")
+			                         .arg(i).arg(w, 4, 16, QChar('0'));
+			++failures;
+		} else if (sioLinkState(links[i]) != 2) {
+			qInfo().noquote() << QString("BUS TEST: FAIL (core %1 dropped during rounds)").arg(i);
+			++failures;
+		}
+	}
+	if (failures == 0) {
+		qInfo().noquote() << QString("BUS TEST: PASS (%1 players, %2 rounds, host word reached every slave)")
+		                         .arg(players).arg(gotRounds);
+	} else {
+		qInfo() << "BUS TEST: FAIL" << failures;
+	}
+	for (int i = 0; i < players; i++) {
+		sioLinkDestroy(links[i]);
+		cores[i]->deinit(cores[i]);
+	}
+	return failures;
+}
+
 static int lanSioLatTest(const QString& rom, int delayMs) {
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
@@ -1967,6 +2131,11 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("audioff")) {
 		return audioFfTest();
+	}
+	if (mode == QStringLiteral("bus")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
+		int players = args.size() > 3 ? args[3].toInt() : 4;
+		return busSioTest(rom, players);
 	}
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");

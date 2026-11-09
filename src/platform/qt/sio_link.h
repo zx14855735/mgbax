@@ -36,9 +36,16 @@ extern "C" {
 struct SioLink* sioLinkCreate(void);
 void sioLinkDestroy(struct SioLink* sio);
 
-/** Start listening (host, 1P) or connect (join, 2P); port 18765 by default. */
+/** Start listening (host, 1P) or connect (join, 2P); port 18765 by default.
+ *
+ * players: 2 走原来的两人直连（行为一字未变）；3/4 走星型总线 —— 主机
+ * accept 最多 players-1 个从机，每轮收齐所有从机的字后连同自己的字一次广播
+ * （见 link_net.c 的总线段）。两边的 players 必须一致，否则包格式不同、
+ * TCP 连得上但解不出任何包。 */
 bool sioLinkHost(struct SioLink* sio, int port);
+bool sioLinkHostPlayers(struct SioLink* sio, int port, int players);
 bool sioLinkJoin(struct SioLink* sio, const char* host, int port);
+bool sioLinkJoinPlayers(struct SioLink* sio, const char* host, int port, int players);
 void sioLinkClose(struct SioLink* sio);
 
 /** 0 off, 1 listening, 2 connected, 3 peer dropped. */

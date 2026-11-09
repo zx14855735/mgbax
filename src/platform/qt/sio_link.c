@@ -194,6 +194,7 @@ static uint32_t readLinkOut(struct SioLink* sio, uint16_t* modeOut) {
 }
 
 static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate);
+static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4], int players, uint32_t cyclesLate);
 
 static void finishIncoming(struct SioLink* sio, uint16_t mode, uint32_t remote, int player) {
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
@@ -438,20 +439,11 @@ static void maybeRearmHandshake(struct GBA* gba) {
 	SIO_LOG("[rearm] handshake election retriggered (players=%d)", players);
 }
 
-/* Fill SIOMULTI0..3 with one transfer's data and finish it. */
-static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
-	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
-		return;
-	}
+/* 四槽凑齐之后的公共收尾：耗时统计、诊断日志、写 SIOMULTI、发 SIO 中断。
+ * 两人直连和 3/4 人总线都汇到这里，诊断口径保持一致。 */
+static void finishMultiTransfer(struct SioLink* sio, uint16_t data[4], uint32_t cyclesLate) {
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	int me = netLinkPlayer(sio->link);
-	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
-	if (me >= 0 && me < 4) {
-		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-	}
-	if (haveRemote) {
-		data[me == 0 ? 1 : 0] = (uint16_t) remote;
-	}
 	struct mTiming* timing = coreTiming(sio);
 	if (timing) {
 		uint32_t spent = mTimingCurrentTime(timing) - sio->sioStartCycle;
@@ -478,6 +470,36 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		maybeRearmHandshake(gba);
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
+}
+
+/* 两人直连：本机一槽 + 对端一槽，其余保持 0xFFFF（空槽）。 */
+static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
+	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) sio->core->board;
+	int me = netLinkPlayer(sio->link);
+	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+	if (me >= 0 && me < 4) {
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	}
+	if (haveRemote) {
+		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	finishMultiTransfer(sio, data, cyclesLate);
+}
+
+/* 3/4 人总线：四个槽位来自主机的汇聚广播，没连上的槽位是 0xFFFF。
+ * 槽位装配规则在 link_net 的 netLinkBusSlots（纯函数，已有单测）。 */
+static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4], int players, uint32_t cyclesLate) {
+	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) sio->core->board;
+	int me = netLinkPlayer(sio->link);
+	uint16_t data[4];
+	netLinkBusSlots(vals, players, me, gba->memory.io[GBA_REG(SIOMLT_SEND)], data);
+	finishMultiTransfer(sio, data, cyclesLate);
 }
 
 static void serviceLink(struct SioLink* sio) {
@@ -587,6 +609,58 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 *（现场：两端日志同时报 me=0，主机侧 done want=1 have=0 永远等不到）。 */
 	if (GBAView8(gba->cpu, 0x03002AF4u + 0x00u) == 8) {
 		return;
+	}
+	/* 3/4 人总线：从机先把自己的字推给主机（主机要收齐才广播），再等广播。
+	 * 两人走下面原来的「取对端字 → 收尾 → 回推」路径。 */
+	{
+		int busPlayers = netLinkBusPlayers(sio->link);
+		if (netLinkBusActive(sio->link) && busPlayers >= 2) {
+			uint16_t own = sio->sioRoundWordValid ? sio->sioRoundWord
+			                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+			sio->sioRoundWordValid = false;
+			uint32_t busVals[4];
+			uint16_t used = sio->sioIndex;
+			int busGot = netLinkBusRound(sio->link, sio->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(sio, -1), &used);
+			if (busGot < 0) {
+				/* 主机还没广播（还在等别的从机）：快速重挂，绝不拿空槽收尾
+				 * —— 一次空槽就会让游戏的 DoHandshake 把 playerCount 清 0。 */
+				++sio->sioTimeouts;
+				if (timing) {
+					mTimingSchedule(timing, &sio->sioSlaveDone, 2048);
+					sio->sioSlaveArmed = true;
+				}
+				return;
+			}
+			{
+				uint32_t peerCycles = netLinkBusRoundCycles(sio->link);
+				if (peerCycles != 0) {
+					if (sio->sioPeerCyclesValid) {
+						uint32_t delta = peerCycles - sio->sioPeerCycles;
+						if (delta > 4000 && delta < 400000) {
+							sio->sioSlavePeriod = delta;
+						}
+					}
+					sio->sioPeerCycles = peerCycles;
+					sio->sioPeerCyclesValid = true;
+				}
+			}
+			if (used != sio->sioIndex) {
+				++sio->sioMisorder;
+			}
+			sio->sioIndex = used;
+			sio->sioHasRemote = true;
+			sio->sioRemote = busVals[0];
+			completeMultiTransferBus(sio, busVals, busPlayers, cyclesLate);
+			sio->sioPushValue = own;
+			sio->sioPushIndex = sio->sioIndex;
+			sio->sioPushed = true;
+			if (timing) {
+				mTimingSchedule(timing, &sio->sioSlaveDone, sio->sioSlavePeriod);
+				sio->sioSlaveArmed = true;
+			}
+			return;
+		}
 	}
 	uint16_t got = 0;
 	uint32_t remote = 0;
@@ -851,6 +925,49 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	if (!sio->sioWaiting) {
 		return;
 	}
+	/* 3/4 人总线：主机在这一刻收齐所有从机本轮的字，再一次性广播给它们。
+	 *
+	 * 两处判据都不能省：
+	 *   - 必须用 netLinkBusActive()，不能按人数。总线里只有一个从机时
+	 *     netLinkBusPlayers() 正好是 2，按人数判会掉进下面的两人直连分支，
+	 *     而总线的字根本不进 peerQ，结果永远是「对端没回字」。
+	 *   - 必须放在 sioFastFrame / netLinkTakePeerWord 之前：那两个会去空的
+	 *     peerQ 上等，白白空耗满整个等待窗。 */
+	{
+		int busPlayers = netLinkBusPlayers(sio->link);
+		if (netLinkBusActive(sio->link) && busPlayers >= 1
+		    && sio->core && sio->core->platform(sio->core) == mPLATFORM_GBA) {
+			struct GBA* gbaBus = (struct GBA*) sio->core->board;
+			uint32_t busVals[4];
+			uint16_t used = sio->sioIndex;
+			uint32_t own = gbaBus->memory.io[GBA_REG(SIOMLT_SEND)];
+			int busGot = netLinkBusRound(sio->link, sio->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(sio, (int) sio->sioIndex), &used);
+			if (busPlayers < 2) {
+				busPlayers = 2;   /* 还没从机连上：按「只有自己」收尾 */
+			}
+			if (busGot <= 0 && sio->sioRetries < 3 && netLinkState(sio->link) == 2) {
+				/* 有从机连着却一个都没收到：它们慢了一拍，不是没有。重试几次
+				 * 再按空槽收尾，否则一次迟到就把这一轮的握手数据变成 0xFFFF。 */
+				++sio->sioRetries;
+				struct mTiming* t2 = coreTiming(sio);
+				if (t2) {
+					mTimingSchedule(t2, &sio->sioDone, 100);
+					return;   /* sioWaiting 保持 true */
+				}
+			}
+			sio->sioRetries = 0;
+			sio->sioWaiting = false;
+			sio->sioHasRemote = busGot > 0;
+			sio->sioRemote = busVals[0];
+			if (busGot <= 0) {
+				SIO_LOG("BUS host round me=%d idx=%u got=%d n=%d",
+				        netLinkPlayer(sio->link), (unsigned) sio->sioIndex, busGot, busPlayers);
+			}
+			completeMultiTransferBus(sio, busVals, busPlayers, cyclesLate);
+			return;
+		}
+	}
 	if (sioFastFrame(sio)) {
 		uint32_t fastRemote = 0;
 		uint16_t fastGot = 0;
@@ -1042,11 +1159,18 @@ static bool gbaLinkHandles(struct GBASIODriver* driver, enum GBASIOMode mode) {
 }
 
 static int gbaLinkDevices(struct GBASIODriver* driver) {
-	UNUSED(driver);
-	/* Same semantics as gbp.c: the number of connected peers, not counting
-	 * ourselves. Two-player link = 1; the core then uses 2P transfer periods
-	 * (filling 2 would compute 3P periods, 50% slower than real hardware and
-	 * outside the game's timeout windows). */
+	struct SioLink* sio = ((struct GbaLinkDriver*) driver)->sio;
+	/* 对端数（不含自己）。两人联机是 1：内核据此用 2P 的传输周期，填 2 会按
+	 * 3P 算、比真机慢 50%，超出游戏的超时窗口。
+	 *
+	 * 3/4 人总线必须按实际人数上报：一直返回 1 会让每一轮都按 2P 的周期算，
+	 * 比真机的 3P/4P 周期短，游戏数出来的每帧轮次数就不对了。 */
+	if (sio && netLinkBusActive(sio->link)) {
+		int players = netLinkBusPlayers(sio->link);
+		if (players > 2) {
+			return players - 1;
+		}
+	}
 	return 1;
 }
 
@@ -1366,15 +1490,33 @@ const void* sioLinkHandle(const struct SioLink* sio) {
 }
 
 bool sioLinkHost(struct SioLink* sio, int port) {
+	return sioLinkHostPlayers(sio, port, 2);
+}
+
+/* players：本局人数。2 走原来的两人直连；3/4 走星型总线（主机 accept 多个
+ * 从机、每轮收齐后广播）。旧的两参数入口一律按 2 人处理，行为不变。 */
+bool sioLinkHostPlayers(struct SioLink* sio, int port, int players) {
 	if (!sio || !sio->link) {
 		return false;
 	}
-	return netLinkHost(sio->link, port);
+	if (players < 2) {
+		players = 2;
+	}
+	return netLinkBusHost(sio->link, port, players);
 }
 
 bool sioLinkJoin(struct SioLink* sio, const char* host, int port) {
+	return sioLinkJoinPlayers(sio, host, port, 2);
+}
+
+/* players 必须和主机一致：总线和两人直连用的是不同的包格式，TCP 层能连上
+ * 但一个包都解不出来（总线是定长 BusPacket，两人是 struct Packet）。 */
+bool sioLinkJoinPlayers(struct SioLink* sio, const char* host, int port, int players) {
 	if (!sio || !sio->link || !host) {
 		return false;
+	}
+	if (players > 2) {
+		return netLinkBusJoin(sio->link, host, port);
 	}
 	return netLinkJoin(sio->link, host, port);
 }

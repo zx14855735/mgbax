@@ -5381,10 +5381,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.spacing = 8
         let help = UILabel()
         help.numberOfLines = 0
-        help.text = "两边打开同一个游戏，保持 1 倍速，不要暂停。创建方是 1P。\n局域网：一边创建，另一边填写对方 IP 后加入。\n互联网：两边填写同一个中继地址。一边点远程创建，把房间号给对方。中继留空时由本机充当，只在对方能访问这个 IP 时可用。"
+        help.text = "两边打开同一个游戏，保持 1 倍速，不要暂停。创建方是 1P。\n局域网：一边创建，另一边填写对方 IP 后加入。\n人数填 3 或 4 时走局域网总线（房主每轮收齐所有人的字再广播），中继链路只支持 2 人。\n互联网：两边填写同一个中继地址。一边点远程创建，把房间号给对方。中继留空时由本机充当，只在对方能访问这个 IP 时可用。"
         let host = field(defaults.string(forKey: "link_host") ?? "", "对方 IP，例如 192.168.1.8")
         let port = field(String(defaults.object(forKey: "link_port") == nil ? 8765 : defaults.integer(forKey: "link_port")), nil)
         port.keyboardType = .numberPad
+        let players = field(String(defaults.object(forKey: "link_players") == nil ? 2 : defaults.integer(forKey: "link_players")), "人数：2 / 3 / 4（3、4 人走局域网总线）")
+        players.keyboardType = .numberPad
         let relay = field(defaults.string(forKey: "link_relay") ?? "", "中继地址，例如 1.2.3.4:8766，留空则本机当中继")
         let room = field(defaults.string(forKey: "link_room") ?? "", "房间号")
         linkRoomField = room
@@ -5396,6 +5398,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(help)
         box.addArrangedSubview(host)
         box.addArrangedSubview(port)
+        box.addArrangedSubview(players)
         box.addArrangedSubview(row(linkButton("局域网创建") { [weak self] in
             guard let self else { return }
             let p = Int32(port.text ?? "") ?? -1
@@ -5403,10 +5406,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 status.text = "端口无效"
                 return
             }
+            let n = self.linkPlayerCount(players)
             self.remote?.close()
-            if let core = self.core, mgbaMobileLinkHost(core, p) {
+            if let core = self.core, mgbaMobileLinkHost(core, p, n) {
                 self.defaults.set(Int(p), forKey: "link_port")
-                status.text = "等待连接\n本机 \(self.localIpv4()):\(p)\n你是 1P"
+                self.defaults.set(Int(n), forKey: "link_players")
+                status.text = n > 2
+                    ? "等待加入\n本机 \(self.localIpv4()):\(p)\n你是 1P（\(n) 人房，端口 \(p)）"
+                    : "等待连接\n本机 \(self.localIpv4()):\(p)\n你是 1P"
                 self.startLinkWatch()
             } else {
                 status.text = self.linkMessage()
@@ -5419,11 +5426,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 status.text = "端口无效"
                 return
             }
+            let n = self.linkPlayerCount(players)
             self.remote?.close()
             self.defaults.set(ip, forKey: "link_host")
             self.defaults.set(Int(p), forKey: "link_port")
+            self.defaults.set(Int(n), forKey: "link_players")
             if let core = self.core {
-                _ = mgbaMobileLinkJoin(core, ip, p)
+                _ = mgbaMobileLinkJoin(core, ip, p, n)
             }
             status.text = self.linkMessage()
             self.startLinkWatch()
@@ -5622,6 +5631,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         presentSheet(SheetController(title: "联机", content: box))
     }
 
+    /// 读取「人数」输入并夹到 2...4：GBA 的 MULTI 最多四台，少于 2 人不是联机。
+    private func linkPlayerCount(_ field: UITextField) -> Int32 {
+        let raw = Int32(field.text?.trimmingCharacters(in: .whitespaces) ?? "") ?? 2
+        if raw < 2 { return 2 }
+        if raw > 4 { return 4 }
+        return raw
+    }
+
     private func ensureRemote() -> RemoteLink {
         if let remote { return remote }
         let link = RemoteLink()
@@ -5633,13 +5650,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             UIPasteboard.general.string = code
             self.toast("房间号 \(code) 已复制\n对方中继填 \(advertise)")
         }
+        // 中继链路是一条单管道，只支持两人；3/4 人请用局域网直连（总线）。
         link.hostLink = { [weak self] port in
             guard let self, let core = self.core else { return false }
-            return mgbaMobileLinkHost(core, port)
+            return mgbaMobileLinkHost(core, port, 2)
         }
         link.joinLink = { [weak self] host, port in
             guard let self, let core = self.core else { return false }
-            return mgbaMobileLinkJoin(core, host, port)
+            return mgbaMobileLinkJoin(core, host, port, 2)
         }
         link.closeLink = { [weak self] in
             if let core = self?.core { mgbaMobileLinkClose(core) }

@@ -1263,7 +1263,10 @@ struct BusRoundArg {
 
 static void* busRoundThread(void* arg) {
 	struct BusRoundArg* a = (struct BusRoundArg*) arg;
-	a->got = netLinkBusRound(a->link, a->index, a->own, a->values, 4, 2000, &a->used);
+	/* 等待窗给足 8s：这些用例是 4 个线程在同一个进程里跑，机器满载（比如同时
+	 * 在编 PC 端）时一轮里某一端晚到几百毫秒是正常的，2s 会偶发误判。等待窗
+	 * 只影响「慢到异常」的那一次，判据本身不变。 */
+	a->got = netLinkBusRound(a->link, a->index, a->own, a->values, 4, 8000, &a->used);
 	return NULL;
 }
 
@@ -3148,6 +3151,10 @@ static void testRom64Mobile(const char* dir, const char* rompath) {
 
 int main(int argc, char** argv) {
 	char dir[512];
+	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
+	 * 现场就只剩「0 条 ok」，没法判断崩在哪。这里强制无缓冲。 */
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 #ifdef _WIN32
 	WSADATA data;
 	WSAStartup(MAKEWORD(2, 2), &data);
