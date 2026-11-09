@@ -15,6 +15,7 @@
 #include <mgba-util/image.h>
 
 #include <fcntl.h>
+#include <pthread.h>
 
 /* Synthetic clock hook owned by mgba_mobile.c: 音乐原速 paces its output by
  * elapsed real time, and this test runs emulation as fast as it can. */
@@ -1161,6 +1162,72 @@ static void testStateMemory(const char* dir) {
 
 	mgbaMobileFreeState(blob2);
 	mgbaMobileFreeState(blob);
+	mgbaMobileDestroy(emu);
+}
+
+struct StateRace {
+	struct MgbaMobile* emu;
+	int frames;
+	int completed;
+};
+
+static void* stateRaceFrames(void* arg) {
+	struct StateRace* race = (struct StateRace*) arg;
+	for (int i = 0; i < race->frames; ++i) {
+		mgbaMobileLock(race->emu);
+		mgbaMobileRunFrames(race->emu, 1);
+		mgbaMobileUnlock(race->emu);
+		++race->completed;
+	}
+	return NULL;
+}
+
+/* A TYPE_STATE frame reaches the mirror core from the socket reader thread
+ * while the emulation thread is inside runFrames. Both paths go through the
+ * per-instance core lock at the JNI boundary; verify the real two-thread case
+ * neither deadlocks nor corrupts the state blob. */
+static void testStateConcurrency(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/state_race.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "race: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "race");
+	expect(mgbaMobileLoad(emu, path), "race: load gba");
+	struct StateRace race = { emu, 120, 0 };
+	pthread_t thread;
+	int started = pthread_create(&thread, NULL, stateRaceFrames, &race) == 0;
+	expect(started, "race: frame thread started");
+
+	int snapshots = 0;
+	for (int i = 0; i < 12; ++i) {
+		void* blob = NULL;
+		size_t size = 0;
+		bool ok;
+		mgbaMobileLock(emu);
+		ok = mgbaMobileSaveStateToMemory(emu, &blob, &size);
+		if (ok && blob && size > 0) {
+			ok = mgbaMobileLoadStateFromMemory(emu, blob, size);
+		}
+		mgbaMobileUnlock(emu);
+		mgbaMobileFreeState(blob);
+		if (ok) {
+			++snapshots;
+		}
+	}
+	if (started) {
+		expect(pthread_join(thread, NULL) == 0, "race: frame thread joined");
+	}
+	expect(!started || race.completed == race.frames,
+	       "race: all frames completed without deadlock");
+	expect(snapshots == 12, "race: concurrent save/load round trips succeeded");
 	mgbaMobileDestroy(emu);
 }
 
@@ -2561,6 +2628,7 @@ int main(int argc, char** argv) {
 		mkdir(dir, 0755);
 #endif
 		testStateMemory(dir);
+	testStateConcurrency(dir);
 		return g_failed ? 1 : 0;
 	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");
@@ -2584,6 +2652,7 @@ int main(int argc, char** argv) {
 	testLink();
 	testStateMemory(dir);
 	testRelay();
+	testStateConcurrency(dir);
 	if (g_failed) {
 		fprintf(stderr, "mobile tests failed\n");
 		return 1;

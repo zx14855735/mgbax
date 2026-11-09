@@ -95,7 +95,11 @@ Java_io_mgba_android_MgbaCore_nativeRewind(JNIEnv*, jobject, jlong handle, jint 
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeRunFrames(JNIEnv*, jobject, jlong handle, jint, jint count) {
-	return mgbaMobileRunFrames((struct MgbaMobile*) handle, count) ? JNI_TRUE : JNI_FALSE;
+	struct MgbaMobile* emu = (struct MgbaMobile*) handle;
+	mgbaMobileLock(emu);
+	bool ok = mgbaMobileRunFrames(emu, count);
+	mgbaMobileUnlock(emu);
+	return ok ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -208,8 +212,11 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_io_mgba_android_MgbaCore_nativeSaveStateToMemory(JNIEnv* env, jobject, jlong handle) {
 	void* data = NULL;
 	size_t size = 0;
-	if (!mgbaMobileSaveStateToMemory((struct MgbaMobile*) handle, &data, &size)
-			|| !data || size == 0 || size > 0x7FFFFFFFu) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) handle;
+	mgbaMobileLock(emu);
+	bool ok = mgbaMobileSaveStateToMemory(emu, &data, &size);
+	mgbaMobileUnlock(emu);
+	if (!ok || !data || size == 0 || size > 0x7FFFFFFFu) {
 		mgbaMobileFreeState(data);
 		return NULL;
 	}
@@ -234,7 +241,10 @@ Java_io_mgba_android_MgbaCore_nativeLoadStateFromMemory(JNIEnv* env, jobject, jl
 	if (!bytes) {
 		return JNI_FALSE;
 	}
-	bool ok = mgbaMobileLoadStateFromMemory((struct MgbaMobile*) handle, bytes, (size_t) size);
+	struct MgbaMobile* emu = (struct MgbaMobile*) handle;
+	mgbaMobileLock(emu);
+	bool ok = mgbaMobileLoadStateFromMemory(emu, bytes, (size_t) size);
+	mgbaMobileUnlock(emu);
 	env->ReleaseByteArrayElements(state, bytes, JNI_ABORT);
 	return ok ? JNI_TRUE : JNI_FALSE;
 }

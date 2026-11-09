@@ -14,6 +14,7 @@ public final class GBoySocketLinkTest {
         volatile int readies;
         volatile int resets;
         volatile byte[] state;
+        volatile Runnable onReadyAction;
         final List<String> status = new ArrayList<>();
 
         @Override
@@ -29,6 +30,10 @@ public final class GBoySocketLinkTest {
         @Override
         public void onReady() {
             ++readies;
+            Runnable action = onReadyAction;
+            if (action != null) {
+                action.run();
+            }
         }
 
         @Override
@@ -49,6 +54,7 @@ public final class GBoySocketLinkTest {
             continuousFramesReachPeer();
             stateAndResetRoundTrip();
             largeStateFrameRoundTrip();
+            stateSentAfterHandshake();
             closeReleasesBothSides();
             System.out.println("GBoySocketLinkTest ok");
         } finally {
@@ -142,6 +148,29 @@ public final class GBoySocketLinkTest {
         host.session().sendFps(61);
         check(waitFor(() -> guest.session().remoteFps() == 61, 3000),
                 "stream stays aligned after a large state frame");
+    }
+
+    /**
+     * The host sends its initial save state from the ready callback, not from
+     * start(). This pins the official ordering: handshake first, then sync.
+     */
+    private static void stateSentAfterHandshake() throws Exception {
+        Recorder hEvents = new Recorder();
+        Recorder gEvents = new Recorder();
+        GBoySocketLink h = new GBoySocketLink(1, 2, hEvents);
+        final byte[] blob = {0x41, 0x42, 0x43, 0x44};
+        hEvents.onReadyAction = () -> h.session().sendState(blob);
+        int port = h.startHost(0);
+        GBoySocketLink g = new GBoySocketLink(2, 2, gEvents);
+        check(gEvents.state == null, "no state frame exists before the handshake");
+        g.startJoin("127.0.0.1", port);
+        check(waitFor(() -> gEvents.state != null, 3000),
+                "state frame sent from onReady reaches the peer");
+        check(hEvents.readies >= 1, "host reached ready before sending state");
+        check(Arrays.equals(gEvents.state, blob),
+                "handshake-triggered state payload is intact");
+        h.close();
+        g.close();
     }
 
     private static void closeReleasesBothSides() {

@@ -24,6 +24,7 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -86,6 +87,12 @@ struct GbLinkDriver {
 };
 
 struct MgbaMobile {
+	/* Serialises core access between the emulation thread (runFrames) and
+	 * link threads calling saveStateToMemory/loadStateFromMemory. A TYPE_STATE
+	 * frame arrives on the socket reader thread while the mirror core is
+	 * running, so both paths must hold this lock. */
+	pthread_mutex_t coreMutex;
+	bool coreMutexReady;
 	struct mCore* core;
 	mColor* video;
 	uint32_t* prev;
@@ -1022,6 +1029,11 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (!emu) {
 		return NULL;
 	}
+	if (pthread_mutex_init(&emu->coreMutex, NULL) != 0) {
+		free(emu);
+		return NULL;
+	}
+	emu->coreMutexReady = true;
 	copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
 	copyPath(emu->statePath, sizeof(emu->statePath), stateDir);
 	copyPath(emu->port, sizeof(emu->port), port && port[0] ? port : "mobile");
@@ -1067,7 +1079,23 @@ void mgbaMobileDestroy(struct MgbaMobile* emu) {
 	deinitAudioOutput(emu);
 	netLinkDestroy(emu->link);
 	emu->link = NULL;
+	if (emu->coreMutexReady) {
+		emu->coreMutexReady = false;
+		pthread_mutex_destroy(&emu->coreMutex);
+	}
 	free(emu);
+}
+
+void mgbaMobileLock(struct MgbaMobile* emu) {
+	if (emu && emu->coreMutexReady) {
+		pthread_mutex_lock(&emu->coreMutex);
+	}
+}
+
+void mgbaMobileUnlock(struct MgbaMobile* emu) {
+	if (emu && emu->coreMutexReady) {
+		pthread_mutex_unlock(&emu->coreMutex);
+	}
 }
 
 void mgbaMobileSetSaveDirs(struct MgbaMobile* emu, const char* saveDir, const char* stateDir) {

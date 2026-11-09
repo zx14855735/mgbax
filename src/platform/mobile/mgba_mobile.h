@@ -16,6 +16,10 @@ struct MgbaMobile;
 
 struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port);
 void mgbaMobileDestroy(struct MgbaMobile* emu);
+/* Core serialisation for the JNI boundary: runFrames and the two in-memory
+ * state calls must not touch the same mCore from different threads. */
+void mgbaMobileLock(struct MgbaMobile* emu);
+void mgbaMobileUnlock(struct MgbaMobile* emu);
 bool mgbaMobileLoad(struct MgbaMobile* emu, const char* path);
 /* Overrides the battery-save / save-state folders before the next load.
  * Passing the ROM's own folder keeps saves beside the game. */
