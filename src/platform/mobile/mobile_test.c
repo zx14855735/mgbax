@@ -1626,6 +1626,56 @@ static void testBusIgnoresPointToPoint(void) {
 	netLinkDestroy(host);
 }
 
+/* 四槽装配规则（`netLinkBusSlots`，纯函数）。
+ *
+ * 这是 3/4 人联机里最容易错、也最致命的一处：把不该填的槽填上，游戏会数出
+ * 多余玩家；把该填的槽漏掉，玩家数就是 2 —— 正好是「只填 data[0]/data[1]」
+ * 那个原始缺陷的形态。六条用例逐条钉住规则。 */
+static void testBusSlots(void) {
+	uint16_t out[4];
+	int ok;
+
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 0, 0x1111, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0x4444;
+		expect(ok, "bus slots: four players copy every slot");
+	}
+	{
+		/* 第 4 个槽里塞了脏数据，但人数是 3 —— 必须被 0xFFFF 覆盖。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0xDEADu };
+		netLinkBusSlots(v, 3, 1, 0x2222, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0xFFFF;
+		expect(ok, "bus slots: three players leave slot 3 empty");
+	}
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0xDEADu, 0xDEADu };
+		netLinkBusSlots(v, 2, 1, 0x2222, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0xFFFF && out[3] == 0xFFFF;
+		expect(ok, "bus slots: two players leave slots 2/3 empty");
+	}
+	{
+		/* 广播里自己那份是旧值 —— 必须被本机这一轮的字覆盖。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 2, 0x9999, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x9999 && out[3] == 0x4444;
+		expect(ok, "bus slots: own slot always uses the local word");
+	}
+	{
+		/* 链路还没连上时 player 号可能是 -1：不许越界写，也不许改任何槽。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, -1, 0x9999, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0x4444;
+		expect(ok, "bus slots: invalid player id overrides nothing");
+	}
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 4, 0x9999, out);
+		ok = out[0] == 0x1111 && out[3] == 0x4444;
+		expect(ok, "bus slots: player id 4 does not write past the array");
+	}
+}
+
 static void testLink(void) {
 	struct NetLink* host = netLinkCreate();
 	struct NetLink* guest = netLinkCreate();
@@ -3015,7 +3065,8 @@ int main(int argc, char** argv) {
 		return g_failed ? 1 : 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
-		testBusIgnoresPointToPoint();
+		testBusSlots();
+	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
@@ -3023,7 +3074,8 @@ int main(int argc, char** argv) {
 	}
 	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
 		testLink();
-		testBusIgnoresPointToPoint();
+		testBusSlots();
+	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
@@ -3059,6 +3111,7 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testBusSlots();
 	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();

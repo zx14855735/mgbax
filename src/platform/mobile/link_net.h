@@ -124,4 +124,15 @@ uint32_t netLinkBusRoundCycles(struct NetLink* link);
 int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
                     uint32_t* values, int players, int timeoutMs, uint16_t* indexOut);
 
+/* 把一轮汇聚结果摊成 SIOMULTI0..3 的四个槽位（纯函数，不碰链路状态）。
+ *
+ * 规则就三条，但每一条都对应一类真实故障：
+ *   1. values[i] 只有在 i < players 时才进槽 —— 人数不足的槽必须是空槽
+ *      0xFFFF。填错会让游戏的玩家数判定多出一个人，握手直接失败。
+ *   2. out[me] 一定用本机这一轮的字 own —— 广播里的自己那份可能因为主机
+ *      晚了半拍而是旧值。
+ *   3. me 不在 0..3（例如链路还没连上、player 号无效）时不做第 2 条，
+ *      不能越界写。 */
+void netLinkBusSlots(const uint32_t* values, int players, int me, uint16_t own, uint16_t out[4]);
+
 #endif

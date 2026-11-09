@@ -2269,12 +2269,9 @@ static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	int me = netLinkPlayer(emu->link);
 	uint16_t data[4];
-	for (int i = 0; i < 4; ++i) {
-		data[i] = (i < players) ? (uint16_t) vals[i] : 0xFFFF;
-	}
-	if (me >= 0 && me < 4) {
-		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-	}
+	/* 四槽的装配规则在 link_net 里做成纯函数，方便单测（人数不足的槽必须
+	 * 是空槽、自己的槽一定用本机这一轮的字）。 */
+	netLinkBusSlots(vals, players, me, gba->memory.io[GBA_REG(SIOMLT_SEND)], data);
 	finishMultiTransfer(emu, data, cyclesLate);
 }
 

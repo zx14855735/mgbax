@@ -1536,6 +1536,19 @@ int netLinkBusPlayers(struct NetLink* link) {
 	return n;
 }
 
+void netLinkBusSlots(const uint32_t* values, int players, int me, uint16_t own, uint16_t out[4]) {
+	for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+		if (values && i < players) {
+			out[i] = (uint16_t) values[i];
+		} else {
+			out[i] = 0xFFFF;
+		}
+	}
+	if (me >= 0 && me < BUS_MAX_PLAYERS) {
+		out[me] = own;
+	}
+}
+
 uint16_t netLinkBusRoundIndex(struct NetLink* link) {
 	if (!link) {
 		return 0;
