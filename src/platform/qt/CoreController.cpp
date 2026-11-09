@@ -1619,6 +1619,9 @@ int CoreController::updateAutofire() {
 
 void CoreController::finishFrame() {
 #ifdef M_CORE_GBA
+	/* 只读诊断与联机对象无关：联机链路可能要到游戏已经进了菜单才建立，
+	 * 甚至整轮都没建立，脚本仍需靠游戏内存判定光标/项目码。 */
+	sioLinkDiagCore(m_threadContext.core);
 	if (m_lanLink) {
 		// Per-frame top-up on the core thread: attaches the SIO driver once
 		// the peer connects, re-attaches after a reset, drains requests and

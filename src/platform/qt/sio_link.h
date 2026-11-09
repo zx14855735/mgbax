@@ -50,6 +50,11 @@ void sioLinkStatusText(const struct SioLink* sio, char* out, size_t outLen);
  * the link state changes (and re-attaches after a core reset). */
 void sioLinkPump(struct SioLink* sio, struct mCore* core);
 
+/** 只读的菜单/联机状态诊断，不依赖任何 SioLink 对象。挂到 CoreController
+ * 的每帧回调上，联机链路还没建立（甚至还没建房）时就能落盘 [diag]/[room]，
+ * 供自动化脚本用游戏内存判定入场；MGBAX_LINK_DIAG 未设置时开销为零。 */
+void sioLinkDiagCore(struct mCore* core);
+
 /** Diagnostics: smoothed RTT in µs (0 = unknown) and peer queue counters. */
 uint32_t sioLinkRttUs(const struct SioLink* sio);
 void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drops);

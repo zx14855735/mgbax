@@ -262,11 +262,24 @@ QStringList DirectLink::candidates() {
 	quint16 mappedPort = 0;
 	if (stunLookup(socket_t(m_sock), "stun.miwifi.com", 3478, &mappedIp, &mappedPort)
 	    || stunLookup(socket_t(m_sock), "stun.l.google.com", 19302, &mappedIp, &mappedPort)) {
-		list.append(candidateText(mappedIp, mappedPort));
+		// 同机/同局域网测试（MGBAX_DIRECT_LOCAL_FIRST=1）：把本机网卡地址
+		// 排到公网映射前面。打洞是「第一个 RESP 到达即锁定对端」，默认把
+		// STUN 放首位会让同一台机器上的两端绕公网反射地址（实测 50ms、
+		// 抖动到 200ms+），而本机网卡路径是 1-3ms。跨网生产环境不设此开关，
+		// 行为完全不变；本机地址打不通时公网映射仍在列表里作兜底。
+		if (qEnvironmentVariableIsEmpty("MGBAX_DIRECT_LOCAL_FIRST")) {
+			list.append(candidateText(mappedIp, mappedPort));
+		}
 	}
 	for (const QString& text : local) {
 		if (!list.contains(text)) {
 			list.append(text);
+		}
+	}
+	if (mappedIp && !qEnvironmentVariableIsEmpty("MGBAX_DIRECT_LOCAL_FIRST")) {
+		QString stun = candidateText(mappedIp, mappedPort);
+		if (!list.contains(stun)) {
+			list.append(stun);
 		}
 	}
 	return list;

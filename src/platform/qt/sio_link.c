@@ -540,23 +540,10 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
 	UNUSED(cyclesLate);
 	struct SioLink* sio = (struct SioLink*) user;
 	serviceLink(sio);
-	/* [room] 只读诊断不能只挂在「传输成功」路径：主机第一轮就卡住时
-	 * sioOk 永远是 0，诊断一行都不打，走位脚本全程 ic/ts/cb2 都是 "-"，
-	 * 根本判断不了有没有踩到座位（12:44 那轮实测就是这样）。改在每帧
-	 * 轮询里按墙钟节流输出，与 SIO 传输是否成功无关；未设 MGBAX_LINK_DIAG
-	 * 时 logLinkDiag 会立刻返回，开销可忽略。 */
-	static uint32_t lastDiagMs;
-	if (sio->linkAttached && sio->core
-	    && sio->core->platform(sio->core) == mPLATFORM_GBA) {
-		uint32_t now = wallNowMs();
-		if ((uint32_t) (now - lastDiagMs) >= 250u) {
-			lastDiagMs = now;
-			logLinkDiag((struct GBA*) sio->core->board);
-		}
-	}
-	if (sio->linkAttached) {
-		mTimingSchedule(timing, &sio->linkEvent, 8192);
-	}
+	/* [diag]/[room] 统一由 sioLinkPump 输出（Qt 帧循环无条件调用，链路没连上
+	 * 时也有）。这里只负责续期：链路可能在游戏已进入菜单之后才连上，停在
+	 * 这里就再也不会 attachLink。 */
+	mTimingSchedule(timing, &sio->linkEvent, 8192);
 }
 
 /**
@@ -1432,6 +1419,26 @@ void sioLinkPump(struct SioLink* sio, struct mCore* core) {
 		return;
 	}
 	sio->core = core;
+	/* 环回基线不走 CoreController::finishFrame，在这里补一次；与桌面端
+	 * 共用 sioLinkDiagCore 的节流变量，同一帧不会产生重复日志。 */
+	sioLinkDiagCore(core);
 	pollLink(sio);
 	serviceLink(sio);
+}
+
+void sioLinkDiagCore(struct mCore* core) {
+	/* 与链路对象完全解耦：CoreController::finishFrame 每帧无条件调用。
+	 * 联机对象只在隧道配对后才创建，而脚本拿到房号就开始推进菜单，
+	 * 那时 m_lanLink 还是 null，挂在 sioLinkPump 里的诊断一行都不会有
+	 * （09:58 轮实测 mgba_sio.log 全程 0 字节）。 */
+	if (!core || core->platform(core) != mPLATFORM_GBA) {
+		return;
+	}
+	static uint32_t diagMs;
+	uint32_t now = wallNowMs();
+	if ((uint32_t) (now - diagMs) < 250u) {
+		return;
+	}
+	diagMs = now;
+	logLinkDiag((struct GBA*) core->board);
 }
