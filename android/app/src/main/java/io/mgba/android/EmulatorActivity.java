@@ -186,6 +186,15 @@ public class EmulatorActivity extends AppCompatActivity {
                 Log.i(TAG, "local link stopped by broadcast");
                 return;
             }
+            // 无头验证用：菜单栏那句「联机」按钮在模拟器里点不到（SurfaceView
+            // 会盖住菜单，而且菜单会自动收起），这里给对话框开一个广播入口，
+            // 和 ROM / KEYS / STATE 那几个 headless 钩子同一套路。对话框本身
+            // 不依赖 ROM 是否已加载，所以放在 ROM 检查之前。
+            if (intent.getBooleanExtra("dialog", false)) {
+                Log.i(TAG, "link dialog opened by broadcast");
+                showLinkDialog();
+                return;
+            }
             if (core == null || !core.isLoaded()) {
                 Log.i(TAG, "local link broadcast ignored: no rom loaded");
                 return;
