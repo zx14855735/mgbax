@@ -237,18 +237,28 @@ public final class GBoyLinkSession {
         if (slot < 1 || slot > MAX_CONSOLES) {
             return;
         }
-        boolean dropped;
+        boolean report;
+        long total;
         synchronized (lock) {
             ArrayDeque<Integer> queue = pending[slot];
             queue.add(keys);
-            dropped = queue.size() > BACKLOG_LIMIT;
-            if (dropped) {
+            if (queue.size() > BACKLOG_LIMIT) {
                 queue.poll();
                 ++droppedFrames;
+                // Two emulators rarely run at the same frame rate, so the peer
+                // can be ahead on almost every key frame. Report the first few
+                // and then only occasionally; unbounded logging used to flood
+                // logcat and bury the TYPE_STATE / handshake events.
+                total = droppedFrames;
+                report = total <= 3 || (total & 0xFFL) == 0;
+            } else {
+                total = droppedFrames;
+                report = false;
             }
         }
-        if (dropped) {
-            events.onStatus("peer slot " + slot + " ahead, dropped oldest key frame");
+        if (report) {
+            events.onStatus("peer slot " + slot + " ahead, dropped oldest key frame"
+                    + " (total " + total + ")");
         }
     }
 

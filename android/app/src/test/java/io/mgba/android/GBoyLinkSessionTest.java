@@ -4,6 +4,7 @@
 package io.mgba.android;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /** Plain JVM test of the ported GBoy link session. */
@@ -57,6 +58,7 @@ public final class GBoyLinkSessionTest {
         slotTypedFrames();
         readyHandshake();
         resetAndStateRoundTrip();
+        readerAcceptsLargeStateFrames();
         counterAndFps();
         backPressureDropsOldest();
         registrationAndSocketHandshake();
@@ -207,6 +209,47 @@ public final class GBoyLinkSessionTest {
         session.sendReset();
         byte[] rst = sink.frames.get(sink.frames.size() - 1);
         check(GBoyFrames.getShort(rst, 4) == GBoyFrames.TYPE_RESET, "reset frame type 5");
+    }
+
+    /**
+     * The frame splitter must accept bodies well beyond 64 KiB: a GBA
+     * save-state is hundreds of KiB, and rejecting the frame used to wipe the
+     * receive buffer and misparse everything that followed.
+     */
+    private static void readerAcceptsLargeStateFrames() {
+        byte[] blob = new byte[256 * 1024];
+        for (int i = 0; i < blob.length; ++i) {
+            blob[i] = (byte) (i * 17 + 3);
+        }
+        byte[] payload = new byte[4 + blob.length];
+        GBoyFrames.putInt(payload, 0, blob.length);
+        System.arraycopy(blob, 0, payload, 4, blob.length);
+        byte[] wire = GBoyFrames.frame(GBoyFrames.TYPE_STATE, payload);
+
+        GBoyFrames.Reader reader = new GBoyFrames.Reader();
+        byte[] body = null;
+        for (int off = 0; off < wire.length;) {
+            int n = Math.min(2048, wire.length - off);
+            byte[] chunk = Arrays.copyOfRange(wire, off, off + n);
+            reader.append(chunk, n);
+            off += n;
+            byte[] candidate = reader.next();
+            if (candidate != null) {
+                body = candidate;
+            }
+        }
+        check(body != null, "reader emits a frame larger than 64 KiB");
+        check(GBoyFrames.typeOf(body) == GBoyFrames.TYPE_STATE,
+                "large frame keeps its TYPE_STATE tag");
+        check(Arrays.equals(GBoyLinkSession.stateOf(body), blob),
+                "large save-state payload decodes byte for byte");
+
+        byte[] small = GBoyFrames.frame(GBoyFrames.TYPE_FPS, 47);
+        reader.append(small, small.length);
+        byte[] next = reader.next();
+        check(next != null && GBoyFrames.typeOf(next) == GBoyFrames.TYPE_FPS
+                        && GBoyFrames.intOf(next) == 47,
+                "stream stays aligned after a large state frame");
     }
 
     private static void rejectsBadConfiguration() {

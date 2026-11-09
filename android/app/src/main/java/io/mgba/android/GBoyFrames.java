@@ -27,6 +27,14 @@ import java.util.Arrays;
  */
 final class GBoyFrames {
 
+    /**
+     * Largest frame body we accept. A GBA save-state blob is several hundred
+     * KiB, so the old 65535 cap silently discarded every TYPE_STATE frame and
+     * desynchronised the stream; the official client uses an unrestricted int
+     * length. 16 MiB leaves ample headroom while still bounding allocations.
+     */
+    static final int MAX_FRAME_LENGTH = 16 * 1024 * 1024;
+
     /** Key bitmask for the console this session owns. */
     static final int TYPE_KEYS = 0;
     /** Session registration (ten byte body) and the plain acknowledgement. */
@@ -177,8 +185,10 @@ final class GBoyFrames {
                 return null;
             }
             int length = getInt(buffer, 0);
-            if (length < 2 || length > 65535) {
+            if (length < 2 || length > MAX_FRAME_LENGTH) {
                 // Not a frame we understand; drop the stream rather than spin.
+                // A real save-state frame is far above 64 KiB, so the cap must
+                // not reject it (that used to corrupt every following frame).
                 position = 0;
                 return null;
             }

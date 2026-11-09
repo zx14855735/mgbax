@@ -239,7 +239,10 @@ final class KcpChannel implements GBoyCloudLink.Link {
                     break;
                 }
                 int length = getInt(head, 0);
-                if (length <= 0 || length > 65535) {
+                // TYPE_STATE carries a full GBA save-state blob (hundreds of
+                // KiB); keep the same bound as GBoyFrames.Reader so a state
+                // transfer does not tear down the stream.
+                if (length <= 0 || length > GBoyFrames.MAX_FRAME_LENGTH) {
                     Log.i(TAG, "bad stream frame length " + length);
                     break;
                 }

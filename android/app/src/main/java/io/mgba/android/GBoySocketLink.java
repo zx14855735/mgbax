@@ -13,6 +13,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The official local TCP link, ported from {@code LKpHwm4/B25kr6}.
@@ -46,6 +47,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     private final BlockingQueue<byte[]> outbox = new ArrayBlockingQueue<>(OUTBOX_CAPACITY);
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean handshakeDone = new AtomicBoolean();
+    private final AtomicLong received = new AtomicLong();
 
     private volatile Socket socket;
     private volatile ServerSocket server;
@@ -154,6 +156,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 reader.append(buffer, n);
                 byte[] body;
                 while ((body = reader.next()) != null) {
+                    received.incrementAndGet();
                     session.onFrameBody(body);
                     if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_REGISTER) {
                         boolean wasHost = server != null;
@@ -225,6 +228,11 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
 
     public int queuedFrames() {
         return outbox.size();
+    }
+
+    /** Complete frame bodies received from the peer, for link diagnostics. */
+    public long receivedFrames() {
+        return received.get();
     }
 
     public void close() {

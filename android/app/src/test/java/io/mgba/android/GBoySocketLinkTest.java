@@ -46,7 +46,9 @@ public final class GBoySocketLinkTest {
         try {
             handshakeOverLoopback();
             keyMaskReachesTheOtherConsole();
+            continuousFramesReachPeer();
             stateAndResetRoundTrip();
+            largeStateFrameRoundTrip();
             closeReleasesBothSides();
             System.out.println("GBoySocketLinkTest ok");
         } finally {
@@ -89,6 +91,21 @@ public final class GBoySocketLinkTest {
                 "slot 1 receives the host's key mask at the 12 Hz sample point");
     }
 
+    private static void continuousFramesReachPeer() {
+        long receivedBefore = guest.receivedFrames();
+        int sentBefore = host.session().sentFrames();
+        // The emulation loop calls onLocalFrame once per rendered frame; 20
+        // driven frames must produce exactly four 12 Hz broadcasts, and those
+        // frames must actually cross the TCP link to the peer.
+        for (int f = 20; f < 40; ++f) {
+            host.session().onLocalFrame(f, 0x33);
+        }
+        check(host.session().sentFrames() - sentBefore == 4,
+                "20 driven frames produce exactly 4 key broadcasts");
+        check(waitFor(() -> guest.receivedFrames() - receivedBefore >= 4, 3000),
+                "the 12 Hz key frames arrive over the TCP link");
+    }
+
     private static void stateAndResetRoundTrip() {
         byte[] blob = {9, 8, 7, 6, 5, 4};
         host.session().sendState(blob);
@@ -101,6 +118,30 @@ public final class GBoySocketLinkTest {
         host.session().sendFps(59);
         check(waitFor(() -> guest.session().remoteFps() == 59, 3000),
                 "TYPE_FPS is recorded by the peer session");
+    }
+
+    /**
+     * A real GBA save-state is hundreds of KiB. The old 65535 cap in the frame
+     * splitter rejected such frames and reset the stream, so TYPE_STATE never
+     * arrived and every following byte was parsed as a bogus frame header.
+     */
+    private static void largeStateFrameRoundTrip() {
+        byte[] blob = new byte[256 * 1024];
+        for (int i = 0; i < blob.length; ++i) {
+            blob[i] = (byte) (i * 31 + 7);
+        }
+        guestEvents.state = null;
+        host.session().sendState(blob);
+        check(waitFor(() -> guestEvents.state != null
+                        && guestEvents.state.length == blob.length, 6000),
+                "256 KiB TYPE_STATE crosses the TCP link intact");
+        check(Arrays.equals(guestEvents.state, blob),
+                "large save-state payload is byte-for-byte identical");
+        // The stream must still be aligned after the large frame: a small
+        // frame sent right afterwards has to decode normally.
+        host.session().sendFps(61);
+        check(waitFor(() -> guest.session().remoteFps() == 61, 3000),
+                "stream stays aligned after a large state frame");
     }
 
     private static void closeReleasesBothSides() {

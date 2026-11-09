@@ -1881,6 +1881,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (core == null || !core.isLoaded() || (!asHost && (peer == null || peer.isEmpty()))) {
             return false;
         }
+        // The official client synchronises save state only after the session is
+        // ready. Sending it from start() raced the peer's mirror console, so
+        // the snapshot is now sent once, from onReady().
+        final AtomicBoolean initialStateSent = new AtomicBoolean();
         GBoyLinkSession.Events events = new GBoyLinkSession.Events() {
             @Override
             public void onReset() {
@@ -1903,6 +1907,26 @@ public class EmulatorActivity extends AppCompatActivity {
 
             @Override
             public void onReady() {
+                Log.i(TAG, "local link handshake complete");
+                // saveStateToMemory() touches the running core, so hop back to
+                // the UI thread before taking the snapshot.
+                if (asHost && initialStateSent.compareAndSet(false, true)) {
+                    runOnUiThread(() -> {
+                        GBoyConsoleSet set = consoleSet;
+                        GBoySocketLink link = localLink;
+                        if (set == null || link == null) {
+                            Log.w(TAG, "local link initial state skipped: consoles not ready");
+                            return;
+                        }
+                        byte[] snapshot = set.snapshotState();
+                        if (snapshot == null || snapshot.length == 0) {
+                            Log.w(TAG, "local link initial state skipped: empty snapshot");
+                            return;
+                        }
+                        link.session().sendState(snapshot);
+                        Log.i(TAG, "local link initial state sent " + snapshot.length + " bytes");
+                    });
+                }
                 runOnUiThread(() -> toast("本地联机已就绪"));
             }
 
@@ -1924,12 +1948,6 @@ public class EmulatorActivity extends AppCompatActivity {
             GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort);
             boolean ok = set.start(core, link.session());
             consoleSet = set;
-            if (ok && asHost) {
-                byte[] snapshot = set.snapshotState();
-                if (snapshot != null) {
-                    link.session().sendState(snapshot);
-                }
-            }
             return ok;
         } catch (java.io.IOException e) {
             GBoySocketLink link = localLink;
@@ -1953,6 +1971,22 @@ public class EmulatorActivity extends AppCompatActivity {
         localLink = null;
         if (link != null) {
             link.close();
+        }
+    }
+
+    /**
+     * Feeds the frame number and local key mask to every active GBoy session.
+     * The local TCP link owns its own session and has no cloud link behind it,
+     * so without this call it would never broadcast keys at the official
+     * five-frame (12 Hz) cadence.
+     */
+    private void driveLinkSessions(long frame, int keys) {
+        if (cloudLink != null) {
+            cloudLink.onLocalFrame(frame, keys);
+        }
+        GBoySocketLink socket = localLink;
+        if (socket != null) {
+            socket.session().onLocalFrame(frame, keys);
         }
     }
 
@@ -2061,9 +2095,7 @@ public class EmulatorActivity extends AppCompatActivity {
                             // loopback MULTI round stays paired.
                             for (int f = 0; f < n; ++f) {
                                 int frameKeys = userKeys();
-                                if (cloudLink != null) {
-                                    cloudLink.onLocalFrame(netFrameNo, frameKeys);
-                                }
+                                driveLinkSessions(netFrameNo, frameKeys);
                                 consoles.beginFrame(netFrameNo);
                                 core.runFrames(frameKeys, 1);
                                 consoles.endFrame(netFrameNo);
@@ -2074,9 +2106,7 @@ public class EmulatorActivity extends AppCompatActivity {
                             // cadence; the legacy 50 ms timer takes over only
                             // if the frame loop is not wired up.
                             for (int f = 0; f < n; ++f) {
-                                if (cloudLink != null) {
-                                    cloudLink.onLocalFrame(netFrameNo, userKeys());
-                                }
+                                driveLinkSessions(netFrameNo, userKeys());
                                 ++netFrameNo;
                             }
                             core.runFrames(userKeys(), n);
