@@ -171,6 +171,45 @@ public class EmulatorActivity extends AppCompatActivity {
             publishRemoteKeys();
         }
     };
+    /** Headless entry for the official local TCP link:
+     *  {@code am broadcast -a io.mgba.android.action.GBOY_LOCAL_LINK
+     *  --ez host true --ei tcp 19876 --ei sio 18781 --es rom /sdcard/rom.gba},
+     *  or {@code --ez host false --es peer 10.0.2.2 ...} to join.
+     *  {@code --ez stop true} tears the link down. */
+    private final BroadcastReceiver localLinkReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getBooleanExtra("stop", false)) {
+                stopGBoyLink();
+                Log.i(TAG, "local link stopped by broadcast");
+                return;
+            }
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "local link broadcast ignored: no rom loaded");
+                return;
+            }
+            boolean asHost = intent.getBooleanExtra("host", true);
+            int tcpPort = intent.getIntExtra("tcp", 19876);
+            int sioPort = intent.getIntExtra("sio", 18781);
+            String peer = intent.getStringExtra("peer");
+            String romPath = intent.getStringExtra("rom");
+            if (romPath == null || romPath.isEmpty()) {
+                romPath = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+            }
+            if (romPath == null || romPath.isEmpty()) {
+                Log.w(TAG, "local link broadcast: no rom path");
+                return;
+            }
+            File save = defaultSaveDir != null ? defaultSaveDir : getFilesDir();
+            File stateDir = defaultStateDir != null
+                    ? defaultStateDir : new File(getFilesDir(), "state");
+            boolean ok = startGBoyLocalLink(new File(romPath), save, stateDir,
+                    sioPort, tcpPort, peer, asHost);
+            Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
+                    + " sio=" + sioPort + " started=" + ok
+                    + " err=" + gboyLinkFailure());
+        }
+    };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
      *  --es pass P --es room R` start the gboy.top cloud link without touching the
      *  menu bar (its buttons sit under the game SurfaceView in some emulators, so
@@ -497,6 +536,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(remoteKeysReceiver, remoteKeysFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(remoteKeysReceiver, remoteKeysFilter);
+        }
+        IntentFilter localLinkFilter = new IntentFilter("io.mgba.android.action.GBOY_LOCAL_LINK");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(localLinkReceiver, localLinkFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(localLinkReceiver, localLinkFilter);
         }
         IntentFilter cloudFilter = new IntentFilter("io.mgba.android.action.CLOUD");
         if (Build.VERSION.SDK_INT >= 33) {
@@ -7678,6 +7723,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(remoteKeysReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(localLinkReceiver);
         } catch (Exception ignored) {
         }
         try {

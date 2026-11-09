@@ -91,19 +91,45 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         return listener.getLocalPort();
     }
 
-    /** Connects to the peer and sends the official registration frame. */
+    /**
+     * Connects to the peer and sends the official registration frame.
+     * Android forbids socket I/O on the main thread and broadcast receivers run
+     * there, so the connect happens on a worker; this method still waits for the
+     * outcome and keeps its synchronous contract for callers and tests.
+     */
     public void startJoin(String host, int port) throws IOException {
         running.set(true);
-        Socket peer = new Socket();
+        final Socket[] connected = new Socket[1];
+        final IOException[] failure = new IOException[1];
+        Thread connector = new Thread(() -> {
+            Socket peer = new Socket();
+            try {
+                peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                peer.setTcpNoDelay(true);
+                connected[0] = peer;
+            } catch (IOException e) {
+                failure[0] = e;
+                try {
+                    peer.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }, "gboy-socket-connect");
+        connector.setDaemon(true);
+        connector.start();
         try {
-            peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-            peer.setTcpNoDelay(true);
-            open(peer);
-        } catch (IOException e) {
-            peer.close();
+            connector.join(CONNECT_TIMEOUT_MS + 1000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
             running.set(false);
-            throw e;
+            throw new IOException("interrupted while connecting", e);
         }
+        Socket peer = connected[0];
+        if (peer == null) {
+            running.set(false);
+            throw failure[0] != null ? failure[0] : new IOException("connect timed out");
+        }
+        open(peer);
         session.sendSocketHandshake();
     }
 
