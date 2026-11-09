@@ -2042,8 +2042,18 @@ static void serviceLink(struct MgbaMobile* emu) {
 		 *
 		 * 改成「对端队列里有字才挂」：没联机时主机一个字都不推，从机永远
 		 * 不会被挂上，模拟线程保持满速；联机开始后主机每轮推一个字，从机
-		 * 照旧一轮一个地取走。 */
-		if (player != 0 && !emu->sioSlaveArmed && netLinkPeerPending(emu->link) > 0) {
+		 * 照旧一轮一个地取走。
+		 *
+		 * 总线例外（2026-11-10）：3/4 人的字走 PKT_PUSH / PKT_BUS_ROUND，
+		 * 根本不进 peerQ，netLinkPeerPending() 恒为 0 —— 沿用原判据会让
+		 * 从机轮次事件永远 arm 不上（主机每轮等满超时窗，从机收不到 SIO
+		 * 中断卡在进房前：busgame 实测从机 45s 只跑 302 帧）。总线改看
+		 * sioRoundWordValid：游戏自己写过 SIOCNT 起 MULTI 才算一轮，既不
+		 * 会在还没进房间时自旋，也不依赖主机先广播（避开第一轮互等）。 */
+		bool busMode = netLinkBusActive(emu->link);
+		bool roundReady = busMode ? emu->sioRoundWordValid
+		                          : netLinkPeerPending(emu->link) > 0;
+		if (player != 0 && !emu->sioSlaveArmed && roundReady) {
 			struct mTiming* timing = coreTiming(emu);
 			if (timing) {
 				mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);

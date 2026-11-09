@@ -524,7 +524,15 @@ static void serviceLink(struct SioLink* sio) {
 		 * the host's cadence; here we only arm it - and only once the host
 		 * actually pushed a word, otherwise the event would spin waiting for
 		 * a word that never comes (before the game even reaches the room). */
-		if (player != 0 && !sio->sioSlaveArmed && netLinkPeerPending(sio->link) > 0) {
+		/* 3/4 人总线的字走 PKT_PUSH / PKT_BUS_ROUND，不进 peerQ：
+		 * netLinkPeerPending() 在总线模式恒为 0，沿用两人判据会让从机
+		 * 轮次事件永远 arm 不上（主机每轮等满超时窗，从机收不到 SIO
+		 * 中断卡在进房前）。总线改看「游戏自己写过 SIOCNT 起 MULTI」，
+		 * 既不自旋，也不依赖主机先广播，避免第一轮互等。 */
+		bool busMode = netLinkBusActive(sio->link);
+		bool roundReady = busMode ? sio->sioRoundWordValid
+		                          : netLinkPeerPending(sio->link) > 0;
+		if (player != 0 && !sio->sioSlaveArmed && roundReady) {
 			struct mTiming* timing = coreTiming(sio);
 			if (timing) {
 				if (mTimingIsScheduled(timing, &sio->sioSlaveDone)) {

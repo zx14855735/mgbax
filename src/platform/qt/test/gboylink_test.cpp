@@ -1248,6 +1248,10 @@ static int busSioTest(const QString& rom, int players) {
  *
  * 每个内核一个线程：总线从机要等主机广播，单线程轮流跑必然互等。所有内核
  * 同一份存档、同一套按键脚本，保证同时进房。带墙钟超时，绝不挂死。
+ *
+ * 2026-11-10 实测：3 人房 LINKUP 仍未达成（总线从机在游戏还没发起 MULTI
+ * 时被轮次事件拖住），此模式保留为**诊断入口**，不进默认测试套件。返回非 0
+ * 表示「游戏侧 3/4 人对局未跑通」，不是链路层回归失败；链路层请看 bus 模式。
  */
 static int busGameTest(const QString& rom, const QString& sav, int players) {
 	if (players < 3) {
@@ -1269,7 +1273,15 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	static mColor video[4][240 * 160];
 
 	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
-	const QByteArray savUtf8 = QFileInfo(sav).absoluteFilePath().toUtf8();
+	/* Each core gets its own copy of the battery save. Three VFileOpen(...,
+	 * O_RDWR) handles on one file can lock each other out on Windows, leaving
+	 * the later cores booted from an empty save (cb2 stays 0). */
+	QString savCopy[4];
+	for (int i = 0; i < players; ++i) {
+		savCopy[i] = sav + QStringLiteral(".busgame%1").arg(i);
+		QFile::remove(savCopy[i]);
+		QFile::copy(sav, savCopy[i]);
+	}
 	for (int i = 0; i < players; i++) {
 		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
 		if (!romVf) {
@@ -1291,6 +1303,7 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 			fprintf(stderr, "BUSGAME: FAIL (cannot load rom)\n");
 			return 1;
 		}
+		const QByteArray savUtf8 = savCopy[i].toUtf8();
 		VFile* sv = VFileOpen(savUtf8.constData(), O_RDWR);
 		if (sv && !cores[i]->loadSave(cores[i], sv)) {
 			fprintf(stderr, "BUSGAME: WARN (core %d loadSave failed)\n", i);
@@ -1339,11 +1352,13 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	std::atomic<int> sawCards[4];
 	std::atomic<int> sawBattle[4];
 	std::atomic<uint32_t> lastCb2[4];
+	std::atomic<int> lastFrame[4];
 	for (int i = 0; i < players; ++i) {
 		maxCnt[i].store(0);
 		sawCards[i].store(0);
 		sawBattle[i].store(0);
 		lastCb2[i].store(0);
+		lastFrame[i].store(-1);
 	}
 	std::vector<std::thread> threads;
 	for (int i = 0; i < players; ++i) {
@@ -1389,6 +1404,7 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 					sawBattle[i].store(1);
 				}
 				lastCb2[i].store(cb2);
+				lastFrame[i].store(f);
 			}
 			finished.fetch_add(1);
 		});
@@ -1406,9 +1422,9 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	        players, maxFrames, finished.load(), players);
 	for (int i = 0; i < players; ++i) {
 		int cnt = maxCnt[i].load();
-		fprintf(stderr, "  core %d: maxCnt=%d cards=%d battle=%d cb2=%08X state=%d\n",
-		        i, cnt, sawCards[i].load(), sawBattle[i].load(), lastCb2[i].load(),
-		        sioLinkState(links[i]));
+		fprintf(stderr, "  core %d: frame=%d/%d maxCnt=%d cards=%d battle=%d cb2=%08X state=%d\n",
+		        i, lastFrame[i].load(), maxFrames - 1, cnt, sawCards[i].load(),
+		        sawBattle[i].load(), lastCb2[i].load(), sioLinkState(links[i]));
 		if (cnt < players) {
 			fprintf(stderr, "BUSGAME: FAIL (core %d never reached LINKUP with %d players)\n", i, players);
 			++failures;
@@ -1420,6 +1436,7 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	for (int i = 0; i < players; ++i) {
 		sioLinkDestroy(links[i]);
 		cores[i]->deinit(cores[i]);
+		QFile::remove(savCopy[i]);
 	}
 	return failures;
 }
