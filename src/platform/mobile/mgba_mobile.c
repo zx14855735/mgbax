@@ -1029,9 +1029,20 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (!emu) {
 		return NULL;
 	}
-	if (pthread_mutex_init(&emu->coreMutex, NULL) != 0) {
-		free(emu);
-		return NULL;
+	/* 递归锁：加锁点既在 C 层的 mgbaMobileRunFrames / SaveStateToMemory /
+	 * LoadStateToMemory 内部（这样 iOS 直接调用 C 函数也受保护，它不经过
+	 * JNI），也在 JNI 的入口（安卓侧的历史做法）。同一线程沿途二次加锁必须
+	 * 不能自死锁，所以这里用 PTHREAD_MUTEX_RECURSIVE。 */
+	{
+		pthread_mutexattr_t attr;
+		pthread_mutexattr_init(&attr);
+		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+		int rc = pthread_mutex_init(&emu->coreMutex, &attr);
+		pthread_mutexattr_destroy(&attr);
+		if (rc != 0) {
+			free(emu);
+			return NULL;
+		}
 	}
 	emu->coreMutexReady = true;
 	copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
@@ -3362,7 +3373,8 @@ uint16_t mgbaMobileLastKeys(struct MgbaMobile* emu) {
 	return GBAIORead(gba, GBA_REG_KEYINPUT);
 }
 
-bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
+/* RunFrames 的实现体。调用方必须已持有核心锁（见下面的公开包装）。 */
+static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	if (!emu || !emu->core) {
 		return false;
 	}
@@ -3575,6 +3587,20 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 	}
 	ensureVideo(emu);
 	return true;
+}
+
+/* 核心锁下沉到这一层：iOS 直接调用这个函数（不经过 JNI 的 nativeRunFrames），
+ * 而状态帧是在 socket 读线程上被注入的 —— 不加锁就是「一边 runFrame 一边
+ * 换核心状态」的竞态。安卓侧的 JNI 入口也加了锁，核心锁是递归的，同线程
+ * 重入安全。 */
+bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
+	if (!emu || !emu->core) {
+		return false;
+	}
+	mgbaMobileLock(emu);
+	bool ok = mobileRunFramesLocked(emu, count);
+	mgbaMobileUnlock(emu);
+	return ok;
 }
 
 int mgbaMobileReadAudio(struct MgbaMobile* emu, int16_t* out, int maxFrames) {
@@ -4172,7 +4198,8 @@ bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot) {
 	return ok;
 }
 
-bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize) {
+/* 快照的实现体。调用方必须已持有核心锁。 */
+static bool mobileSaveStateLocked(struct MgbaMobile* emu, void** out, size_t* outSize) {
 	if (!emu || !emu->core || !out || !outSize) {
 		return false;
 	}
@@ -4211,7 +4238,19 @@ bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* out
 	return ok;
 }
 
-bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size) {
+bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize) {
+	if (!emu || !emu->core || !out || !outSize) {
+		return false;
+	}
+	/* 与 RunFrames 同一把核心锁：iOS 直接调 C 函数，不经 JNI。 */
+	mgbaMobileLock(emu);
+	bool ok = mobileSaveStateLocked(emu, out, outSize);
+	mgbaMobileUnlock(emu);
+	return ok;
+}
+
+/* 状态注入的实现体。调用方必须已持有核心锁。 */
+static bool mobileLoadStateLocked(struct MgbaMobile* emu, const void* data, size_t size) {
 	if (!emu || !emu->core || !data || size == 0) {
 		return false;
 	}
@@ -4227,6 +4266,18 @@ bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, siz
 		emu->fast = -1;
 		attachKeyCallback(emu);
 	}
+	return ok;
+}
+
+bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size) {
+	if (!emu || !emu->core || !data || size == 0) {
+		return false;
+	}
+	/* 这条路径的危险性最高：状态帧在 socket 读线程上到达，镜像核正在另一条
+	 * 线程上 runFrame。没有这把锁就是「运行中换掉整个核心状态」。 */
+	mgbaMobileLock(emu);
+	bool ok = mobileLoadStateLocked(emu, data, size);
+	mgbaMobileUnlock(emu);
 	return ok;
 }
 

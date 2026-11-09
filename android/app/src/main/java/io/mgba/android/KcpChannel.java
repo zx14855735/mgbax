@@ -293,11 +293,17 @@ final class KcpChannel implements GBoyCloudLink.Link {
 
     @Override
     public void close() {
-        if (!running) {
-            return;
-        }
+        // 这里原来第一行是 `if (!running) return;`。但 running 会被 loop() /
+        // streamLoop() 在对端断开时自己置成 false —— 于是「对端先断、再关
+        // 房间」这条路直接返回，下面的 socket.close() / stream.close() 一行都
+        // 不执行，描述符就漏了。反复联机掉线会把 fd 耗尽（表现为之后连什么都
+        // 失败），PC 端同源实现在这条路径上更严重（std::thread 仍 joinable，
+        // 析构直接 terminate）。
+        //
+        // 现在只用 wasRunning 决定「要不要发 DISC」，关闭资源无条件执行。
+        boolean wasRunning = running;
         running = false;
-        if (kcp != null) {
+        if (wasRunning && kcp != null) {
             try {
                 kcp.send(DISC);
                 flush();

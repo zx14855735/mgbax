@@ -223,9 +223,15 @@ public slots:
 	// on the first pump once the peer connects.
 	bool lanLinkHost(quint16 port);
 	bool lanLinkJoin(const QString& host, quint16 port);
+	/** 3/4 人：走 link_net 的星型总线（主机 accept 多个从机、每轮汇聚广播）。
+	 * players 为 2 时行为与上面的两参数版本完全一致。 */
+	bool lanLinkHostPlayers(quint16 port, int players);
+	bool lanLinkJoinPlayers(const QString& host, quint16 port, int players);
 	void lanLinkClose();
 	int lanLinkState() const;
 	int lanLinkPlayer() const;
+	/** 本局目标人数（含自己）：总线房是开房时定的人数，两人直连恒为 2。 */
+	int lanLinkPlayers() const;
 
 	// SioLinkHost: the cloud bridge drives the same driver through this
 	// interface so it does not have to link CoreController.

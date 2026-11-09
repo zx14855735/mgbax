@@ -1234,6 +1234,171 @@ static int busSioTest(const QString& rom, int players) {
 	return failures;
 }
 
+
+/**
+ * 帧长上限：一个 GBA 状态约 790 KiB，必须能完整穿过 Reader。
+ *
+ * 原来的上限是 65535，状态帧被判成「不是我们认识的帧」后整段流被丢弃 ——
+ * 后面所有帧（含按键帧）都从错位的偏移解析，表现为一批假的按键输入、以及
+ * 对端永远收不到状态。安卓 / iOS / PC 的 KcpChannel 与 GBoyFrames 都有同一个
+ * 上限，这里把 PC 侧的行为钉住。
+ */
+static int framesTest() {
+	int failures = 0;
+
+	// 256 KiB 的载荷，按 2048 字节一片喂进去（模拟真实 TCP/KCP 分片）。
+	const int blobSize = 256 * 1024;
+	QByteArray blob(blobSize, '\0');
+	for (int i = 0; i < blobSize; ++i) {
+		blob[i] = char((i * 37 + (i >> 8)) & 0xFF);
+	}
+	QByteArray big = GBoyFrames::frame(GBoyFrames::TYPE_STATE, blob);
+	if (big.size() != blobSize + 6) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (encoded %1 bytes, want %2)")
+		                         .arg(big.size()).arg(blobSize + 6);
+		return 1;
+	}
+
+	GBoyFrames::Reader reader;
+	QByteArray got;
+	for (int off = 0; off < big.size(); off += 2048) {
+		reader.append(big.constData() + off, qMin(2048, big.size() - off));
+		QByteArray body;
+		while (!(body = reader.next()).isEmpty()) {
+			got = body;
+		}
+	}
+	if (got.isEmpty()) {
+		qInfo() << "FRAMES TEST: FAIL (reader never emitted the large frame)";
+		++failures;
+	} else if (GBoyFrames::typeOf(got) != GBoyFrames::TYPE_STATE) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (type %1, want %2)")
+		                         .arg(GBoyFrames::typeOf(got)).arg(int(GBoyFrames::TYPE_STATE));
+		++failures;
+	} else if (GBoyFrames::payloadOf(got) != blob) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (payload %1 bytes, want %2)")
+		                         .arg(GBoyFrames::payloadOf(got).size()).arg(blobSize);
+		++failures;
+	}
+
+	// 大帧之后紧跟一个小帧：流必须仍然对齐（旧上限的另一个症状就是这里错位）。
+	QByteArray small = GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x0A0B);
+	reader.append(small.constData(), small.size());
+	QByteArray after = reader.next();
+	if (after.isEmpty()) {
+		qInfo() << "FRAMES TEST: FAIL (small frame after the large one was lost)";
+		++failures;
+	} else if (GBoyFrames::typeOf(after) != GBoyFrames::TYPE_KEYS
+	           || GBoyFrames::intOf(after) != 0x0A0B) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (framing broke: type %1 int %2)")
+		                         .arg(GBoyFrames::typeOf(after)).arg(GBoyFrames::intOf(after));
+		++failures;
+	}
+
+	// 超过上限的帧必须被拒绝：Reader 丢弃整段流，而不会试着去分配那个长度。
+	// 注意顺序：putInt 直接往 data() 里写，缓冲区必须先有 4 个字节。
+	QByteArray over;
+	over.resize(4);
+	GBoyFrames::putInt(&over, 0, GBoyFrames::maxFrameLength + 1);
+	GBoyFrames::Reader guard;
+	guard.append(over.constData(), over.size());
+	if (!guard.next().isEmpty()) {
+		qInfo() << "FRAMES TEST: FAIL (a frame above maxFrameLength was accepted)";
+		++failures;
+	}
+
+	if (failures == 0) {
+		qInfo().noquote() << QString("FRAMES TEST: PASS (256 KiB state frame survives, stream stays aligned, %1 MiB ceiling enforced)")
+		                         .arg(GBoyFrames::maxFrameLength / (1024 * 1024));
+	}
+	return failures;
+}
+
+
+/**
+ * KcpChannel 的 TCP 传输有自己一套帧循环（streamLoop），和 GBoyFrames 是两处
+ * 独立实现、曾经是同一个 65535 上限。这里用本机 TCP 环回实测：一个 256 KiB
+ * 的载荷必须完整到达，紧随其后的小载荷也必须能收到（验证流没有错位）。
+ */
+static int kcpFrameTest() {
+	int failures = 0;
+	QTcpServer server;
+	if (!server.listen(QHostAddress::LocalHost, 0)) {
+		qInfo() << "KCP FRAME TEST: FAIL (cannot listen)";
+		return 1;
+	}
+	const quint16 port = server.serverPort();
+	QString error;
+	KcpChannel* channel = KcpChannel::openTcp(QStringLiteral("127.0.0.1"), port, &error);
+	if (!channel) {
+		qInfo().noquote() << QString("KCP FRAME TEST: FAIL (openTcp: %1)").arg(error);
+		return 1;
+	}
+	if (!server.waitForNewConnection(5000)) {
+		qInfo() << "KCP FRAME TEST: FAIL (no inbound connection)";
+		channel->close();
+		delete channel;
+		return 1;
+	}
+	QTcpSocket* peer = server.nextPendingConnection();
+	if (!peer) {
+		qInfo() << "KCP FRAME TEST: FAIL (no peer socket)";
+		channel->close();
+		delete channel;
+		return 1;
+	}
+
+	auto sendPayload = [peer](const QByteArray& payload) {
+		QByteArray head;
+		head.resize(4);
+		GBoyFrames::putInt(&head, 0, quint32(payload.size()));
+		peer->write(head);
+		peer->write(payload);
+		peer->flush();
+		peer->waitForBytesWritten(5000);
+	};
+
+	const int blobSize = 256 * 1024;
+	QByteArray blob(blobSize, '\0');
+	for (int i = 0; i < blobSize; ++i) {
+		blob[i] = char((i * 7 + (i >> 9)) & 0xFF);
+	}
+	sendPayload(blob);
+	QByteArray got;
+	if (!channel->recv(&got, 8000)) {
+		qInfo() << "KCP FRAME TEST: FAIL (large payload never arrived)";
+		++failures;
+	} else if (got.size() != blobSize) {
+		qInfo().noquote() << QString("KCP FRAME TEST: FAIL (got %1 bytes, want %2)")
+		                         .arg(got.size()).arg(blobSize);
+		++failures;
+	} else if (got != blob) {
+		qInfo() << "KCP FRAME TEST: FAIL (payload bytes differ)";
+		++failures;
+	}
+
+	QByteArray small("after-big", 9);
+	sendPayload(small);
+	QByteArray got2;
+	if (!channel->recv(&got2, 8000)) {
+		qInfo() << "KCP FRAME TEST: FAIL (small payload after the large one was lost)";
+		++failures;
+	} else if (got2 != small) {
+		qInfo().noquote() << QString("KCP FRAME TEST: FAIL (framing broke: got '%1')")
+		                         .arg(QString::fromLatin1(got2));
+		++failures;
+	}
+
+	peer->disconnectFromHost();
+	peer->deleteLater();
+	channel->close();
+	delete channel;
+	if (failures == 0) {
+		qInfo().noquote() << "KCP FRAME TEST: PASS (256 KiB payload over TCP, stream stays aligned)";
+	}
+	return failures;
+}
+
 static int lanSioLatTest(const QString& rom, int delayMs) {
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
@@ -2131,6 +2296,11 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("audioff")) {
 		return audioFfTest();
+	}
+	if (mode == QStringLiteral("frames")) {
+		int failures = framesTest();
+		failures += kcpFrameTest();
+		return failures;
 	}
 	if (mode == QStringLiteral("bus")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");

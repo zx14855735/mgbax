@@ -574,7 +574,10 @@ void KcpChannel::pumpLoop() {
 					break;
 				}
 				quint32 length = readInt(pending.constData(), 0);
-				if (length == 0 || length > 65535) {
+				// MAX_FRAME_LENGTH rather than 65535: a save state is ~790 KiB
+				// and the old ceiling killed the channel on the first state
+				// transfer (see the header comment).
+				if (length == 0 || length > MAX_FRAME_LENGTH) {
 					m_dead = true;
 					m_running = false;
 					break;
@@ -669,11 +672,17 @@ bool KcpChannel::recv(QByteArray* out, int timeoutMs) {
 }
 
 void KcpChannel::close() {
-	if (!m_running) {
-		return;
-	}
+	// 这里原来第一行是 `if (!m_running) return;`。但 m_running 会被
+	// pumpLoop / streamLoop 在对端断开时自己置成 false —— 于是「对端先断、
+	// 再关房间」这条路直接返回，线程没有被 join。析构函数 ~KcpChannel() 调的
+	// 也是 close()，同样 early return，最后 std::thread 析构时仍然 joinable
+	// 就 std::terminate 掉整个进程（现场：terminate called without an active
+	// exception）。云端联机里对端掉线后再关房间必崩，就是这个。
+	//
+	// 现在只用 wasRunning 决定「要不要发 DISC」，join 与资源清理无条件执行。
+	bool wasRunning = m_running;
 	m_running = false;
-	if (m_kcp && m_socket >= 0) {
+	if (wasRunning && m_kcp && m_socket >= 0) {
 		m_kcp->send(QByteArray(reinterpret_cast<const char*>(DISC), sizeof(DISC)));
 		std::vector<QByteArray> datagrams = m_kcp->update(QDateTime::currentMSecsSinceEpoch());
 		sockaddr_in addr{};

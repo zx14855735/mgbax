@@ -51,6 +51,8 @@ void sioLinkClose(struct SioLink* sio);
 /** 0 off, 1 listening, 2 connected, 3 peer dropped. */
 int sioLinkState(const struct SioLink* sio);
 int sioLinkPlayer(const struct SioLink* sio);
+/** 本局目标人数（含自己）：总线房是开房时定的人数，两人直连恒为 2。 */
+int sioLinkPlayerCount(const struct SioLink* sio);
 void sioLinkStatusText(const struct SioLink* sio, char* out, size_t outLen);
 
 /** Per-frame top-up on the core thread; attaches/detaches the SIO driver as

@@ -329,7 +329,11 @@ final class LobbyKcpChannel {
                 break
             }
             let length = Int(LobbyFrames.getInt(head, 0))
-            if length <= 0 || length > 65535 {
+            // Same 16 MiB ceiling as the frame reader. With the old 65535 a
+            // state frame (~790 KiB) failed this check and the whole KCP stream
+            // was torn down - so the cloud link never carried a save state at
+            // all, on either direction.
+            if length <= 0 || length > LobbyFrames.maxFrameLength {
                 break
             }
             var body = [UInt8](repeating: 0, count: length)

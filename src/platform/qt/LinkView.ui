@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>360</width>
-    <height>320</height>
+    <height>360</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -78,7 +78,30 @@
      </property>
     </widget>
    </item>
-   <item row="3" column="0" colspan="2">
+   <item row="3" column="0">
+    <widget class="QLabel" name="playersLabel">
+     <property name="text">
+      <string>人数</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="1">
+    <widget class="QSpinBox" name="players">
+     <property name="toolTip">
+      <string>3 或 4 人走局域网总线（主机每轮收齐所有人的字再广播）。两边必须填一样；2 人是原来的直连，WiFi 合并按键模式只支持 2 人。</string>
+     </property>
+     <property name="minimum">
+      <number>2</number>
+     </property>
+     <property name="maximum">
+      <number>4</number>
+     </property>
+     <property name="value">
+      <number>2</number>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="0" colspan="2">
     <widget class="QCheckBox" name="lanMode">
      <property name="toolTip">
       <string>局域网精确 SIO 联机线（端口 18765），与安卓/iOS 局域网模式同协议，支持游戏内对战与交换。</string>
@@ -88,7 +111,7 @@
      </property>
     </widget>
    </item>
-   <item row="4" column="0" colspan="2">
+   <item row="5" column="0" colspan="2">
     <widget class="QTextEdit" name="status">
      <property name="readOnly">
       <bool>true</bool>
@@ -98,7 +121,7 @@
      </property>
     </widget>
    </item>
-   <item row="5" column="0" colspan="2">
+   <item row="6" column="0" colspan="2">
     <layout class="QHBoxLayout" name="buttonLayout">
      <item>
       <widget class="QPushButton" name="start">

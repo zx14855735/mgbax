@@ -24,6 +24,17 @@ namespace QGBA {
  */
 namespace GBoyFrames {
 
+/** Largest frame body accepted on a lobby stream.
+ *
+ * 16 MiB, matching the Android `GBoyFrames`. The original 65535 was wrong: a
+ * GBA save state is roughly 790 KiB (the Android log measured 790663 bytes),
+ * so every `TYPE_STATE` frame was rejected as "not a frame we understand" and
+ * the reader dropped the accumulated stream. Everything after it - key frames
+ * included - was parsed from a corrupted offset, which showed up as phantom
+ * inputs and a state that never reached the peer.
+ */
+static constexpr quint32 maxFrameLength = 16u * 1024u * 1024u;
+
 enum Type {
 	TYPE_KEYS = 0,        // Key bitmask for the console this session owns.
 	TYPE_REGISTER = 1,    // Session registration (ten byte body) and the plain acknowledgement.

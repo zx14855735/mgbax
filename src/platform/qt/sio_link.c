@@ -1546,6 +1546,22 @@ int sioLinkPlayer(const struct SioLink* sio) {
 	return netLinkPlayer(sio->link);
 }
 
+/* 本局目标人数（含自己）。总线模式下是房主开房时定的人数，两人直连是 2。
+ * 注意这不是「已经接入的人数」—— 总线的槽位是逐个接入的，界面要判断「还差
+ * 几个人」得看 netLinkBusPlayers。 */
+int sioLinkPlayerCount(const struct SioLink* sio) {
+	if (!sio || !sio->link) {
+		return 2;
+	}
+	if (netLinkBusActive(sio->link)) {
+		int n = netLinkBusPlayers(sio->link);
+		if (n > 2) {
+			return n;
+		}
+	}
+	return 2;
+}
+
 void sioLinkStatusText(const struct SioLink* sio, char* out, size_t outLen) {
 	if (!out || outLen == 0) {
 		return;

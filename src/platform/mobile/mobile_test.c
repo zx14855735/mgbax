@@ -1252,6 +1252,60 @@ static void linkSleepMs(int ms) {
 #endif
 }
 
+struct LockProbe {
+	struct MgbaMobile* emu;
+	volatile int done;
+};
+
+static void* lockProbeFrames(void* arg) {
+	struct LockProbe* p = (struct LockProbe*) arg;
+	mgbaMobileRunFrames(p->emu, 2);
+	p->done = 1;
+	return NULL;
+}
+
+/* 核心锁必须真的包住公开入口。
+ *
+ * 只靠「并发跑不崩」是弱证据 —— 竞态是概率性的，没崩不代表有锁。这里给确定
+ * 性证据：主线程先持锁，另一线程调 mgbaMobileRunFrames 必须被挡住；主线程解锁
+ * 后它才跑完。
+ *
+ * 守的是「iOS 直接调用 C 函数」那条路径：核心锁原来只加在 JNI 的三个入口
+ * （nativeRunFrames / SaveStateToMemory / LoadStateFromMemory）上，而 iOS
+ * 不经过 JNI —— 于是 iOS 上「镜像核跑帧」与「状态帧注入」从来没有互斥过。
+ */
+static void testCoreLockHeld(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	struct LockProbe probe;
+	pthread_t thread;
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/lock_probe.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "lock: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "lock");
+	expect(mgbaMobileLoad(emu, path), "lock: load gba");
+
+	probe.emu = emu;
+	probe.done = 0;
+	mgbaMobileLock(emu);
+	expect(pthread_create(&thread, NULL, lockProbeFrames, &probe) == 0,
+	       "lock: probe thread started");
+	linkSleepMs(250);
+	expect(!probe.done, "lock: run frames blocks while the core lock is held");
+	mgbaMobileUnlock(emu);
+	pthread_join(thread, NULL);
+	expect(probe.done, "lock: run frames finishes after the lock is released");
+	mgbaMobileDestroy(emu);
+}
+
+
 struct BusRoundArg {
 	struct NetLink* link;
 	uint16_t index;
@@ -3276,6 +3330,7 @@ int main(int argc, char** argv) {
 		mkdir(dir, 0755);
 #endif
 		testStateMemory(dir);
+	testCoreLockHeld(dir);
 	testStateConcurrency(dir);
 		return g_failed ? 1 : 0;
 	}
@@ -3306,6 +3361,7 @@ int main(int argc, char** argv) {
 	testBusPlayers();
 	testStateMemory(dir);
 	testRelay();
+	testCoreLockHeld(dir);
 	testStateConcurrency(dir);
 	if (g_failed) {
 		fprintf(stderr, "mobile tests failed\n");

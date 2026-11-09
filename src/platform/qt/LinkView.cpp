@@ -46,14 +46,28 @@ void LinkView::startLink() {
 		// LAN precise SIO cable: the driver lives in CoreController and pumps
 		// itself per frame; the SIO attach happens once the peer connects.
 		quint16 port = quint16(m_ui.port->value());
+		// 人数必须两边一致：2 人是原来的直连，3/4 人走星型总线。两边填不一
+		// 样时 TCP 能连上、但一个是 20 字节 struct Packet、另一个是 28 字节
+		// BusPacket，谁都解不出对方的包（表现为连上就断）。
+		int players = m_ui.players->value();
 		bool ok;
 		if (m_ui.radioHost->isChecked()) {
-			ok = m_controller->lanLinkHost(port);
-			m_ui.status->append(tr("LAN 联机线监听端口 %1，等待对方…（你是 1P）").arg(port));
+			ok = m_controller->lanLinkHostPlayers(port, players);
+			if (players > 2) {
+				m_ui.status->append(tr("LAN 总线监听端口 %1，%2 人房，等待 %3 位玩家…（你是 1P）")
+				                    .arg(port).arg(players).arg(players - 1));
+			} else {
+				m_ui.status->append(tr("LAN 联机线监听端口 %1，等待对方…（你是 1P）").arg(port));
+			}
 		} else {
 			QString ip = m_ui.ipAddr->text().trimmed();
-			ok = m_controller->lanLinkJoin(ip, port);
-			m_ui.status->append(tr("LAN 联机线连接 %1:%2…（你是 2P）").arg(ip).arg(port));
+			ok = m_controller->lanLinkJoinPlayers(ip, port, players);
+			if (players > 2) {
+				m_ui.status->append(tr("LAN 总线连接 %1:%2，%3 人房…（你是 P2 或之后接入的槽位）")
+				                    .arg(ip).arg(port).arg(players));
+			} else {
+				m_ui.status->append(tr("LAN 联机线连接 %1:%2…（你是 2P）").arg(ip).arg(port));
+			}
 		}
 		if (!ok) {
 			m_ui.status->append(tr("LAN 联机线启动失败"));
@@ -70,6 +84,15 @@ void LinkView::startLink() {
 		return;
 	}
 
+	// WiFi 合并按键模式是一条单管道，只合并两台的按键，没有第三、第四槽位。
+	// 选了 3/4 人却勾错模式时，宁可把话说清也不要在频道里对着空气等。
+	int players = m_ui.players->value();
+	if (players > 2) {
+		m_ui.status->append(tr("WiFi 合并按键模式只支持 2 人；3/4 人请勾选上面的「局域网精确 SIO 联机线」。"));
+		m_controller.reset();
+		updateRunning();
+		return;
+	}
 	GBoyLink::Config config;
 	config.mode = m_ui.radioHost->isChecked() ? GBoyLink::HOST : GBoyLink::JOIN;
 	config.ip = m_ui.ipAddr->text().trimmed();
@@ -154,6 +177,7 @@ void LinkView::updateRunning() {
 	m_ui.ipAddr->setDisabled(running);
 	m_ui.port->setDisabled(running);
 	m_ui.lanMode->setDisabled(running);
+	m_ui.players->setDisabled(running);
 	if (m_lanActive && m_controller) {
 		int state = m_controller->lanLinkState();
 		int player = m_controller->lanLinkPlayer();
@@ -162,9 +186,13 @@ void LinkView::updateRunning() {
 		case 1:
 			text = tr("监听中，等待对方接入…");
 			break;
-		case 2:
-			text = tr("已连接，你是 P%1（SIO 驱动已就位，进游戏房间即可）").arg(player + 1);
-			break;
+		case 2: {
+			int players = m_controller->lanLinkPlayers();
+			text = players > 2
+				? tr("已连接，你是 P%1（%2 人总线，已接入 %3 人）")
+				      .arg(player + 1).arg(players).arg(players)
+				: tr("已连接，你是 P%1（SIO 驱动已就位，进游戏房间即可）").arg(player + 1);
+		} break;
 		case 3:
 			text = tr("对方已断开");
 			break;

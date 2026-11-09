@@ -58,6 +58,14 @@ struct ILink {
  */
 class KcpChannel : public ILink {
 public:
+	/** Largest frame body accepted on a stream channel.
+	 *
+	 * 16 MiB, the same ceiling the Android `KcpChannel` and `GBoyFrames` use.
+	 * The original 65535 was wrong: a GBA save state is roughly 790 KiB (the
+	 * Android log measured 790663 bytes), so a state transfer tripped this check
+	 * and the channel was declared dead - the cloud link could never carry a
+	 * save state, and the peer never applied the host's snapshot. */
+	static constexpr quint32 MAX_FRAME_LENGTH = 16u * 1024u * 1024u;
 	static constexpr int UDP_MTU = 512;
 	static constexpr int UDP_WND = 128;
 	static constexpr int UDP_INTERVAL_MS = 30;

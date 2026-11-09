@@ -469,17 +469,28 @@ void CoreController::detachDolphin() {
 }
 
 bool CoreController::lanLinkHost(quint16 port) {
+	return lanLinkHostPlayers(port, 2);
+}
+
+/* players：本局人数。2 走原来的两人直连（行为不变）；3/4 走星型总线 ——
+ * 主机 accept 最多 players-1 个从机，每轮收齐所有人的字后一次广播。两边
+ * 填的人数必须一致：总线和两人直连是两种包格式，TCP 能连上但解不出包。 */
+bool CoreController::lanLinkHostPlayers(quint16 port, int players) {
 	if (!m_lanLink) {
 		m_lanLink = sioLinkCreate();
 	}
-	return m_lanLink && sioLinkHost(m_lanLink, port);
+	return m_lanLink && sioLinkHostPlayers(m_lanLink, port, players);
 }
 
 bool CoreController::lanLinkJoin(const QString& host, quint16 port) {
+	return lanLinkJoinPlayers(host, port, 2);
+}
+
+bool CoreController::lanLinkJoinPlayers(const QString& host, quint16 port, int players) {
 	if (!m_lanLink) {
 		m_lanLink = sioLinkCreate();
 	}
-	return m_lanLink && sioLinkJoin(m_lanLink, host.toUtf8().constData(), port);
+	return m_lanLink && sioLinkJoinPlayers(m_lanLink, host.toUtf8().constData(), port, players);
 }
 
 void CoreController::lanLinkClose() {
@@ -495,6 +506,10 @@ int CoreController::lanLinkState() const {
 
 int CoreController::lanLinkPlayer() const {
 	return m_lanLink ? sioLinkPlayer(m_lanLink) : -1;
+}
+
+int CoreController::lanLinkPlayers() const {
+	return m_lanLink ? sioLinkPlayerCount(m_lanLink) : 2;
 }
 
 // ---- mobile-parity features ----

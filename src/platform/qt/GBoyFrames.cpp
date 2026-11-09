@@ -107,7 +107,7 @@ QByteArray Reader::next() {
 		return QByteArray();
 	}
 	quint32 length = getInt(m_buffer, 0);
-	if (length < 2 || length > 65535) {
+	if (length < 2 || length > maxFrameLength) {
 		// Not a frame we understand; drop the stream rather than spin.
 		m_position = 0;
 		return QByteArray();
