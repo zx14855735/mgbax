@@ -267,6 +267,36 @@ static void logLinkDiag(struct GBA* gba) {
 	uint16_t linkup = GBAView16(gba->cpu, 0x0202197Cu);
 	uint16_t ltype = GBAView16(gba->cpu, 0x02027B82u);
 	uint8_t wireless = GBAView8(gba->cpu, 0x03002AADu);
+	/* 联机菜单判定（完全基于游戏内存，不依赖 GL 窗口抓图）。
+	 * struct Menu @0x020296C0（menu.c 的 sMenu，符号大小 12）：
+	 *   +2 cursorPos、+3 minCursorPos、+4 maxCursorPos、+5 windowId。
+	 * Menu_GetCursorPos 的反汇编就是 ldrb r0,[0x020296C0,#2]，已核对。
+	 * gTasks @0x02033CDC，sizeof(struct Task)=0x28（func4 + 4 个 u8 +
+	 * s16 data[16]）；Task_HandleMultichoiceInput @0x081BB614（Thumb 指针
+	 * 带 bit0），其 data[7]=tMultichoiceId、data[6]=tWindowId。
+	 * 常量 /d/gen8/include/constants/script_menu.h：74/76/77/78/79 是
+	 * 有线/无线俱乐部服务菜单，18 是「单打/双打/多人」模式菜单。
+	 * 有了这些字段，脚本能确定地判断 PC 是否停在菜单、光标在第几项、
+	 * 有没有把 DOWN 吃掉，而不是靠抓不到的 PrintWindow 画面猜。 */
+	uint8_t mCursor = GBAView8(gba->cpu, 0x020296C2u);
+	uint8_t mMin = GBAView8(gba->cpu, 0x020296C3u);
+	uint8_t mMax = GBAView8(gba->cpu, 0x020296C4u);
+	uint8_t mWin = GBAView8(gba->cpu, 0x020296C5u);
+	int mTask = -1;
+	int mChoice = -1;
+	for (int i = 0; i < 16; ++i) {
+		uint32_t slot = 0x02033CDCu + (uint32_t) i * 0x28u;
+		uint32_t fn = (uint32_t) GBAView16(gba->cpu, slot)
+		              | ((uint32_t) GBAView16(gba->cpu, slot + 2u) << 16);
+		if (!GBAView8(gba->cpu, slot + 4u)) {
+			continue;
+		}
+		if ((fn & ~1u) == 0x081BB614u) {
+			mTask = i;
+			mChoice = (int16_t) GBAView16(gba->cpu, slot + 8u + 14u);
+			break;
+		}
+	}
 	/* 玩家格坐标：gSaveBlock1Ptr @0x03004964 → struct SaveBlock1 { Coords16 pos; }，
 	 * pos.x 在 +0、pos.y 在 +2。走位改成闭环导航全靠它 —— 盲按方向键在锁步
 	 * 低帧率下频繁丢输入，扫十几次也踩不到座位。 */
@@ -278,12 +308,15 @@ static void logLinkDiag(struct GBA* gba) {
 	}
 	SIO_LOG("[diag] mu=%u brs=%04X/%04X rem=%u cb=%08X st=%08X"
 	        " lstate=%u pc=%u intr=%u ridx=%u sidx=%u lag=%u rn=%u qf=%u"
-	        " linkup=%u ltype=%u wl=%u px=%d py=%d",
+	        " linkup=%u ltype=%u wl=%u px=%d py=%d"
+	        " menu=c%u/%u/%u/w%u mt=%d mid=%d",
 	        state, brs01, brs23, rem, cb, status,
 	        (l0 >> 8) & 0xFF, (l1 >> 8) & 0xFF, (l2 >> 8) & 0xFF,
 	        l4 & 0xFF, (l4 >> 8) & 0xFF, (l3 >> 8) & 0xFF, l2 & 0xFF, l3 & 0xFF,
 	        (unsigned) linkup, (unsigned) ltype, (unsigned) wireless,
-	        (int) px, (int) py);
+	        (int) px, (int) py,
+	        (unsigned) mCursor, (unsigned) mMin, (unsigned) mMax, (unsigned) mWin,
+	        mTask, mChoice);
 	/* 联机房间按键码握手（overworld.c / link.c）：
 	 * sPlayerTradingStates[4] 每一端都保存所有玩家状态，0x82=UNK_2 表示已准备好，
 	 * sub_8087214() 要求所有玩家都是 0x82 才会切到 Task_StartWiredCableClubBattle。 */
