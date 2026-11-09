@@ -900,6 +900,10 @@ static void busNoteRtt(struct NetLink* link, const struct BusPacket* pkt) {
 		return;
 	}
 	pthread_mutex_lock(&link->mu);
+	int ms = (int) (us / 1000u);
+	if (ms >= 0 && ms < 5000) {
+		link->rttMs = link->rttMs > 0 ? (link->rttMs * 3 + ms) / 4 : ms;
+	}
 	link->rttUs = link->rttUs ? (link->rttUs * 3 + us) / 4 : us;
 	if (us > link->rttUsMax) {
 		link->rttUsMax = us;
@@ -1086,6 +1090,7 @@ static void busHostLoop(struct NetLink* link) {
 		}
 		int rr = busReadSome(fd, p->rx, &p->rxLen);
 		if (rr <= 0) {
+			LINK_LOG("Link bus host read ended rr=%d errno=%d slot=%d", rr, errno, p->slot);
 			busDropPeer(link, kind[idx]);
 			continue;
 		}
@@ -1094,6 +1099,59 @@ static void busHostLoop(struct NetLink* link) {
 		}
 	}
 	LINK_LOG("Link bus host loop stopped");
+}
+
+/* 总线心跳：两人路径有 250ms 的周期 PING，总线的链路上在游戏开始交换之前
+ * 是**完全空闲**的 —— 而这段空闲正好出现在「大家进了房间在等人」的时候。
+ * 家用路由的 NAT 映射 30~120 秒就会过期，之后任何一端先发包都会被丢掉，
+ * 表现为「人连上了但怎么都开不了局」。每秒一个 PING 把映射钉住，顺带把
+ * RTT 测出来给状态栏用（`netLinkStatusText` 显示的就是它）。
+ *
+ * 用 200ms 的短睡眠分片，而不是 sleep(1)：`netLinkClose` 之后没有等这个
+ * 线程退出，分片睡眠让它最多 200ms 就跟上 stop 标记。 */
+static void* busPingMain(void* arg) {
+	struct NetLink* link = (struct NetLink*) arg;
+	unsigned tick = 0;
+	while (!link->stop) {
+		struct timespec sl;
+		sl.tv_sec = 0;
+		sl.tv_nsec = 200L * 1000000L;
+		nanosleep(&sl, NULL);
+		if (link->stop) {
+			break;
+		}
+		if ((tick++ % 5) != 0) {
+			continue;   /* 每 5 个分片（约 1 秒）发一次 */
+		}
+		int fds[BUS_MAX_PLAYERS - 1];
+		int n = 0;
+		uint16_t slot = 0;
+		pthread_mutex_lock(&link->mu);
+		if (link->state == LINK_CONNECTED) {
+			slot = (uint16_t) link->player;
+			if (link->busHost) {
+				for (int i = 0; i < link->busPeerCount && n < BUS_MAX_PLAYERS - 1; ++i) {
+					fds[n++] = link->busPeers[i].fd;
+				}
+			} else if (link->sock >= 0) {
+				fds[n++] = link->sock;
+			}
+		}
+		pthread_mutex_unlock(&link->mu);
+		if (n == 0) {
+			continue;
+		}
+		struct BusPacket ping;
+		memset(&ping, 0, sizeof(ping));
+		ping.magic = kMagic;
+		ping.type = PKT_PING;
+		ping.slot = slot;
+		ping.stamp = nowUs();
+		for (int i = 0; i < n; ++i) {
+			busSend(link, fds[i], &ping);
+		}
+	}
+	return NULL;
 }
 
 static void busJoinLoop(struct NetLink* link) {
@@ -1113,9 +1171,11 @@ static void busJoinLoop(struct NetLink* link) {
 		}
 		int rr = busReadSome(fd, link->busRx, &link->busRxLen);
 		if (rr <= 0) {
+			LINK_LOG("Link bus join read ended rr=%d errno=%d", rr, errno);
 			break;
 		}
 		if (!busDrain(link, NULL, fd, link->busRx, &link->busRxLen)) {
+			LINK_LOG("Link bus join drain rejected");
 			break;
 		}
 	}
@@ -1174,6 +1234,12 @@ void netLinkClose(struct NetLink* link) {
 		return;
 	}
 	pthread_mutex_lock(&link->mu);
+	int traceState = link->state;
+	int traceSock = link->sock;
+	int traceListen = link->listenFd;
+	bool traceBus = link->bus;
+	bool traceHost = link->busHost;
+	int tracePeers = link->busPeerCount;
 	link->stop = true;
 	int sock = link->sock;
 	int listenFd = link->listenFd;
@@ -1232,6 +1298,8 @@ void netLinkClose(struct NetLink* link) {
 	link->busRxLen = 0;
 	setMessage(link, "");
 	pthread_mutex_unlock(&link->mu);
+	LINK_LOG("Link close: state=%d sock=%d listen=%d bus=%d host=%d peers=%d",
+	         traceState, traceSock, traceListen, traceBus ? 1 : 0, traceHost ? 1 : 0, tracePeers);
 }
 
 void netLinkDestroy(struct NetLink* link) {
@@ -1380,6 +1448,10 @@ bool netLinkBusHost(struct NetLink* link, int port, int players) {
 		return false;
 	}
 	link->threadLive = true;
+	if (!link->pingLive) {
+		link->pingLive = true;
+		pthread_create(&link->pingThread, NULL, busPingMain, link);
+	}
 	LINK_LOG("Link bus hosting on %d for %d players", port, players);
 	return true;
 }
@@ -1429,6 +1501,10 @@ bool netLinkBusJoin(struct NetLink* link, const char* host, int port) {
 		return false;
 	}
 	link->threadLive = true;
+	if (!link->pingLive) {
+		link->pingLive = true;
+		pthread_create(&link->pingThread, NULL, busPingMain, link);
+	}
 	LINK_LOG("Link bus joining %s:%d", host, port);
 	return true;
 }
@@ -1690,6 +1766,14 @@ void netLinkPingTick(struct NetLink* link) {
 	}
 	uint32_t now = nowMs();
 	pthread_mutex_lock(&link->mu);
+	if (link->bus) {
+		/* 总线连接只认定长 BusPacket。这个函数发的是两人路径的
+		 * struct Packet（20 字节），混进去会把对端的解析流冲成乱码
+		 * （现场：主机报 bad magic=00000000 后掉线）。总线的心跳由
+		 * busPingMain 负责，这里必须直接返回。 */
+		pthread_mutex_unlock(&link->mu);
+		return;
+	}
 	if (link->state != LINK_CONNECTED || link->sock < 0) {
 		pthread_mutex_unlock(&link->mu);
 		return;
@@ -1711,6 +1795,11 @@ bool netLinkBarrier(struct NetLink* link, int timeoutMs) {
 		return false;
 	}
 	pthread_mutex_lock(&link->mu);
+	if (link->bus) {
+		/* 两人路径的节拍栅栏；总线每轮自带同步，不需要也不能用它。 */
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
 	if (link->state != LINK_CONNECTED || link->sock < 0) {
 		pthread_mutex_unlock(&link->mu);
 		return false;
@@ -1759,6 +1848,11 @@ bool netLinkExchange(struct NetLink* link, uint16_t mode, uint32_t local, uint32
 		return false;
 	}
 	pthread_mutex_lock(&link->mu);
+	if (link->bus) {
+		/* 总线的字由 netLinkBusRound 汇聚，请求-应答通道不参与。 */
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
 	if (link->state != LINK_CONNECTED || link->sock < 0) {
 		pthread_mutex_unlock(&link->mu);
 		return false;

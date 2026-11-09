@@ -4416,6 +4416,7 @@ void mgbaMobileLinkClose(struct MgbaMobile* emu) {
 	if (!emu || !emu->link) {
 		return;
 	}
+	MOBILE_LOGI("Link close requested by app (state=%d)", netLinkState(emu->link));
 	netLinkClose(emu->link);
 }
 

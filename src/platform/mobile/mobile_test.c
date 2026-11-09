@@ -1537,6 +1537,95 @@ static void testBusSinglePeer(void) {
 	netLinkDestroy(host);
 }
 
+/* 总线会话里必须让两人路径的入口失效。
+ *
+ * `serviceLink` 每次轮询都会调 `netLinkPingTick`。总线从机的 `sock >= 0` 且
+ * `state == CONNECTED`，如果不拦，它就按两人格式（20 字节 `struct Packet`）
+ * 往总线连接上写 —— 对端按 28 字节 `BusPacket` 解析就读到垃圾。现场症状是
+ * 主机报 `Link bus bad magic=00000000` 然后掉线，端到端表现为「连上了但一秒
+ * 就断」。
+ *
+ * 这条用例在总线会话里持续调用这些入口，然后断言链路还活着、轮次仍然一致。 */
+static void testBusIgnoresPointToPoint(void) {
+	int port = 18795;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest = netLinkCreate();
+	int i;
+	int k;
+	int tries;
+	int ok = 0;
+	int rejected = 1;
+	int rounds = 12;
+	int agree = 0;
+
+	expect(netLinkBusHost(host, port, 3), "bus-p2p host up");
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(guest, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus-p2p join");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(host) == 2 && netLinkState(guest) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+
+	for (k = 0; k < rounds; ++k) {
+		struct BusRoundArg args[2];
+		pthread_t th[2];
+		int okRound = 1;
+		/* 模拟 serviceLink 的高频轮询：两人专用入口必须什么也不做。 */
+		for (i = 0; i < 30; ++i) {
+			uint32_t remote = 0;
+			netLinkPingTick(host);
+			netLinkPingTick(guest);
+			if (netLinkExchange(host, 2, 0x1234u, &remote, 0)) {
+				rejected = 0;
+			}
+			if (netLinkBarrier(host, 0)) {
+				rejected = 0;
+			}
+		}
+		for (i = 0; i < 2; ++i) {
+			args[i].link = i == 0 ? host : guest;
+			args[i].index = (uint16_t) k;
+			args[i].own = (i == 0 ? 0x4000u : 0x4100u) + (uint32_t) k;
+			args[i].got = 0;
+			args[i].used = 0;
+			for (int s = 0; s < 4; ++s) {
+				args[i].values[s] = 0;
+			}
+			pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+		}
+		for (i = 0; i < 2; ++i) {
+			pthread_join(th[i], NULL);
+		}
+		for (i = 0; i < 2; ++i) {
+			if (args[i].got != 1 || args[i].used != (uint16_t) k) {
+				okRound = 0;
+			}
+			if (args[i].values[0] != 0x4000u + (uint32_t) k
+			    || args[i].values[1] != 0x4100u + (uint32_t) k) {
+				okRound = 0;
+			}
+		}
+		if (okRound) {
+			++agree;
+		}
+	}
+
+	expect(rejected, "bus rejects point-to-point exchange and barrier");
+	expect(netLinkState(host) == 2 && netLinkState(guest) == 2,
+	       "bus link survives point-to-point pings");
+	expect(agree == rounds, "bus rounds still agree with pings in flight");
+
+	netLinkDestroy(guest);
+	netLinkDestroy(host);
+}
+
 static void testLink(void) {
 	struct NetLink* host = netLinkCreate();
 	struct NetLink* guest = netLinkCreate();
@@ -2926,14 +3015,16 @@ int main(int argc, char** argv) {
 		return g_failed ? 1 : 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
-		testBusSinglePeer();
+		testBusIgnoresPointToPoint();
+	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
 		return g_failed ? 1 : 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
 		testLink();
-		testBusSinglePeer();
+		testBusIgnoresPointToPoint();
+	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
 		return g_failed ? 1 : 0;
@@ -2968,6 +3059,7 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
 	testBusPlayers();
