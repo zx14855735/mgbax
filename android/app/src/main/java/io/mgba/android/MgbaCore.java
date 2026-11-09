@@ -212,6 +212,21 @@ public final class MgbaCore {
         return handle != 0 && nativeLoadState(handle, slot);
     }
 
+    /**
+     * In-memory save state for link synchronisation (TYPE_STATE). Null when the
+     * core cannot produce one. The blob is self-contained and carries no
+     * screenshot, so it can be sent straight over the link.
+     */
+    public byte[] saveStateToMemory() {
+        return handle == 0 ? null : nativeSaveStateToMemory(handle);
+    }
+
+    /** Applies a state blob produced by {@link #saveStateToMemory()}. */
+    public boolean loadStateFromMemory(byte[] state) {
+        return handle != 0 && state != null && state.length > 0
+                && nativeLoadStateFromMemory(handle, state);
+    }
+
     public void reset() {
         if (handle != 0) {
             nativeReset(handle);
@@ -493,4 +508,6 @@ public final class MgbaCore {
     private static native boolean nativeCheatAdd(long handle, String name, String lines, int type);
 
     private static native boolean nativeCheatRemove(long handle, int index);
+    private static native byte[] nativeSaveStateToMemory(long handle);
+    private static native boolean nativeLoadStateFromMemory(long handle, byte[] state);
 }

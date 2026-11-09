@@ -110,6 +110,16 @@ int64_t mgbaMobileFrameNanos(const struct MgbaMobile* emu);
 bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride);
 bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot);
 bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot);
+/*
+ * In-memory save state, the equivalent of the official client's
+ * Console.saveStateToMemory()/loadStateFromMemory() used by TYPE_STATE frames.
+ * On success *out points to a malloc'd blob that the caller releases with
+ * mgbaMobileFreeState(). Screenshot data is omitted: the state travels over
+ * the link and the receiving core does not need it.
+ */
+bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize);
+bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size);
+void mgbaMobileFreeState(void* state);
 /* Rewind history: append a differential state every ~half second while
  * enabled; rewind by about the given number of seconds of gameplay. */
 void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled);

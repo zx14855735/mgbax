@@ -2505,9 +2505,15 @@ static int sioWaitMs(struct MgbaMobile* emu) {
 static bool sioPipelineMode(void) {
 	static int enabled = -1;
 	if (enabled < 0) {
-		char v[92] = {0};
+#ifdef __ANDROID__
+		char v[PROP_VALUE_MAX] = {0};
 		__system_property_get("mgbax.sio.pipeline", v);
 		enabled = (v[0] == '1') ? 1 : 0;
+#else
+		/* Desktop and the local test build share the Qt-side switch name. */
+		const char* v = getenv("MGBAX_SIO_PIPELINE");
+		enabled = (v && v[0] == '1') ? 1 : 0;
+#endif
 	}
 	return enabled != 0;
 }
@@ -3988,6 +3994,68 @@ bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot) {
 	}
 	MOBILE_LOGI("State slot %d %s", slot, ok ? "loaded" : "missing");
 	return ok;
+}
+
+bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize) {
+	if (!emu || !emu->core || !out || !outSize) {
+		return false;
+	}
+	*out = NULL;
+	*outSize = 0;
+	struct VFile* vf = VFileMemChunk(NULL, 0);
+	if (!vf) {
+		return false;
+	}
+	if (emu->fast > 0) {
+		setFastAudio(emu, 0);
+	}
+	applyFrameskip(emu->core, 0);
+	bool ok = mCoreSaveStateNamed(emu->core, vf,
+	                              SAVESTATE_SAVEDATA | SAVESTATE_RTC | SAVESTATE_METADATA);
+	emu->fast = -1;
+	if (ok) {
+		ssize_t size = vf->size(vf);
+		if (size > 0) {
+			void* buffer = malloc((size_t) size);
+			if (!buffer) {
+				ok = false;
+			} else if (vf->seek(vf, 0, SEEK_SET) != 0
+			           || vf->read(vf, buffer, (size_t) size) != size) {
+				free(buffer);
+				ok = false;
+			} else {
+				*out = buffer;
+				*outSize = (size_t) size;
+			}
+		} else {
+			ok = false;
+		}
+	}
+	vf->close(vf);
+	return ok;
+}
+
+bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size) {
+	if (!emu || !emu->core || !data || size == 0) {
+		return false;
+	}
+	struct VFile* vf = VFileFromConstMemory(data, size);
+	if (!vf) {
+		return false;
+	}
+	bool ok = mCoreLoadStateNamed(emu->core, vf, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+	vf->close(vf);
+	if (ok) {
+		applyFrameskip(emu->core, 0);
+		ensureVideo(emu);
+		emu->fast = -1;
+		attachKeyCallback(emu);
+	}
+	return ok;
+}
+
+void mgbaMobileFreeState(void* state) {
+	free(state);
 }
 
 void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled) {

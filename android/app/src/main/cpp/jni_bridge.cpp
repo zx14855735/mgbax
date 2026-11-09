@@ -204,6 +204,41 @@ Java_io_mgba_android_MgbaCore_nativeLoadState(JNIEnv*, jobject, jlong handle, ji
 	return mgbaMobileLoadState((struct MgbaMobile*) handle, slot) ? JNI_TRUE : JNI_FALSE;
 }
 
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_io_mgba_android_MgbaCore_nativeSaveStateToMemory(JNIEnv* env, jobject, jlong handle) {
+	void* data = NULL;
+	size_t size = 0;
+	if (!mgbaMobileSaveStateToMemory((struct MgbaMobile*) handle, &data, &size)
+			|| !data || size == 0 || size > 0x7FFFFFFFu) {
+		mgbaMobileFreeState(data);
+		return NULL;
+	}
+	jbyteArray out = env->NewByteArray((jsize) size);
+	if (out) {
+		env->SetByteArrayRegion(out, 0, (jsize) size, (const jbyte*) data);
+	}
+	mgbaMobileFreeState(data);
+	return out;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLoadStateFromMemory(JNIEnv* env, jobject, jlong handle, jbyteArray state) {
+	if (!state) {
+		return JNI_FALSE;
+	}
+	jsize size = env->GetArrayLength(state);
+	if (size <= 0) {
+		return JNI_FALSE;
+	}
+	jbyte* bytes = env->GetByteArrayElements(state, NULL);
+	if (!bytes) {
+		return JNI_FALSE;
+	}
+	bool ok = mgbaMobileLoadStateFromMemory((struct MgbaMobile*) handle, bytes, (size_t) size);
+	env->ReleaseByteArrayElements(state, bytes, JNI_ABORT);
+	return ok ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeReset(JNIEnv*, jobject, jlong handle) {
 	mgbaMobileReset((struct MgbaMobile*) handle);

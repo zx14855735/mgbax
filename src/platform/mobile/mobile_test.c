@@ -1127,6 +1127,43 @@ static void testAudioNativeHold(const char* dir) {
 	mgbaMobileDestroy(emu);
 }
 
+/* In-memory save state used by TYPE_STATE link synchronisation. */
+static void testStateMemory(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	void* blob = NULL;
+	void* blob2 = NULL;
+	size_t size = 0;
+	size_t size2 = 0;
+
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/state.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "state: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "state");
+	expect(mgbaMobileLoad(emu, path), "state: load gba");
+	expect(mgbaMobileRunFrames(emu, 4), "state: run frames before snapshot");
+	expect(mgbaMobileSaveStateToMemory(emu, &blob, &size), "state: save to memory");
+	expect(blob != NULL && size > 0, "state: snapshot is not empty");
+	expect(mgbaMobileRunFrames(emu, 4), "state: run frames after snapshot");
+	expect(mgbaMobileLoadStateFromMemory(emu, blob, size), "state: load from memory");
+	expect(mgbaMobileSaveStateToMemory(emu, &blob2, &size2), "state: save again");
+	expect(size2 == size, "state: snapshot size is stable across a round trip");
+	expect(!mgbaMobileLoadStateFromMemory(emu, NULL, 0), "state: null blob rejected");
+	expect(!mgbaMobileLoadStateFromMemory(emu, blob, 0), "state: zero length rejected");
+	expect(!mgbaMobileSaveStateToMemory(NULL, &blob2, &size2), "state: null core rejected");
+
+	mgbaMobileFreeState(blob2);
+	mgbaMobileFreeState(blob);
+	mgbaMobileDestroy(emu);
+}
+
 struct ExArgs {
 	struct NetLink* link;
 	uint32_t value;
@@ -2516,6 +2553,16 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--state") == 0) {
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		testStateMemory(dir);
+		return g_failed ? 1 : 0;
+	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");
 #ifdef _WIN32
 	_mkdir(dir);
@@ -2535,6 +2582,7 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testStateMemory(dir);
 	testRelay();
 	if (g_failed) {
 		fprintf(stderr, "mobile tests failed\n");
