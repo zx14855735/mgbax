@@ -428,6 +428,9 @@ struct NetLink {
 	uint16_t busInPlayers;
 	bool busInValid;
 	int busInPending;
+	/* 主机广播里带的模拟时钟戳：从机靠它对齐自己每帧的轮次数（与两人直连
+	 * 路径用 PUSH.cycles 做的事完全一样）。 */
+	uint32_t busInCycles;
 	/* 从机侧只有一条连接，半个包的缓冲区挂在链路上。 */
 	unsigned char busRx[sizeof(struct BusPacket) * 2];
 	size_t busRxLen;
@@ -953,6 +956,7 @@ static bool busDispatch(struct NetLink* link, struct BusPeer* peer, int fd,
 			}
 			link->busInIndex = pkt->index;
 			link->busInPlayers = pkt->players;
+			link->busInCycles = pkt->cycles;
 			link->busInValid = true;
 			link->busInPending = 1;
 			link->busHostIndex = pkt->index;
@@ -1469,6 +1473,16 @@ uint16_t netLinkBusRoundIndex(struct NetLink* link) {
 	return index;
 }
 
+uint32_t netLinkBusRoundCycles(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	pthread_mutex_lock(&link->mu);
+	uint32_t cycles = link->busInCycles;
+	pthread_mutex_unlock(&link->mu);
+	return cycles;
+}
+
 int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
                     uint32_t* values, int players, int timeoutMs, uint16_t* indexOut) {
 	if (values) {
@@ -1486,13 +1500,14 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 		players = BUS_MAX_PLAYERS;
 	}
 	int got = 0;
+	int ret = -1;
 	uint32_t vals[BUS_MAX_PLAYERS] = { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
 	vals[0] = own;
 
 	pthread_mutex_lock(&link->mu);
 	if (!link->bus || link->state != LINK_CONNECTED) {
 		pthread_mutex_unlock(&link->mu);
-		return 0;
+		return -1;
 	}
 	if (link->busHost) {
 		/* 主机：等所有**已连接**从机把 index 这一轮的字推上来。缺席的从机
@@ -1528,6 +1543,7 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 			pthread_cond_timedwait(&link->cv, &link->mu, &ts);
 		}
 		/* 收集到的字数（0..players）留给广播。 */
+		ret = got;
 		int fds[BUS_MAX_PLAYERS - 1];
 		int n = 0;
 		for (int i = 0; i < link->busPeerCount; ++i) {
@@ -1541,6 +1557,7 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 		round.slot = 0;
 		round.index = index;
 		round.players = (uint16_t) players;
+		round.cycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
 		for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
 			round.word[i] = (uint16_t) vals[i];
 		}
@@ -1551,10 +1568,14 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 	} else {
 		/* 从机：先把自己的字推给主机（主机收齐所有从机才广播），再等广播。
 		 *
-		 * 轮次号要跟随主机：从机刚加入时自己的 sioIndex 还是 0，而主机可能
-		 * 已经跑到几十轮，用 0 推上去主机永远匹配不上。这里优先用最后一次
-		 * 从主机那里看到的轮次号。 */
-		uint16_t useIndex = link->busHostIndexValid ? link->busHostIndex : index;
+		 * 轮次号取「调用方请求的」和「最后一次从主机看到的」中**较新**的那个：
+		 *   - 本机落后（刚加入，自己的计数器还是 0，主机已经几十轮）→ 跟随主机；
+		 *   - 本机已经跟上（游戏按上一轮主机的号继续递增）→ 用调用方的号，
+		 *     否则每一轮都会拿上一轮的旧号去推，主机永远匹配不上。 */
+		uint16_t useIndex = index;
+		if (link->busHostIndexValid && (int16_t) (index - link->busHostIndex) < 0) {
+			useIndex = link->busHostIndex;
+		}
 		uint16_t slot = (uint16_t) link->player;
 		uint16_t playersNow = (uint16_t) link->busPlayers;
 		int fd = link->sock;
@@ -1610,6 +1631,7 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 			}
 			link->busInPending = 0;
 			link->busInValid = false;
+			ret = got;
 		}
 		pthread_mutex_unlock(&link->mu);
 		LINK_VERBOSE("bus round slave slot=%d idx=%u got=%d", slot, (unsigned) useIndex, got);
@@ -1619,7 +1641,7 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 			values[i] = vals[i];
 		}
 	}
-	return got;
+	return ret;
 }
 
 int netLinkState(struct NetLink* link) {

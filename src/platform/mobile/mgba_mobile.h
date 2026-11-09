@@ -134,8 +134,8 @@ void mgbaMobileSetInterframe(struct MgbaMobile* emu, bool enabled);
 void mgbaMobileSetFrameskip(struct MgbaMobile* emu, int skip);
 void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen);
 void mgbaMobilePumpLink(struct MgbaMobile* emu);
-bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port);
-bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port);
+bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port, int players);
+bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int players);
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

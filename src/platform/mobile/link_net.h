@@ -110,13 +110,17 @@ int netLinkBusPlayers(struct NetLink* link);
 /* 主机 / 从机端口上最后一次见到的轮次号（主机自己的推送或主机的广播）。
  * 从机靠它把轮次号对齐到主机，避免刚加入时用 0 号去推、主机匹配不上。 */
 uint16_t netLinkBusRoundIndex(struct NetLink* link);
+/* 主机最近一次广播里带的模拟时钟戳（从机对齐轮次节奏用）；没有则为 0。 */
+uint32_t netLinkBusRoundCycles(struct NetLink* link);
 /* 一轮聚合。values[0..players-1] 按槽位排列，缺席的槽位填 0xFFFF。
  *
  * 主机：等所有**已连接**从机把 index 这一轮的字推上来，然后广播给所有从机。
  * 从机：把 own 推给主机，等主机的广播。
  * 两边的 index 都以主机为准，从机实际采用的轮次号从 indexOut 回带。
  *
- * 返回真正拿到的对端槽位数（不含本机），超时或断开返回 0。 */
+ * 返回本轮的**对端槽位数**（不含本机）：0 表示只拿到自己的字（其余槽位是
+ * 0xFFFF），-1 表示这一轮根本没拿到（主机没广播 / 链路已断），调用方应当
+ * 等下一轮而不是拿空槽收尾。 */
 int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
                     uint32_t* values, int players, int timeoutMs, uint16_t* indexOut);
 

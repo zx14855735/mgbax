@@ -1871,6 +1871,7 @@ static void finishIncoming(struct MgbaMobile* emu, uint16_t mode, uint32_t remot
 }
 
 static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate);
+static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals[4], int players, uint32_t cyclesLate);
 
 /* 联机排查用的游戏内存窥探（只在开着 MGBA_LINK_PEEK 时编译进去）。
  * 地址来自 ROM 工程的 rom.map（pokeemerald 系布局）。 */
@@ -2160,19 +2161,11 @@ static void maybeRearmHandshake(struct GBA* gba) {
 	MOBILE_LOGI("[rearm] handshake election retriggered (players=%d)", players);
 }
 
-static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
-	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
-		return;
-	}
+/* 四个槽位已经凑齐之后的公共收尾：耗时统计、诊断日志、写 SIOMULTI0..3、
+ * 发 SIO 中断。两人直连和 3/4 人总线都汇到这里，诊断口径保持一致。 */
+static void finishMultiTransfer(struct MgbaMobile* emu, uint16_t data[4], uint32_t cyclesLate) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	int me = netLinkPlayer(emu->link);
-	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
-	if (me >= 0 && me < 4) {
-		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-	}
-	if (haveRemote) {
-		data[me == 0 ? 1 : 0] = (uint16_t) remote;
-	}
 	/* 单次传输耗时（单位 0.1ms）与统计，联机排查就靠这行。 */
 	struct mTiming* timing = coreTiming(emu);
 	if (timing) {
@@ -2193,14 +2186,25 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		++emu->hsDbg;
 		MOBILE_LOGI("HSX #%u me=%d idx=%u m0=%04X m1=%04X have=%d to=%u mis=%u",
 		            emu->hsDbg, me, (unsigned) emu->sioIndex, data[0], data[1],
-		            haveRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
+		            emu->sioHasRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
 	}
 	if (emu->xferDbg < 900) {
+		/* 「对端」在 3/4 人总线里有多个槽位，日志里取第一个非空槽，
+		 * 两人直连时它就是唯一的对端。 */
+		uint32_t peerWord = 0xDEADu;
+		int peerHave = 0;
+		for (int i = 0; i < 4; ++i) {
+			if (i != me && data[i] != 0xFFFF) {
+				peerWord = data[i];
+				peerHave = 1;
+				break;
+			}
+		}
 		++emu->xferDbg;
 		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
 		            emu->xferDbg, me, (unsigned) emu->sioIndex,
 		            (unsigned) (me >= 0 && me < 4 ? data[me] : 0),
-		            (unsigned) (haveRemote ? remote : 0xDEADu), haveRemote ? 1 : 0,
+		            (unsigned) peerWord, peerHave,
 		            emu->sioTimeouts);
 	}
 	if ((emu->sioOk & 0x3F) == 0) {
@@ -2238,6 +2242,40 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		}
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
+}
+
+/* 两人直连：本机一槽 + 对端一槽，其余保持 0xFFFF（空槽）。 */
+static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int me = netLinkPlayer(emu->link);
+	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+	if (me >= 0 && me < 4) {
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	}
+	if (haveRemote) {
+		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	finishMultiTransfer(emu, data, cyclesLate);
+}
+
+/* 3/4 人总线：四个槽位来自主机的汇聚广播，没连上的槽位是 0xFFFF。 */
+static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals[4], int players, uint32_t cyclesLate) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int me = netLinkPlayer(emu->link);
+	uint16_t data[4];
+	for (int i = 0; i < 4; ++i) {
+		data[i] = (i < players) ? (uint16_t) vals[i] : 0xFFFF;
+	}
+	if (me >= 0 && me < 4) {
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	}
+	finishMultiTransfer(emu, data, cyclesLate);
 }
 
 /**
@@ -2309,6 +2347,68 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		/* 游戏认定自己是主机：轮次由它驱动，这里不管。 */
 		return;
 	}
+	/* 3/4 人总线：从机先把自己的字推给主机（主机要收齐才广播），再等广播。
+	 * 两人走下面原来的「取对端字 → 收尾 → 回推」路径。 */
+	{
+		int busPlayers = netLinkBusPlayers(emu->link);
+		if (netLinkBusActive(emu->link) && busPlayers >= 2) {
+			uint16_t own = emu->sioRoundWordValid ? emu->sioRoundWord
+			                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+			emu->sioRoundWordValid = false;
+			uint32_t busVals[4];
+			uint16_t used = emu->sioIndex;
+			int busGot = netLinkBusRound(emu->link, emu->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(emu, -1), &used);
+			if (busGot < 0) {
+				/* 主机还没广播（还在等别的从机）：快速重挂，绝不拿空槽收尾
+				 * —— 一次空槽就会让游戏的 DoHandshake 把 playerCount 清 0。 */
+				++emu->sioTimeouts;
+				if (emu->toDbg < 30) {
+					++emu->toDbg;
+					MOBILE_LOGI("BUS slave wait-me me=%d last=%u", me, (unsigned) emu->sioIndex);
+				}
+				if (timing) {
+					mTimingSchedule(timing, &emu->sioSlaveDone, 2048);
+					emu->sioSlaveArmed = true;
+				}
+				return;
+			}
+			/* 轮次节奏跟随主机：与两人路径用 PUSH.cycles 做的事一样。 */
+			{
+				uint32_t peerCycles = netLinkBusRoundCycles(emu->link);
+				if (peerCycles != 0) {
+					if (emu->sioPeerCyclesValid) {
+						uint32_t delta = peerCycles - emu->sioPeerCycles;
+						if (delta > 4000 && delta < 400000) {
+							emu->sioSlavePeriod = delta;
+						}
+					}
+					emu->sioPeerCycles = peerCycles;
+					emu->sioPeerCyclesValid = true;
+				}
+			}
+			if (used != emu->sioIndex) {
+				++emu->sioMisorder;
+				if (emu->sioMisorder < 8) {
+					MOBILE_LOGI("BUS slave 跟随主机轮次 me=%d was=%u now=%u n=%u",
+					            me, (unsigned) emu->sioIndex, (unsigned) used, emu->sioMisorder);
+				}
+			}
+			emu->sioIndex = used;
+			emu->sioHasRemote = true;
+			emu->sioRemote = busVals[0];
+			completeMultiTransferBus(emu, busVals, busPlayers, cyclesLate);
+			emu->sioPushValue = own;
+			emu->sioPushIndex = emu->sioIndex;
+			emu->sioPushed = true;
+			if (timing) {
+				mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+				emu->sioSlaveArmed = true;
+			}
+			return;
+		}
+	}
+
 	uint16_t got = 0;
 	uint32_t remote = 0;
 	uint32_t peerCycles = 0;
@@ -2584,6 +2684,48 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
+	/* 3/4 人总线：主机在这一刻收齐所有从机本轮的字，再一次性广播给它们。
+	 *
+	 * 判据必须是「链路处于总线模式」，不能只看人数：总线里只有一个从机
+	 * 连上来时 netLinkBusPlayers() 正好是 2，按人数判会掉进下面的两人直连
+	 * 分支，而总线的字根本不进 peerQ，结果永远是「对端没回字」。 */
+	{
+		int busPlayers = netLinkBusPlayers(emu->link);
+		if (netLinkBusActive(emu->link) && busPlayers >= 1
+		    && emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+			if (busPlayers < 2) {
+				busPlayers = 2;   /* 还没从机连上：按「只有自己」收尾 */
+			}
+			struct GBA* gbaBus = (struct GBA*) emu->core->board;
+			uint32_t busVals[4];
+			uint16_t used = emu->sioIndex;
+			uint32_t own = gbaBus->memory.io[GBA_REG(SIOMLT_SEND)];
+			int busGot = netLinkBusRound(emu->link, emu->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(emu, (int) emu->sioIndex), &used);
+			if (busGot <= 0 && emu->sioRetries < 3 && netLinkState(emu->link) == 2) {
+				/* 有从机连着却一个都没收到：它们是慢了一拍，不是没有。
+				 * 重试几次再按空槽收尾，否则一次迟到就会把这一轮的握手数据
+				 * 变成 0xFFFF，游戏当场报 checksum 错。 */
+				++emu->sioRetries;
+				struct mTiming* t2 = coreTiming(emu);
+				if (t2) {
+					mTimingSchedule(t2, &emu->sioDone, 100);
+					return;   /* sioWaiting 保持 true */
+				}
+			}
+			emu->sioRetries = 0;
+			emu->sioWaiting = false;
+			emu->sioHasRemote = busGot > 0;
+			emu->sioRemote = busVals[0];
+			if (busGot <= 0 && emu->toDbg < 40) {
+				++emu->toDbg;
+				MOBILE_LOGI("BUS host round me=%d idx=%u got=%d n=%d",
+				            netLinkPlayer(emu->link), (unsigned) emu->sioIndex, busGot, busPlayers);
+			}
+			completeMultiTransferBus(emu, busVals, busPlayers, cyclesLate);
+			return;
+		}
+	}
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
@@ -4246,16 +4388,26 @@ void mgbaMobilePumpLink(struct MgbaMobile* emu) {
 	serviceLink(emu);
 }
 
-bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port) {
+/* players：本局人数。2 走原来的两人直连；3/4 走星型总线（主机 accept 多个
+ * 从机并汇聚每一轮的字）。 */
+bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port, int players) {
 	if (!emu || !emu->link) {
 		return false;
 	}
-	return netLinkHost(emu->link, port);
+	if (players < 2) {
+		players = 2;
+	}
+	return netLinkBusHost(emu->link, port, players);
 }
 
-bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port) {
+/* players 必须和主机一致：两边用不同的包格式连上去，TCP 层能连上但一个包
+ * 都解不出来（总线用定长 BusPacket，两人直连用 struct Packet）。 */
+bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int players) {
 	if (!emu || !emu->link || !host) {
 		return false;
+	}
+	if (players > 2) {
+		return netLinkBusJoin(emu->link, host, port);
 	}
 	return netLinkJoin(emu->link, host, port);
 }

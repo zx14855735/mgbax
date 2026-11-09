@@ -203,10 +203,18 @@ public class EmulatorActivity extends AppCompatActivity {
             File save = defaultSaveDir != null ? defaultSaveDir : getFilesDir();
             File stateDir = defaultStateDir != null
                     ? defaultStateDir : new File(getFilesDir(), "state");
-            boolean ok = startGBoyLocalLink(new File(romPath), save, stateDir,
-                    sioPort, tcpPort, peer, asHost);
+            int players = intent.getIntExtra("players", 2);
+            boolean ok;
+            if (players > 2) {
+                // 3/4 人：每台设备只跑自己的核，走 native 星型总线（主机汇聚
+                // 每一轮的字再广播），不再起本机镜像核。
+                ok = startBusLink(players, tcpPort, peer, asHost);
+            } else {
+                ok = startGBoyLocalLink(new File(romPath), save, stateDir,
+                        sioPort, tcpPort, peer, asHost);
+            }
             Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
-                    + " sio=" + sioPort + " started=" + ok
+                    + " sio=" + sioPort + " players=" + players + " started=" + ok
                     + " err=" + gboyLinkFailure());
         }
     };
@@ -458,6 +466,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile GBoyConsoleSet consoleSet;
     /** Official local TCP link, used when no cloud room is involved. */
     private volatile GBoySocketLink localLink;
+    /** 3/4 人总线会话：每台设备只跑自己的核，互连由 native 链路汇聚。 */
+    private volatile boolean busLinkActive;
     /** Monotonic frame number feeding the official 12 Hz key cadence. */
     private long netFrameNo;
     /** State folder in effect for the loaded ROM, read by the UI slot helpers. */
@@ -1874,6 +1884,40 @@ public class EmulatorActivity extends AppCompatActivity {
      * used by the two local consoles. The official handshake (type 1 / int 6)
      * runs on the TCP link while key masks feed the hidden mirror console.
      */
+    /**
+     * 3/4 人联机：每台设备只跑自己的那个核，四台设备之间由 native 星型总线
+     * 互连 —— 主机 accept 最多 players-1 个从机，每轮收齐所有从机的字后连同
+     * 自己的字一次广播，于是每台的 SIOMULTI0..3 都能填满。
+     *
+     * 两人不走这里：两人有本机镜像核那条已经验证过的路径（见
+     * {@link #startGBoyLocalLink}），行为和帧率都别动。
+     */
+    public boolean startBusLink(int players, int tcpPort, String peer, boolean asHost) {
+        stopGBoyLink();
+        if (core == null || !core.isLoaded()) {
+            return false;
+        }
+        if (players < 3 || players > 4) {
+            toast("多人联机人数只支持 3 或 4");
+            return false;
+        }
+        if (!asHost && (peer == null || peer.isEmpty())) {
+            toast("多人联机缺少主机地址");
+            return false;
+        }
+        boolean ok = asHost ? core.linkHost(tcpPort, players)
+                            : core.linkJoin(peer, tcpPort, players);
+        if (!ok) {
+            toast("多人联机连接失败");
+            return false;
+        }
+        busLinkActive = true;
+        Log.i(TAG, "bus link host=" + asHost + " players=" + players + " tcp=" + tcpPort);
+        toast(asHost ? "多人联机：已开房，等待 " + (players - 1) + " 名玩家加入"
+                     : "多人联机：已加入房间");
+        return true;
+    }
+
     public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
                                       int sioPort, int tcpPort, String peer,
                                       boolean asHost) {
@@ -1971,6 +2015,13 @@ public class EmulatorActivity extends AppCompatActivity {
         localLink = null;
         if (link != null) {
             link.close();
+        }
+        if (busLinkActive) {
+            busLinkActive = false;
+            MgbaCore c = core;
+            if (c != null) {
+                c.linkClose();
+            }
         }
     }
 

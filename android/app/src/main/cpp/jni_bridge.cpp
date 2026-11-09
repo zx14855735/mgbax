@@ -290,13 +290,28 @@ Java_io_mgba_android_MgbaCore_nativePumpLink(JNIEnv*, jobject, jlong handle) {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeLinkHost(JNIEnv*, jobject, jlong handle, jint port) {
-	return mgbaMobileLinkHost((struct MgbaMobile*) handle, port) ? JNI_TRUE : JNI_FALSE;
+	return mgbaMobileLinkHost((struct MgbaMobile*) handle, port, 2) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLinkHostPlayers(JNIEnv*, jobject, jlong handle, jint port, jint players) {
+	return mgbaMobileLinkHost((struct MgbaMobile*) handle, port, players) ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeLinkJoin(JNIEnv* env, jobject, jlong handle, jstring host, jint port) {
 	const char* text = host ? env->GetStringUTFChars(host, NULL) : NULL;
-	bool ok = text && mgbaMobileLinkJoin((struct MgbaMobile*) handle, text, port);
+	bool ok = text && mgbaMobileLinkJoin((struct MgbaMobile*) handle, text, port, 2);
+	if (text) {
+		env->ReleaseStringUTFChars(host, text);
+	}
+	return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLinkJoinPlayers(JNIEnv* env, jobject, jlong handle, jstring host, jint port, jint players) {
+	const char* text = host ? env->GetStringUTFChars(host, NULL) : NULL;
+	bool ok = text && mgbaMobileLinkJoin((struct MgbaMobile*) handle, text, port, players);
 	if (text) {
 		env->ReleaseStringUTFChars(host, text);
 	}

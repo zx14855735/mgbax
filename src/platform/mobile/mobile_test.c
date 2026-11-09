@@ -1362,6 +1362,16 @@ static void testBusPlayers(void) {
 			}
 			if (okRound) {
 				++agree;
+			} else if (agree + 1 == k + 1) {
+				/* 只报第一轮不一致，省得 40 轮把输出刷满。 */
+				fprintf(stderr, "bus round %d mismatch:", k);
+				for (i = 0; i < 4; ++i) {
+					fprintf(stderr, " [p%d got=%d used=%u %04X %04X %04X %04X]", i,
+					        args[i].got, (unsigned) args[i].used,
+					        (unsigned) args[i].values[0], (unsigned) args[i].values[1],
+					        (unsigned) args[i].values[2], (unsigned) args[i].values[3]);
+				}
+				fprintf(stderr, "\n");
 			}
 		}
 		expect(agree == rounds, "bus 4-player rounds agree on all four slots");
@@ -1375,6 +1385,155 @@ static void testBusPlayers(void) {
 	for (i = 0; i < 3; ++i) {
 		netLinkDestroy(guest[i]);
 	}
+	netLinkDestroy(host);
+}
+
+/* 3 人总线：人数少于 4 时，第 4 个槽位必须是空槽 0xFFFF。
+ * 这条和四点用例是两件事：四点测「四个槽都能填对」，三点测「人数不足时
+ * 不能把别人的字错填进多余的槽」——后者一旦错了，游戏的玩家数判定会多出
+ * 一个人，握手直接失败。 */
+static void testBusThree(void) {
+	int port = 18793;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest[2];
+	const uint32_t base[3] = { 0x2000u, 0x2100u, 0x2200u };
+	int i;
+	int k;
+
+	expect(netLinkBusHost(host, port, 3), "bus host up for 3 players");
+	for (i = 0; i < 2; ++i) {
+		int ok = 0;
+		int tries;
+		guest[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(guest[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus3 join");
+		for (tries = 0; tries < 300; ++tries) {
+			if (netLinkState(guest[i]) == 2) {
+				break;
+			}
+			linkSleepMs(10);
+		}
+		expect(netLinkBusPlayers(guest[i]) == 3, "bus3 joiner learns 3 players");
+	}
+	expect(netLinkBusPlayers(host) == 3, "bus3 host sees 3 players");
+
+	{
+		int okRound = 1;
+		for (k = 0; k < 20; ++k) {
+			struct BusRoundArg args[3];
+			pthread_t th[3];
+			for (i = 0; i < 3; ++i) {
+				args[i].link = i == 0 ? host : guest[i - 1];
+				args[i].index = (uint16_t) k;
+				args[i].own = base[i] + (uint32_t) k;
+				args[i].got = 0;
+				args[i].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[i].values[s] = 0;
+				}
+				pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+			}
+			for (i = 0; i < 3; ++i) {
+				pthread_join(th[i], NULL);
+			}
+			for (i = 0; i < 3; ++i) {
+				if (args[i].got != 2) {
+					okRound = 0;
+				}
+				if (args[i].used != (uint16_t) k) {
+					okRound = 0;
+				}
+				for (int s = 0; s < 3; ++s) {
+					if (args[i].values[s] != base[s] + (uint32_t) k) {
+						okRound = 0;
+					}
+				}
+				if (args[i].values[3] != 0xFFFFu) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus3 third slot stays empty");
+	}
+
+	for (i = 0; i < 2; ++i) {
+		netLinkDestroy(guest[i]);
+	}
+	netLinkDestroy(host);
+}
+
+/* 4 人房只来了 1 个从机：链路必须仍然按总线跑。
+ *
+ * 这条用例针对一个真实踩过的坑：如果「是否走总线」按人数判（== 2 就当成两人
+ * 直连），那么 1 个从机时正好是 2 人，会掉进直连分支去 peerQ 里取字 —— 而总线
+ * 的字根本不进 peerQ，对端永远「没有回字」，一轮都过不去。 */
+static void testBusSinglePeer(void) {
+	int port = 18794;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest = netLinkCreate();
+	int i;
+	int tries;
+	int ok = 0;
+
+	expect(netLinkBusHost(host, port, 4), "bus1 host up for 4 players");
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(guest, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus1 join");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(guest) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkBusPlayers(host) == 2, "bus1 host sees the single peer");
+	expect(netLinkBusActive(host) && netLinkBusActive(guest), "bus1 stays on the bus with one peer");
+
+	{
+		int okRound = 1;
+		for (i = 0; i < 10; ++i) {
+			struct BusRoundArg args[2];
+			pthread_t th[2];
+			int k;
+			for (k = 0; k < 2; ++k) {
+				args[k].link = k == 0 ? host : guest;
+				args[k].index = (uint16_t) i;
+				args[k].own = (k == 0 ? 0x3000u : 0x3100u) + (uint32_t) i;
+				args[k].got = 0;
+				args[k].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[k].values[s] = 0;
+				}
+				pthread_create(&th[k], NULL, busRoundThread, &args[k]);
+			}
+			for (k = 0; k < 2; ++k) {
+				pthread_join(th[k], NULL);
+			}
+			for (k = 0; k < 2; ++k) {
+				if (args[k].got != 1 || args[k].used != (uint16_t) i) {
+					okRound = 0;
+				}
+				if (args[k].values[0] != 0x3000u + (uint32_t) i
+				    || args[k].values[1] != 0x3100u + (uint32_t) i) {
+					okRound = 0;
+				}
+				if (args[k].values[2] != 0xFFFFu || args[k].values[3] != 0xFFFFu) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus1 round works with a single peer");
+	}
+
+	netLinkDestroy(guest);
 	netLinkDestroy(host);
 }
 
@@ -2754,7 +2913,28 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--audio") == 0) {
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		testAudioConstPitch(dir);
+		testAudioConstPitchRealtime(dir);
+		testAudioConstPitchDevicePump(dir);
+		return g_failed ? 1 : 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
+		testBusSinglePeer();
+	testBusThree();
+		testBusPlayers();
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
+		testLink();
+		testBusSinglePeer();
+	testBusThree();
 		testBusPlayers();
 		return g_failed ? 1 : 0;
 	}
@@ -2788,6 +2968,8 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testBusSinglePeer();
+	testBusThree();
 	testBusPlayers();
 	testStateMemory(dir);
 	testRelay();

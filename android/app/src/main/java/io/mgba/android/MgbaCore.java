@@ -263,8 +263,18 @@ public final class MgbaCore {
         return handle != 0 && nativeLinkHost(handle, port);
     }
 
+    /** 本局人数：2 走两人直连，3/4 走星型总线（主机汇聚每一轮的字）。 */
+    public boolean linkHost(int port, int players) {
+        return handle != 0 && nativeLinkHostPlayers(handle, port, players);
+    }
+
     public boolean linkJoin(String host, int port) {
         return handle != 0 && host != null && nativeLinkJoin(handle, host, port);
+    }
+
+    /** players 必须与主机一致：两边的包格式不同，混用连得上但收不到数据。 */
+    public boolean linkJoin(String host, int port, int players) {
+        return handle != 0 && host != null && nativeLinkJoinPlayers(handle, host, port, players);
     }
 
     public void linkClose() {
@@ -471,7 +481,11 @@ public final class MgbaCore {
 
     private static native boolean nativeLinkHost(long handle, int port);
 
+    private static native boolean nativeLinkHostPlayers(long handle, int port, int players);
+
     private static native boolean nativeLinkJoin(long handle, String host, int port);
+
+    private static native boolean nativeLinkJoinPlayers(long handle, String host, int port, int players);
 
     private static native void nativeLinkClose(long handle);
 
