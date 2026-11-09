@@ -412,7 +412,6 @@ struct NetLink {
 	int busPlayers;              /* 目标玩家数（含本机）；2 表示走原来的直连 */
 	struct BusPeer busPeers[BUS_MAX_PLAYERS - 1];
 	int busPeerCount;
-	int busNextSlot;
 	/* 主机本轮自己的字：在传输开始时由 netLinkPush 记下，收齐从机的字之后
 	 * 一起广播出去。 */
 	uint16_t busOwnIndex;
@@ -1058,10 +1057,37 @@ static void busHostLoop(struct NetLink* link) {
 				LINK_LOG("Link bus reject: room full");
 				continue;
 			}
+			/* 槽位取**最小的空闲号**（1..3），不能用单调递增的计数器：
+			 * 4 人房里 2 号位掉线后重连时，单调递增会分配出 4 号槽 —— 而
+			 * 槽位只认 0..3，4 号会被 netLinkBusRound 的边界判断静默忽略，
+			 * 新连上的玩家永远收不到数据、也永远不会被报错。
+			 *
+			 * 先算出空号再决定是否接受：三个槽都占着就把连接挡回去，
+			 * 不能先进数组再发现没号可用。 */
+			int freeSlot = 0;
+			for (int s = 1; s < BUS_MAX_PLAYERS && !freeSlot; ++s) {
+				bool used = false;
+				for (int i = 0; i < link->busPeerCount; ++i) {
+					if (link->busPeers[i].slot == s) {
+						used = true;
+						break;
+					}
+				}
+				if (!used) {
+					freeSlot = s;
+				}
+			}
+			if (!freeSlot) {
+				pthread_mutex_unlock(&link->mu);
+				shutdown(fd, SHUT_RDWR);
+				link_close(fd);
+				LINK_LOG("Link bus reject: no free slot");
+				continue;
+			}
 			struct BusPeer* p = &link->busPeers[link->busPeerCount];
 			memset(p, 0, sizeof(*p));
 			p->fd = fd;
-			p->slot = ++link->busNextSlot;
+			p->slot = freeSlot;
 			++link->busPeerCount;
 			link->state = LINK_CONNECTED;
 			uint16_t slot = (uint16_t) p->slot;
@@ -1289,7 +1315,6 @@ void netLinkClose(struct NetLink* link) {
 	link->bus = false;
 	link->busHost = false;
 	link->busPlayers = 0;
-	link->busNextSlot = 0;
 	link->busOwnValid = false;
 	link->busHostIndexValid = false;
 	link->busHostIndex = 0;
@@ -1426,7 +1451,6 @@ bool netLinkBusHost(struct NetLink* link, int port, int players) {
 	link->bus = true;
 	link->busHost = true;
 	link->busPlayers = players;
-	link->busNextSlot = 0;
 	link->busPeerCount = 0;
 	for (int i = 0; i < BUS_MAX_PLAYERS - 1; ++i) {
 		memset(&link->busPeers[i], 0, sizeof(link->busPeers[i]));

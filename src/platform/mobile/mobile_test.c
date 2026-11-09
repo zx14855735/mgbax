@@ -1676,6 +1676,122 @@ static void testBusSlots(void) {
 	}
 }
 
+
+
+/* 槽位复用：4 人房里有人掉线后重连，新玩家必须拿到空出来的槽。
+ *
+ * 原来槽位来自单调递增的计数器：3 个从机占满 1/2/3，2 号位掉线后重连的
+ * 第 4 个连接会分到 **4 号槽**。而槽位只认 0..3，4 号会被
+ * netLinkBusRound 的边界判断静默忽略 —— 新玩家连得上、握手也过，但永远
+ * 收不到任何数据，也没有任何报错。 */
+static void testBusSlotReuse(void) {
+	int port = 18798;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* peer[3];
+	struct NetLink* rejoin;
+	int i;
+	int tries;
+	int ok = 0;
+	int slotsOk = 1;
+
+	expect(netLinkBusHost(host, port, 4), "bus-slot host up for 4 players");
+	for (i = 0; i < 3; ++i) {
+		ok = 0;
+		peer[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(peer[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus-slot join");
+		for (tries = 0; tries < 300; ++tries) {
+			if (netLinkState(peer[i]) == 2 && netLinkBusPlayers(host) == i + 2) {
+				break;
+			}
+			linkSleepMs(10);
+		}
+		if (netLinkPlayer(peer[i]) != i + 1) {
+			slotsOk = 0;
+		}
+	}
+	expect(slotsOk, "bus-slot first three peers take slots 1/2/3");
+
+	/* 2 号位掉线。 */
+	netLinkDestroy(peer[1]);
+	peer[1] = NULL;
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkBusPlayers(host) == 3) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkBusPlayers(host) == 3, "bus-slot host notices the dropped peer");
+
+	/* 新玩家补进来，必须拿到 2 号槽。 */
+	rejoin = netLinkCreate();
+	ok = 0;
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(rejoin, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus-slot rejoin");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(rejoin) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkPlayer(rejoin) == 2, "bus-slot rejoin reuses the freed slot 2");
+	expect(netLinkBusPlayers(host) == 4, "bus-slot host is back to four players");
+
+	/* 一轮聚合验证四个槽都真的能填：掉线重连之后仍然是一局完整的 4 人。 */
+	{
+		struct BusRoundArg args[4];
+		pthread_t th[4];
+		const uint32_t base[4] = { 0x8000u, 0x8100u, 0x8200u, 0x8300u };
+		int okRound = 1;
+		args[0].link = host;
+		args[1].link = peer[0];
+		args[2].link = rejoin;
+		args[3].link = peer[2];
+		for (i = 0; i < 4; ++i) {
+			args[i].index = 0;
+			args[i].own = base[i];
+			args[i].got = 0;
+			args[i].used = 0;
+			for (int s = 0; s < 4; ++s) {
+				args[i].values[s] = 0;
+			}
+			pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+		}
+		for (i = 0; i < 4; ++i) {
+			pthread_join(th[i], NULL);
+		}
+		for (i = 0; i < 4; ++i) {
+			if (args[i].got != 3) {
+				okRound = 0;
+			}
+			for (int s = 0; s < 4; ++s) {
+				if (args[i].values[s] != base[s]) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus-slot four players still agree after a rejoin");
+	}
+
+	netLinkDestroy(rejoin);
+	for (i = 0; i < 3; ++i) {
+		if (peer[i]) {
+			netLinkDestroy(peer[i]);
+		}
+	}
+	netLinkDestroy(host);
+}
+
 static void testLink(void) {
 	struct NetLink* host = netLinkCreate();
 	struct NetLink* guest = netLinkCreate();
@@ -3052,6 +3168,68 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--preaudio") == 0) {
+		/* 跑指定的前置用例后再跑 device pump，用来二分段错误的触发源。
+		 * 第三个参数是字母集合：b=bios s=resample g=gb G=gba R=rom64 T=turboB */
+		const char* set = argc > 3 ? argv[3] : "bsgGRT";
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		if (strchr(set, 'b')) {
+			testBios();
+		}
+		if (strchr(set, 's')) {
+			testResample();
+		}
+		if (strchr(set, 'g')) {
+			testGb(dir);
+		}
+		if (strchr(set, 'G')) {
+			testGba(dir);
+		}
+		if (strchr(set, 'R')) {
+			testRom64(dir);
+		}
+		if (strchr(set, 'T')) {
+			testTurboB(dir);
+		}
+		if (strchr(set, 'a')) {
+			testAudioOut(dir);
+			testAudioPitch(dir);
+			testAudioConstPitch(dir);
+			testAudioConstPitchRealtime(dir);
+		}
+		testAudioConstPitchDevicePump(dir);
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--audioall") == 0) {
+		/* 只跑音频整组，用来二分「device pump 的段错误由谁触发」。 */
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		if (argc <= 3 || strchr(argv[3], 'o')) {
+			testAudioOut(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'p')) {
+			testAudioPitch(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'c')) {
+			testAudioConstPitch(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'r')) {
+			testAudioConstPitchRealtime(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'd')) {
+			testAudioConstPitchDevicePump(dir);
+		}
+		return g_failed ? 1 : 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--audio") == 0) {
 		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
 #ifdef _WIN32
@@ -3066,6 +3244,7 @@ int main(int argc, char** argv) {
 	}
 	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
 		testBusSlots();
+	testBusSlotReuse();
 	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
@@ -3075,6 +3254,7 @@ int main(int argc, char** argv) {
 	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
 		testLink();
 		testBusSlots();
+	testBusSlotReuse();
 	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
@@ -3112,6 +3292,7 @@ int main(int argc, char** argv) {
 	testAudioNativeHold(dir);
 	testLink();
 	testBusSlots();
+	testBusSlotReuse();
 	testBusIgnoresPointToPoint();
 	testBusSinglePeer();
 	testBusThree();
