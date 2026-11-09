@@ -415,6 +415,10 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Fallback folders used when the ROM has no saves beside it. */
     private File defaultSaveDir;
     private File defaultStateDir;
+    /** Hidden mirror core; null until the ported GBoy link is started. */
+    private volatile GBoyConsoleSet consoleSet;
+    /** Monotonic frame number feeding the official 12 Hz key cadence. */
+    private long netFrameNo;
     /** State folder in effect for the loaded ROM, read by the UI slot helpers. */
     private volatile File activeStateDir;
     private volatile String currentRomPath;
@@ -1795,6 +1799,38 @@ public class EmulatorActivity extends AppCompatActivity {
         menuButton.setLayoutParams(lp);
     }
 
+    /**
+     * Starts the ported GBoy link: the visible core plus a hidden mirror core
+     * joined over loopback SIO, with key masks supplied by the cloud session's
+     * slot 2 at the official five-frame cadence. Inert until called.
+     */
+    public boolean startGBoyLink(File rom, File saveDir, File stateDir, int port) {
+        stopGBoyLink();
+        if (core == null || !core.isLoaded()) {
+            return false;
+        }
+        GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
+        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
+        boolean ok = set.start(core, session);
+        consoleSet = set;
+        return ok;
+    }
+
+    /** Stops the mirror core and closes the loopback link. */
+    public void stopGBoyLink() {
+        GBoyConsoleSet set = consoleSet;
+        consoleSet = null;
+        if (set != null) {
+            set.stop();
+        }
+    }
+
+    /** Empty on success, otherwise the setup error of the last start. */
+    public String gboyLinkFailure() {
+        GBoyConsoleSet set = consoleSet;
+        return set == null ? "" : set.failure();
+    }
+
     private void emulationLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         long frames = 0;
@@ -1886,7 +1922,34 @@ public class EmulatorActivity extends AppCompatActivity {
                     int step = (framesToRun + steps - 1) / steps;
                     for (int done = 0; done < framesToRun; ) {
                         int n = Math.min(step, framesToRun - done);
-                        core.runFrames(userKeys(), n);
+                        GBoyConsoleSet consoles = consoleSet;
+                        boolean multi = consoles != null
+                                && consoles.state() == GBoyConsoleSet.State.READY;
+                        if (multi) {
+                            // Lock-step: one frame on each console, so every
+                            // loopback MULTI round stays paired.
+                            for (int f = 0; f < n; ++f) {
+                                int frameKeys = userKeys();
+                                if (cloudLink != null) {
+                                    cloudLink.onLocalFrame(netFrameNo, frameKeys);
+                                }
+                                consoles.beginFrame(netFrameNo);
+                                core.runFrames(frameKeys, 1);
+                                consoles.endFrame(netFrameNo);
+                                ++netFrameNo;
+                            }
+                        } else {
+                            // Single core still feeds the official 12 Hz key
+                            // cadence; the legacy 50 ms timer takes over only
+                            // if the frame loop is not wired up.
+                            for (int f = 0; f < n; ++f) {
+                                if (cloudLink != null) {
+                                    cloudLink.onLocalFrame(netFrameNo, userKeys());
+                                }
+                                ++netFrameNo;
+                            }
+                            core.runFrames(userKeys(), n);
+                        }
                         // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
                         // The resampler follows the console's true frame time;
                         // the measured pace is reported to the core once a
@@ -7467,6 +7530,7 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        stopGBoyLink();
         NoticeService.stop(this);
         if (solarListening && sensorManager != null) {
             sensorManager.unregisterListener(solarListener);

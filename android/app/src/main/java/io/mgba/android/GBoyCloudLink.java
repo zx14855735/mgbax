@@ -127,6 +127,33 @@ public final class GBoyCloudLink {
     /** Last key state received from the peer; only transitions are logged. */
     private int lastRxKeys = Integer.MIN_VALUE;
     private Thread worker;
+    /** Ported GBoy session: 12 Hz key cadence, slot dispatch, state and reset. */
+    private volatile GBoyLinkSession session;
+    /** Link currently served, used by the session's transport. */
+    private volatile Link servingLink;
+    /** When true the emulation loop drives key sends instead of the 50 ms timer. */
+    private volatile boolean frameDriven;
+    private final GBoyLinkSession.Events sessionEvents = new GBoyLinkSession.Events() {
+        @Override
+        public void onReset() {
+            Log.i(TAG, "rx TYPE_RESET (session)");
+        }
+
+        @Override
+        public void onState(byte[] state) {
+            Log.i(TAG, "rx TYPE_STATE " + state.length + " bytes");
+        }
+
+        @Override
+        public void onReady() {
+            hooks.onStatus("对端就绪");
+        }
+
+        @Override
+        public void onStatus(String text) {
+            Log.i(TAG, text);
+        }
+    };
 
     public GBoyCloudLink(Hooks hooks) {
         this.hooks = hooks;
@@ -1776,13 +1803,42 @@ public final class GBoyCloudLink {
 
     // ---- game loop ----
 
+    /**
+     * Called once per rendered frame by the emulation loop. The first call
+     * switches key broadcasting from the legacy 50 ms timer to the official
+     * five-frame cadence, so a front end that has not been wired up keeps the
+     * old behaviour and the handshake still works.
+     */
+    public void onLocalFrame(long frame, int localKeys) {
+        GBoyLinkSession s = session;
+        if (s == null) {
+            return;
+        }
+        frameDriven = true;
+        s.onLocalFrame(frame, localKeys);
+    }
+
+    /** Session used by the local multi-console driver, or null before serve(). */
+    public GBoyLinkSession linkSession() {
+        return session;
+    }
+
     private void serve(Link link) {
+        servingLink = link;
+        session = new GBoyLinkSession(frame -> {
+            synchronized (sendLock) {
+                Link current = servingLink;
+                if (!closed && current != null) {
+                    current.send(frame);
+                }
+            }
+        }, sessionEvents, 1, 2);
         long lastKey = 0;
         long lastFps = 0;
         int sentKeys = Integer.MIN_VALUE;
         while (!closed && !link.isClosed()) {
             long now = System.currentTimeMillis();
-            if (now - lastKey >= KEY_INTERVAL_MS) {
+            if (!frameDriven && now - lastKey >= KEY_INTERVAL_MS) {
                 int keys = hooks.localKeys();
                 if (keys != sentKeys || now - lastKey >= 500) {
                     boolean changed = keys != sentKeys;
@@ -1812,6 +1868,12 @@ public final class GBoyCloudLink {
 
     private void handle(byte[] body) {
         int type = GBoyFrames.typeOf(body);
+        GBoyLinkSession s = session;
+        if (s != null) {
+            // Session handles slot dispatch, counter/fps, state and handshake.
+            // The switch below stays as the compatibility path for the UI.
+            s.onFrameBody(body);
+        }
         switch (type) {
             case GBoyFrames.TYPE_KEYS:
             case GBoyFrames.TYPE_KEYS_LOCAL: {
