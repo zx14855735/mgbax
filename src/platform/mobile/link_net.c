@@ -201,6 +201,53 @@ static void linkTune(int fd) {
 #endif
 }
 
+/* 总线要同时盯 listen fd 和最多 3 个从机 fd。select 在 Windows 和 POSIX 上
+ * 语义一致（poll 只有 POSIX 有），所以这里统一用 select。
+ * 返回可读 fd 在数组里的下标；超时 -1，出错 -2。 */
+#ifdef _WIN32
+#define LINK_FD(f) ((SOCKET) (f))
+#else
+#define LINK_FD(f) (f)
+#endif
+
+static int waitAnyReadable(const int* fds, int n, int timeoutMs) {
+	fd_set set;
+	struct timeval tv;
+	int maxFd = -1;
+	FD_ZERO(&set);
+	for (int i = 0; i < n; ++i) {
+		if (fds[i] < 0) {
+			continue;
+		}
+		FD_SET(LINK_FD(fds[i]), &set);
+		if (fds[i] > maxFd) {
+			maxFd = fds[i];
+		}
+	}
+	if (maxFd < 0) {
+		return -1;
+	}
+	tv.tv_sec = timeoutMs / 1000;
+	tv.tv_usec = (timeoutMs % 1000) * 1000;
+#ifdef _WIN32
+	int rc = select(0, &set, NULL, NULL, &tv);
+#else
+	int rc = select(maxFd + 1, &set, NULL, NULL, &tv);
+#endif
+	if (rc == 0) {
+		return -1;
+	}
+	if (rc < 0) {
+		return errno == EINTR ? -1 : -2;
+	}
+	for (int i = 0; i < n; ++i) {
+		if (fds[i] >= 0 && FD_ISSET(LINK_FD(fds[i]), &set)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 enum {
 	LINK_OFF = 0,
 	LINK_LISTEN = 1,
@@ -215,8 +262,14 @@ enum {
 	PKT_BYE = 4,
 	PKT_PUSH = 5,
 	PKT_PING = 6,
-	PKT_PONG = 7
+	PKT_PONG = 7,
+	/* 总线（3/4 人）专用包，固定长度、不做可变长帧。 */
+	PKT_BUS_WELCOME = 8,
+	PKT_BUS_ROUND = 9
 };
+
+/* GBA 的 MULTI 最多 4 台。 */
+enum { BUS_MAX_PLAYERS = 4 };
 
 enum { REQ_QUEUE = 8 };
 
@@ -262,6 +315,36 @@ struct Req {
 	uint16_t player;
 	uint32_t value;
 	uint32_t stamp;
+};
+
+/* 总线连接的**唯一种**包格式：定长、按槽位带四个字。
+ *
+ * 总线链路上不混用 struct Packet —— 两种包长度不同，混在一起就必须做变长
+ * 分帧；而总线是同一份代码的两端互连，直接统一成一种定长包最省事，也不会
+ * 出现「把 PING 当 ROUND 解」这类错位。 */
+struct BusPacket {
+	uint32_t magic;
+	uint16_t type;
+	uint16_t slot;      /* 发送者槽位：0 = 主机，1..3 = 从机 */
+	uint16_t index;     /* 轮次号（主机是链路的时钟源） */
+	uint16_t players;   /* 玩家总数（WELCOME / ROUND 有效） */
+	uint16_t word[BUS_MAX_PLAYERS];  /* ROUND：按槽位的四个字 */
+	uint32_t cycles;    /* 发送方的模拟时钟戳 */
+	uint32_t stamp;     /* PING 用：发送时刻（µs） */
+};
+
+struct BusPeer {
+	int fd;
+	int slot;
+	/* 该从机最近一次推上来的字（主机侧）。valid 只在 index 命中时才算数。 */
+	uint16_t index;
+	uint32_t value;
+	uint32_t cycles;
+	bool valid;
+	uint32_t stamp;
+	/* 非阻塞读的半个包缓冲区：TCP 上来的可能是半个 BusPacket，先攒着。 */
+	unsigned char rx[sizeof(struct BusPacket) * 2];
+	size_t rxLen;
 };
 
 struct NetLink {
@@ -322,6 +405,32 @@ struct NetLink {
 	/* 对端最近一次 PUSH 到达的真实时刻（nowMs）：从机用它判断「交换正在进行」
 	 * （主控的轮次在密集到达），只有此时才允许阻塞等下一个字。 */
 	uint32_t pushSeenAt;
+
+	/* ---- 3/4 人总线（星型汇聚） ---------------------------------------- */
+	bool bus;
+	bool busHost;                /* 本机是主机（listen 端） */
+	int busPlayers;              /* 目标玩家数（含本机）；2 表示走原来的直连 */
+	struct BusPeer busPeers[BUS_MAX_PLAYERS - 1];
+	int busPeerCount;
+	int busNextSlot;
+	/* 主机本轮自己的字：在传输开始时由 netLinkPush 记下，收齐从机的字之后
+	 * 一起广播出去。 */
+	uint16_t busOwnIndex;
+	uint32_t busOwn;
+	bool busOwnValid;
+	/* 本机最后一次见到的「主机轮次号」：主机侧是它自己推的，从机侧是收到
+	 * 的主机推送/广播。从机用它对齐轮次，避免刚加入时用 0 号推上去。 */
+	uint16_t busHostIndex;
+	bool busHostIndexValid;
+	/* 从机侧：主机最近一次广播的内容与未消费次数。 */
+	uint32_t busInWord[BUS_MAX_PLAYERS];
+	uint16_t busInIndex;
+	uint16_t busInPlayers;
+	bool busInValid;
+	int busInPending;
+	/* 从机侧只有一条连接，半个包的缓冲区挂在链路上。 */
+	unsigned char busRx[sizeof(struct BusPacket) * 2];
+	size_t busRxLen;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -391,6 +500,18 @@ static bool readAll(int fd, void* data, size_t len) {
 		off += (size_t) n;
 	}
 	return true;
+}
+
+/* 总线包发送：所有总线写都走 sendMu，模拟线程（广播 ROUND）和 I/O 线程
+ * （回 PONG）不会把同一个 fd 的字节写乱。 */
+static bool busSend(struct NetLink* link, int fd, struct BusPacket* pkt) {
+	if (fd < 0) {
+		return false;
+	}
+	pthread_mutex_lock(&link->sendMu);
+	bool ok = writeAll(fd, pkt, sizeof(*pkt));
+	pthread_mutex_unlock(&link->sendMu);
+	return ok;
 }
 
 static bool sendPacket(struct NetLink* link, uint16_t type, uint16_t seq, uint16_t mode, uint32_t value) {
@@ -707,6 +828,308 @@ static void* hostMain(void* arg) {
 	return NULL;
 }
 
+/* ---- 总线（3/4 人）I/O ---------------------------------------------------
+ *
+ * 这里的线程约定和原来的直连路径不同，刻意写清楚：
+ *   - busPeers[] 只由**主机 I/O 线程**增删（accept / 掉线），所以它在别处
+ *     只读；读写都先拿 link->mu。
+ *   - 每个 Peer 的半个包缓冲区 rx/rxLen 只由 I/O 线程碰，不需要锁。
+ *   - 广播 ROUND 由模拟线程发，PONG 由 I/O 线程回，两者都走 sendMu。
+ */
+
+/* 读一次（调用前 select 已确认可读）。返回 1 读到数据，0 对端关闭，-1 需要丢弃连接。 */
+static int busReadSome(int fd, unsigned char* rx, size_t* rxLen) {
+	size_t cap = sizeof(struct BusPacket) * 2;
+	if (*rxLen >= cap) {
+		return -1;
+	}
+	ssize_t n = recv(fd, (char*) rx + *rxLen, (int) (cap - *rxLen), 0);
+	if (n == 0) {
+		return 0;
+	}
+	if (n < 0) {
+		return errno == EINTR ? 1 : -1;
+	}
+	*rxLen += (size_t) n;
+	return 1;
+}
+
+static void busDropPeer(struct NetLink* link, int index) {
+	int fd = -1;
+	pthread_mutex_lock(&link->mu);
+	if (index >= 0 && index < link->busPeerCount) {
+		fd = link->busPeers[index].fd;
+		for (int i = index; i + 1 < link->busPeerCount; ++i) {
+			link->busPeers[i] = link->busPeers[i + 1];
+		}
+		--link->busPeerCount;
+		memset(&link->busPeers[link->busPeerCount], 0, sizeof(link->busPeers[0]));
+		link->busPeers[link->busPeerCount].fd = -1;
+		if (link->busPeerCount == 0 && !link->stop) {
+			link->state = link->listenFd >= 0 ? LINK_LISTEN : LINK_DOWN;
+			setMessage(link, link->listenFd >= 0 ? "从机全部断开，继续等待" : "从机已断开");
+		} else if (link->busPeerCount > 0) {
+			setMessage(link, "有玩家断开");
+		}
+	}
+	pthread_cond_broadcast(&link->cv);
+	pthread_mutex_unlock(&link->mu);
+	if (fd >= 0) {
+		shutdown(fd, SHUT_RDWR);
+		link_close(fd);
+	}
+	LINK_LOG("Link bus peer %d dropped (left=%d)", index, link->busPeerCount);
+}
+
+static void busSendPong(struct NetLink* link, int fd, const struct BusPacket* pkt, uint16_t slot) {
+	struct BusPacket pong;
+	memset(&pong, 0, sizeof(pong));
+	pong.magic = kMagic;
+	pong.type = PKT_PONG;
+	pong.slot = slot;
+	pong.stamp = pkt->stamp;   /* 原样带回发送时刻，接收方据此算真实 RTT */
+	busSend(link, fd, &pong);
+}
+
+static void busNoteRtt(struct NetLink* link, const struct BusPacket* pkt) {
+	uint32_t us = nowUs() - pkt->stamp;
+	if (us > 5000000u) {
+		return;
+	}
+	pthread_mutex_lock(&link->mu);
+	link->rttUs = link->rttUs ? (link->rttUs * 3 + us) / 4 : us;
+	if (us > link->rttUsMax) {
+		link->rttUsMax = us;
+	}
+	if (((++link->rttUsN) % 8) == 0) {
+		LINK_LOG("Link bus RTT avg=%uus max=%uus (last=%uus)", link->rttUs, link->rttUsMax, us);
+	}
+	pthread_mutex_unlock(&link->mu);
+}
+
+/* 处理一个总线包。peer 非空表示这是主机侧从某个从机收到的；为空表示从机侧
+ * 从唯一那条到主机的连接上收到的。返回 false 表示这条连接该关了。 */
+static bool busDispatch(struct NetLink* link, struct BusPeer* peer, int fd,
+                        const struct BusPacket* pkt) {
+	if (pkt->type == PKT_PING) {
+		busSendPong(link, fd, pkt, (uint16_t) (peer ? peer->slot : link->player));
+		return true;
+	}
+	if (pkt->type == PKT_PONG) {
+		busNoteRtt(link, pkt);
+		return true;
+	}
+	if (pkt->type == PKT_BYE) {
+		return false;
+	}
+	if (!peer) {
+		/* 从机侧。 */
+		switch (pkt->type) {
+		case PKT_BUS_WELCOME:
+			pthread_mutex_lock(&link->mu);
+			link->player = pkt->slot;
+			if (pkt->players >= 2 && pkt->players <= BUS_MAX_PLAYERS) {
+				link->busPlayers = pkt->players;
+			}
+			link->state = LINK_CONNECTED;
+			setMessage(link, "已连接，等待主机开始");
+			pthread_cond_broadcast(&link->cv);
+			pthread_mutex_unlock(&link->mu);
+			LINK_LOG("Link bus welcome slot=%u players=%u", (unsigned) pkt->slot, (unsigned) pkt->players);
+			return true;
+		case PKT_PUSH:
+			/* 主机本轮自己的字（顺带把轮次号带过来给从机对齐）。 */
+			pthread_mutex_lock(&link->mu);
+			link->busHostIndex = pkt->index;
+			link->busHostIndexValid = true;
+			link->pushSeenAt = nowMs();
+			pthread_cond_broadcast(&link->cv);
+			pthread_mutex_unlock(&link->mu);
+			return true;
+		case PKT_BUS_ROUND:
+			pthread_mutex_lock(&link->mu);
+			for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+				link->busInWord[i] = pkt->word[i];
+			}
+			link->busInIndex = pkt->index;
+			link->busInPlayers = pkt->players;
+			link->busInValid = true;
+			link->busInPending = 1;
+			link->busHostIndex = pkt->index;
+			link->busHostIndexValid = true;
+			link->pushSeenAt = nowMs();
+			pthread_cond_broadcast(&link->cv);
+			pthread_mutex_unlock(&link->mu);
+			return true;
+		default:
+			return true;
+		}
+	}
+	/* 主机侧。 */
+	if (pkt->type == PKT_PUSH) {
+		pthread_mutex_lock(&link->mu);
+		peer->index = pkt->index;
+		peer->value = pkt->word[0];
+		peer->cycles = pkt->cycles;
+		peer->valid = true;
+		peer->stamp = nowMs();
+		link->busHostIndex = pkt->index;
+		link->busHostIndexValid = true;
+		link->pushSeenAt = peer->stamp;
+		pthread_cond_broadcast(&link->cv);
+		pthread_mutex_unlock(&link->mu);
+		LINK_VERBOSE("bus push slot=%d index=%u value=%04X", peer->slot,
+		             (unsigned) pkt->index, (unsigned) pkt->word[0]);
+	}
+	return true;
+}
+
+/* 解析缓冲区里所有完整的包。返回 false 表示这条连接该关了。 */
+static bool busDrain(struct NetLink* link, struct BusPeer* peer, int fd,
+                     unsigned char* rx, size_t* rxLen) {
+	size_t off = 0;
+	bool keep = true;
+	while (*rxLen - off >= sizeof(struct BusPacket)) {
+		struct BusPacket pkt;
+		memcpy(&pkt, rx + off, sizeof(pkt));
+		off += sizeof(pkt);
+		if (pkt.magic != kMagic) {
+			LINK_LOG("Link bus bad magic=%08X slot=%d", (unsigned) pkt.magic, peer ? peer->slot : -1);
+			keep = false;
+			break;
+		}
+		if (!busDispatch(link, peer, fd, &pkt)) {
+			keep = false;
+			break;
+		}
+	}
+	if (off > 0) {
+		memmove(rx, rx + off, *rxLen - off);
+		*rxLen -= off;
+	}
+	return keep;
+}
+
+static void busHostLoop(struct NetLink* link) {
+	LINK_LOG("Link bus host loop started, players=%d", link->busPlayers);
+	for (;;) {
+		int fds[BUS_MAX_PLAYERS];
+		int kind[BUS_MAX_PLAYERS];
+		int n = 0;
+		pthread_mutex_lock(&link->mu);
+		bool stop = link->stop;
+		int listenFd = link->listenFd;
+		fds[n] = listenFd;
+		kind[n] = -1;
+		++n;
+		for (int i = 0; i < link->busPeerCount; ++i) {
+			fds[n] = link->busPeers[i].fd;
+			kind[n] = i;
+			++n;
+		}
+		pthread_mutex_unlock(&link->mu);
+		if (stop || listenFd < 0) {
+			break;
+		}
+		int idx = waitAnyReadable(fds, n, 100);
+		if (idx < 0 || idx >= n) {
+			continue;
+		}
+		if (kind[idx] < 0) {
+			int fd = accept(listenFd, NULL, NULL);
+			if (fd < 0) {
+				continue;
+			}
+			linkTune(fd);
+			pthread_mutex_lock(&link->mu);
+			if (link->busPeerCount >= link->busPlayers - 1 || link->busPeerCount >= BUS_MAX_PLAYERS - 1) {
+				/* 房间满了：直接关掉，不让第 5 台挤进来。 */
+				pthread_mutex_unlock(&link->mu);
+				shutdown(fd, SHUT_RDWR);
+				link_close(fd);
+				LINK_LOG("Link bus reject: room full");
+				continue;
+			}
+			struct BusPeer* p = &link->busPeers[link->busPeerCount];
+			memset(p, 0, sizeof(*p));
+			p->fd = fd;
+			p->slot = ++link->busNextSlot;
+			++link->busPeerCount;
+			link->state = LINK_CONNECTED;
+			uint16_t slot = (uint16_t) p->slot;
+			uint16_t players = (uint16_t) link->busPlayers;
+			int nowPlayers = link->busPeerCount + 1;
+			char msg[64];
+			snprintf(msg, sizeof(msg), "已连接 %d 人", nowPlayers);
+			setMessage(link, msg);
+			pthread_cond_broadcast(&link->cv);
+			pthread_mutex_unlock(&link->mu);
+			struct BusPacket welcome;
+			memset(&welcome, 0, sizeof(welcome));
+			welcome.magic = kMagic;
+			welcome.type = PKT_BUS_WELCOME;
+			welcome.slot = slot;
+			welcome.players = players;
+			busSend(link, fd, &welcome);
+			LINK_LOG("Link bus accepted fd=%d slot=%u players=%d", fd, (unsigned) slot, nowPlayers);
+			continue;
+		}
+		/* 某个从机可读。只有本线程碰 rx/rxLen，见上面的线程约定。 */
+		struct BusPeer* p = &link->busPeers[kind[idx]];
+		int fd = p->fd;
+		if (fd < 0) {
+			continue;
+		}
+		int rr = busReadSome(fd, p->rx, &p->rxLen);
+		if (rr <= 0) {
+			busDropPeer(link, kind[idx]);
+			continue;
+		}
+		if (!busDrain(link, p, fd, p->rx, &p->rxLen)) {
+			busDropPeer(link, kind[idx]);
+		}
+	}
+	LINK_LOG("Link bus host loop stopped");
+}
+
+static void busJoinLoop(struct NetLink* link) {
+	LINK_LOG("Link bus join loop started fd=%d", link->sock);
+	for (;;) {
+		int fd;
+		pthread_mutex_lock(&link->mu);
+		fd = link->sock;
+		bool stop = link->stop;
+		pthread_mutex_unlock(&link->mu);
+		if (stop || fd < 0) {
+			break;
+		}
+		int fds[1] = { fd };
+		if (waitAnyReadable(fds, 1, 100) < 0) {
+			continue;
+		}
+		int rr = busReadSome(fd, link->busRx, &link->busRxLen);
+		if (rr <= 0) {
+			break;
+		}
+		if (!busDrain(link, NULL, fd, link->busRx, &link->busRxLen)) {
+			break;
+		}
+	}
+	pthread_mutex_lock(&link->mu);
+	if (link->sock >= 0) {
+		shutdown(link->sock, SHUT_RDWR);
+		link_close(link->sock);
+		link->sock = -1;
+	}
+	if (!link->stop) {
+		link->state = LINK_DOWN;
+		setMessage(link, "主机已断开");
+	}
+	pthread_cond_broadcast(&link->cv);
+	pthread_mutex_unlock(&link->mu);
+	LINK_LOG("Link bus join loop stopped");
+}
+
 static int openListen(int port) {
 	int fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0) {
@@ -753,6 +1176,13 @@ void netLinkClose(struct NetLink* link) {
 	link->sock = -1;
 	link->listenFd = -1;
 	link->waiting = false;
+	int peerFd[BUS_MAX_PLAYERS - 1];
+	int peerCount = link->busPeerCount;
+	for (int i = 0; i < BUS_MAX_PLAYERS - 1; ++i) {
+		peerFd[i] = link->busPeers[i].fd;
+		link->busPeers[i].fd = -1;
+	}
+	link->busPeerCount = 0;
 	pthread_cond_broadcast(&link->cv);
 	pthread_mutex_unlock(&link->mu);
 	if (sock >= 0) {
@@ -765,6 +1195,12 @@ void netLinkClose(struct NetLink* link) {
 		pthread_mutex_unlock(&link->sendMu);
 		shutdown(sock, SHUT_RDWR);
 		link_close(sock);
+	}
+	for (int i = 0; i < peerCount && i < BUS_MAX_PLAYERS - 1; ++i) {
+		if (peerFd[i] >= 0) {
+			shutdown(peerFd[i], SHUT_RDWR);
+			link_close(peerFd[i]);
+		}
 	}
 	if (listenFd >= 0) {
 		shutdown(listenFd, SHUT_RDWR);
@@ -780,6 +1216,16 @@ void netLinkClose(struct NetLink* link) {
 	link->qCount = 0;
 	link->peerHead = 0;
 	link->peerCount = 0;
+	link->bus = false;
+	link->busHost = false;
+	link->busPlayers = 0;
+	link->busNextSlot = 0;
+	link->busOwnValid = false;
+	link->busHostIndexValid = false;
+	link->busHostIndex = 0;
+	link->busInValid = false;
+	link->busInPending = 0;
+	link->busRxLen = 0;
 	setMessage(link, "");
 	pthread_mutex_unlock(&link->mu);
 }
@@ -870,6 +1316,310 @@ bool netLinkJoin(struct NetLink* link, const char* host, int port) {
 	}
 	LINK_LOG("Link joined %s:%d", host, port);
 	return true;
+}
+
+/* ---- 总线（3/4 人）公开接口 -------------------------------------------- */
+
+static void* busHostThread(void* arg) {
+	busHostLoop((struct NetLink*) arg);
+	return NULL;
+}
+
+static void* busJoinThread(void* arg) {
+	busJoinLoop((struct NetLink*) arg);
+	return NULL;
+}
+
+bool netLinkBusHost(struct NetLink* link, int port, int players) {
+	if (!link || port < 1 || port > 65535) {
+		return false;
+	}
+	if (players <= 2) {
+		/* 两人不启用总线：直连路径一字不动。 */
+		return netLinkHost(link, port);
+	}
+	if (players > BUS_MAX_PLAYERS) {
+		players = BUS_MAX_PLAYERS;
+	}
+	netLinkClose(link);
+	int fd = openListen(port);
+	if (fd < 0) {
+		pthread_mutex_lock(&link->mu);
+		link->state = LINK_DOWN;
+		setMessage(link, "端口被占用");
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	pthread_mutex_lock(&link->mu);
+	link->bus = true;
+	link->busHost = true;
+	link->busPlayers = players;
+	link->busNextSlot = 0;
+	link->busPeerCount = 0;
+	for (int i = 0; i < BUS_MAX_PLAYERS - 1; ++i) {
+		memset(&link->busPeers[i], 0, sizeof(link->busPeers[i]));
+		link->busPeers[i].fd = -1;
+	}
+	link->listenFd = fd;
+	link->port = port;
+	link->player = 0;
+	link->state = LINK_LISTEN;
+	link->stop = false;
+	link->busOwnValid = false;
+	link->busHostIndexValid = false;
+	char msg[64];
+	snprintf(msg, sizeof(msg), "等待 %d 人加入", players);
+	setMessage(link, msg);
+	pthread_mutex_unlock(&link->mu);
+	if (pthread_create(&link->ioThread, NULL, busHostThread, link) != 0) {
+		netLinkClose(link);
+		return false;
+	}
+	link->threadLive = true;
+	LINK_LOG("Link bus hosting on %d for %d players", port, players);
+	return true;
+}
+
+bool netLinkBusJoin(struct NetLink* link, const char* host, int port) {
+	if (!link || !host || port < 1 || port > 65535) {
+		return false;
+	}
+	netLinkClose(link);
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons((uint16_t) port);
+	if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+		pthread_mutex_lock(&link->mu);
+		link->state = LINK_DOWN;
+		setMessage(link, "IP 地址无效");
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	int fd = connectTcp(&addr, 3000);
+	if (fd < 0) {
+		pthread_mutex_lock(&link->mu);
+		link->state = LINK_DOWN;
+		setMessage(link, "连不上主机");
+		pthread_mutex_unlock(&link->mu);
+		return false;
+	}
+	linkTune(fd);
+	pthread_mutex_lock(&link->mu);
+	link->sock = fd;
+	link->bus = true;
+	link->busHost = false;
+	link->busPlayers = 2;   /* 收到 WELCOME 后由主机告知真实人数与槽位 */
+	link->player = 0;
+	link->state = LINK_LISTEN;   /* 还没拿到槽位，不算「已连接」 */
+	link->stop = false;
+	link->busRxLen = 0;
+	link->busInValid = false;
+	link->busInPending = 0;
+	link->busHostIndexValid = false;
+	link->busOwnValid = false;
+	setMessage(link, "已连上主机，等待分配槽位");
+	pthread_mutex_unlock(&link->mu);
+	if (pthread_create(&link->ioThread, NULL, busJoinThread, link) != 0) {
+		netLinkClose(link);
+		return false;
+	}
+	link->threadLive = true;
+	LINK_LOG("Link bus joining %s:%d", host, port);
+	return true;
+}
+
+bool netLinkBusActive(struct NetLink* link) {
+	if (!link) {
+		return false;
+	}
+	pthread_mutex_lock(&link->mu);
+	bool bus = link->bus;
+	pthread_mutex_unlock(&link->mu);
+	return bus;
+}
+
+int netLinkBusPlayers(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	int n = 0;
+	pthread_mutex_lock(&link->mu);
+	if (link->bus) {
+		if (link->busHost) {
+			n = link->busPeerCount + 1;
+		} else if (link->state == LINK_CONNECTED) {
+			n = link->busPlayers;
+		}
+	}
+	pthread_mutex_unlock(&link->mu);
+	return n;
+}
+
+uint16_t netLinkBusRoundIndex(struct NetLink* link) {
+	if (!link) {
+		return 0;
+	}
+	uint16_t index = 0;
+	pthread_mutex_lock(&link->mu);
+	if (link->busHostIndexValid) {
+		index = link->busHostIndex;
+	}
+	pthread_mutex_unlock(&link->mu);
+	return index;
+}
+
+int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
+                    uint32_t* values, int players, int timeoutMs, uint16_t* indexOut) {
+	if (values) {
+		for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+			values[i] = 0xFFFFu;
+		}
+	}
+	if (indexOut) {
+		*indexOut = index;
+	}
+	if (!link) {
+		return 0;
+	}
+	if (players < 2 || players > BUS_MAX_PLAYERS) {
+		players = BUS_MAX_PLAYERS;
+	}
+	int got = 0;
+	uint32_t vals[BUS_MAX_PLAYERS] = { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
+	vals[0] = own;
+
+	pthread_mutex_lock(&link->mu);
+	if (!link->bus || link->state != LINK_CONNECTED) {
+		pthread_mutex_unlock(&link->mu);
+		return 0;
+	}
+	if (link->busHost) {
+		/* 主机：等所有**已连接**从机把 index 这一轮的字推上来。缺席的从机
+		 * （没连上 / 掉线）按空槽 0xFFFF 处理，和真机上没插机的槽一致。 */
+		int wantPeers = link->busPeerCount;
+		uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
+		link->busOwn = own;
+		link->busOwnIndex = index;
+		link->busOwnValid = true;
+		link->busHostIndex = index;
+		link->busHostIndexValid = true;
+		for (;;) {
+			got = 0;
+			vals[0] = own;
+			for (int i = 1; i < BUS_MAX_PLAYERS; ++i) {
+				vals[i] = 0xFFFFu;
+			}
+			for (int i = 0; i < link->busPeerCount; ++i) {
+				struct BusPeer* p = &link->busPeers[i];
+				if (p->valid && p->index == index && p->slot > 0 && p->slot < BUS_MAX_PLAYERS) {
+					vals[p->slot] = p->value;
+					++got;
+				}
+			}
+			if (got >= wantPeers || timeoutMs <= 0 || link->stop) {
+				break;
+			}
+			if ((int32_t) (expireAt - nowMs()) <= 0) {
+				break;
+			}
+			struct timespec ts;
+			deadline(&ts, 20);
+			pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+		}
+		/* 收集到的字数（0..players）留给广播。 */
+		int fds[BUS_MAX_PLAYERS - 1];
+		int n = 0;
+		for (int i = 0; i < link->busPeerCount; ++i) {
+			fds[n++] = link->busPeers[i].fd;
+		}
+		pthread_mutex_unlock(&link->mu);
+		struct BusPacket round;
+		memset(&round, 0, sizeof(round));
+		round.magic = kMagic;
+		round.type = PKT_BUS_ROUND;
+		round.slot = 0;
+		round.index = index;
+		round.players = (uint16_t) players;
+		for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+			round.word[i] = (uint16_t) vals[i];
+		}
+		for (int i = 0; i < n; ++i) {
+			busSend(link, fds[i], &round);
+		}
+		LINK_VERBOSE("bus round host idx=%u got=%d/%d", (unsigned) index, got, wantPeers);
+	} else {
+		/* 从机：先把自己的字推给主机（主机收齐所有从机才广播），再等广播。
+		 *
+		 * 轮次号要跟随主机：从机刚加入时自己的 sioIndex 还是 0，而主机可能
+		 * 已经跑到几十轮，用 0 推上去主机永远匹配不上。这里优先用最后一次
+		 * 从主机那里看到的轮次号。 */
+		uint16_t useIndex = link->busHostIndexValid ? link->busHostIndex : index;
+		uint16_t slot = (uint16_t) link->player;
+		uint16_t playersNow = (uint16_t) link->busPlayers;
+		int fd = link->sock;
+		link->busOwn = own;
+		link->busOwnIndex = useIndex;
+		link->busOwnValid = true;
+		pthread_mutex_unlock(&link->mu);
+		struct BusPacket push;
+		memset(&push, 0, sizeof(push));
+		push.magic = kMagic;
+		push.type = PKT_PUSH;
+		push.slot = slot;
+		push.index = useIndex;
+		push.players = playersNow;
+		push.word[0] = (uint16_t) own;
+		busSend(link, fd, &push);
+		if (indexOut) {
+			*indexOut = useIndex;
+		}
+		pthread_mutex_lock(&link->mu);
+		uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
+		for (;;) {
+			if (link->busInValid && (int16_t) (link->busInIndex - useIndex) >= 0) {
+				break;
+			}
+			if (timeoutMs <= 0 || link->stop || link->state != LINK_CONNECTED) {
+				break;
+			}
+			if ((int32_t) (expireAt - nowMs()) <= 0) {
+				break;
+			}
+			struct timespec ts;
+			deadline(&ts, 20);
+			pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+		}
+		if (link->busInValid && (int16_t) (link->busInIndex - useIndex) >= 0) {
+			got = 0;
+			for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+				vals[i] = link->busInWord[i];
+			}
+			/* 自己那一槽一定用本机这轮的字：广播里的自己那份也是它，但万一
+			 * 主机晚了半拍，本机仍应以自己算出来的字为准。 */
+			if (slot < BUS_MAX_PLAYERS) {
+				vals[slot] = own;
+			}
+			for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+				if (i != slot && vals[i] != 0xFFFFu && i < players) {
+					++got;
+				}
+			}
+			if (indexOut) {
+				*indexOut = link->busInIndex;
+			}
+			link->busInPending = 0;
+			link->busInValid = false;
+		}
+		pthread_mutex_unlock(&link->mu);
+		LINK_VERBOSE("bus round slave slot=%d idx=%u got=%d", slot, (unsigned) useIndex, got);
+	}
+	if (values) {
+		for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+			values[i] = vals[i];
+		}
+	}
+	return got;
 }
 
 int netLinkState(struct NetLink* link) {
@@ -1077,7 +1827,49 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
 	__atomic_store_n(&link->publishedMode, mode, __ATOMIC_RELEASE);
 	/* 模拟时钟戳随这一轮一起发给对端（只对 PKT_PUSH 有意义）。 */
 	__atomic_store_n(&link->pushCycles, cycles, __ATOMIC_RELEASE);
-	sendPacket(link, PKT_PUSH, index, mode, local);
+	bool bus;
+	bool host;
+	int fds[BUS_MAX_PLAYERS - 1];
+	int n = 0;
+	uint16_t players = 0;
+	pthread_mutex_lock(&link->mu);
+	bus = link->bus;
+	host = link->busHost;
+	if (bus && host) {
+		/* 主机把本轮自己的字推给所有从机：从机要靠它知道「交换正在进
+		 * 行」才会挂上自己的轮次事件，也顺便拿到主机的轮次号。 */
+		link->busOwn = local;
+		link->busOwnIndex = index;
+		link->busOwnValid = true;
+		link->busHostIndex = index;
+		link->busHostIndexValid = true;
+		players = (uint16_t) link->busPlayers;
+		for (int i = 0; i < link->busPeerCount && n < BUS_MAX_PLAYERS - 1; ++i) {
+			fds[n++] = link->busPeers[i].fd;
+		}
+	}
+	pthread_mutex_unlock(&link->mu);
+	if (!bus) {
+		sendPacket(link, PKT_PUSH, index, mode, local);
+		return;
+	}
+	if (!host) {
+		/* 从机的推送由 netLinkBusRound 在「先推后等广播」这一步发出，
+		 * 这里不能重复发，否则主机把同一轮算两次。 */
+		return;
+	}
+	struct BusPacket push;
+	memset(&push, 0, sizeof(push));
+	push.magic = kMagic;
+	push.type = PKT_PUSH;
+	push.slot = 0;
+	push.index = index;
+	push.players = players;
+	push.word[0] = (uint16_t) local;
+	push.cycles = cycles;
+	for (int i = 0; i < n; ++i) {
+		busSend(link, fds[i], &push);
+	}
 }
 
 /* 从队列里取对端的一个字。
@@ -1200,7 +1992,14 @@ int netLinkPeerPending(struct NetLink* link) {
 		return 0;
 	}
 	pthread_mutex_lock(&link->mu);
-	int n = link->peerCount;
+	int n;
+	if (link->bus) {
+		/* 从机：主机的广播还没消费，或者主机至少推过一次字（交换正在
+		 * 进行）。主机自己不看这个数。 */
+		n = link->busHost ? 1 : (link->busInPending + (link->busHostIndexValid ? 1 : 0));
+	} else {
+		n = link->peerCount;
+	}
 	pthread_mutex_unlock(&link->mu);
 	return n;
 }

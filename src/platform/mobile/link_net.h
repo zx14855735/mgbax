@@ -84,4 +84,40 @@ void netLinkPeerHeadInfo(struct NetLink* link, int* count, unsigned* headIndex);
 /* 距对端最近一次 PUSH 到达过了多少真实毫秒（从没收到过则返回极大值）。 */
 uint32_t netLinkPushAgeMs(struct NetLink* link);
 
+/* ---- 3/4 人总线（星型汇聚） ----------------------------------------------
+ *
+ * 原来的链路只有两个端点：主机 listen(fd, 1) 只接受一个连接、每轮对端只有一个
+ * 字，所以 GBA 的 SIOMULTI0..3 里只有两个槽能被填上，3/4 人联机根本组不起来。
+ *
+ * 总线拓扑是星型：主机 accept 最多 players-1 个从机，按接入顺序把槽位 1..players-1
+ * 分给它们；从机之间不直连。每一轮：
+ *   1. 主机在自己这次传输开始时把「本轮自己的字」推给**所有**从机；
+ *   2. 每个从机在自己的轮次里把自己的字推给主机；
+ *   3. 主机收齐所有已连接从机的字后，连同自己的字**一次广播**给所有从机。
+ * 于是每台机器一轮都能拿到全部槽位的字，SIOMULTI0..3 可以整块填满。
+ *
+ * 代价是每轮多一跳：从机的字要经过主机才能到别的从机，一轮约 1.5 个 RTT，
+ * 而两人直连是 1 个 RTT。这是星型汇聚的物理成本，不是实现缺陷。
+ *
+ * 两人（players == 2）仍然走原来的直连路径，一行都不变；总线只在 players > 2
+ * 时启用。 */
+bool netLinkBusHost(struct NetLink* link, int port, int players);
+bool netLinkBusJoin(struct NetLink* link, const char* host, int port);
+/* 本机是否处于总线模式（players > 2 且已启动）。 */
+bool netLinkBusActive(struct NetLink* link);
+/* 当前已连上的玩家数（含本机）。未连上或非总线模式返回 0。 */
+int netLinkBusPlayers(struct NetLink* link);
+/* 主机 / 从机端口上最后一次见到的轮次号（主机自己的推送或主机的广播）。
+ * 从机靠它把轮次号对齐到主机，避免刚加入时用 0 号去推、主机匹配不上。 */
+uint16_t netLinkBusRoundIndex(struct NetLink* link);
+/* 一轮聚合。values[0..players-1] 按槽位排列，缺席的槽位填 0xFFFF。
+ *
+ * 主机：等所有**已连接**从机把 index 这一轮的字推上来，然后广播给所有从机。
+ * 从机：把 own 推给主机，等主机的广播。
+ * 两边的 index 都以主机为准，从机实际采用的轮次号从 indexOut 回带。
+ *
+ * 返回真正拿到的对端槽位数（不含本机），超时或断开返回 0。 */
+int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
+                    uint32_t* values, int players, int timeoutMs, uint16_t* indexOut);
+
 #endif

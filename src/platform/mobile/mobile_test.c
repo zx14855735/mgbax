@@ -1244,6 +1244,140 @@ static void* exchangeThread(void* arg) {
 	return NULL;
 }
 
+static void linkSleepMs(int ms) {
+#ifdef _WIN32
+	Sleep((DWORD) ms);
+#else
+	usleep((useconds_t) ms * 1000);
+#endif
+}
+
+struct BusRoundArg {
+	struct NetLink* link;
+	uint16_t index;
+	uint32_t own;
+	uint32_t values[4];
+	int got;
+	uint16_t used;
+};
+
+static void* busRoundThread(void* arg) {
+	struct BusRoundArg* a = (struct BusRoundArg*) arg;
+	a->got = netLinkBusRound(a->link, a->index, a->own, a->values, 4, 2000, &a->used);
+	return NULL;
+}
+
+/* 3/4 人总线（星型汇聚）回归。
+ *
+ * 四项断言各自对应一个真实缺陷面：
+ *   1. 主机 accept 多连接、按接入顺序分配槽位 —— 原来 listen(fd, 1) 只收一个。
+ *   2. 每个从机能拿到「总人数」—— 只靠 TCP 连上是拿不到的，必须主机在
+ *      WELCOME 里告知。
+ *   3. 每一轮四个槽位的数据在四台机器上完全一致 —— 这是 3/4 人联机能进行
+ *      SIOMULTI 握手的充要条件（原来 data[2]/data[3] 永远是 0xFFFF）。
+ *   4. players == 2 时不启用总线 —— 保证已验证的双人直连路径不被改动波及。 */
+static void testBusPlayers(void) {
+	int port = 18791;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest[3];
+	struct NetLink* duo = netLinkCreate();
+	int i;
+	int k;
+	const uint32_t base[4] = { 0x1000u, 0x1100u, 0x1200u, 0x1300u };
+
+	expect(netLinkBusHost(host, port, 4), "bus host up for 4 players");
+	for (i = 0; i < 3; ++i) {
+		int ok = 0;
+		int tries;
+		guest[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(guest[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus join");
+		{
+			int seen = 0;
+			for (tries = 0; tries < 300; ++tries) {
+				if (netLinkBusPlayers(host) >= i + 2) {
+					seen = 1;
+					break;
+				}
+				linkSleepMs(10);
+			}
+			expect(seen, "bus host accepted peer");
+		}
+		{
+			int slot = -1;
+			int ready = 0;
+			for (tries = 0; tries < 300; ++tries) {
+				if (netLinkState(guest[i]) == 2) {
+					slot = netLinkPlayer(guest[i]);
+					ready = 1;
+					break;
+				}
+				linkSleepMs(10);
+			}
+			expect(ready, "bus joiner welcomed");
+			expect(slot == i + 1, "bus slot assigned in accept order");
+			expect(netLinkBusPlayers(guest[i]) == 4, "bus joiner learns player count");
+		}
+	}
+	expect(netLinkBusPlayers(host) == 4, "bus host sees 4 players");
+
+	{
+		int rounds = 40;
+		int agree = 0;
+		for (k = 0; k < rounds; ++k) {
+			struct BusRoundArg args[4];
+			pthread_t th[4];
+			int okRound = 1;
+			for (i = 0; i < 4; ++i) {
+				args[i].link = i == 0 ? host : guest[i - 1];
+				args[i].index = (uint16_t) k;
+				args[i].own = base[i] + (uint32_t) k;
+				args[i].got = 0;
+				args[i].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[i].values[s] = 0;
+				}
+				pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+			}
+			for (i = 0; i < 4; ++i) {
+				pthread_join(th[i], NULL);
+			}
+			for (i = 0; i < 4; ++i) {
+				if (args[i].got != 3) {
+					okRound = 0;
+				}
+				if (args[i].used != (uint16_t) k) {
+					okRound = 0;
+				}
+				for (int s = 0; s < 4; ++s) {
+					if (args[i].values[s] != base[s] + (uint32_t) k) {
+						okRound = 0;
+					}
+				}
+			}
+			if (okRound) {
+				++agree;
+			}
+		}
+		expect(agree == rounds, "bus 4-player rounds agree on all four slots");
+	}
+
+	/* 两人场景必须仍然走原来的直连路径：总线模式不得被打开。 */
+	expect(netLinkBusHost(duo, 18792, 2), "duo host up");
+	expect(!netLinkBusActive(duo), "duo keeps the direct 2-player path off the bus");
+
+	netLinkDestroy(duo);
+	for (i = 0; i < 3; ++i) {
+		netLinkDestroy(guest[i]);
+	}
+	netLinkDestroy(host);
+}
+
 static void testLink(void) {
 	struct NetLink* host = netLinkCreate();
 	struct NetLink* guest = netLinkCreate();
@@ -2620,6 +2754,10 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
+		testBusPlayers();
+		return g_failed ? 1 : 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--state") == 0) {
 		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
 #ifdef _WIN32
@@ -2650,6 +2788,7 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testBusPlayers();
 	testStateMemory(dir);
 	testRelay();
 	testStateConcurrency(dir);
