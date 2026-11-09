@@ -417,6 +417,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private File defaultStateDir;
     /** Hidden mirror core; null until the ported GBoy link is started. */
     private volatile GBoyConsoleSet consoleSet;
+    /** Official local TCP link, used when no cloud room is involved. */
+    private volatile GBoySocketLink localLink;
     /** Monotonic frame number feeding the official 12 Hz key cadence. */
     private long netFrameNo;
     /** State folder in effect for the loaded ROM, read by the UI slot helpers. */
@@ -1820,12 +1822,82 @@ public class EmulatorActivity extends AppCompatActivity {
         return ok;
     }
 
-    /** Stops the mirror core and closes the loopback link. */
+    /**
+     * Official local TCP link: two devices on the same network or hotspot talk
+     * directly, with no cloud room. {@code asHost=true} listens on tcpPort;
+     * otherwise peer is the host address. sioPort is the separate loopback port
+     * used by the two local consoles. The official handshake (type 1 / int 6)
+     * runs on the TCP link while key masks feed the hidden mirror console.
+     */
+    public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
+                                      int sioPort, int tcpPort, String peer,
+                                      boolean asHost) {
+        stopGBoyLink();
+        if (core == null || !core.isLoaded() || (!asHost && (peer == null || peer.isEmpty()))) {
+            return false;
+        }
+        GBoyLinkSession.Events events = new GBoyLinkSession.Events() {
+            @Override
+            public void onReset() {
+                runOnUiThread(() -> {
+                    if (core != null && core.isLoaded()) {
+                        core.reset();
+                        core.clearAudio();
+                    }
+                });
+            }
+
+            @Override
+            public void onState(byte[] state) {
+                Log.i(TAG, "local link TYPE_STATE " + state.length + " bytes");
+            }
+
+            @Override
+            public void onReady() {
+                runOnUiThread(() -> toast("本地联机已就绪"));
+            }
+
+            @Override
+            public void onStatus(String text) {
+                Log.i(TAG, "local link " + text);
+            }
+        };
+        try {
+            GBoySocketLink link = new GBoySocketLink(1, 2, events);
+            if (asHost) {
+                link.startHost(tcpPort);
+            } else {
+                link.startJoin(peer, tcpPort);
+            }
+            localLink = link;
+            gboyRemoteKeysEnabled = false;
+            gboyRemoteKeys = 0;
+            GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort);
+            boolean ok = set.start(core, link.session());
+            consoleSet = set;
+            return ok;
+        } catch (java.io.IOException e) {
+            GBoySocketLink link = localLink;
+            if (link != null) {
+                link.close();
+                localLink = null;
+            }
+            toast("本地联机连接失败：" + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Stops the mirror core and closes the loopback and TCP links. */
     public void stopGBoyLink() {
         GBoyConsoleSet set = consoleSet;
         consoleSet = null;
         if (set != null) {
             set.stop();
+        }
+        GBoySocketLink link = localLink;
+        localLink = null;
+        if (link != null) {
+            link.close();
         }
     }
 
