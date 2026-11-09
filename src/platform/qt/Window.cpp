@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "Window.h"
 
+#include <QBuffer>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -2517,6 +2518,28 @@ void Window::startAutoCloudLink() {
 
 	CloudLink* link = new CloudLink(this);
 	link->setController(m_controller.get());
+	// TYPE_STATE: the host seeds the joiner with one save-state snapshot.
+	// CoreController::saveState(QIODevice*) runs on the core thread but waits
+	// for completion (mCoreThreadRunFunction), so the buffer is filled by the
+	// time it returns even when the provider is called from the link thread.
+	link->setStateSnapshotProvider([this]() -> QByteArray {
+		if (!m_controller) {
+			return QByteArray();
+		}
+		QBuffer buffer;
+		buffer.open(QIODevice::WriteOnly);
+		m_controller->saveState(&buffer);
+		return buffer.data();
+	});
+	connect(link, &CloudLink::remoteState, this, [this](const QByteArray& state) {
+		if (!m_controller || state.isEmpty()) {
+			return;
+		}
+		QBuffer buffer;
+		buffer.setData(state);
+		buffer.open(QIODevice::ReadOnly);
+		m_controller->loadState(&buffer);
+	});
 	connect(link, &CloudLink::statusMessage, this, [](const QString& text) {
 		qInfo().noquote() << "[AUTOLINK]" << text;
 	});

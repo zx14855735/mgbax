@@ -735,8 +735,9 @@ static bool startReader(struct NetLink* link) {
 	}
 	int rc = pthread_create(&link->ioThread, NULL, readerMain, link);
 	if (rc == 0 && !link->pingLive) {
-		link->pingLive = true;
-		pthread_create(&link->pingThread, NULL, pingMain, link);
+		if (pthread_create(&link->pingThread, NULL, pingMain, link) == 0) {
+			link->pingLive = true;
+		}
 	}
 	link->threadLive = rc == 0;
 	return link->threadLive;
@@ -812,9 +813,8 @@ static void* hostMain(void* arg) {
 		setMessage(link, "已连接，你是 1P");
 		pthread_mutex_unlock(&link->mu);
 		LINK_LOG("Link client accepted");
-		if (!link->pingLive) {
+		if (!link->pingLive && pthread_create(&link->pingThread, NULL, pingMain, link) == 0) {
 			link->pingLive = true;
-			pthread_create(&link->pingThread, NULL, pingMain, link);
 		}
 		readerMain(link);
 		if (link->stop) {
@@ -1306,6 +1306,17 @@ void netLinkClose(struct NetLink* link) {
 		pthread_join(link->ioThread, NULL);
 		link->threadLive = false;
 	}
+	/* The ping thread (250 ms sleep for 2P, 200 ms slices for the bus) reads
+	 * `link->stop` and locks `link->mu`. Close used to join only ioThread and
+	 * then immediately reset stop to false: a ping thread waking up in that
+	 * window saw "not stopping", kept running, and netLinkDestroy() freed the
+	 * struct (plus its mutexes) underneath it - the intermittent use-after-free
+	 * that crashed the full test suite at a random late stage. Join it before
+	 * the flag is reusable. */
+	if (link->pingLive) {
+		pthread_join(link->pingThread, NULL);
+		link->pingLive = false;
+	}
 	pthread_mutex_lock(&link->mu);
 	link->stop = false;
 	link->state = LINK_OFF;
@@ -1472,9 +1483,8 @@ bool netLinkBusHost(struct NetLink* link, int port, int players) {
 		return false;
 	}
 	link->threadLive = true;
-	if (!link->pingLive) {
+	if (!link->pingLive && pthread_create(&link->pingThread, NULL, busPingMain, link) == 0) {
 		link->pingLive = true;
-		pthread_create(&link->pingThread, NULL, busPingMain, link);
 	}
 	LINK_LOG("Link bus hosting on %d for %d players", port, players);
 	return true;
@@ -1525,9 +1535,8 @@ bool netLinkBusJoin(struct NetLink* link, const char* host, int port) {
 		return false;
 	}
 	link->threadLive = true;
-	if (!link->pingLive) {
+	if (!link->pingLive && pthread_create(&link->pingThread, NULL, busPingMain, link) == 0) {
 		link->pingLive = true;
-		pthread_create(&link->pingThread, NULL, busPingMain, link);
 	}
 	LINK_LOG("Link bus joining %s:%d", host, port);
 	return true;

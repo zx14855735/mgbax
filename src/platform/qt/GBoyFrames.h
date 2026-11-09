@@ -59,6 +59,20 @@ QByteArray frame(int type, int value);
 QByteArray frame(int type, const QByteArray& payload);
 
 /**
+ * TYPE_STATE = a big endian u32 blob length followed by the save-state bytes.
+ * This is the sending half of the save-state synchronisation that Android has
+ * in GBoyLinkSession.sendState(); the host sends one right after the link is
+ * up so both cores start from the same deterministic point.
+ */
+QByteArray stateFrame(const QByteArray& state);
+
+/** Reverse of stateFrame(). Returns empty when the length header does not fit
+ *  the payload - the SIO relay bridge also uses type 6, but carries a raw
+ *  netLink packet with no length prefix, so those frames must not be mistaken
+ *  for save states. */
+QByteArray stateOf(const QByteArray& body);
+
+/**
  * The registration frame the official client sends the moment the KCP
  * handshake completes: type 1, body: int playerCount, short 0, int
  * baseStateCount.

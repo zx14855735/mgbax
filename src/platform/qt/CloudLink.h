@@ -8,6 +8,7 @@
 #include <QByteArray>
 #include <QThread>
 #include <atomic>
+#include <functional>
 #include <memory>
 
 #include "GBoyFrames.h"
@@ -54,11 +55,19 @@ public:
 	void setLocalKeys(int keys) { m_localKeys.store(keys, std::memory_order_relaxed); }
 	/** The running game's SIO driver surface (分开控制模式). */
 	void setController(SioLinkHost* controller) { m_controller = controller; }
+	/**
+	 * Supplies this machine's save state for TYPE_STATE. Invoked once from the
+	 * link thread when the host's session is up. Return an empty array when no
+	 * state is available yet - the sender will retry on the next tick.
+	 */
+	void setStateSnapshotProvider(std::function<QByteArray()> provider) { m_stateSnapshot = provider; }
 
 signals:
 	void statusMessage(const QString& message);
 	void remoteKeys(int mask);
 	void remoteReset();
+	/** Peer sent a save-state blob; the UI loads it into the local core. */
+	void remoteState(const QByteArray& state);
 	void linkEnded(const QString& message);
 	void connected(bool asHost);
 
@@ -105,6 +114,8 @@ private:
 	// game loop
 	void serve(ILink* link);
 	void handle(const QByteArray& body);
+	/** One-shot host -> joiner TYPE_STATE, on whichever transport is live. */
+	bool maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost);
 	void pollSignaling(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
 
 	// websocket tunnel helpers
@@ -130,6 +141,8 @@ private:
 	std::atomic<bool> m_closed{false};
 	std::atomic<bool> m_sendReset{false};
 	std::atomic<int> m_localKeys{0};
+	std::function<QByteArray()> m_stateSnapshot;
+	std::atomic<bool> m_initialStateSent{false};
 
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;

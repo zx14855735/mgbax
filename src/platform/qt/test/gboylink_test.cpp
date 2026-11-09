@@ -18,6 +18,10 @@
  *   test-gboylink webdav         WebDAV round trip against a local mock
  *   test-gboylink glsl <in.glsl> [outdir]
  *                                external shader conversion sanity check
+ *   test-gboylink bus <rom> [3|4]   N real cores, star bus, scripted SIO writes
+ *   test-gboylink busgame <rom> <sav> [3|4]
+ *                                N real cores on the star bus running the
+ *                                actual game's cable-club script (LINKUP proof)
  *
  * The wifi mode exercises the same frames GBoy/My Boy speak, the cloud modes
  * exercise the same signalling path the Android lobby uses.
@@ -1234,6 +1238,192 @@ static int busSioTest(const QString& rom, int players) {
 	return failures;
 }
 
+/**
+ * 3/4 人真实 ROM 对局：N 个内核 + 星型总线 + 由游戏自己发起 MULTI 轮次。
+ *
+ * busSioTest 用空 ROM 直写 SIO 寄存器，只证明链路层；这里让 gen8 自己跑
+ * 「进俱乐部 → 联机」，读 gFieldLinkPlayerCount 和训练家卡片状态判 LINKUP。
+ * LINKUP 本身必须靠游戏每帧 9 轮 MULTI 握手达成，所以这是「游戏侧 MULTI
+ * 轮次真的被总线驱动」的直接证据（11-10 日志里列的开放项）。
+ *
+ * 每个内核一个线程：总线从机要等主机广播，单线程轮流跑必然互等。所有内核
+ * 同一份存档、同一套按键脚本，保证同时进房。带墙钟超时，绝不挂死。
+ */
+static int busGameTest(const QString& rom, const QString& sav, int players) {
+	if (players < 3) {
+		players = 3;
+	}
+	if (players > 4) {
+		players = 4;
+	}
+	auto envInt = [](const char* k, int dflt) {
+		bool ok = false;
+		int v = qEnvironmentVariableIntValue(k, &ok);
+		return ok ? v : dflt;
+	};
+	const int port = 18767;
+	const int maxFrames = envInt("BUSGAME_FRAMES", 6000);
+	const int wallLimitMs = envInt("BUSGAME_TIMEOUT_MS", 45000);
+	struct mCore* cores[4] = { nullptr, nullptr, nullptr, nullptr };
+	struct SioLink* links[4] = { nullptr, nullptr, nullptr, nullptr };
+	static mColor video[4][240 * 160];
+
+	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
+	const QByteArray savUtf8 = QFileInfo(sav).absoluteFilePath().toUtf8();
+	for (int i = 0; i < players; i++) {
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			fprintf(stderr, "BUSGAME: FAIL (cannot open rom %s)\n", romUtf8.constData());
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			fprintf(stderr, "BUSGAME: FAIL (cannot find core)\n");
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		mCoreConfigSetIntValue(&cores[i]->config, "logLevel", mLOG_WARN);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			fprintf(stderr, "BUSGAME: FAIL (cannot load rom)\n");
+			return 1;
+		}
+		VFile* sv = VFileOpen(savUtf8.constData(), O_RDWR);
+		if (sv && !cores[i]->loadSave(cores[i], sv)) {
+			fprintf(stderr, "BUSGAME: WARN (core %d loadSave failed)\n", i);
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+		links[i] = sioLinkCreate();
+	}
+
+	if (!sioLinkHostPlayers(links[0], port, players)) {
+		fprintf(stderr, "BUSGAME: FAIL (cannot listen)\n");
+		return 1;
+	}
+	for (int i = 1; i < players; ++i) {
+		if (!sioLinkJoinPlayers(links[i], "127.0.0.1", port, players)) {
+			fprintf(stderr, "BUSGAME: FAIL (cannot connect %d)\n", i);
+			return 1;
+		}
+	}
+	for (int k = 0; k < 300; ++k) {
+		bool all = true;
+		for (int i = 0; i < players; ++i) {
+			sioLinkPump(links[i], cores[i]);
+			if (sioLinkState(links[i]) != 2) {
+				all = false;
+			}
+		}
+		if (all) {
+			break;
+		}
+		QThread::msleep(20);
+	}
+	for (int i = 0; i < players; ++i) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		GBASIOWriteRCNT(&gba->sio, 0);
+		if (sioLinkState(links[i]) != 2 || !gba->sio.driver) {
+			fprintf(stderr, "BUSGAME: FAIL (core %d link state %d driver %p)\n",
+			        i, sioLinkState(links[i]), (void*) gba->sio.driver);
+			return 1;
+		}
+	}
+
+	std::atomic<bool> stop(false);
+	std::atomic<int> finished(0);
+	std::atomic<int> maxCnt[4];
+	std::atomic<int> sawCards[4];
+	std::atomic<int> sawBattle[4];
+	std::atomic<uint32_t> lastCb2[4];
+	for (int i = 0; i < players; ++i) {
+		maxCnt[i].store(0);
+		sawCards[i].store(0);
+		sawBattle[i].store(0);
+		lastCb2[i].store(0);
+	}
+	std::vector<std::thread> threads;
+	for (int i = 0; i < players; ++i) {
+		threads.emplace_back([&, i]() {
+			const uint32_t A = 1, START = 8, LEFT = 32, UP = 64, DOWN = 128;
+			const int boot = 240, menuAt = 1500, saveAt = menuAt + 240;
+			struct GBA* g = (struct GBA*) cores[i]->board;
+			for (int f = 0; f < maxFrames && !stop.load(); ++f) {
+				uint32_t keys = 0;
+				if (f >= boot && f < boot + 6) {
+					keys = START;
+				} else if (f >= boot + 10 && f < boot + 16) {
+					keys = START;
+				} else if (f >= boot + 20 && f < menuAt) {
+					keys = ((f % 45) < 30) ? A : 0u;
+				} else if (f >= menuAt && f < menuAt + 8) {
+					keys = DOWN;
+				} else if (f >= menuAt + 30 && f < menuAt + 40) {
+					keys = A;
+				} else if (f >= menuAt + 40 && f < menuAt + 60) {
+					keys = UP;
+				} else if (f >= menuAt + 60 && f < menuAt + 80) {
+					keys = LEFT;
+				} else if (f >= menuAt + 80 && f < menuAt + 92) {
+					keys = A;
+				} else if (f >= saveAt) {
+					keys = ((f % 40) < 25) ? A : 0u;
+				}
+				cores[i]->setKeys(cores[i], keys);
+				sioLinkPump(links[i], cores[i]);
+				cores[i]->runFrame(cores[i]);
+				int cnt = (GBAView16(g->cpu, 0x03004A38u) >> 8) & 0xFF;
+				uint16_t ts = GBAView16(g->cpu, 0x03004A10u);
+				uint32_t cb2 = (uint32_t) GBAView16(g->cpu, 0x03002AD4u)
+				             | ((uint32_t) GBAView16(g->cpu, 0x03002AD6u) << 16);
+				if (cnt > maxCnt[i].load()) {
+					maxCnt[i].store(cnt);
+				}
+				if ((ts & 0xFF) == 0x80) {
+					sawCards[i].store(1);
+				}
+				if ((cb2 & 0xFFFF0000u) == 0x08090000u) {
+					sawBattle[i].store(1);
+				}
+				lastCb2[i].store(cb2);
+			}
+			finished.fetch_add(1);
+		});
+	}
+	for (int tick = 0; tick < wallLimitMs / 100 && finished.load() < players; ++tick) {
+		QThread::msleep(100);
+	}
+	stop.store(true);
+	for (auto& t : threads) {
+		t.join();
+	}
+
+	int failures = 0;
+	fprintf(stderr, "BUSGAME: players=%d frames=%d finished=%d/%d\n",
+	        players, maxFrames, finished.load(), players);
+	for (int i = 0; i < players; ++i) {
+		int cnt = maxCnt[i].load();
+		fprintf(stderr, "  core %d: maxCnt=%d cards=%d battle=%d cb2=%08X state=%d\n",
+		        i, cnt, sawCards[i].load(), sawBattle[i].load(), lastCb2[i].load(),
+		        sioLinkState(links[i]));
+		if (cnt < players) {
+			fprintf(stderr, "BUSGAME: FAIL (core %d never reached LINKUP with %d players)\n", i, players);
+			++failures;
+		}
+	}
+	if (!failures) {
+		fprintf(stderr, "BUSGAME: PASS (%d cores linked up through the star bus)\n", players);
+	}
+	for (int i = 0; i < players; ++i) {
+		sioLinkDestroy(links[i]);
+		cores[i]->deinit(cores[i]);
+	}
+	return failures;
+}
+
 
 /**
  * 帧长上限：一个 GBA 状态约 790 KiB，必须能完整穿过 Reader。
@@ -1292,6 +1482,34 @@ static int framesTest() {
 	           || GBoyFrames::intOf(after) != 0x0A0B) {
 		qInfo().noquote() << QString("FRAMES TEST: FAIL (framing broke: type %1 int %2)")
 		                         .arg(GBoyFrames::typeOf(after)).arg(GBoyFrames::intOf(after));
+		++failures;
+	}
+
+	// TYPE_STATE 帧：u32 长度头 + blob，发送端/接收端必须严格往返。
+	QByteArray snapshot("GBASTATE-test-blob");
+	QByteArray stateWire = GBoyFrames::stateFrame(snapshot);
+	GBoyFrames::Reader stateReader;
+	stateReader.append(stateWire.constData(), stateWire.size());
+	QByteArray stateBody = stateReader.next();
+	if (stateBody.isEmpty() || GBoyFrames::typeOf(stateBody) != GBoyFrames::TYPE_STATE
+	    || GBoyFrames::stateOf(stateBody) != snapshot) {
+		qInfo() << "FRAMES TEST: FAIL (TYPE_STATE send/receive round trip lost the save blob)";
+		++failures;
+	}
+	// SIO 中继桥也用 type 6，但 body 是 20 字节裸包（没有长度头），不能被当成存档。
+	QByteArray bridge = GBoyFrames::frame(GBoyFrames::TYPE_STATE, QByteArray(20, '\x01'));
+	if (!GBoyFrames::stateOf(bridge.mid(4)).isEmpty()) {
+		qInfo() << "FRAMES TEST: FAIL (a raw SIO bridge packet was parsed as a save state)";
+		++failures;
+	}
+	// 长度头越界必须拒绝，而不是按它去切 payload。
+	QByteArray truncated;
+	truncated.resize(2 + 4);
+	truncated[0] = 0;
+	truncated[1] = char(GBoyFrames::TYPE_STATE);
+	GBoyFrames::putInt(&truncated, 2, 9999);
+	if (!GBoyFrames::stateOf(truncated).isEmpty()) {
+		qInfo() << "FRAMES TEST: FAIL (an over-long TYPE_STATE length header was accepted)";
 		++failures;
 	}
 
@@ -2306,6 +2524,12 @@ int main(int argc, char** argv) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
 		int players = args.size() > 3 ? args[3].toInt() : 4;
 		return busSioTest(rom, players);
+	}
+	if (mode == QStringLiteral("busgame")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/gen8/rom.gba");
+		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/gen8/rom.sav");
+		int players = args.size() > 4 ? args[4].toInt() : 3;
+		return busGameTest(rom, sav, players);
 	}
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");

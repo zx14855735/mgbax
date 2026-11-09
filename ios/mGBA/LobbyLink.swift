@@ -48,6 +48,11 @@ final class LobbyLink {
     var romPath: () -> String? = { nil }
     /// Local key bitmask, GBA style.
     var localKeys: () -> Int32 = { 0 }
+    /// Save-state snapshot for the host to seed the joiner (TYPE_STATE).
+    /// Called from the link thread; return nil until a core is loaded.
+    var stateSnapshot: () -> Data? = { nil }
+    /// Peer's save-state blob; called from the reader thread.
+    var onRemoteState: (Data) -> Void = { _ in }
     /// Key mask received from the peer; called from the reader thread.
     var onRemoteKeys: (Int32) -> Void = { _ in }
     /// Called from background threads; the owner hops to the main queue.
@@ -70,6 +75,8 @@ final class LobbyLink {
     private var authToken: String?
     private var currentRoom: Room?
     private var hostRole = false
+    /// The host sends exactly one TYPE_STATE snapshot per session.
+    private var initialStateSent = false
 
     private var isClosed: Bool {
         lock.lock()
@@ -619,6 +626,11 @@ final class LobbyLink {
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
+            if hostRole && !initialStateSent,
+               let snapshot = stateSnapshot(), !snapshot.isEmpty {
+                initialStateSent = true
+                link.send(LobbyFrames.stateFrame(snapshot))
+            }
             if now - lastKey >= LobbyLink.keyIntervalMs {
                 let keys = localKeys()
                 if keys != sentKeys || now - lastKey >= 500 {
@@ -647,6 +659,10 @@ final class LobbyLink {
             onRemoteKeys(LobbyFrames.intValue(of: body))
         case LobbyFrames.typeReset:
             onRemoteReset()
+        case LobbyFrames.typeState:
+            if let state = LobbyFrames.state(of: body), !state.isEmpty {
+                onRemoteState(state)
+            }
         default:
             break
         }

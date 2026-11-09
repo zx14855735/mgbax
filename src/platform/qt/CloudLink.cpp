@@ -602,6 +602,7 @@ void CloudLink::startLink(const Config& config) {
 	m_config = config;
 	m_closed.store(false, std::memory_order_relaxed);
 	m_sendReset.store(false, std::memory_order_relaxed);
+	m_initialStateSent.store(false, std::memory_order_relaxed);
 	start();
 }
 
@@ -1490,6 +1491,7 @@ void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
 	       + QStringLiteral("\n云端联机已连接，你是 ")
 	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	emit connected(asHost);
+	maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, asHost);
 	qint64 lastDrain = 0;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
 		// 出向：驱动包 → type-6 帧（套接字上有数据才发，select 探测）
@@ -1507,7 +1509,12 @@ void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
 			if (n <= 0) {
 				break;
 			}
-			link->send(QByteArray(reinterpret_cast<const char*>(buf), n));
+			// The receive side below expects a TYPE_STATE frame, so the send
+			// side must wrap the raw netLink packet in one too. Sending bare
+			// bytes (the old code) meant the peer's Reader saw them as a frame
+			// length and dropped the whole stream.
+			link->send(GBoyFrames::frame(GBoyFrames::TYPE_STATE,
+			                            QByteArray(reinterpret_cast<const char*>(buf), n)));
 		}
 		// 入向：type-6 帧 → 还原驱动包 → 本地套接字
 		QByteArray message;
@@ -1687,6 +1694,7 @@ void CloudLink::serve(ILink* link) {
 	int sentKeys = -1;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
 		if (now - lastKey >= KEY_INTERVAL_MS) {
 			int keys = m_localKeys.load(std::memory_order_relaxed);
 			if (keys != sentKeys || now - lastKey >= 500) {
@@ -1733,7 +1741,27 @@ void CloudLink::handle(const QByteArray& body) {
 		emit remoteKeys(m_remoteKeysEnabled ? keys : 0);
 	} else if (type == GBoyFrames::TYPE_RESET) {
 		emit remoteReset();
+	} else if (type == GBoyFrames::TYPE_STATE) {
+		// The SIO relay bridge also uses type 6 with a raw netLink packet and
+		// no length header; stateOf() rejects those instead of loading garbage.
+		QByteArray state = GBoyFrames::stateOf(body);
+		if (!state.isEmpty()) {
+			emit remoteState(state);
+		}
 	}
+}
+
+bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
+	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	QByteArray state = m_stateSnapshot();
+	if (state.isEmpty()) {
+		return false;   // core not ready yet; retry on the next tick
+	}
+	m_initialStateSent.store(true, std::memory_order_relaxed);
+	send(GBoyFrames::stateFrame(state));
+	return true;
 }
 
 void CloudLink::pollSignaling(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room) {

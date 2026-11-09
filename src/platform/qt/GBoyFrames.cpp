@@ -41,6 +41,30 @@ QByteArray payloadOf(const QByteArray& body) {
 	return body.mid(2);
 }
 
+QByteArray stateFrame(const QByteArray& state) {
+	QByteArray body;
+	body.resize(int(4 + state.size()));
+	putInt(&body, 0, quint32(state.size()));
+	if (!state.isEmpty()) {
+		memcpy(body.data() + 4, state.constData(), size_t(state.size()));
+	}
+	return frame(TYPE_STATE, body);
+}
+
+QByteArray stateOf(const QByteArray& body) {
+	QByteArray payload = payloadOf(body);
+	if (payload.size() < 4) {
+		return QByteArray();
+	}
+	quint32 length = getInt(payload, 0);
+	// A SIO bridge packet carries a raw netLink magic in its first four bytes,
+	// which is far larger than the remaining payload, so it is rejected here.
+	if (length > quint32(payload.size() - 4)) {
+		return QByteArray();
+	}
+	return payload.mid(4, int(length));
+}
+
 QByteArray registerFrame(int playerCount, int baseStateCount) {
 	QByteArray out(16, 0);
 	putInt(&out, 0, 12);

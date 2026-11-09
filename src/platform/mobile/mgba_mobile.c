@@ -351,6 +351,22 @@ struct MgbaMobile {
 	unsigned rewindCounter;
 	/* Per-channel audio gains, replayed on every load (see SetChannelVolumes). */
 	int32_t channelGains[6];
+	/*
+	 * Per-instance state that used to live in function-local `static`s. With
+	 * two cores in one process (本机双核心), those statics were shared: the
+	 * unstick one-shot latch fired on core A and core B then skipped its own
+	 * patch forever, while the streak counter was incremented by both cores.
+	 * The desktop test injects a synthetic wall clock here too - a global hook
+	 * meant destroying one core could silently change the other core's pacing.
+	 */
+	double (*audioClock)(void);
+	bool unstickDone;
+	int unstickStreak;
+	int unstickModeCached;   /* -1 = not read yet */
+	int rearmEnabled;        /* -1 = not read yet */
+	int sioPipelineEnabled;  /* -1 = not read yet */
+	unsigned diagTick;
+	unsigned traceTick;
 };
 
 enum {
@@ -422,9 +438,9 @@ enum {
 
 /* Wall clock for pacing the 音乐原速 hand-out. The native test runs emulation
  * as fast as it can, so no real time passes between its reads and a wall clock
- * would hand out nothing; it installs a synthetic clock instead (one frame per
- * read), which is exactly what the front end does on a device. */
-double (*mgbaMobileAudioClock)(void);
+ * would hand out nothing; it installs a synthetic clock through
+ * mgbaMobileSetAudioClock() instead. The hook is per MgbaMobile instance:
+ * two cores in one process must not share it. */
 
 /* 真实墙钟（毫秒）。不用 audioNow —— 那个可能被原生测试替换成合成时钟，
  * 而联机排查要量的是真实耗时（等对端应答花了多少毫秒）。 */
@@ -436,8 +452,9 @@ static uint32_t wallNowMs(void) {
 	return 0;
 }
 
-static double audioNow(void) {	if (mgbaMobileAudioClock) {
-		return mgbaMobileAudioClock();
+static double audioNow(struct MgbaMobile* emu) {
+	if (emu && emu->audioClock) {
+		return emu->audioClock();
 	}
 #if defined(_WIN32)
 	struct timespec ts;
@@ -452,6 +469,17 @@ static double audioNow(void) {	if (mgbaMobileAudioClock) {
 	}
 	return 0.0;
 #endif
+}
+
+/* Per-instance synthetic wall clock, used by the desktop audio tests. */
+void mgbaMobileSetAudioClock(struct MgbaMobile* emu, double (*clock)(void)) {
+	if (emu) {
+		emu->audioClock = clock;
+	}
+}
+
+bool mgbaMobileHasSyntheticAudioClock(const struct MgbaMobile* emu) {
+	return emu && emu->audioClock != NULL;
 }
 
 /* How fast-forward audio is produced when the front end asks for it: see the
@@ -902,7 +930,7 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	 * device can actually emulate. This is the only quantity that means the
 	 * same thing at every speed, so it is the one that keeps the music at the
 	 * console's own tempo. */
-	double now = audioNow();
+	double now = audioNow(emu);
 	double dt = now - emu->natLastTime;
 	emu->natLastTime = now;
 	if (dt > 0.0 && dt < 0.5) {
@@ -921,6 +949,14 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	}
 	if (budget > holdCap - holdAvail) {
 		budget = holdCap - holdAvail;
+	}
+	/* wsolaScratch holds exactly MOBILE_AUDIO_WSOLA_SCRATCH stereo frames, but
+	 * `want` can be 8192 (the device pump reads 8192-frame blocks). Without
+	 * this clamp the copy below writes up to 2x past the allocation whenever a
+	 * wall-clock jump makes `budget` large - a load-dependent heap overwrite,
+	 * which is why the full suite only crashed intermittently under load. */
+	if (budget > MOBILE_AUDIO_WSOLA_SCRATCH) {
+		budget = MOBILE_AUDIO_WSOLA_SCRATCH;
 	}
 
 	/* 3. Copy `budget` frames out of the ring into the playback buffer. The
@@ -1055,6 +1091,11 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (emu->statePath[0]) {
 		mobile_mkdir(emu->statePath);
 	}
+	/* -1 means "not resolved yet": calloc gives 0, which would otherwise look
+	 * like a cached "disabled" answer and skip the env/property lookup. */
+	emu->unstickModeCached = -1;
+	emu->rearmEnabled = -1;
+	emu->sioPipelineEnabled = -1;
 	emu->link = netLinkCreate();
 	emu->gbaLink.emu = emu;
 	emu->gbLink.emu = emu;
@@ -2082,26 +2123,41 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
  * IWRAM 函数指针，把它换成游戏自带的 LinkCB_Standby，保留原来的
  * gLastRecvQueueCount 门控，不改 ROM、不改游戏逻辑。
  */
-static int unstickEnabled(void) {
-	static int cached = -1;
-	if (cached < 0) {
+static int unstickEnabled(struct MgbaMobile* emu) {
+	if (emu->unstickModeCached < 0) {
 #ifdef __ANDROID__
 		char v[PROP_VALUE_MAX] = {0};
 		__system_property_get("mgbax.link.unstick", v);
-		cached = (v[0] == '1') ? 1 : ((v[0] == '2') ? 2 : 0);
+		emu->unstickModeCached = (v[0] == '1') ? 1 : ((v[0] == '2') ? 2 : 0);
 #else
 		const char* v = getenv("MGBAX_LINK_UNSTICK");
-		cached = (v && v[0] == '1') ? 1 : ((v && v[0] == '2') ? 2 : 0);
+		emu->unstickModeCached = (v && v[0] == '1') ? 1 : ((v && v[0] == '2') ? 2 : 0);
 #endif
 	}
-	return cached;
+	return emu->unstickModeCached;
 }
 
-static void maybeUnstickStandby(struct GBA* gba) {
-	static int done = 0;
-	static int streak = 0;
-	int mode = unstickEnabled();
-	if (done || !mode || !gba || !gba->cpu) {
+/* One decision step, kept as a public per-instance function so the desktop
+ * test can prove two cores in one process do not share the one-shot latch.
+ * Returns 1 exactly on the call that arms the patch. */
+int mgbaMobileUnstickStep(struct MgbaMobile* emu, int mode, bool matched) {
+	if (!emu || emu->unstickDone || !mode) {
+		return 0;
+	}
+	if (!matched) {
+		emu->unstickStreak = 0;
+		return 0;
+	}
+	if (++emu->unstickStreak >= 3) {
+		emu->unstickDone = true;
+		return 1;
+	}
+	return 0;
+}
+
+static void maybeUnstickStandby(struct MgbaMobile* emu, struct GBA* gba) {
+	int mode = unstickEnabled(emu);
+	if (!mode || !gba || !gba->cpu) {
 		return;
 	}
 	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);
@@ -2113,18 +2169,14 @@ static void maybeUnstickStandby(struct GBA* gba) {
 	uint16_t brs = GBAView16(gba->cpu, 0x03002A40u);
 	int state = (l0 >> 8) & 0xFF;
 	int rem = (rem16 >> 8) & 0xFF;
-	if (state == 4 && rem == 1 && cb == 0x08151DA9u && mu == 0 && brs == 0) {
-		if (++streak >= 3) {
-			/* mode 2 直接置 NULL，跳过 standby，让游戏进 CB2_InitBattle；
-			 * SendBlock 会自行安装 LinkCB_BlockSend* 回调。 */
-			uint32_t target = (mode == 2) ? 0x00000000u : 0x081529BDu;
-			gba->memory.iwram[(0x03002AD4u - 0x03000000u) >> 2] = target;
-			done = 1;
-			MOBILE_LOGI("[unstick] mode=%d cb %08X -> %08X (state=%d rem=%d mu=%u)",
-			            mode, cb, target, state, rem, mu);
-		}
-	} else {
-		streak = 0;
+	bool matched = (state == 4 && rem == 1 && cb == 0x08151DA9u && mu == 0 && brs == 0);
+	if (mgbaMobileUnstickStep(emu, mode, matched)) {
+		/* mode 2 直接置 NULL，跳过 standby，让游戏进 CB2_InitBattle；
+		 * SendBlock 会自行安装 LinkCB_BlockSend* 回调。 */
+		uint32_t target = (mode == 2) ? 0x00000000u : 0x081529BDu;
+		gba->memory.iwram[(0x03002AD4u - 0x03000000u) >> 2] = target;
+		MOBILE_LOGI("[unstick] mode=%d cb %08X -> %08X (state=%d rem=%d mu=%u)",
+		            mode, cb, target, state, rem, mu);
 	}
 }
 
@@ -2139,19 +2191,18 @@ static void maybeUnstickStandby(struct GBA* gba) {
  * 握手态(state==2)、但还没选出主机(handshakeAsMaster==0)」时代游戏把
  * gShouldAdvanceLinkState 置 1，重新选举一次。只写 IWRAM 的 1 个字节标志。
  */
-static void maybeRearmHandshake(struct GBA* gba) {
-	static int enabled = -1;
-	if (enabled < 0) {
+static void maybeRearmHandshake(struct MgbaMobile* emu, struct GBA* gba) {
+	if (emu->rearmEnabled < 0) {
 #ifdef __ANDROID__
 		char v[PROP_VALUE_MAX] = {0};
 		__system_property_get("mgbax.link.rearm", v);
-		enabled = (v[0] == '0') ? 0 : 1;
+		emu->rearmEnabled = (v[0] == '0') ? 0 : 1;
 #else
 		const char* v = getenv("MGBAX_LINK_REARM");
-		enabled = (v && v[0] == '0') ? 0 : 1;
+		emu->rearmEnabled = (v && v[0] == '0') ? 0 : 1;
 #endif
 	}
-	if (!enabled || !gba || !gba->cpu) {
+	if (!emu->rearmEnabled || !gba || !gba->cpu) {
 		return;
 	}
 	/* 逐字节读 struct Link（不能从 uint16 右移 24 位取 playerCount，会恒为 0）。 */
@@ -2239,8 +2290,8 @@ static void finishMultiTransfer(struct MgbaMobile* emu, uint16_t data[4], uint32
 		            (unsigned) GBAView8(gba->cpu, 0x03002B0Bu),
 		            (unsigned) GBAView16(gba->cpu, 0x03002A40u),
 		            (unsigned) GBAView16(gba->cpu, 0x03002A9Cu));
-		maybeUnstickStandby(gba);
-		maybeRearmHandshake(gba);
+		maybeUnstickStandby(emu, gba);
+		maybeRearmHandshake(emu, gba);
 	}
 	/* 玩家格坐标（gSaveBlock1Ptr→SaveBlock1.pos）：走位闭环导航的输入，走位
 	 * 阶段每 16 轮打一次就够了（9 轮/帧），不打会让按键步数与实际位移脱钩。 */
@@ -2638,24 +2689,23 @@ static int sioWaitMs(struct MgbaMobile* emu) {
 
 /* 与 Qt 侧同一条按帧流水线：系统属性 mgbax.sio.pipeline=1 开启。
  * 队列里有对端字就零等待消费，队列空才给一次整批预算；字严格按轮次配对。 */
-static bool sioPipelineMode(void) {
-	static int enabled = -1;
-	if (enabled < 0) {
+static bool sioPipelineMode(struct MgbaMobile* emu) {
+	if (emu->sioPipelineEnabled < 0) {
 #ifdef __ANDROID__
 		char v[PROP_VALUE_MAX] = {0};
 		__system_property_get("mgbax.sio.pipeline", v);
-		enabled = (v[0] == '1') ? 1 : 0;
+		emu->sioPipelineEnabled = (v[0] == '1') ? 1 : 0;
 #else
 		/* Desktop and the local test build share the Qt-side switch name. */
 		const char* v = getenv("MGBAX_SIO_PIPELINE");
-		enabled = (v && v[0] == '1') ? 1 : 0;
+		emu->sioPipelineEnabled = (v && v[0] == '1') ? 1 : 0;
 #endif
 	}
-	return enabled != 0;
+	return emu->sioPipelineEnabled != 0;
 }
 
 static int sioPipelineWaitMs(struct MgbaMobile* emu, int want) {
-	if (!sioPipelineMode()) {
+	if (!sioPipelineMode(emu)) {
 		return sioPeerWaitMs(emu);
 	}
 	if (!emu->link || netLinkState(emu->link) != 2) {
@@ -3632,6 +3682,12 @@ void mgbaMobileClearAudio(struct MgbaMobile* emu) {
 	if (emu->audioHoldInited) {
 		mAudioBufferClear(&emu->audioHold);
 	}
+	/* The WSOLA input queue and the native-hold cursors are owned by the audio
+	 * thread. Publish a pending clear instead of touching them here: the next
+	 * mgbaMobileReadAudioOut() runs the full reset (wsolaIn, wsolaAnaPos,
+	 * natR/natW, primed/outAcc/lastTime), so a re-enable after ClearAudio can
+	 * no longer replay stale samples against a reset analysis cursor. */
+	emu->wsolaClearPending = true;
 	resetAudioOutput(emu);
 }
 
@@ -4056,8 +4112,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	 * here (engagement bug); holdInited=0 means the hold failed to allocate and
 	 * the pass-through fast path runs instead. */
 	if (speed > 1.01) {
-		static int diagTick;
-		if ((diagTick++ % 60) == 1) {
+		if ((emu->diagTick++ % 60) == 1) {
 			MOBILE_LOGI("audio diag: speed %.1f holdOn %d holdInited %d mode %s natRing %p",
 					speed, emu->audioHoldOn, emu->audioHoldInited,
 					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
@@ -4076,8 +4131,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		 * the stretcher is running, at what ratio, and whether it is keeping
 		 * up: hold/in back up permanently means it is not draining, held = 0
 		 * means it produced nothing for this read. */
-		static int traceTick;
-		if ((traceTick++ % 60) == 1) {
+		if ((emu->traceTick++ % 60) == 1) {
 			MOBILE_LOGI("audio ff: mode %s stretch %.2f speed %.2f inRate %.0f coreRate %u held %zu hold %zu in %zu lagDrops %zu cuts %zu",
 					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
 					emu->wsolaStretch, speed, inRate, coreRate, held,

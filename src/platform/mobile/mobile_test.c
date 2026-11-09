@@ -17,9 +17,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-/* Synthetic clock hook owned by mgba_mobile.c: 音乐原速 paces its output by
- * elapsed real time, and this test runs emulation as fast as it can. */
-extern double (*mgbaMobileAudioClock)(void);
+/* The synthetic clock is a per-instance hook (mgbaMobileSetAudioClock), so
+ * two cores in one process cannot change each other's pacing. */
 
 /* TEMP PROBE: IRQ 派发链路计数器（gba.c / arm.c）。 */
 extern uint32_t mgbaStatTestIrq;
@@ -766,7 +765,7 @@ static void testAudioConstPitchRealtime(const char* dir) {
 	expect(total >= CAP * 0.8, "WSOLA 不变速 4x plays the whole track (no 3/4 dropped)");
 	expect(held < 0.10 && held < shredded * 0.7,
 			"WSOLA 不变速 4x is far more continuous than the shredded path (no section jump)");
-	mgbaMobileAudioClock = NULL;
+	mgbaMobileSetAudioClock(emu, NULL);
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	free(out);
 	mgbaMobileDestroy(emu);
@@ -1031,7 +1030,7 @@ static void testAudioNativeHold(const char* dir) {
 	}
 	expect(mgbaMobileSetAudioOutput(emu, OUT_RATE), "native-hold resampler");
 	g_fakeAudioNow = 0.0;
-	mgbaMobileAudioClock = fakeAudioClock;
+	mgbaMobileSetAudioClock(emu, fakeAudioClock);
 
 	mgbaMobileResetAudioPace(emu);
 	mgbaMobileClearAudio(emu);
@@ -1122,10 +1121,58 @@ static void testAudioNativeHold(const char* dir) {
 
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	mgbaMobileSetAudioHoldMode(emu, 0);
+	mgbaMobileSetAudioClock(emu, NULL);
 	free(out);
 	free(tmp);
 	free(baseline);
 	mgbaMobileDestroy(emu);
+}
+
+/* 本机双核心: two MgbaMobile instances in one process, each running its own
+ * thread and SIO loopback. Function-local statics used to be shared between
+ * them - the unstick one-shot latch fired on core A and core B then skipped
+ * its own standby patch forever, while the streak counter was incremented by
+ * both cores. Prove the state is per-instance now. */
+static void testDualCoreIsolation(void) {
+	struct MgbaMobile* a = mgbaMobileCreate("", "", "dual-a");
+	struct MgbaMobile* b = mgbaMobileCreate("", "", "dual-b");
+	struct MgbaMobile* c;
+	expect(a != NULL && b != NULL, "two cores can coexist in one process");
+	if (!a || !b) {
+		mgbaMobileDestroy(a);
+		mgbaMobileDestroy(b);
+		return;
+	}
+	/* Interleaved rounds: a shared streak counter would arm on the third
+	 * *global* match instead of each core's third own match. */
+	expect(mgbaMobileUnstickStep(a, 1, true) == 0, "core A round 1 does not arm");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B round 1 does not arm");
+	expect(mgbaMobileUnstickStep(a, 1, true) == 0, "core A round 2 does not arm");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B round 2 does not arm (streaks are separate)");
+	expect(mgbaMobileUnstickStep(a, 1, true) == 1, "core A arms on its own third match");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 1, "core B still arms its own patch after A");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B patch is a one-shot too");
+
+	c = mgbaMobileCreate("", "", "dual-c");
+	expect(c != NULL, "a third core can be created");
+	if (c) {
+		mgbaMobileUnstickStep(c, 1, true);
+		mgbaMobileUnstickStep(c, 1, false);
+		expect(mgbaMobileUnstickStep(c, 1, true) == 0, "a miss resets only that core's streak");
+		expect(mgbaMobileUnstickStep(c, 1, true) == 0, "streak restarts from one");
+		expect(mgbaMobileUnstickStep(c, 1, true) == 1, "core C arms after three fresh matches");
+		mgbaMobileDestroy(c);
+	}
+
+	/* The synthetic audio clock is per-instance as well. */
+	expect(!mgbaMobileHasSyntheticAudioClock(a), "core A starts with the real clock");
+	mgbaMobileSetAudioClock(a, fakeAudioClock);
+	expect(mgbaMobileHasSyntheticAudioClock(a), "core A takes the synthetic clock");
+	expect(!mgbaMobileHasSyntheticAudioClock(b), "core B keeps the real clock");
+	mgbaMobileSetAudioClock(a, NULL);
+	mgbaMobileDestroy(a);
+	expect(!mgbaMobileHasSyntheticAudioClock(b), "destroying core A does not change core B");
+	mgbaMobileDestroy(b);
 }
 
 /* In-memory save state used by TYPE_STATE link synchronisation. */
@@ -3334,6 +3381,10 @@ int main(int argc, char** argv) {
 	testStateConcurrency(dir);
 		return g_failed ? 1 : 0;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--dual") == 0) {
+		testDualCoreIsolation();
+		return g_failed ? 1 : 0;
+	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");
 #ifdef _WIN32
 	_mkdir(dir);
@@ -3363,6 +3414,7 @@ int main(int argc, char** argv) {
 	testRelay();
 	testCoreLockHeld(dir);
 	testStateConcurrency(dir);
+	testDualCoreIsolation();
 	if (g_failed) {
 		fprintf(stderr, "mobile tests failed\n");
 		return 1;

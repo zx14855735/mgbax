@@ -69,6 +69,41 @@ enum LobbyFrames {
         return Data(out)
     }
 
+    /// Frame carrying a raw payload (the length counts the two type bytes).
+    static func frame(_ type: Int, _ payload: Data) -> Data {
+        let bytes = [UInt8](payload)
+        var out = [UInt8](repeating: 0, count: 6 + bytes.count)
+        putInt(&out, 0, Int32(2 + bytes.count))
+        putShort(&out, 4, type)
+        for i in 0..<bytes.count {
+            out[6 + i] = bytes[i]
+        }
+        return Data(out)
+    }
+
+    /// TYPE_STATE = int length followed by the save-state blob. The host sends
+    /// one once the link is up so both cores start from the same point.
+    static func stateFrame(_ state: Data) -> Data {
+        let bytes = [UInt8](state)
+        var body = [UInt8](repeating: 0, count: 4 + bytes.count)
+        putInt(&body, 0, Int32(bytes.count))
+        for i in 0..<bytes.count {
+            body[4 + i] = bytes[i]
+        }
+        return frame(typeState, Data(body))
+    }
+
+    /// Extracts the save-state blob; nil when the length header does not fit.
+    /// The SIO relay bridge also uses type 6, but with a raw packet and no
+    /// length prefix, so those frames must not be loaded as save states.
+    static func state(of body: Data) -> Data? {
+        let payload = [UInt8](LobbyFrames.payload(of: body))
+        guard payload.count >= 4 else { return nil }
+        let length = Int(getInt(payload, 0))
+        guard length >= 0, length <= payload.count - 4 else { return nil }
+        return Data(payload[4..<(4 + length)])
+    }
+
     /// The registration frame the official client sends right after the KCP
     /// handshake completes:
     ///

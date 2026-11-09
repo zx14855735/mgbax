@@ -215,6 +215,16 @@ int mgbaMobileBusReadBlock(const struct MgbaMobile* emu, uint32_t address, int s
 /* Linear resample used by the iOS audio path. pos is carried between calls. */
 int mgbaMobileResample(const int16_t* in, int inFrames, int inRate, int outRate, int16_t* out, int maxOutFrames, double* pos);
 
+/*
+ * Desktop test hooks. Both are per-instance on purpose: two cores in one
+ * process (本机双核心) must not share the synthetic audio clock or the link
+ * unstick one-shot latch. mgbaMobileUnstickStep() returns 1 exactly on the
+ * call that arms the patch; matched=false resets that core's streak.
+ */
+void mgbaMobileSetAudioClock(struct MgbaMobile* emu, double (*clock)(void));
+bool mgbaMobileHasSyntheticAudioClock(const struct MgbaMobile* emu);
+int mgbaMobileUnstickStep(struct MgbaMobile* emu, int mode, bool matched);
+
 /* Same BIOS filename rules as the Android importer. */
 void mgbaMobileBiosFileName(const char* name, long size, char* out, size_t outLen);
 

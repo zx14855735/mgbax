@@ -5728,6 +5728,28 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.toast(asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P")
             }
         }
+        // TYPE_STATE: the host seeds the joiner with one save-state snapshot.
+        // The C memory-state helpers already take the per-instance core lock,
+        // so calling them from the link thread needs no extra synchronisation.
+        link.stateSnapshot = { [weak self] in
+            guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return nil }
+            var blob: UnsafeMutableRawPointer? = nil
+            var size = 0
+            guard mgbaMobileSaveStateToMemory(core, &blob, &size),
+                  let ptr = blob, size > 0 else { return nil }
+            let data = Data(bytes: UnsafeRawPointer(ptr), count: size)
+            mgbaMobileFreeState(ptr)
+            return data
+        }
+        link.onRemoteState = { [weak self] state in
+            DispatchQueue.main.async {
+                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+                state.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    guard let base = raw.baseAddress else { return }
+                    _ = mgbaMobileLoadStateFromMemory(core, base, state.count)
+                }
+            }
+        }
         link.onRemoteReset = { [weak self] in
             DispatchQueue.main.async {
                 guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
