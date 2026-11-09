@@ -1850,6 +1850,10 @@ public class EmulatorActivity extends AppCompatActivity {
             @Override
             public void onState(byte[] state) {
                 Log.i(TAG, "local link TYPE_STATE " + state.length + " bytes");
+                GBoyConsoleSet set = consoleSet;
+                if (set == null || !set.applyRemoteState(state)) {
+                    Log.w(TAG, "local link TYPE_STATE not applied");
+                }
             }
 
             @Override
@@ -1875,6 +1879,12 @@ public class EmulatorActivity extends AppCompatActivity {
             GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort);
             boolean ok = set.start(core, link.session());
             consoleSet = set;
+            if (ok && asHost) {
+                byte[] snapshot = set.snapshotState();
+                if (snapshot != null) {
+                    link.session().sendState(snapshot);
+                }
+            }
             return ok;
         } catch (java.io.IOException e) {
             GBoySocketLink link = localLink;
@@ -4309,6 +4319,16 @@ public class EmulatorActivity extends AppCompatActivity {
                                 ? defaultStateDir : new File(getFilesDir(), "state");
                         if (!startGBoyLink(new File(path), save, state, 18781)) {
                             toast("多核心联机启动失败：" + gboyLinkFailure());
+                            return;
+                        }
+                        // The host publishes its starting state so both devices
+                        // advance from the same deterministic snapshot.
+                        if (asHost && cloudLink != null && cloudLink.linkSession() != null) {
+                            GBoyConsoleSet set = consoleSet;
+                            byte[] snapshot = set == null ? null : set.snapshotState();
+                            if (snapshot != null) {
+                                cloudLink.linkSession().sendState(snapshot);
+                            }
                         }
                     });
                 }
@@ -4316,6 +4336,16 @@ public class EmulatorActivity extends AppCompatActivity {
                 @Override
                 public void onDisconnected() {
                     runOnUiThread(() -> stopGBoyLink());
+                }
+
+                @Override
+                public void onRemoteState(final byte[] state) {
+                    runOnUiThread(() -> {
+                        GBoyConsoleSet set = consoleSet;
+                        if (set == null || !set.applyRemoteState(state)) {
+                            Log.w(TAG, "TYPE_STATE not applied (no mirror console)");
+                        }
+                    });
                 }
 
                 @Override

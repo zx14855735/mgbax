@@ -101,6 +101,9 @@ public final class GBoyCloudLink {
         /** The link is closing: stop the local mirror console and its thread. */
         void onDisconnected();
 
+        /** TYPE_STATE blob from the peer, to be applied to the mirror console. */
+        void onRemoteState(byte[] state);
+
         void onRemoteReset();
     }
 
@@ -159,6 +162,7 @@ public final class GBoyCloudLink {
         @Override
         public void onState(byte[] state) {
             Log.i(TAG, "rx TYPE_STATE " + state.length + " bytes");
+            hooks.onRemoteState(state);
         }
 
         @Override

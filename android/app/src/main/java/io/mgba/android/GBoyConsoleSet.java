@@ -229,6 +229,18 @@ public final class GBoyConsoleSet {
         }
     }
 
+    /** Snapshot of the visible core, for TYPE_STATE when a link starts. */
+    public byte[] snapshotState() {
+        MgbaCore visible = primary;
+        return visible == null ? null : visible.saveStateToMemory();
+    }
+
+    /** Applies a peer state blob to the hidden mirror console. */
+    public boolean applyRemoteState(byte[] state) {
+        MgbaCore hidden = mirror;
+        return hidden != null && hidden.loadStateFromMemory(state);
+    }
+
     public State state() {
         return state;
     }
