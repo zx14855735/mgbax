@@ -102,6 +102,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class EmulatorActivity extends AppCompatActivity {
     private static final String TAG = "mGBA-App";
+    /** 局域网多人（3/4 人）的默认 TCP 端口，与 adb 广播里的 --ei tcp 默认值一致。 */
+    private static final int BUS_TCP_PORT = 19876;
     private static final int REQ_ROM = 1;
     private static final int REQ_BIOS = 2;
     private static final int REQ_STORAGE = 3;
@@ -1884,6 +1886,35 @@ public class EmulatorActivity extends AppCompatActivity {
      * used by the two local consoles. The official handshake (type 1 / int 6)
      * runs on the TCP link while key masks feed the hidden mirror console.
      */
+    /** 联机对话框里「开房 / 加入（3/4 人）」的入口：校验输入后直接开总线会话。 */
+    private void busStart(boolean asHost, EditText peerBox, EditText playersBox, TextView status) {
+        int players;
+        try {
+            players = Integer.parseInt(playersBox.getText().toString().trim());
+        } catch (NumberFormatException e) {
+            players = 0;
+        }
+        if (players < 3 || players > 4) {
+            status.setText("人数只能填 3 或 4");
+            return;
+        }
+        String peer = peerBox.getText().toString().trim();
+        if (!asHost && peer.isEmpty()) {
+            status.setText("加入时请填房主 IP");
+            return;
+        }
+        // 记住输入，免得每次重连都要重打。
+        getPreferences(MODE_PRIVATE).edit()
+                .putInt("bus_players", players)
+                .putString("bus_peer", peer)
+                .apply();
+        boolean ok = startBusLink(players, BUS_TCP_PORT, peer, asHost);
+        status.setText(ok
+                ? (asHost ? "已开房（" + players + " 人，端口 " + BUS_TCP_PORT + "），等待其他玩家加入"
+                          : "已加入房间（" + players + " 人）")
+                : "启动失败：请确认 ROM 已加载、端口未被占用");
+    }
+
     /**
      * 3/4 人联机：每台设备只跑自己的那个核，四台设备之间由 native 星型总线
      * 互连 —— 主机 accept 最多 players-1 个从机，每轮收齐所有从机的字后连同
@@ -4352,6 +4383,27 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             ensureCloud().selfTest(e, p);
         }));
+        // ---- 局域网 3/4 人：每台设备只跑自己的核，互连走 native 星型总线 ----
+        TextView busHelp = new TextView(this);
+        busHelp.setText("局域网多人（3/4 人）：每台设备只跑自己的核，四台设备由总线互连。"
+                + "开房的一方填人数，其他人填房主的 IP；两边人数必须一致。");
+        busHelp.setTextColor(0xFF222222);
+        busHelp.setPadding(0, pad, 0, 0);
+        box.addView(busHelp);
+        final EditText busPeer = new EditText(this);
+        busPeer.setHint("房主 IP（加入时填，例如 192.168.1.10）");
+        busPeer.setSingleLine(true);
+        busPeer.setText(getPreferences(MODE_PRIVATE).getString("bus_peer", ""));
+        box.addView(busPeer);
+        final EditText busPlayers = new EditText(this);
+        busPlayers.setHint("人数：3 或 4");
+        busPlayers.setSingleLine(true);
+        busPlayers.setInputType(InputType.TYPE_CLASS_NUMBER);
+        busPlayers.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("bus_players", 4)));
+        box.addView(busPlayers);
+        box.addView(buttonRow(
+                linkButton("开房（3/4 人）", v -> busStart(true, busPeer, busPlayers, status)),
+                linkButton("加入（3/4 人）", v -> busStart(false, busPeer, busPlayers, status))));
         box.addView(status);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);
