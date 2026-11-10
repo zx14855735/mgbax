@@ -1640,6 +1640,17 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 					lb->bcastWord[i] = ok ? lb->word[i] : (uint16_t) 0xFFFFu;
 				}
 				lb->bcastWord[0] = (uint16_t) own;
+				if (lb->bcastGen <= 3 || (lb->bcastGen % 400) == 0) {
+					fprintf(stderr,
+					        "BCAST gen=%d idx=%u pw=%d%d%d%d pi=%u,%u,%u w=%04X,%04X,%04X bw=%04X,%04X,%04X,%04X\n",
+					        lb->bcastGen, (unsigned) index,
+					        lb->pushed[0] ? 1 : 0, lb->pushed[1] ? 1 : 0,
+					        lb->pushed[2] ? 1 : 0, lb->pushed[3] ? 1 : 0,
+					        (unsigned) lb->pushIdx[0], (unsigned) lb->pushIdx[1],
+					        (unsigned) lb->pushIdx[2],
+					        lb->word[0], lb->word[1], lb->word[2],
+					        lb->bcastWord[0], lb->bcastWord[1], lb->bcastWord[2], lb->bcastWord[3]);
+				}
 				lb->bcastCycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
 				++lb->bcastGen;
 				pthread_cond_broadcast(&lb->cv);

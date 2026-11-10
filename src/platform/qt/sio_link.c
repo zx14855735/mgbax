@@ -629,6 +629,30 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	if (GBAView8(gba->cpu, 0x03002AF4u + 0x00u) == 8) {
 		return;
 	}
+	/* bus 模式下的启动期保护：游戏还没进入联机代码（gLinkCallback == 0）时，
+	 * boot/BIOS 的 MULTI 探测不该被总线参与。否则三核在启动期就互相喂字，
+	 * boot 卡在 `MULTI m=494E im=0 pc=0` 再也进不去（实测 3 人 cb2=0）。
+	 * 2 人直连路径不走这里，行为不变。 */
+	if (netLinkBusActive(sio->link)
+	    && GBAView16(gba->cpu, 0x03002AD4u) == 0
+	    && GBAView16(gba->cpu, 0x03002AD6u) == 0) {
+		/* 同主机侧：boot 期不参与总线，用空槽收尾让启动继续。 */
+		static unsigned gateN;
+		if (++gateN <= 5 || (gateN % 3000) == 0) {
+			fprintf(stderr, "GATESLAVE n=%u me=%d mode=%d idx=%u\n",
+			        gateN, netLinkPlayer(sio->link), (int) gba->sio.mode,
+			        (unsigned) sio->sioIndex);
+		}
+		sio->sioWaiting = false;
+		sio->sioRetries = 0;
+		uint32_t emptyVals[4] = { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
+		int bp = netLinkBusPlayers(sio->link);
+		if (bp < 2) {
+			bp = 2;
+		}
+		completeMultiTransferBus(sio, emptyVals, bp, cyclesLate);
+		return;
+	}
 	/* 3/4 人总线：从机先把自己的字推给主机（主机要收齐才广播），再等广播。
 	 * 两人走下面原来的「取对端字 → 收尾 → 回推」路径。 */
 	{
@@ -978,6 +1002,21 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		if (netLinkBusActive(sio->link) && busPlayers >= 1
 		    && sio->core && sio->core->platform(sio->core) == mPLATFORM_GBA) {
 			struct GBA* gbaBus = (struct GBA*) sio->core->board;
+			/* boot/BIOS 阶段（游戏还没进入联机代码，gLinkCallback==0）不能
+			 * 走总线：否则三核在启动期互相喂字，boot 卡在 494E 再也进不去
+			 *（实测 3 人 cb2=0；同条件不挂链接则能到菜单）。这里用空槽把
+			 * 本轮收尾，让启动代码像「单机无对端」一样继续跑。 */
+			if (GBAView16(gbaBus->cpu, 0x03002AD4u) == 0
+			    && GBAView16(gbaBus->cpu, 0x03002AD6u) == 0) {
+				uint32_t emptyVals[4] = { 0xFFFFu, 0xFFFFu, 0xFFFFu, 0xFFFFu };
+				/* 必须清 sioWaiting：gbaLinkStart 见到它就把后续所有 MULTI
+				 * 起始直接拒绝（返回 false）。之前这里只 return，导致主机
+				 * 整个运行只启动过一次 MULTI（BEGIN n=1），之后再不起传输。 */
+				sio->sioWaiting = false;
+				sio->sioRetries = 0;
+				completeMultiTransferBus(sio, emptyVals, busPlayers, cyclesLate);
+				return;
+			}
 			uint32_t busVals[4];
 			uint16_t used = sio->sioIndex;
 			uint32_t own = gbaBus->memory.io[GBA_REG(SIOMLT_SEND)];
@@ -1099,6 +1138,13 @@ static bool beginMultiTransfer(struct SioLink* sio, struct GBASIODriver* driver)
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	static unsigned beginN;
+	if (++beginN <= 12 || (beginN % 3000) == 0) {
+		fprintf(stderr, "BEGIN n=%u me=%d mode=%d idx=%u cb=%04X%04X\n",
+		        beginN, netLinkPlayer(sio->link), (int) driver->p->mode,
+		        (unsigned) sio->sioIndex,
+		        GBAView16(gba->cpu, 0x03002AD6u), GBAView16(gba->cpu, 0x03002AD4u));
+	}
 	++sio->sioIndex;
 	sio->sioWaiting = true;
 	sio->sioRetries = 0;
