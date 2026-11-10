@@ -455,19 +455,13 @@ static double audioNow(struct MgbaMobile* emu) {
 	if (emu && emu->audioClock) {
 		return emu->audioClock();
 	}
-#if defined(_WIN32)
-	struct timespec ts;
-	if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
-		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
-	}
-	return 0.0;
-#else
+	/* clock_gettime 在安卓(bionic)与桌面(winpthreads)都有；旧的
+	 * timespec_get 分支在 MSYS2 MinGW 头文件里不存在，桌面构建过不去。 */
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
 		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
 	}
 	return 0.0;
-#endif
 }
 
 /* Per-instance synthetic wall clock, used by the desktop audio tests. */

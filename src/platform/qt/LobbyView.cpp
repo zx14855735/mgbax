@@ -233,6 +233,8 @@ void LobbyView::startRoom(bool asHost) {
 	config.password = m_tokenPassword;
 	config.roomId = asHost ? QString() : m_ui.roomId->text().trimmed();
 	config.romPath = m_window->controller()->path();
+	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步。
+	config.savePath = m_window->controller()->savePath();
 
 	m_controller = m_window->controller();
 	m_link = new CloudLink(this);

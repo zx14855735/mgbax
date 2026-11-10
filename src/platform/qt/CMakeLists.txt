@@ -276,14 +276,25 @@ endif()
 if(TARGET ${QT}::WebSockets)
 	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
 	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
-	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp KcpChannel.cpp LobbyView.cpp)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp)
 	list(APPEND UI_FILES LobbyView.ui)
 
+	# The official-mode mirror console wraps the same headless mobile core the
+	# Android app uses; on Windows it needs winsock for the loopback link.
+	set_source_files_properties(${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c
+		PROPERTIES COMPILE_DEFINITIONS "ENABLE_VFS;ENABLE_DIRECTORIES")
+	list(APPEND SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
+
 	# Console E2E harness: wifi round trip + gboy.top signalling self test.
-	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp GBoyLinkSession.cpp GBoyMirror.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
+	set_source_files_properties(${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c
+		PROPERTIES COMPILE_DEFINITIONS "ENABLE_VFS;ENABLE_DIRECTORIES")
 	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets ${BINARY_NAME})
 	if(WIN32)
-		target_link_libraries(test-gboylink ws2_32)
+		target_link_libraries(test-gboylink ws2_32 pthread)
 	endif()
 	target_include_directories(test-gboylink PRIVATE ${PROJECT_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD ENABLE_VFS ENABLE_VFS_FD ENABLE_DIRECTORIES)

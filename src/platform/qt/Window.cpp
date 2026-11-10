@@ -2515,6 +2515,8 @@ void Window::startAutoCloudLink() {
 	config.password = parts.at(1);
 	config.roomId = parts.size() > 2 ? parts.at(2) : QString();
 	config.romPath = m_controller->path();
+	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步。
+	config.savePath = m_controller->savePath();
 
 	CloudLink* link = new CloudLink(this);
 	link->setController(m_controller.get());

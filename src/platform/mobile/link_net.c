@@ -590,37 +590,51 @@ static void* readerMain(void* arg) {
 			break;
 		}
 		if (pkt.magic != kMagic) {
-			/* 隧道丢片/半包会让 20 字节包边界错位。以前这里直接 break：读线程
-			 * 一死，对端队列恒为 0（现场就是 rtt=0、pending=0、主机
-			 * done want=1 have=0 retries=27）。按字节滑动找下一个 MBL1 魔数
-			 * 重新对齐，丢 1~19 字节时都能把链路救回来；丢整包（20 的倍数）
-			 * 本来就不会错位。 */
-			unsigned char raw[sizeof(struct Packet)];
-			memcpy(raw, &pkt, sizeof(pkt));
+			/* 隧道上除了 20 字节联机包，还夹着服务端/对端的控制帧（实测每帧
+			 * 10 字节、以 00 00 00 06 开头）。旧实现有两个坑：
+			 *   ① 在 20 字节窗口里找不到魔数就整窗丢弃 —— 10 字节控制帧会
+			 *      让边界每轮漂移 10，漂移量与 20 不互质，越丢越远；
+			 *   ② resync 超过 64 次就 break，读线程自杀。游戏还没开始联机
+			 *      时控制帧就能把它耗光，于是真正要联机时对端队列恒空
+			 *      （现场 packets=0 / resync=65，gLink 停在 lstate=1）。
+			 * 改成真正的字节流重同步：保留窗口末尾 3 字节（魔数只有 4 字节，
+			 * 跨窗一定会被拼回来），再补读 17 字节重新扫描，永不因脏字节退出。 */
+			unsigned char win[sizeof(struct Packet)];
+			memcpy(win, &pkt, sizeof(pkt));
 			int shift = -1;
-			for (size_t i = 1; i + sizeof(uint32_t) <= sizeof(raw); ++i) {
-				uint32_t magic;
-				memcpy(&magic, raw + i, sizeof(magic));
-				if (magic == kMagic) {
-					shift = (int) i;
+			bool truncated = false;
+			for (;;) {
+				for (size_t i = 0; i + sizeof(uint32_t) <= sizeof(win); ++i) {
+					uint32_t magic;
+					memcpy(&magic, win + i, sizeof(magic));
+					if (magic == kMagic) {
+						shift = (int) i;
+						break;
+					}
+				}
+				if (shift >= 0) {
 					break;
 				}
-			}
-			LINK_LOG("Link reader desync magic=%08X head=%02X%02X%02X%02X shift=%d",
-			         (unsigned) pkt.magic, (unsigned) raw[0], (unsigned) raw[1],
-			         (unsigned) raw[2], (unsigned) raw[3], shift);
-			if (shift < 0) {
-				if (++resyncs > 64) {
+				/* 丢掉已确认无魔数的前 17 字节，保留末尾 3 字节跨窗续接 */
+				memmove(win, win + sizeof(win) - 3, 3);
+				if (!readAll(fd, win + 3, sizeof(win) - 3)) {
+					truncated = true;
 					break;
 				}
-				continue;
+				if (++resyncs == 1 || (resyncs % 5000) == 0) {
+					LINK_LOG("Link reader stray windows=%u (still scanning for MBL1)",
+					         resyncs);
+				}
 			}
-			size_t have = sizeof(raw) - (size_t) shift;
-			memmove(raw, raw + shift, have);
-			if (!readAll(fd, raw + have, sizeof(raw) - have)) {
+			if (truncated) {
 				break;
 			}
-			memcpy(&pkt, raw, sizeof(pkt));
+			size_t have = sizeof(win) - (size_t) shift;
+			memmove(win, win + shift, have);
+			if (!readAll(fd, win + have, sizeof(win) - have)) {
+				break;
+			}
+			memcpy(&pkt, win, sizeof(pkt));
 			++resyncs;
 			LINK_LOG("Link reader resynced after %d stray bytes", shift);
 		}

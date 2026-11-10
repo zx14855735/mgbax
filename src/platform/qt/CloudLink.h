@@ -16,6 +16,8 @@
 namespace QGBA {
 
 class KcpChannel;
+class GBoyLinkSession;
+class GBoyMirror;
 struct ILink;
 struct SioLinkHost;
 namespace GbCloud { class Session; }
@@ -44,6 +46,11 @@ public:
 		/** Room id; empty or null creates a room, otherwise joins it. */
 		QString roomId;
 		QString romPath;
+		/**
+		 * The running game's battery save; the official-mode mirror console
+		 * boots from a copy of it. Empty falls back to the ROM directory.
+		 */
+		QString savePath;
 	};
 
 	CloudLink(QObject* parent = nullptr);
@@ -104,6 +111,14 @@ private:
 	/** 分开控制 over the official KCP relay (netLink packets in type-6 frames). */
 	void startSioRelayBridge(KcpChannel* link, intptr_t local, GbCloud::Session* sig,
 	                         const QString& token, Room* room, bool asHost);
+	/**
+	 * Official GBoy layout (officialMode): a hidden mirror console joins the
+	 * visible core over loopback SIO and only key masks cross the network.
+	 * Runs the session serve loop over whichever transport is live.
+	 */
+	void startOfficialMatch(ILink* link, Room* room);
+	void serveOfficial(ILink* link, Room* room);
+	void stopOfficialMatch();
 	void closeSio();
 
 	// wire handshake
@@ -143,6 +158,13 @@ private:
 	std::atomic<int> m_localKeys{0};
 	std::function<QByteArray()> m_stateSnapshot;
 	std::atomic<bool> m_initialStateSent{false};
+
+	/** Official GBoy layout (MGBAX_OFFICIAL_LINK=1): mirror console + keys. */
+	bool m_officialMode = false;
+	GBoyLinkSession* m_gboySession = nullptr;
+	GBoyMirror* m_mirror = nullptr;
+	quint16 m_mirrorSioPort = 0;
+	long m_officialFrame = 0;
 
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;

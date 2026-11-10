@@ -8,9 +8,14 @@
 
 #include "GbCloud.h"
 #include "GBoyFrames.h"
+#include "GBoyLinkSession.h"
+#include "GBoyMirror.h"
 #include "DirectLink.h"
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
+
+#include <QDir>
+#include <QFileInfo>
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
@@ -590,6 +595,11 @@ CloudLink::CloudLink(QObject* parent)
 	: QThread(parent)
 {
 	m_remoteKeysEnabled = qgetenv("MGBAX_REMOTE_KEYS").toInt() != 0;
+	// 官方 GBoy 布局：本机多核（可见核 + 隐藏镜像核走回环 SIO），网络只传
+	// 按键掩码。安卓端默认开启（gboy_official_link=true），PC 端由环境变量
+	// 打开——两端必须一致，否则同一条隧道上跑两套帧格式（现场教训：PC 发
+	// 裸 MBL1 包、安卓发 GBoy 帧，9470 个碎片包把读线程活活耗死）。
+	m_officialMode = qgetenv("MGBAX_OFFICIAL_LINK").toInt() != 0;
 }
 
 CloudLink::~CloudLink() {
@@ -652,10 +662,12 @@ void CloudLink::run() {
 		runLobby();
 	} catch (const std::exception& e) {
 		cleanupTunnel();
+		stopOfficialMatch();
 		m_session = nullptr;
 		fail(QStringLiteral("联机流程中断：%1").arg(QString::fromUtf8(e.what())));
 	} catch (...) {
 		cleanupTunnel();
+		stopOfficialMatch();
 		m_session = nullptr;
 		fail(QStringLiteral("联机流程出现未知错误"));
 	}
@@ -856,8 +868,13 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 		runTunnel(sig, token, room, asHost);
 		return;
 	}
-	// 官方 KCP 中继活着：SIO 分开控制模式直接把联机线字节过中继
+	// 官方 KCP 中继活着：officialMode 走镜像按键布局（网络只传按键，
+	// 两端各自全速跑），否则 SIO 分开控制模式把联机线字节过中继
 	// （netLink 包封在 type-6 帧里），RTT 比 WS 隧道低 3-7 倍。
+	if (m_officialMode) {
+		startOfficialMatch(link, room);
+		return;
+	}
 	QString error;
 	intptr_t local = attachDriverLoopback(m_controller, asHost, &error);
 	if (m_closed.load(std::memory_order_relaxed)) {
@@ -1268,6 +1285,14 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		fail(detail);
 		return;
 	}
+	if (m_officialMode) {
+		// 镜像按键布局不搞 P2P 直连：按键流走隧道就已经是全速，不值得为
+		// 它再开一条直连（MGBAX_NO_DIRECT 场景下也不允许）。
+		startOfficialMatch(link, room);
+		cleanupTunnel();
+		m_tunnelUp = false;
+		return;
+	}
 	ILink* chosen = link;
 	DirectLink* direct = static_cast<DirectLink*>(tryDirectLink(sig, token, room, link, asHost));
 	if (direct) {
@@ -1563,6 +1588,153 @@ void CloudLink::closeSio() {
 	}
 	if (m_controller) {
 		m_controller->sioClose();
+	}
+}
+
+/**
+ * 官方 GBoy 布局（officialMode）的比赛循环：
+ *
+ *   本机：可见核 linkHost(127.0.0.1:P) ← 镜像核 linkJoin —— SIO 完全本地，
+ *         游戏内联机（有线俱乐部/对战）就是两颗本地核在跑，零网络锁步
+ *   网络：每 5 帧(12Hz)一把按键掩码 + 1Hz FPS + 一把 TYPE_STATE 开局快照
+ *
+ * 镜像核由 GBoyMirror 自己的线程推进（60fps，pumpLink 每帧），本地按键由
+ * 前端的 pump 定时器喂进 m_localKeys，远端按键经 GBoyLinkSession 12Hz 采样
+ * 后由镜像线程读走——两端各自全速跑，这就是「帧率和单机一样」的来源。
+ */
+void CloudLink::startOfficialMatch(ILink* link, Room* room) {
+	const bool asHost = m_hostRole;
+	status((asHost ? QStringLiteral("房间已创建，房号 ") : QStringLiteral("已加入房间 "))
+	       + (room->roomId.isEmpty() ? QString() : room->roomId)
+	       + QStringLiteral("\n官方镜像联机（本机多核，网络仅传按键）\n正在启动镜像核心…"));
+	if (!m_controller) {
+		fail(QStringLiteral("模拟核心未就绪"));
+		return;
+	}
+	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），镜像核连进来。
+	quint16 port = 0;
+	for (int t = 0; t < 8; ++t) {
+		quint16 candidate = quint16(18781 + t);
+		if (m_controller->sioHost(candidate)) {
+			port = candidate;
+			break;
+		}
+	}
+	if (!port) {
+		fail(QStringLiteral("本机联机线端口被占用"));
+		return;
+	}
+	m_mirrorSioPort = port;
+	GBoyLinkSession::Events events;
+	events.onReset = [this]() { emit remoteReset(); };
+	events.onState = [this](const QByteArray& state) {
+		// 官方语义：TYPE_STATE 只灌进镜像核（对方的控制台在本机的映像），
+		// 绝不能灌进可见核——后者是玩家自己的进度。
+		if (!m_mirror || !m_mirror->applyRemoteState(state)) {
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE not applied (no mirror console)"));
+		}
+	};
+	events.onReady = [this]() { status(QStringLiteral("对方已就绪")); };
+	events.onStatus = [this](const QString& text) {
+		GbCloud::debugLog(QStringLiteral("[gboy-session] ") + text);
+	};
+	m_gboySession = new GBoyLinkSession(
+	        [this, link](const QByteArray& frame) {
+		        if (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
+			        link->send(frame);
+		        }
+	        },
+	        events, 1, 2);
+	emit connected(asHost);
+	m_mirror = new GBoyMirror(this);
+	QString savePath = m_config.savePath;
+	if (savePath.isEmpty()) {
+		savePath = QFileInfo(m_config.romPath).dir().filePath(
+		        QFileInfo(m_config.romPath).completeBaseName() + QStringLiteral(".sav"));
+	}
+	QString mirrorRoot = QFileInfo(savePath).dir().filePath(QStringLiteral("mirror1"));
+	QString error;
+	if (!m_mirror->start(m_config.romPath, savePath, mirrorRoot, port, m_gboySession, &error)) {
+		stopOfficialMatch();
+		fail(error);
+		return;
+	}
+	status(QStringLiteral("SIO 链路已建立（官方镜像，环回 %1）\n").arg(port)
+	       + QStringLiteral("各自操作各自的画面，游戏内联机（交换/对战）走本机联机线\n")
+	       + QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
+	serveOfficial(link, room);
+	stopOfficialMatch();
+}
+
+void CloudLink::serveOfficial(ILink* link, Room* room) {
+	// 官方 12Hz 摇键节奏：onLocalFrame 按帧调用（这里用 ~60Hz 墙钟模拟帧
+	// 节拍，等价安卓的 onLocalFrame 帧驱动），GBoyLinkSession 内部每 5 帧
+	// 发一把本地按键并采样一把远端按键——正是官方客户端的 cadence。
+	qint64 lastTick = 0;
+	qint64 lastFps = 0;
+	qint64 lastAdvertise = 0;
+	// 每分钟一次的会话自检：对端按键积压/掉帧从会话里捞出来打日志。
+	qint64 lastDiag = 0;
+	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
+		if (now - lastTick >= 16) {
+			lastTick = now;
+			m_gboySession->onLocalFrame(++m_officialFrame,
+			                            m_localKeys.load(std::memory_order_relaxed));
+		}
+		if (now - lastFps >= 1000) {
+			lastFps = now;
+			m_gboySession->sendFps(60);
+		}
+		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
+			m_gboySession->sendReset();
+		}
+		// Host side: keep the signalling socket alive and re-broadcast the
+		// relay endpoint (same duty cycle as the merged-keys serve()).
+		if (m_isAdvertising && m_session && !m_tunnelUp && now - lastAdvertise >= 2000) {
+			lastAdvertise = now;
+			pollSignaling(m_session, m_authToken, m_advertiserUuid, room);
+		}
+		if (now - lastDiag >= 60000) {
+			if (lastDiag) {
+				GbCloud::debugLog(QStringLiteral("[gboy-io] frames=%1 dropped=%2 ready=%3")
+				                          .arg(m_officialFrame)
+				                          .arg(m_gboySession->droppedFrames())
+				                          .arg(m_gboySession->isReady() ? 1 : 0));
+			}
+			lastDiag = now;
+		}
+		QByteArray message;
+		if (!link->recv(&message, 30)) {
+			continue;
+		}
+		m_reader.append(message.constData(), message.size());
+		QByteArray body;
+		while (!(body = m_reader.next()).isNull()) {
+			m_gboySession->onFrameBody(body);
+		}
+	}
+	if (link->isClosed() && !m_closed.load(std::memory_order_relaxed)) {
+		fail(m_tunnelUp ? QStringLiteral("服务器隧道连接已断开") : QStringLiteral("中继连接已断开"));
+	}
+}
+
+void CloudLink::stopOfficialMatch() {
+	if (m_mirror) {
+		m_mirror->stopMirror();
+		delete m_mirror;
+		m_mirror = nullptr;
+	}
+	if (m_gboySession) {
+		delete m_gboySession;
+		m_gboySession = nullptr;
+	}
+	if (m_mirrorSioPort) {
+		m_mirrorSioPort = 0;
+		if (m_controller) {
+			m_controller->sioClose();
+		}
 	}
 }
 
