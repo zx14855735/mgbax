@@ -2514,9 +2514,26 @@ void Window::startAutoCloudLink() {
 	config.user = parts.at(0);
 	config.password = parts.at(1);
 	config.roomId = parts.size() > 2 ? parts.at(2) : QString();
-	config.romPath = m_controller->path();
-	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步。
-	config.savePath = m_controller->savePath();
+	// path() 可能只是文件名（从媒体库/VFile 加载时），绝对位置在 baseDirectory：
+	// 镜像核要拿它重新加载 ROM，必须解析成真实文件路径。
+	QString romPath = m_controller->path();
+	if (!QFileInfo::exists(romPath)) {
+		QString base = m_controller->baseDirectory();
+		if (!base.isEmpty() && QFileInfo::exists(QDir(base).filePath(romPath))) {
+			romPath = QDir(base).filePath(romPath);
+		}
+	}
+	config.romPath = romPath;
+	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步；
+	// savePath 同样可能是相对形式（./rom.sav），一并解析。
+	QString savePath = m_controller->savePath();
+	if (!QFileInfo::exists(savePath)) {
+		QString base = m_controller->baseDirectory();
+		if (!base.isEmpty() && QFileInfo::exists(QDir(base).filePath(savePath))) {
+			savePath = QDir(base).filePath(savePath);
+		}
+	}
+	config.savePath = savePath;
 
 	CloudLink* link = new CloudLink(this);
 	link->setController(m_controller.get());

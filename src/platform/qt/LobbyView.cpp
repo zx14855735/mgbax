@@ -11,6 +11,8 @@
 #include "GbCloud.h"
 #include "Window.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QRandomGenerator>
 #include <QSettings>
 #include <QTimer>
@@ -232,9 +234,19 @@ void LobbyView::startRoom(bool asHost) {
 	config.user = m_tokenUser;
 	config.password = m_tokenPassword;
 	config.roomId = asHost ? QString() : m_ui.roomId->text().trimmed();
-	config.romPath = m_window->controller()->path();
-	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步。
-	config.savePath = m_window->controller()->savePath();
+	// path() 可能只是文件名（媒体库/VFile 加载），绝对位置在 baseDirectory；
+	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿它们重新加载 ROM。
+	QString romPath = m_window->controller()->path();
+	QString base = m_window->controller()->baseDirectory();
+	if (!QFileInfo::exists(romPath) && !base.isEmpty()) {
+		romPath = QDir(base).filePath(romPath);
+	}
+	config.romPath = romPath;
+	QString savePath = m_window->controller()->savePath();
+	if (!QFileInfo::exists(savePath) && !base.isEmpty()) {
+		savePath = QDir(base).filePath(savePath);
+	}
+	config.savePath = savePath;
 
 	m_controller = m_window->controller();
 	m_link = new CloudLink(this);

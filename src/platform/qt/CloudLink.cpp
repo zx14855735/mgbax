@@ -1652,6 +1652,8 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		savePath = QFileInfo(m_config.romPath).dir().filePath(
 		        QFileInfo(m_config.romPath).completeBaseName() + QStringLiteral(".sav"));
 	}
+	GbCloud::debugLog(QStringLiteral("[official] rom=[%1] len=%2 save=[%3]")
+	                          .arg(m_config.romPath, QString::number(m_config.romPath.size()), savePath));
 	QString mirrorRoot = QFileInfo(savePath).dir().filePath(QStringLiteral("mirror1"));
 	QString error;
 	if (!m_mirror->start(m_config.romPath, savePath, mirrorRoot, port, m_gboySession, &error)) {
