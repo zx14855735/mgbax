@@ -110,6 +110,15 @@ uint32_t netLinkPushAgeMs(struct NetLink* link);
  * 时启用。 */
 bool netLinkBusHost(struct NetLink* link, int port, int players);
 bool netLinkBusJoin(struct NetLink* link, const char* host, int port);
+/* 进程内总线（同进程 N 核，无 socket / IO 线程）。
+ *
+ * 与 netLinkBusHost/Join 语义相同，但所有 NetLink 在同一进程内共享一块内存
+ * 做回合屏障：主机是唯一时钟源，从机永远跟随主机当前轮次，轮次天然对齐；
+ * 会合靠 cond 广播（µs 级），没有 TCP 的 2ms 超时地板。3/4 人 N 核必须用它，
+ * 否则 netLinkBusRound 会在「主机等从机 index / 从机等主机广播」上互相等满
+ * 超时（实测 198ms/帧、5.6fps）。key 用来在同一进程里区分不同的会话。 */
+bool netLinkBusHostLocal(struct NetLink* link, int key, int players);
+bool netLinkBusJoinLocal(struct NetLink* link, int key);
 /* 本机是否处于总线模式（players > 2 且已启动）。 */
 bool netLinkBusActive(struct NetLink* link);
 /* 当前已连上的玩家数（含本机）。未连上或非总线模式返回 0。 */

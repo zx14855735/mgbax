@@ -347,6 +347,9 @@ struct BusPeer {
 	size_t rxLen;
 };
 
+struct LocalBus;
+static void localBusDetach(struct LocalBus* lb, bool host);
+
 struct NetLink {
 	pthread_mutex_t mu;
 	pthread_cond_t cv;
@@ -442,6 +445,10 @@ struct NetLink {
 	/* 从机侧只有一条连接，半个包的缓冲区挂在链路上。 */
 	unsigned char busRx[sizeof(struct BusPacket) * 2];
 	size_t busRxLen;
+	/* 进程内总线：同进程 N 个 NetLink 共享一块内存做回合栅栏，不碰 socket。
+	 * 非空时 netLinkBusRound 走 busRoundLocal，TCP 那一整套（IO 线程/收发/
+	 * 心跳）都不启动。 */
+	struct LocalBus* localBus;
 };
 
 static const uint32_t kMagic = 0x314C424Du;
@@ -1288,8 +1295,14 @@ void netLinkClose(struct NetLink* link) {
 		link->busPeers[i].fd = -1;
 	}
 	link->busPeerCount = 0;
+	struct LocalBus* localBus = link->localBus;
+	bool localHost = link->busHost;
+	link->localBus = NULL;
 	pthread_cond_broadcast(&link->cv);
 	pthread_mutex_unlock(&link->mu);
+	if (localBus) {
+		localBusDetach(localBus, localHost);
+	}
 	if (sock >= 0) {
 		struct Packet bye;
 		memset(&bye, 0, sizeof(bye));
@@ -1447,6 +1460,320 @@ static void* busJoinThread(void* arg) {
 	return NULL;
 }
 
+/* ==================== 进程内总线（同进程 N 核） ====================
+ *
+ * 3/4 人星型总线跑在 127.0.0.1 TCP 上时，主机「等从机同 index 的字」和从机
+ * 「等主机广播」会互相等；index 一旦错位就双双吃满超时地板（实测从机
+ * runFrame 198ms/帧、整机 5.6fps、full=0）。根因不是带宽，是「跨线程逐轮
+ * 会合」+「轮次号各算各的」。
+ *
+ * 这里把同一份协议搬进进程内共享内存：**主机是唯一时钟源，由它决定本轮号**，
+ * 从机永远跟随主机当前轮次（实际号由 indexOut 回带）。于是轮次天然对齐，
+ * 不存在错位；会合靠 cond 广播，唤醒 µs 级，没有 2ms 超时地板。socket、
+ * IO 线程、心跳一概不需要。语义与 netLinkBusRound 完全一致。
+ */
+#define LOCALBUS_MAX_BUSES 8
+
+struct LocalBus {
+	int players;
+	int attached;                 /* 已 attach 的从机数（不含主机） */
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	uint16_t index;               /* 主机当前开的轮次号 */
+	bool roundOpen;
+	uint16_t word[BUS_MAX_PLAYERS];
+	bool pushed[BUS_MAX_PLAYERS];
+	uint16_t pushIdx[BUS_MAX_PLAYERS];
+	uint16_t doneIdx[BUS_MAX_PLAYERS];   /* 各从机已消费到的轮次 */
+	int seenGen[BUS_MAX_PLAYERS];        /* 各从机已消费的广播代数 */
+	uint16_t bcastIndex;
+	uint16_t bcastWord[BUS_MAX_PLAYERS];
+	uint32_t bcastCycles;
+	int bcastGen;
+	int rounds, full, empty, stale, future, minLead, maxLead;
+	int slaveCalls;               /* 从机调用 busRoundLocal 的次数（诊断） */
+	uint64_t totalUs;             /* busRoundLocal 内累计墙钟（诊断） */
+	bool stop;
+	bool used;
+	int key;
+};
+
+static struct LocalBus gLocalBuses[LOCALBUS_MAX_BUSES];
+static pthread_mutex_t gLocalBusMu = PTHREAD_MUTEX_INITIALIZER;
+
+static struct LocalBus* localBusFind(int key) {
+	struct LocalBus* lb = NULL;
+	pthread_mutex_lock(&gLocalBusMu);
+	for (int i = 0; i < LOCALBUS_MAX_BUSES; ++i) {
+		if (gLocalBuses[i].used && gLocalBuses[i].key == key) {
+			lb = &gLocalBuses[i];
+			break;
+		}
+	}
+	pthread_mutex_unlock(&gLocalBusMu);
+	return lb;
+}
+
+static struct LocalBus* localBusCreate(int key, int players) {
+	struct LocalBus* lb = NULL;
+	pthread_mutex_lock(&gLocalBusMu);
+	for (int i = 0; i < LOCALBUS_MAX_BUSES && !lb; ++i) {
+		if (gLocalBuses[i].used && gLocalBuses[i].key == key) {
+			lb = &gLocalBuses[i];
+		}
+	}
+	for (int i = 0; i < LOCALBUS_MAX_BUSES && !lb; ++i) {
+		if (!gLocalBuses[i].used) {
+			lb = &gLocalBuses[i];
+			memset(lb, 0, sizeof(*lb));
+			pthread_mutex_init(&lb->mu, NULL);
+			pthread_cond_init(&lb->cv, NULL);
+			lb->used = true;
+			lb->key = key;
+			lb->minLead = 9999;
+			lb->maxLead = -9999;
+			for (int s = 0; s < BUS_MAX_PLAYERS; ++s) {
+				lb->doneIdx[s] = 0;
+			}
+		}
+	}
+	if (lb) {
+		lb->players = players;
+	}
+	pthread_mutex_unlock(&gLocalBusMu);
+	return lb;
+}
+
+static void localBusDetach(struct LocalBus* lb, bool host) {
+	if (!lb) {
+		return;
+	}
+	pthread_mutex_lock(&gLocalBusMu);
+	pthread_mutex_lock(&lb->mu);
+	if (host) {
+		/* 主机退出 = 整个会话结束：叫醒所有从机让它们 bail，释放槽位。 */
+		lb->stop = true;
+		lb->used = false;
+	} else if (lb->attached > 0) {
+		--lb->attached;
+	}
+	pthread_cond_broadcast(&lb->cv);
+	pthread_mutex_unlock(&lb->mu);
+	pthread_mutex_unlock(&gLocalBusMu);
+}
+
+/* 进程内一轮聚合，契约同 netLinkBusRound。 */
+static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
+                         uint32_t* values, int players, int timeoutMs, uint16_t* indexOut) {
+	struct LocalBus* lb = link->localBus;
+	int slot = link->player;
+	if (!lb || slot < 0 || slot >= BUS_MAX_PLAYERS) {
+		return -1;
+	}
+	if (players < 2 || players > BUS_MAX_PLAYERS) {
+		players = lb->players;
+	}
+	uint32_t vals[BUS_MAX_PLAYERS];
+	for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+		vals[i] = 0xFFFFu;
+	}
+	if (indexOut) {
+		*indexOut = index;
+	}
+	int ret = -1;
+	uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
+	uint32_t _busT0 = nowUs();
+
+	pthread_mutex_lock(&lb->mu);
+	if (link->busHost) {
+		/* 主机 = 时钟源：用调用方的 index 开这一轮。 */
+		lb->index = index;
+		lb->roundOpen = true;
+		lb->word[0] = (uint16_t) own;
+		lb->pushed[0] = true;
+		lb->pushIdx[0] = index;
+		pthread_cond_broadcast(&lb->cv);
+		for (;;) {
+			int got = 0;
+			for (int s = 1; s < lb->players; ++s) {
+				if (lb->pushed[s] && lb->pushIdx[s] == index) {
+					++got;
+				}
+			}
+			for (int s = 1; s < lb->players; ++s) {
+				if (lb->pushed[s]) {
+					int16_t lead = (int16_t) (lb->pushIdx[s] - index);
+					if (lead < 0) {
+						++lb->stale;
+					} else if (lead > 0) {
+						++lb->future;
+					}
+					if (lead < lb->minLead) {
+						lb->minLead = lead;
+					}
+					if (lead > lb->maxLead) {
+						lb->maxLead = lead;
+					}
+				}
+			}
+			++lb->rounds;
+			if (got >= lb->attached) {
+				++lb->full;
+			}
+			if (got == 0) {
+				++lb->empty;
+			}
+			if (got >= lb->attached || timeoutMs <= 0 || lb->stop
+			    || (int32_t) (expireAt - nowMs()) <= 0) {
+				/* 快照广播（含可能的空槽），让所有从机都能前进。 */
+				lb->bcastIndex = index;
+				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+					bool ok = lb->pushed[i] && lb->pushIdx[i] == index;
+					lb->bcastWord[i] = ok ? lb->word[i] : (uint16_t) 0xFFFFu;
+				}
+				lb->bcastWord[0] = (uint16_t) own;
+				lb->bcastCycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
+				++lb->bcastGen;
+				pthread_cond_broadcast(&lb->cv);
+				vals[0] = own;
+				ret = got;
+				break;
+			}
+			struct timespec ts;
+			deadline(&ts, 2);
+			pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
+		}
+	} else {
+		/* 从机：始终跟随主机当前轮次。若主机还没开本轮，等它开。 */
+		++lb->slaveCalls;
+		bool have = false;
+		uint16_t want = 0;
+		for (;;) {
+			if (lb->stop) {
+				break;
+			}
+			if (lb->roundOpen) {
+				want = lb->index;
+				if ((int16_t) (want - lb->doneIdx[slot]) > 0) {
+					have = true;
+					break;
+				}
+			}
+			if (timeoutMs <= 0 || (int32_t) (expireAt - nowMs()) <= 0) {
+				break;
+			}
+			struct timespec ts;
+			deadline(&ts, 2);
+			pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
+		}
+		if (have) {
+			lb->word[slot] = (uint16_t) own;
+			lb->pushed[slot] = true;
+			lb->pushIdx[slot] = want;
+			pthread_cond_broadcast(&lb->cv);
+			int gen0 = lb->bcastGen;
+			for (;;) {
+				if (lb->bcastGen > gen0 && (int16_t) (lb->bcastIndex - want) >= 0) {
+					break;
+				}
+				if (lb->stop || timeoutMs <= 0 || (int32_t) (expireAt - nowMs()) <= 0) {
+					break;
+				}
+				struct timespec ts;
+				deadline(&ts, 2);
+				pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
+			}
+			if (lb->bcastGen > gen0 && (int16_t) (lb->bcastIndex - want) >= 0) {
+				int got = 0;
+				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+					vals[i] = lb->bcastWord[i];
+				}
+				vals[slot] = (uint16_t) own;
+				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+					if (i != slot && i < players && vals[i] != 0xFFFFu) {
+						++got;
+					}
+				}
+				lb->doneIdx[slot] = lb->bcastIndex;
+				lb->seenGen[slot] = lb->bcastGen;
+				if (indexOut) {
+					*indexOut = lb->bcastIndex;
+				}
+				ret = got;
+			}
+		}
+	}
+	lb->totalUs += (uint64_t) (nowUs() - _busT0);
+	pthread_mutex_unlock(&lb->mu);
+	if (values) {
+		for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+			values[i] = vals[i];
+		}
+	}
+	return ret;
+}
+
+bool netLinkBusHostLocal(struct NetLink* link, int key, int players) {
+	if (!link) {
+		return false;
+	}
+	if (players < 3) {
+		players = 3;
+	}
+	if (players > BUS_MAX_PLAYERS) {
+		players = BUS_MAX_PLAYERS;
+	}
+	struct LocalBus* lb = localBusCreate(key, players);
+	if (!lb) {
+		return false;
+	}
+	pthread_mutex_lock(&link->mu);
+	link->localBus = lb;
+	link->bus = true;
+	link->busHost = true;
+	link->busPlayers = players;
+	link->player = 0;
+	link->state = LINK_CONNECTED;
+	pthread_mutex_unlock(&link->mu);
+	pthread_mutex_lock(&lb->mu);
+	lb->roundOpen = false;
+	lb->stop = false;
+	pthread_mutex_unlock(&lb->mu);
+	LINK_LOG("Link LOCAL bus host key=%d players=%d", key, players);
+	return true;
+}
+
+bool netLinkBusJoinLocal(struct NetLink* link, int key) {
+	if (!link) {
+		return false;
+	}
+	struct LocalBus* lb = localBusFind(key);
+	if (!lb) {
+		return false;
+	}
+	pthread_mutex_lock(&lb->mu);
+	int slot = lb->attached + 1;
+	if (slot >= lb->players || slot >= BUS_MAX_PLAYERS) {
+		pthread_mutex_unlock(&lb->mu);
+		return false;
+	}
+	lb->attached = slot;
+	lb->pushed[slot] = false;
+	lb->doneIdx[slot] = 0;
+	lb->seenGen[slot] = 0;
+	pthread_mutex_unlock(&lb->mu);
+	pthread_mutex_lock(&link->mu);
+	link->localBus = lb;
+	link->bus = true;
+	link->busHost = false;
+	link->busPlayers = lb->players;
+	link->player = slot;
+	link->state = LINK_CONNECTED;
+	pthread_mutex_unlock(&link->mu);
+	LINK_LOG("Link LOCAL bus join key=%d slot=%d players=%d", key, slot, lb->players);
+	return true;
+}
+
 bool netLinkBusHost(struct NetLink* link, int port, int players) {
 	if (!link || port < 1 || port > 65535) {
 		return false;
@@ -1556,7 +1883,7 @@ bool netLinkBusActive(struct NetLink* link) {
 		return false;
 	}
 	pthread_mutex_lock(&link->mu);
-	bool bus = link->bus;
+	bool bus = link->bus || link->localBus != NULL;
 	pthread_mutex_unlock(&link->mu);
 	return bus;
 }
@@ -1568,7 +1895,9 @@ int netLinkBusPlayers(struct NetLink* link) {
 	int n = 0;
 	pthread_mutex_lock(&link->mu);
 	if (link->bus) {
-		if (link->busHost) {
+		if (link->localBus) {
+			n = link->busPlayers;
+		} else if (link->busHost) {
 			n = link->busPeerCount + 1;
 		} else if (link->state == LINK_CONNECTED) {
 			n = link->busPlayers;
@@ -1599,6 +1928,19 @@ void netLinkBusDiag(struct NetLink* link, int32_t* out) {
 	if (!link) {
 		return;
 	}
+	struct LocalBus* lb = link->localBus;
+	if (lb) {
+		pthread_mutex_lock(&lb->mu);
+		out[0] = lb->rounds;
+		out[1] = lb->full;
+		out[2] = lb->empty;
+		out[3] = lb->slaveCalls;
+		out[4] = lb->future;
+		out[5] = (int32_t) (lb->totalUs / 1000);
+		out[6] = lb->maxLead;
+		pthread_mutex_unlock(&lb->mu);
+		return;
+	}
 	pthread_mutex_lock(&link->mu);
 	out[0] = link->busDiagRounds;
 	out[1] = link->busDiagFull;
@@ -1627,6 +1969,14 @@ uint32_t netLinkBusRoundCycles(struct NetLink* link) {
 	if (!link) {
 		return 0;
 	}
+	struct LocalBus* lb = link->localBus;
+	if (lb) {
+		uint32_t c;
+		pthread_mutex_lock(&lb->mu);
+		c = lb->bcastCycles;
+		pthread_mutex_unlock(&lb->mu);
+		return c;
+	}
 	pthread_mutex_lock(&link->mu);
 	uint32_t cycles = link->busInCycles;
 	pthread_mutex_unlock(&link->mu);
@@ -1645,6 +1995,9 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 	}
 	if (!link) {
 		return 0;
+	}
+	if (link->localBus) {
+		return busRoundLocal(link, index, own, values, players, timeoutMs, indexOut);
 	}
 	if (players < 2 || players > BUS_MAX_PLAYERS) {
 		players = BUS_MAX_PLAYERS;

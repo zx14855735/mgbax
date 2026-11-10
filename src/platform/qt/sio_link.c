@@ -1534,6 +1534,24 @@ bool sioLinkHostPlayers(struct SioLink* sio, int port, int players) {
 	return netLinkBusHost(sio->link, port, players);
 }
 
+/* 进程内总线版本（同进程 N 核）：仅诊断 / N 核本机回环用，语义同上面。 */
+bool sioLinkHostPlayersLocal(struct SioLink* sio, int key, int players) {
+	if (!sio || !sio->link) {
+		return false;
+	}
+	if (players < 3) {
+		players = 3;
+	}
+	return netLinkBusHostLocal(sio->link, key, players);
+}
+
+bool sioLinkJoinPlayersLocal(struct SioLink* sio, int key) {
+	if (!sio || !sio->link) {
+		return false;
+	}
+	return netLinkBusJoinLocal(sio->link, key);
+}
+
 bool sioLinkJoin(struct SioLink* sio, const char* host, int port) {
 	return sioLinkJoinPlayers(sio, host, port, 2);
 }

@@ -1326,14 +1326,29 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 		links[i] = sioLinkCreate();
 	}
 
-	if (!sioLinkHostPlayers(links[0], port, players)) {
+	const bool localBus = envInt("BUSGAME_LOCAL_BUS", 0) != 0;
+	if (localBus) {
+		/* 进程内总线：同进程共享内存回合屏障，主机是唯一时钟源。
+		 * 这条路径才是 3/4 人真正可玩的形态（无 socket、无每轮 2ms 地板）。 */
+		if (!sioLinkHostPlayersLocal(links[0], port, players)) {
+			fprintf(stderr, "BUSGAME: FAIL (cannot local-host)\n");
+			return 1;
+		}
+		for (int i = 1; i < players; ++i) {
+			if (!sioLinkJoinPlayersLocal(links[i], port)) {
+				fprintf(stderr, "BUSGAME: FAIL (cannot local-join %d)\n", i);
+				return 1;
+			}
+		}
+	} else if (!sioLinkHostPlayers(links[0], port, players)) {
 		fprintf(stderr, "BUSGAME: FAIL (cannot listen)\n");
 		return 1;
-	}
-	for (int i = 1; i < players; ++i) {
-		if (!sioLinkJoinPlayers(links[i], "127.0.0.1", port, players)) {
-			fprintf(stderr, "BUSGAME: FAIL (cannot connect %d)\n", i);
-			return 1;
+	} else {
+		for (int i = 1; i < players; ++i) {
+			if (!sioLinkJoinPlayers(links[i], "127.0.0.1", port, players)) {
+				fprintf(stderr, "BUSGAME: FAIL (cannot connect %d)\n", i);
+				return 1;
+			}
 		}
 	}
 	for (int k = 0; k < 300; ++k) {
@@ -1367,6 +1382,8 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	std::atomic<uint32_t> lastCb2[4];
 	std::atomic<int> lastFrame[4];
 	std::atomic<int> frameProgress[4];
+	std::atomic<uint64_t> coreStepUs[4];
+	std::atomic<uint64_t> pumpUs[4], runUs[4];
 	for (int i = 0; i < players; ++i) {
 		maxCnt[i].store(0);
 		sawCards[i].store(0);
@@ -1374,15 +1391,16 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 		lastCb2[i].store(0);
 		lastFrame[i].store(-1);
 		frameProgress[i].store(-1);
+		coreStepUs[i].store(0);
+		pumpUs[i].store(0);
+		runUs[i].store(0);
 	}
-	/* Leader-follower 栅栏（与安卓 GBoyConsoleSet 同构）：主机（核 0，可见核）
-	 * 先跑本帧、把本帧的字广播出去，再等所有从机跟上；从机在自己的帧里消费
-	 * 主机刚广播的字，零等待。对称栅栏会把主机也冻在栅栏处，饿死从机的广播
-	 * 等待，把整机拖到 ~5fps 且轮次错位；这里主机先广播再等，从机不会被饿。 */
+	/* 帧栅栏用对称并行模式：所有核并行跑同一帧，见下方 worker 内注释。
+	 * barrierDone[i] 记录每个核最后跑完的帧号，全部追平 f-1 才放行 f。 */
 	std::mutex barrierMu;
 	std::condition_variable barrierCv;
-	int barrierTarget = -1;
 	std::vector<int> barrierDone(players, -1);
+	std::atomic<uint64_t> hostStepUs(0), hostWaitUs(0);
 	std::vector<std::thread> threads;
 	for (int i = 0; i < players; ++i) {
 		threads.emplace_back([&, i]() {
@@ -1391,6 +1409,7 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 			const int saveAt = menuAt + 240;
 			struct GBA* g = (struct GBA*) cores[i]->board;
 			auto step = [&](int f) {
+				auto _s0 = std::chrono::steady_clock::now();
 				uint32_t keys = 0;
 				if (f >= boot && f < boot + 6) {
 					keys = START;
@@ -1412,8 +1431,13 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 					keys = ((f % 40) < 25) ? A : 0u;
 				}
 				cores[i]->setKeys(cores[i], keys);
+				auto _p0 = std::chrono::steady_clock::now();
 				sioLinkPump(links[i], cores[i]);
+				auto _p1 = std::chrono::steady_clock::now();
 				cores[i]->runFrame(cores[i]);
+				auto _p2 = std::chrono::steady_clock::now();
+				pumpUs[i].fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(_p1 - _p0).count());
+				runUs[i].fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(_p2 - _p1).count());
 				int cnt = (GBAView16(g->cpu, 0x03004A38u) >> 8) & 0xFF;
 				uint16_t ts = GBAView16(g->cpu, 0x03004A10u);
 				uint32_t cb2 = (uint32_t) GBAView16(g->cpu, 0x03002AD4u)
@@ -1430,59 +1454,45 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 				lastCb2[i].store(cb2);
 				lastFrame[i].store(f);
 				frameProgress[i].store(f);
+				auto _s1 = std::chrono::steady_clock::now();
+				coreStepUs[i].fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(_s1 - _s0).count());
 			};
-			if (i == 0) {
+			{
+				/* 对称并行栅栏：**所有核（含主机）并行跑同一帧 step(f)**，再一起
+				 * 报 done，齐了才进下一帧。总线上主机的广播与从机的等待因此真正
+				 * 重叠。串行顺序——无论主机先行还是从机先行——都会让一方等另一方：
+				 * 从机在 runFrame 里为 MULTI 轮次等主机广播，主机却在栅栏等从机，
+				 * 从机每帧付上百次 2ms 超时，实测 runFrame 198ms/帧、整机 5.6fps。 */
 				for (int f = 0; f < maxFrames && !stop.load(); ++f) {
-					step(f);
+					auto t1 = std::chrono::steady_clock::now();
 					if (frameBarrier) {
 						std::unique_lock<std::mutex> lk(barrierMu);
-						barrierTarget = f;
-						barrierCv.notify_all();
-						while (!stop.load()) {
-							bool all = true;
-							for (int j = 1; j < players; ++j) {
-								if (barrierDone[j] < f) {
-									all = false;
-									break;
+						auto ready = [&]() {
+							for (int j = 0; j < players; ++j) {
+								if (barrierDone[j] < f - 1) {
+									return false;
 								}
 							}
-							if (all) {
-								break;
-							}
+							return true;
+						};
+						while (!stop.load() && !ready()) {
 							barrierCv.wait_for(lk, std::chrono::milliseconds(barrierWaitMs));
 						}
-					}
-				}
-				 } else {
-				if (frameBarrier) {
-					while (!stop.load()) {
-						int f;
-						{
-							std::unique_lock<std::mutex> lk(barrierMu);
-							/* Timed wait, not wait(): the host may stop producing
-							 * barrierTarget (stop / maxFrames) and never notify, which
-							 * deadlocks join() -- that is what hung 330s runs. */
-							while (!stop.load() && barrierTarget <= barrierDone[i]) {
-								barrierCv.wait_for(lk, std::chrono::milliseconds(barrierWaitMs));
-							}
-							if (stop.load()) {
-								break;
-							}
-							f = barrierDone[i] + 1;
-						}
-						if (f >= maxFrames) {
+						if (stop.load()) {
 							break;
 						}
-						step(f);
-						{
-							std::unique_lock<std::mutex> lk(barrierMu);
-							barrierDone[i] = f;
-							barrierCv.notify_all();
-						}
 					}
-				} else {
-					for (int f = 0; f < maxFrames && !stop.load(); ++f) {
-						step(f);
+					auto t0 = std::chrono::steady_clock::now();
+					step(f);
+					auto t3 = std::chrono::steady_clock::now();
+					if (i == 0) {
+						hostStepUs.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t3 - t0).count());
+						hostWaitUs.fetch_add((uint64_t) std::chrono::duration_cast<std::chrono::microseconds>(t0 - t1).count());
+					}
+					if (frameBarrier) {
+						std::unique_lock<std::mutex> lk(barrierMu);
+						barrierDone[i] = f;
+						barrierCv.notify_all();
 					}
 				}
 			}
@@ -1500,8 +1510,29 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	}
 
 	int failures = 0;
-	fprintf(stderr, "BUSGAME: players=%d frames=%d finished=%d/%d barrier=%d\n",
-	        players, maxFrames, finished.load(), players, frameBarrier ? 1 : 0);
+	fprintf(stderr, "BUSGAME: players=%d frames=%d finished=%d/%d barrier=%d local=%d\n",
+	        players, maxFrames, finished.load(), players, frameBarrier ? 1 : 0, localBus ? 1 : 0);
+	fprintf(stderr, "BUSGAME timing(host): step=%llums wait=%llums\n",
+	        (unsigned long long) (hostStepUs.load() / 1000),
+	        (unsigned long long) (hostWaitUs.load() / 1000));
+	{
+		char buf[256];
+		int n = snprintf(buf, sizeof(buf), "BUSGAME timing(core):");
+		for (int i = 0; i < players; ++i) {
+			n += snprintf(buf + n, sizeof(buf) - n, " c%d=%llums", i,
+			              (unsigned long long) (coreStepUs[i].load() / 1000));
+		}
+		fprintf(stderr, "%s\n", buf);
+		{
+			int m = snprintf(buf, sizeof(buf), "BUSGAME timing(split):");
+			for (int i = 0; i < players; ++i) {
+				m += snprintf(buf + m, sizeof(buf) - m, " c%d[pump=%llu run=%llu]", i,
+				              (unsigned long long) (pumpUs[i].load() / 1000),
+				              (unsigned long long) (runUs[i].load() / 1000));
+			}
+			fprintf(stderr, "%s\n", buf);
+		}
+	}
 	for (int i = 0; i < players; ++i) {
 		int cnt = maxCnt[i].load();
 		fprintf(stderr, "  core %d: frame=%d/%d maxCnt=%d cards=%d battle=%d cb2=%08X state=%d\n",
