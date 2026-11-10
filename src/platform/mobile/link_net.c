@@ -1646,31 +1646,34 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 					++got;
 				}
 			}
-			for (int s = 1; s < lb->players; ++s) {
-				if (lb->pushed[s]) {
-					int16_t lead = (int16_t) (lb->pushIdx[s] - index);
-					if (lead < 0) {
-						++lb->stale;
-					} else if (lead > 0) {
-						++lb->future;
-					}
-					if (lead < lb->minLead) {
-						lb->minLead = lead;
-					}
-					if (lead > lb->maxLead) {
-						lb->maxLead = lead;
-					}
-				}
-			}
-			++lb->rounds;
-			if (got >= lb->attached) {
-				++lb->full;
-			}
-			if (got == 0) {
-				++lb->empty;
-			}
 			if (got >= lb->attached || timeoutMs <= 0 || lb->stop
 			    || (int32_t) (expireAt - nowMs()) <= 0) {
+				/* 诊断按「轮」记，不按「2ms 轮询迭代」记。之前每迭代 +1，
+				 * 只是等了半拍的正常轮也被记成 empty，busgame 的 full/empty
+				 * 因此完全不可读。只在广播决策点统计一次。 */
+				++lb->rounds;
+				if (got >= lb->attached) {
+					++lb->full;
+				}
+				if (got == 0) {
+					++lb->empty;
+				}
+				for (int s = 1; s < lb->players; ++s) {
+					if (lb->pushed[s]) {
+						int16_t lead = (int16_t) (lb->pushIdx[s] - index);
+						if (lead < 0) {
+							++lb->stale;
+						} else if (lead > 0) {
+							++lb->future;
+						}
+						if (lead < lb->minLead) {
+							lb->minLead = lead;
+						}
+						if (lead > lb->maxLead) {
+							lb->maxLead = lead;
+						}
+					}
+				}
 				/* 快照广播（含可能的空槽），让所有从机都能前进。 */
 				lb->bcastIndex = index;
 				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
@@ -1993,9 +1996,9 @@ void netLinkBusDiag(struct NetLink* link, int32_t* out) {
 		out[0] = lb->rounds;
 		out[1] = lb->full;
 		out[2] = lb->empty;
-		out[3] = lb->slaveCalls;
+		out[3] = lb->stale;
 		out[4] = lb->future;
-		out[5] = (int32_t) (lb->totalUs / 1000);
+		out[5] = lb->minLead;
 		out[6] = lb->maxLead;
 		pthread_mutex_unlock(&lb->mu);
 		return;
@@ -2009,6 +2012,30 @@ void netLinkBusDiag(struct NetLink* link, int32_t* out) {
 	out[5] = link->busDiagMinLead;
 	out[6] = link->busDiagMaxLead;
 	pthread_mutex_unlock(&link->mu);
+}
+
+/* 进程内总线的墙钟诊断单独走这里，不占 netLinkBusDiag 的 7 项契约。
+ * totalUs 是 busRoundLocal 内部累计墙钟（所有核累加），用来验证「没有每轮
+ * 2ms 超时地板」；slaveCalls 是从机调用次数。非本地总线返回 0。 */
+void netLinkBusDiagTiming(struct NetLink* link, uint64_t* totalUs, int* slaveCalls) {
+	if (totalUs) {
+		*totalUs = 0;
+	}
+	if (slaveCalls) {
+		*slaveCalls = 0;
+	}
+	struct LocalBus* lb = link ? link->localBus : NULL;
+	if (!lb) {
+		return;
+	}
+	pthread_mutex_lock(&lb->mu);
+	if (totalUs) {
+		*totalUs = lb->totalUs;
+	}
+	if (slaveCalls) {
+		*slaveCalls = lb->slaveCalls;
+	}
+	pthread_mutex_unlock(&lb->mu);
 }
 
 uint16_t netLinkBusRoundIndex(struct NetLink* link) {

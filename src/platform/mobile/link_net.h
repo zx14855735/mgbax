@@ -132,6 +132,9 @@ uint32_t netLinkBusRoundCycles(struct NetLink* link);
  * [轮数, 收齐轮数, 空槽轮数, 落后PUSH数, 超前PUSH数, 最小偏差, 最大偏差]。
  * 偏差 = (int16_t)(从机 PUSH 的 index - 主机本轮 index)。 */
 void netLinkBusDiag(struct NetLink* link, int32_t* out);
+/* 进程内总线的墙钟诊断：busRoundLocal 内部累计微秒数与从机调用次数。
+ * 非本地总线时两者都返回 0。不占用 netLinkBusDiag 的 7 项契约。 */
+void netLinkBusDiagTiming(struct NetLink* link, uint64_t* totalUs, int* slaveCalls);
 /* 一轮聚合。values[0..players-1] 按槽位排列，缺席的槽位填 0xFFFF。
  *
  * 主机：等所有**已连接**从机把 index 这一轮的字推上来，然后广播给所有从机。

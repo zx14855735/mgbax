@@ -1608,8 +1608,10 @@ static void testBusLocalCase(int players, int key, int rounds) {
 	struct LocalBusBarrier barrier;
 	char label[160];
 	int32_t diag[7];
+	uint64_t totalUs;
 	uint64_t t0;
 	uint64_t elapsed;
+	int slaveCalls;
 	int i;
 
 	for (i = 0; i < players; ++i) {
@@ -1654,15 +1656,24 @@ static void testBusLocalCase(int players, int key, int rounds) {
 		expect(args[i].badWords == 0, "local bus: all slots agree");
 	}
 	netLinkBusDiag(links[0], diag);
+	netLinkBusDiagTiming(links[0], &totalUs, &slaveCalls);
 	expect(diag[0] == rounds, "local bus: diag round count");
 	expect(diag[1] == rounds, "local bus: every round full");
 	expect(diag[2] == 0, "local bus: no empty rounds");
+	expect(diag[3] == 0, "local bus: no stale pushes");
 	expect(diag[4] == 0, "local bus: no future pushes");
-	expect((int64_t) elapsed < (int64_t) rounds * 5,
+	expect(diag[5] == 0 && diag[6] == 0, "local bus: round lead is exactly zero");
+	/* 会合内部累计墙钟按「每轮每核」摊：TCP 星型总线每轮吃满 2ms 地板，
+	 * 这里必须低一个数量级。端到端 elapsed 含测试自身的 barrier / 重试退避，
+	 * 只作宽松兜底。 */
+	expect(totalUs < (uint64_t) rounds * (uint64_t) players * 1000u,
 	       "local bus: no per-round 2ms wait floor");
-	fprintf(stderr, "[local-bus] players=%d key=%d rounds=%d elapsed=%llums diag=%d/%d/%d/%d/%d\n",
+	expect((int64_t) elapsed < (int64_t) rounds * 15,
+	       "local bus: end-to-end rounds stay fast");
+	fprintf(stderr, "[local-bus] players=%d key=%d rounds=%d elapsed=%llums inside=%lluus slaveCalls=%d diag=%d/%d/%d/%d/%d/%d/%d\n",
 	        players, key, rounds, (unsigned long long) elapsed,
-	        diag[0], diag[1], diag[2], diag[3], diag[4]);
+	        (unsigned long long) totalUs, slaveCalls,
+	        diag[0], diag[1], diag[2], diag[3], diag[4], diag[5], diag[6]);
 
 	/* 从机先退出，主机最后一个：host 的 detach 会释放槽位并叫醒所有等待者。 */
 	for (i = 1; i < players; ++i) {
