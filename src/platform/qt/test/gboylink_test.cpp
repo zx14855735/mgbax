@@ -1284,6 +1284,12 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	struct mCore* cores[4] = { nullptr, nullptr, nullptr, nullptr };
 	struct SioLink* links[4] = { nullptr, nullptr, nullptr, nullptr };
 	static mColor video[4][240 * 160];
+	/* 逐帧三核对齐采样：只在 SIO 视图上比对（SIOCNT + SIOMULTI0..3）。
+	 * SIOMLT_SEND 是各核自己的发送缓冲，isMaster/playerCount 本就该不同，
+	 * 都不参与「是否分叉」的判定，只打印出来做上下文。 */
+	enum { SMP_FRAMES = 2048 };
+	static uint16_t smp[4][SMP_FRAMES][6];
+	memset(smp, 0, sizeof(smp));
 
 	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
 	/* Each core gets its own copy of the battery save. Three VFileOpen(...,
@@ -1442,6 +1448,26 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 				uint16_t ts = GBAView16(g->cpu, 0x03004A10u);
 				uint32_t cb2 = (uint32_t) GBAView16(g->cpu, 0x03002AD4u)
 				             | ((uint32_t) GBAView16(g->cpu, 0x03002AD6u) << 16);
+				/* 三核对齐取证：同一帧内 SIOMULTI0..3 三核应完全一致（MULTI 的
+				 * 语义就是人人看到相同的四个槽）。若不一致＝desync；一致但游戏
+				 * 不推进＝格式/时序。每 300 帧采样一次，供事后逐帧比对。 */
+				if (f % 300 == 0) {
+					fprintf(stderr,
+					        "MULTI f=%d c=%d m=%04X,%04X,%04X,%04X im=%d pc=%d cnt=%d cb2=%08X\n",
+					        f, i,
+					        GBAView16(g->cpu, 0x04000120u), GBAView16(g->cpu, 0x04000122u),
+					        GBAView16(g->cpu, 0x04000124u), GBAView16(g->cpu, 0x04000126u),
+					        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF7u),
+					        cnt, cb2);
+				}
+				if (f < SMP_FRAMES) {
+					smp[i][f][0] = GBAView16(g->cpu, 0x04000128u);  /* SIOCNT */
+					smp[i][f][1] = GBAView16(g->cpu, 0x0400012Au);  /* SIOMLT_SEND */
+					smp[i][f][2] = GBAView16(g->cpu, 0x04000120u);
+					smp[i][f][3] = GBAView16(g->cpu, 0x04000122u);
+					smp[i][f][4] = GBAView16(g->cpu, 0x04000124u);
+					smp[i][f][5] = GBAView16(g->cpu, 0x04000126u);
+				}
 				if (cnt > maxCnt[i].load()) {
 					maxCnt[i].store(cnt);
 				}
@@ -1531,6 +1557,47 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 				              (unsigned long long) (runUs[i].load() / 1000));
 			}
 			fprintf(stderr, "%s\n", buf);
+		}
+	}
+	{
+		/* 找三核 SIO 视图第一次不一致的帧（跳过 SIOMLT_SEND：各核自己的发送
+		 * 缓冲，本来就不该相同）。这一帧就是游戏级分叉的起点。 */
+		int firstDiv = -1;
+		int divK = -1;
+		for (int f = 0; f < SMP_FRAMES && firstDiv < 0; ++f) {
+			for (int k = 0; k < 6; ++k) {
+				/* 0=SIOCNT：主机/从机的 ID 与 slave 位本就应该不同（真实线缆
+				 * 也如此），不是分叉；1=SIOMLT_SEND：各核自己的发送缓冲。
+				 * 只比 2..5 = SIOMULTI0..3，这三者三核必须完全一致。 */
+				if (k < 2) {
+					continue;
+				}
+				uint16_t v0 = smp[0][f][k];
+				for (int c = 1; c < players; ++c) {
+					if (smp[c][f][k] != v0) {
+						firstDiv = f;
+						divK = k;
+						break;
+					}
+				}
+				if (firstDiv >= 0) {
+					break;
+				}
+			}
+		}
+		if (firstDiv < 0) {
+			fprintf(stderr, "BUSGAME align: NO SIO divergence in first %d frames\n", (int) SMP_FRAMES);
+		} else {
+			static const char* kn[] = { "SIOCNT", "SEND", "M0", "M1", "M2", "M3" };
+			fprintf(stderr, "BUSGAME align: FIRST DIVERGENCE f=%d field=%s\n",
+			        firstDiv, kn[divK >= 0 ? divK : 0]);
+			for (int f = (firstDiv > 0 ? firstDiv - 1 : 0); f <= firstDiv; ++f) {
+				for (int c = 0; c < players; ++c) {
+					fprintf(stderr, "  f=%d c=%d CNT=%04X SEND=%04X M=%04X,%04X,%04X,%04X\n",
+					        f, c, smp[c][f][0], smp[c][f][1], smp[c][f][2],
+					        smp[c][f][3], smp[c][f][4], smp[c][f][5]);
+				}
+			}
 		}
 	}
 	for (int i = 0; i < players; ++i) {

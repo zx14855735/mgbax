@@ -1581,7 +1581,15 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 		*indexOut = index;
 	}
 	int ret = -1;
-	uint32_t expireAt = nowMs() + (uint32_t) (timeoutMs > 0 ? timeoutMs : 0);
+	int budgetMs = timeoutMs > 0 ? timeoutMs : 0;
+	if (link->busHost && budgetMs > 0 && budgetMs < 25) {
+		/* 主机是屏障的另一端，必须等齐从机再广播；2ms 会让它提前甩开从机，
+		 * 落后从机的 PUSH 全变 stale。25ms 足够覆盖从机 µs 级响应，又不会
+		 * 在「从机此刻不在 MULTI」时把整帧按死（200ms/1000ms 实测把吞吐
+		 * 从 68fps 拖到 31fps 或直接卡在 cb2=0）。 */
+		budgetMs = 25;
+	}
+	uint32_t expireAt = nowMs() + (uint32_t) budgetMs;
 	uint32_t _busT0 = nowUs();
 
 	pthread_mutex_lock(&lb->mu);
@@ -1635,6 +1643,13 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				lb->bcastCycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
 				++lb->bcastGen;
 				pthread_cond_broadcast(&lb->cv);
+				/* 主机自己也要拿到「全槽」结果：bcastWord 就是本轮聚合结果，
+				 * 必须整体回填给 values。之前只写 vals[0]=own，主机本地的
+				 * SIOMULTI1..3 因此全是 0xFFFF，游戏判定 playerCount=1、永远
+				 * 停在握手（实测 host pc=1 / slave pc=3）。 */
+				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+					vals[i] = lb->bcastWord[i];
+				}
 				vals[0] = own;
 				ret = got;
 				break;
@@ -1644,38 +1659,33 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 			pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
 		}
 	} else {
-		/* 从机：始终跟随主机当前轮次。若主机还没开本轮，等它开。 */
+		/* 从机：始终跟随主机当前轮次。若主机还没开新轮，**立刻返回 -1**，
+		 * 不做任何墙钟等待。
+		 *
+		 * 这一点很关键：boot 期从机的 SIO 事件会被游戏自己的 SIO 写操作
+		 * arm 起来，而主机此时并没有开轮。若这里按 timeoutMs 死等，从机
+		 * 每帧会空等 ~8 次 × 数 ms（实测 busRoundLocal 内部累计 63 秒/45s，
+		 * runFrame 133~194ms/帧）。返回 -1 后调用方会重新挂载事件、下一轮
+		 * 再来；主机真正开轮时这里能立刻看到 want > doneIdx，同步一帧不丢。 */
 		++lb->slaveCalls;
 		bool have = false;
 		uint16_t want = 0;
-		for (;;) {
-			if (lb->stop) {
-				break;
+		if (!lb->stop && lb->roundOpen) {
+			want = lb->index;
+			if ((int16_t) (want - lb->doneIdx[slot]) > 0) {
+				have = true;
 			}
-			if (lb->roundOpen) {
-				want = lb->index;
-				if ((int16_t) (want - lb->doneIdx[slot]) > 0) {
-					have = true;
-					break;
-				}
-			}
-			if (timeoutMs <= 0 || (int32_t) (expireAt - nowMs()) <= 0) {
-				break;
-			}
-			struct timespec ts;
-			deadline(&ts, 2);
-			pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
 		}
 		if (have) {
 			lb->word[slot] = (uint16_t) own;
 			lb->pushed[slot] = true;
 			lb->pushIdx[slot] = want;
 			pthread_cond_broadcast(&lb->cv);
-			int gen0 = lb->bcastGen;
-			for (;;) {
-				if (lb->bcastGen > gen0 && (int16_t) (lb->bcastIndex - want) >= 0) {
-					break;
-				}
+			/* 广播可能已经先到（主机收齐**别的**从机就把这一轮发了），
+			 * 那就直接消费；否则等新的一轮广播。用 bcastIndex 而不是
+			 * 单增的 bcastGen 判定，否则「错过的那一轮」会永远等不到
+			 * 新 gen（实测 c1 因此每帧空等满超时）。 */
+			while (!((int16_t) (lb->bcastIndex - want) >= 0 && lb->bcastGen > 0)) {
 				if (lb->stop || timeoutMs <= 0 || (int32_t) (expireAt - nowMs()) <= 0) {
 					break;
 				}
@@ -1683,7 +1693,7 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				deadline(&ts, 2);
 				pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
 			}
-			if (lb->bcastGen > gen0 && (int16_t) (lb->bcastIndex - want) >= 0) {
+			if ((int16_t) (lb->bcastIndex - want) >= 0 && lb->bcastGen > 0) {
 				int got = 0;
 				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
 					vals[i] = lb->bcastWord[i];
