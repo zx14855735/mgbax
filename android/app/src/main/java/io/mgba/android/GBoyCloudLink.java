@@ -56,7 +56,9 @@ public final class GBoyCloudLink {
      * ports have been dead server-side for a while, so after this window the
      * link falls back to the websocket tunnel and play proceeds anyway.
      */
-    private static final long RELAY_WINDOW_MS = 12000;
+    // 与 PC 侧同理：加入方 15~25 秒才能连上节点，12 秒窗口太短，一方先放弃
+    // 就会永远退到高延迟的 WS 隧道。
+    private static final long RELAY_WINDOW_MS = 120000;
     /** How long to wait for the peer's first key state before starting anyway. */
     private static final long PEER_KEY_WAIT_MS = 4000;
     private static final long KEY_INTERVAL_MS = 50;
@@ -688,6 +690,7 @@ public final class GBoyCloudLink {
         long nextQuery = 0;
         long lastNotice = 0;
         long lastHello = 0;
+        long firstTunnelPeer = 0;
         String currentHost = host;
         int currentPort = port;
         KcpChannel link = null;
@@ -726,10 +729,21 @@ public final class GBoyCloudLink {
                 }
                 drainSignaling(120);
                 if (tunnelPeerSeen) {
-                    status("对方已在服务器隧道上等待，放弃直连中继");
-                    link.close();
-                    channel = null;
-                    return null;
+                    // 对端在隧道上发过 hello，只说明它的 hello 先到了，不代表它
+                    // 不肯连中继：房主每 2 秒广播一次 node，加入方拿到广播后会
+                    // 自己连上来。原来这里一见 hello 就关中继，两端互相礼让，
+                    // 永远停在高延迟的 WS 隧道上（实测 95~215ms，节点只有 30~38ms）。
+                    // 改成宽限窗口：窗口内对端连上中继就用中继，否则再退回隧道。
+                    long now2 = System.currentTimeMillis();
+                    if (firstTunnelPeer == 0) {
+                        firstTunnelPeer = now2;
+                        Log.i(TAG, "relay: peer hello on tunnel, grace window");
+                    } else if (now2 - firstTunnelPeer > 8000) {
+                        status("对方已在服务器隧道上等待，放弃直连中继");
+                        link.close();
+                        channel = null;
+                        return null;
+                    }
                 }
                 if (!closed && now >= windowEnd) {
                     status("中继节点没有回应，自动切换到服务器隧道模式");

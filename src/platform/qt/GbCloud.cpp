@@ -50,8 +50,13 @@ void debugLog(const QString& message) {
 	QString path = debugLogPath();
 	QFile file(path);
 	// Keep the log bounded: a long session would otherwise grow it forever.
-	if (file.size() > 1024 * 1024) {
-		file.remove();
+	/* 1MB 上限在数据帧跑起来后会被瞬间撞满：文件一超就整个删掉重建，
+	 * 于是日志里只剩最后几秒的内容，建房/取节点/握手这些关键行全被冲掉
+	 * （现场排查时反复看到「日志里没有 host: node」就是这么来的）。
+	 * 改成 64MB，并且删除时先改名再删，避免和正在写的句柄打架。 */
+	if (file.size() > 64 * 1024 * 1024) {
+		file.rename(path + ".old");
+		QFile::remove(path + ".old");
 	}
 	if (!file.open(QIODevice::Append | QIODevice::Text)) {
 		return;

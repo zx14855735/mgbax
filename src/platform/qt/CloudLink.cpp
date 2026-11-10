@@ -57,7 +57,10 @@ constexpr int RELAY_WAIT_MS = 300000;
  * dead server-side for a while, so after this window the link falls back to
  * the websocket tunnel and play proceeds anyway.
  */
-constexpr qint64 RELAY_WINDOW_MS = 12000;
+/* 12 秒只够「对方已经在房间里等」的情况；实测加入方从收到房号到连上
+ * node 要 15~25 秒（大包 app 冷启动 + WS 建会话），房主早就放弃中继退回
+ * 隧道了。这里放宽到 120 秒，让房主一直敲节点等对方来。 */
+constexpr qint64 RELAY_WINDOW_MS = 120000;
 /** Tunnel hello markers are re-sent at this pace until the peer answers. */
 constexpr qint64 TUNNEL_HELLO_MS = 2000;
 /** 紧凑信封单条最大载荷：20 字节 → 40 hex，整条 84 字符 < 100 字符上限。 */
@@ -950,6 +953,7 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 	qint64 nextQuery = 0;
 	qint64 lastNotice = 0;
 	qint64 lastHello = 0;
+	qint64 firstTunnelPeer = 0;
 	QString currentHost = host;
 	int currentPort = port;
 	KcpChannel* link = nullptr;
@@ -998,14 +1002,40 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 		if (sig && now - lastHello >= TUNNEL_HELLO_MS) {
 			lastHello = now;
 			sendWsMarker(sig, token, uuid, QStringLiteral("hello"), room->roomId);
+			/* 房主在等对方期间必须继续广播中继地址。广播原来只写在 serve() 里，
+			 * 而 serve() 要等数据通道建好才跑 —— 房主卡在 startRelayLink() 的
+			 * 整段时间里没人广播，加入方拿不到 node_address，只能退回 WS 隧道；
+			 * 房主又看到对方的隧道 hello 也退回隧道。两边互相礼让，永远用不上
+			 * 低延迟中继（实测隧道 95~215ms，节点只有 30~38ms）。 */
+			if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+				QJsonObject node;
+				node.insert(QStringLiteral("gboy_node"),
+				            room->nodeAddress + ":" + QString::number(room->nodePort));
+				if (!room->roomId.isEmpty()) {
+					node.insert(QStringLiteral("room"), room->roomId);
+				}
+				sig->sendText(wsText(sendMessageJson(token, uuid, wsText(node))));
+			}
 		}
 		drainSignaling(sig, 120);
 		if (m_tunnelPeerSeen) {
-			status(QStringLiteral("对方已在服务器隧道上等待，放弃直连中继"));
-			link->close();
-			delete link;
-			m_channel = nullptr;
-			return nullptr;
+			/* 对端在隧道上发过 hello，只说明它的 hello 先到了，**不代表它
+			 * 不肯连中继**：房主每 2 秒广播一次 node，加入方拿到广播后会自己
+			 * 连上来。原来这里一看到 hello 就关掉中继、退回 WS 隧道，两端于是
+			 * 互相礼让，永远停在高延迟通道上（实测 WS 隧道 95~215ms，而节点
+			 * 只有 30~38ms）。改成给一段宽限窗口：窗口内对端连上中继就直接
+			 * 用中继，过了还没连上再退回隧道。 */
+			qint64 now2 = QDateTime::currentMSecsSinceEpoch();
+			if (!firstTunnelPeer) {
+				firstTunnelPeer = now2;
+				GbCloud::debugLog(QStringLiteral("relay: peer hello on tunnel, grace window"));
+			} else if (now2 - firstTunnelPeer > 8000) {
+				status(QStringLiteral("对方已在服务器隧道上等待，放弃直连中继"));
+				link->close();
+				delete link;
+				m_channel = nullptr;
+				return nullptr;
+			}
 		}
 		if (now >= windowEnd) {
 			status(QStringLiteral("中继节点没有回应，自动切换到服务器隧道模式"));
