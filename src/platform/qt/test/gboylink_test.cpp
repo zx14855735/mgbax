@@ -1281,6 +1281,15 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	 * the harness must do the same, or one slow core stalls all of them. */
 	const int barrierWaitMs = envInt("BUSGAME_BARRIER_MS", 50);
 	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
+	/* BIOS 的多启动(multiboot)探测阶段**不能挂链接驱动**：一挂上，BIOS 就
+	 * 认为有线缆在对端应答，卡在探测循环里永不 boot ROM（实测 f=5400 仍是
+	 * `MULTI m=494E`、`im=0 pc=0`、cb2=0）。等过了 BIOS 再 pump/attach。 */
+	const int attachAt = envInt("BUSGAME_ATTACH_AT", 0);
+	/* 对战模式列表（MultichoiceList_BattleMode）：
+	 *   1 Single Battle(2人) / 2 Double Battle(2人) / 3 Multi Battle(3~4人)
+	 * 3/4 人必须选第 3 项；选 1 会得到 LINKUP_WRONG_NUM_PLAYERS、cnt 恒 0。
+	 * 值为「确认前按几次 DOWN」，默认 0 = 保持原来的首项(Single)行为。 */
+	const int modeDowns = envInt("BUSGAME_MODE_DOWNS", 0);
 	struct mCore* cores[4] = { nullptr, nullptr, nullptr, nullptr };
 	struct SioLink* links[4] = { nullptr, nullptr, nullptr, nullptr };
 	static mColor video[4][240 * 160];
@@ -1360,7 +1369,11 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	for (int k = 0; k < 300; ++k) {
 		bool all = true;
 		for (int i = 0; i < players; ++i) {
-			sioLinkPump(links[i], cores[i]);
+			/* 本地总线建链即 state=2，不需要靠 pump 推进；且这里 pump 会在
+			 * 帧 0 之前就 align 驱动，让 BIOS 多启动循环把 ROM 卡死。 */
+			if (!localBus) {
+				sioLinkPump(links[i], cores[i]);
+			}
 			if (sioLinkState(links[i]) != 2) {
 				all = false;
 			}
@@ -1373,7 +1386,9 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	for (int i = 0; i < players; ++i) {
 		struct GBA* gba = (struct GBA*) cores[i]->board;
 		GBASIOWriteRCNT(&gba->sio, 0);
-		if (sioLinkState(links[i]) != 2 || !gba->sio.driver) {
+		/* 本地总线故意延迟到 attachAt 才挂驱动（避开 BIOS 多启动），
+		 * 所以这里只校验链路状态，驱动在帧循环里挂。 */
+		if (sioLinkState(links[i]) != 2 || (!localBus && !gba->sio.driver)) {
 			fprintf(stderr, "BUSGAME: FAIL (core %d link state %d driver %p)\n",
 			        i, sioLinkState(links[i]), (void*) gba->sio.driver);
 			return 1;
@@ -1431,14 +1446,23 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 					keys = UP;
 				} else if (f >= menuAt + 60 && f < menuAt + 80) {
 					keys = LEFT;
-				} else if (f >= menuAt + 80 && f < menuAt + 92) {
+				} else if (modeDowns > 0
+				           && f >= menuAt + 80
+				           && f < menuAt + 80 + modeDowns * 14) {
+					/* 键位钳到首项后，按 modeDowns 次 DOWN 走到目标对战模式。 */
+					keys = (((f - menuAt - 80) % 14) < 4) ? DOWN : 0u;
+				} else if (f >= menuAt + 80 + modeDowns * 14
+				           && f < menuAt + 92 + modeDowns * 14) {
 					keys = A;
 				} else if (f >= saveAt) {
 					keys = ((f % 40) < 25) ? A : 0u;
 				}
 				cores[i]->setKeys(cores[i], keys);
 				auto _p0 = std::chrono::steady_clock::now();
-				sioLinkPump(links[i], cores[i]);
+				if (!localBus || f >= attachAt) {
+					/* 本地总线：过了 BIOS 多启动探测阶段才挂驱动；TCP 路径保持原样。 */
+					sioLinkPump(links[i], cores[i]);
+				}
 				auto _p1 = std::chrono::steady_clock::now();
 				cores[i]->runFrame(cores[i]);
 				auto _p2 = std::chrono::steady_clock::now();

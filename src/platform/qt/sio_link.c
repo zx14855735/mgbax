@@ -499,6 +499,17 @@ static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4]
 	int me = netLinkPlayer(sio->link);
 	uint16_t data[4];
 	netLinkBusSlots(vals, players, me, gba->memory.io[GBA_REG(SIOMLT_SEND)], data);
+	/* 逐轮取证（前 80 轮 + 每 500 轮一条）：三核同一轮写入的四个槽应该
+	 * 完全一致，主机尤其不能写 0。用来判断握手首轮到底是「主机没收到」
+	 * 还是「收到了但写错」。 */
+	static uint32_t s_busLogN;
+	uint32_t n = ++s_busLogN;
+	if (n <= 80 || (n % 500) == 0) {
+		fprintf(stderr, "BUSBUS n=%u me=%d players=%d idx=%u vals=%04X,%04X,%04X,%04X -> %04X,%04X,%04X,%04X\n",
+		        (unsigned) n, me, players, (unsigned) sio->sioIndex,
+		        (unsigned) vals[0], (unsigned) vals[1], (unsigned) vals[2], (unsigned) vals[3],
+		        data[0], data[1], data[2], data[3]);
+	}
 	finishMultiTransfer(sio, data, cyclesLate);
 }
 
