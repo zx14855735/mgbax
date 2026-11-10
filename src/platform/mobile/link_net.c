@@ -1628,6 +1628,11 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 		budgetMs = 25;
 	}
 	uint32_t expireAt = nowMs() + (uint32_t) budgetMs;
+	/* 一次性绝对 deadline：2ms 分片轮询在 Windows 上会按 ~15ms 定时器粒度
+	 * 睡满，cond 广播本可 µs 级唤醒，反而被分片钉在毫秒级。等到同一个绝对
+	 * 时刻即可：广播到了立刻返回，没到才等满最终 deadline。 */
+	struct timespec absDeadline;
+	deadline(&absDeadline, budgetMs);
 	uint32_t _busT0 = nowUs();
 
 	pthread_mutex_lock(&lb->mu);
@@ -1706,9 +1711,7 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				ret = got;
 				break;
 			}
-			struct timespec ts;
-			deadline(&ts, 2);
-			pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
+			pthread_cond_timedwait(&lb->cv, &lb->mu, &absDeadline);
 		}
 	} else {
 		/* 从机：始终跟随主机当前轮次。若主机还没开新轮，**立刻返回 -1**，
@@ -1741,9 +1744,7 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				if (lb->stop || timeoutMs <= 0 || (int32_t) (expireAt - nowMs()) <= 0) {
 					break;
 				}
-				struct timespec ts;
-				deadline(&ts, 2);
-				pthread_cond_timedwait(&lb->cv, &lb->mu, &ts);
+				pthread_cond_timedwait(&lb->cv, &lb->mu, &absDeadline);
 			}
 			if ((int16_t) (lb->bcastIndex - want) >= 0 && lb->bcastGen > 0) {
 				int got = 0;

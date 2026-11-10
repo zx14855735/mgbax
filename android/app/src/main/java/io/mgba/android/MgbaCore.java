@@ -277,6 +277,16 @@ public final class MgbaCore {
         return handle != 0 && host != null && nativeLinkJoinPlayers(handle, host, port, players);
     }
 
+    /** 进程内共享内存总线：3/4 人本机多核专用，不开 socket、不起 IO 线程。
+     *  key 只在同一进程内区分会话，主机必须先于所有镜像核建立。 */
+    public boolean linkHostLocal(int key, int players) {
+        return handle != 0 && nativeLinkHostLocal(handle, key, players);
+    }
+
+    public boolean linkJoinLocal(int key) {
+        return handle != 0 && nativeLinkJoinLocal(handle, key);
+    }
+
     public void linkClose() {
         if (handle != 0) {
             nativeLinkClose(handle);
@@ -486,6 +496,10 @@ public final class MgbaCore {
     private static native boolean nativeLinkJoin(long handle, String host, int port);
 
     private static native boolean nativeLinkJoinPlayers(long handle, String host, int port, int players);
+
+    private static native boolean nativeLinkHostLocal(long handle, int key, int players);
+
+    private static native boolean nativeLinkJoinLocal(long handle, int key);
 
     private static native void nativeLinkClose(long handle);
 

@@ -1536,6 +1536,17 @@ static uint32_t localBusWord(int r, int slot) {
 	return 0x1000u + (uint32_t) (r * 0x10) + (uint32_t) slot;
 }
 
+/* 从机拿到 -1 表示「主机还没开这一轮」，生产路径靠重新挂载模拟时钟事件，
+ * 不吃墙钟。测试里也不能 sleep 1ms，否则测得的是测试自身退避而不是会合成本。 */
+static void localBusYield(void) {
+#ifdef _WIN32
+	SwitchToThread();
+#else
+	struct timespec ts = { 0, 1000L };
+	nanosleep(&ts, NULL);
+#endif
+}
+
 static void localBusBarrierInit(struct LocalBusBarrier* b, int need) {
 	pthread_mutex_init(&b->mu, NULL);
 	pthread_cond_init(&b->cv, NULL);
@@ -1571,7 +1582,7 @@ static void* localBusThread(void* arg) {
 		uint16_t bogus = a->slot == 0 ? (uint16_t) r
 		                              : (uint16_t) (r * 7u + 1000u);
 		localBusBarrierWait(a->barrier);
-		while (ret < 0 && tries++ < 400) {
+		while (ret < 0 && tries++ < 20000) {
 			int i;
 			for (i = 0; i < LOCALBUS_TEST_MAX; ++i) {
 				vals[i] = 0xDEADu;
@@ -1579,7 +1590,7 @@ static void* localBusThread(void* arg) {
 			ret = netLinkBusRound(a->link, bogus, localBusWord(r, a->slot),
 			                      vals, a->players, 200, &used);
 			if (ret < 0) {
-				linkSleepMs(1);
+				localBusYield();
 			}
 		}
 		if (ret >= 0 && used == (uint16_t) r) {

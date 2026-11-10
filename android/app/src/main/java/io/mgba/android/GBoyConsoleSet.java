@@ -25,12 +25,17 @@ import java.io.OutputStream;
  * deadlocks. A frame barrier keeps the mirrors aligned with the visible loop.</p>
  *
  * <p>Two-player sessions use the original point-to-point loopback
- * ({@code linkHost(port)} / {@code linkJoin(host, port)}); 3/4-player sessions
- * use the star bus ({@code linkHost(port, players)} /
- * {@code linkJoin(host, port, players)}). Mixing the two packet formats on one
- * connection silently drops every word, so {@code players} must match on all
- * cores of the set. Keeping all of them local also avoids the 1.5 RTT cost of
- * running the bus across devices: only key masks travel over the network.</p>
+ * ({@code linkHost(port)} / {@code linkJoin(host, port)}), the verified path,
+ * left untouched. 3/4-player sessions use the in-process shared-memory bus
+ * ({@code linkHostLocal(key, players)} / {@code linkJoinLocal(key)}): rounds
+ * rendezvous on a cond broadcast in microseconds, with no socket and no 2 ms
+ * per-round timeout floor. The host is the only clock source, so slaves always
+ * adopt the host round index. The 127.0.0.1 TCP star bus remains in use by
+ * {@code startBusLink()} for single-core cross-device 3/4-player sessions.</p>
+ *
+ * <p>Mixing the point-to-point and bus packet formats on one connection
+ * silently drops every word, so {@code players} must match on all cores of the
+ * set. Between devices only key masks travel over the network.</p>
  */
 public final class GBoyConsoleSet {
 
@@ -128,33 +133,44 @@ public final class GBoyConsoleSet {
             mirrors[i] = core;
         }
 
+        /* 3/4 人改走进程内共享内存总线：核间 SIO 不再经 127.0.0.1 TCP，
+         * 会合靠 cond 广播（µs 级），也没有每轮 2ms 超时地板。两人路径一字
+         * 不动，仍是已经验证过的环回直连。 */
+        final boolean localBus = players > 2;
+        final int busKey = basePort;
         int port = -1;
-        for (int attempt = 0; attempt < PORT_ATTEMPTS && port < 0; ++attempt) {
-            int candidate = basePort + attempt;
-            boolean listening = players > 2
-                    ? primary.linkHost(candidate, players)
-                    : primary.linkHost(candidate);
-            if (listening) {
-                port = candidate;
+        if (localBus) {
+            if (primary.linkHostLocal(busKey, players)) {
+                port = busKey;
+            }
+        } else {
+            for (int attempt = 0; attempt < PORT_ATTEMPTS && port < 0; ++attempt) {
+                int candidate = basePort + attempt;
+                if (primary.linkHost(candidate)) {
+                    port = candidate;
+                }
             }
         }
         if (port < 0) {
-            return fail("环回监听端口不可用: " + basePort);
+            return fail(localBus ? "进程内总线创建失败: key=" + busKey
+                                 : "环回监听端口不可用: " + basePort);
         }
         linkPort = port;
 
         for (int i = 0; i < count; ++i) {
             boolean joined = false;
             for (int attempt = 0; attempt < JOIN_ATTEMPTS && !joined; ++attempt) {
-                joined = players > 2
-                        ? mirrors[i].linkJoin(LOOPBACK, linkPort, players)
+                joined = localBus
+                        ? mirrors[i].linkJoinLocal(busKey)
                         : mirrors[i].linkJoin(LOOPBACK, linkPort);
                 if (!joined) {
                     sleep(JOIN_RETRY_MS);
                 }
             }
             if (!joined) {
-                return fail("镜像核心 " + (i + 2) + " 无法连上环回端口 " + linkPort);
+                return fail(localBus
+                        ? "镜像核心 " + (i + 2) + " 无法接入进程内总线 key=" + busKey
+                        : "镜像核心 " + (i + 2) + " 无法连上环回端口 " + linkPort);
             }
         }
 

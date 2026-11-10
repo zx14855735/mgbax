@@ -246,8 +246,8 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 | 路径 | 触发 | 数据在网络上跑什么 | 现状 |
 |---|---|---|---|
 | A 单核跨设备 SIO | 默认 / `officialMode=false` | 20 字节 `struct Packet` 逐轮透传 | 2P 直连 60fps ✅；云端隧道 0.7~1.5fps ❌ |
-| B 本机 N 核 + 按键 | `ncore=true` 或 `MGBAX_OFFICIAL_LINK=1` | 只有 12Hz 按键掩码 | 本机 2P 60fps ✅；**3/4 人未验证** |
-| C 3/4 人 native 星型总线 | `players>2 && !ncore` | 28 字节 `BusPacket` 逐轮汇聚广播 | 链路层 ✅，`busgame` 游戏侧 LINKUP `cnt=0` ❌ |
+| B 本机 N 核 + 按键 | `ncore=true` 或 `MGBAX_OFFICIAL_LINK=1` | 只有 12Hz 按键掩码 | 本机 2P 60fps ✅；**3/4 人已改走进程内总线（§9），游戏侧 LINKUP 仍未达成** |
+| C 3/4 人单核跨设备总线 | `players>2 && !ncore` | 28 字节 `BusPacket` 逐轮汇聚广播（TCP 星型） | 链路层 ✅，`busgame` 游戏侧 LINKUP `cnt=0` ❌ |
 
 路径 A 调用链：`LobbyView::startRoom` → `CloudLink::runLobby`（`create_game_room`
 **两次**，第二次才带 `node_address/node_port`）→ `connectRelay` 择优
@@ -263,11 +263,13 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 `GBoyLinkSession.onLocalFrame` 每 5 帧（12Hz）广播一次 `TYPE_KEYS`
 (`GBoyLinkSession.java:102-127`)，超 `BACKLOG_LIMIT=2` 丢最旧。
 
-**⚠️ 路径 B 并没有绕开 TCP**：`GBoyConsoleSet.java:134-151` →
-`MgbaCore.linkHost(port, players)` → `jni_bridge.cpp:300` →
-`mgba_mobile.c:4523 netLinkBusHost(...)`。3/4 人的核间 SIO 仍是
-**127.0.0.1 TCP 星型总线**，与 `busgame` 用的是同一份实现；「网络只传按键」
-只针对跨设备，核间依旧逐轮跨线程会合。别再指望上真机跑 ncore 会自己变快。
+**路径 B 的 3/4 人核间链路已于 2026-11-11 改为进程内总线**（详见 §9）：
+`GBoyConsoleSet.start()` 在 `players>2` 时走 `linkHostLocal(key, players)` /
+`linkJoinLocal(key)` → `jni_bridge.cpp` 新增的两个 JNI 入口 →
+`mgbaMobileLinkHostLocal/JoinLocal` → `netLinkBusHostLocal/JoinLocal`。
+不再开 socket、不起 IO 线程，会合靠共享内存 + cond 广播。
+**`startBusLink()`（路径 C，单核跨设备 3/4 人）仍走 127.0.0.1 TCP 星型总线**，
+与 `busgame` 的 TCP 模式是同一份实现；两人直连路径一字未动。
 
 ### 7.3 帧协议：三处易混淆点
 
@@ -323,8 +325,16 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 | 5.6fps | `BUSGAME_BARRIER=1` 且 `barrier=1` 时三核帧号 `242/242/242`、`full=1`，但 c0 `run=592ms`（2.3ms/帧）、c1/c2 `run≈49.5s`（**195ms/帧**），瓶颈在从机 `runFrame` 内部逐轮跨线程会合吃满 2ms 地板 | TCP 总线 + 帧锁步的物理冲突 |
 
 四种栅栏顺序实测：**零等待 → 73fps 但 `full=0` 全空槽；有等待 → 有字但 5.6fps**。
-`full=1` 与 60fps 不可兼得，这是 A 路线的终点。轮次对齐**不要放宽 `==index` 配对**
-（会把 32 轮前的陈旧字喂进握手块校验）。
+`full=1` 与 60fps 不可兼得，这是 **TCP 星型总线**路线的终点。轮次对齐
+**不要放宽 `==index` 配对**（会把 32 轮前的陈旧字喂进握手块校验）。
+
+**进程内总线已把这两个独立缺陷同时解决（2026-11-11 实测，见 §9）**：主机是唯一
+时钟源，从机永远采用主机轮次号；会合用一次性绝对 deadline 的 `cond_timedwait`，
+广播到达即 µs 级返回。C 侧回归 4 人 120 轮墙钟 **16ms**、`busRoundLocal` 内部
+累计 37ms（四核累加，约 78µs/轮/核），
+`diag=120/120/0/0/0/0/0`（轮数/收齐/空槽/落后/超前/最小偏差/最大偏差）。
+Qt `busgame` 本地总线模式 6000 帧 `wait=0ms`、`lead=[0,0]`、`empty=0`、
+`full=111/115`，与 TCP 模式的历史 `lead=[-32,0]`、5.6fps 形成对照。
 
 ### 7.5 三端对齐矩阵
 
@@ -344,15 +354,18 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 
 ### 7.6 接手基线（已验证 / 未验证，勿凭印象推翻）
 
-- **已绿**（历史实测记录，本轮未重跑）：完整 C 套件 242 ok / 0 FAIL / EXIT=0；`--dual` 16 条确定性用例
-  证明两核不串扰；`--bus` 37 条、`--link` 42 条断言通过。此前「完整套件段错误
-  139」已定位修复（`nativeHoldGenerate` budget 未钳到 scratch 容量导致堆溢出；
-  `netLinkClose` 未 join `pingThread` 导致 UAF）。
+- **已绿（2026-11-11 本轮重跑）**：`--bus`（含新增进程内总线用例）通过；
+  `--link` 155 ok / 0 FAIL / EXIT=0；`--dual` 16 ok / 0 FAIL；完整 C 套件
+  242 ok / 0 FAIL / EXIT=0。Java 编译与 Android NDK 原生构建均 `BUILD SUCCESSFUL`。
+  此前「完整套件段错误 139」已定位修复（`nativeHoldGenerate` budget 未钳到
+  scratch 容量导致堆溢出；`netLinkClose` 未 join `pingThread` 导致 UAF）。
 - **已实测可用**：P2P 直连两端各 1 核 → LINKUP `cnt=2`、训练家卡片块交换 `ts=0x80`、
   走位到座位、进 `BattleMainCB2`、60fps；本机双核心 → 同样到 `ts=0x80`、60fps。
 - **LINKUP 判据**：用 `ts`（0x80 进房 / 0x82 就绪）与 `gLink.playerCount`，
   **不要用 `brs`**（卡片拷完会被 `ResetBlockReceivedFlags()` 清零）。
-- **未达成**：3/4 人游戏侧 LINKUP；`busgame` 是诊断入口，不进默认套件。
+- **未达成**：3/4 人游戏侧 LINKUP。`busgame` 本地总线模式已跑满 6000 帧且轮次
+  完全对齐，但 ROM 仍停在 BIOS/标题（`cb2=0`、`cnt=0`），卡点在菜单脚本与存档
+  状态，不是 SIO 总线；`busgame` 是诊断入口，不进默认套件。
 - **环境前提**：构建前 `export PATH="/c/msys64/mingw64/bin:$PATH"`；起测前
   `taskkill /F /IM mGBA.exe`（残留进程锁住 `rom.sav`）；ROM 必须复制进工作区
   （工作区外 `D:/gen8` 的 `VFileOpen` 返回 NULL）；`gboy_tcp_relay.py` 连上后
@@ -360,23 +373,60 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 
 ---
 
-## 8. 下一步（按优先级）
+## 8. 下一步（按优先级，2026-11-11 重排）
 
-1. **真·进程内总线**（唯一能同时做到帧同步 + `full` 轮次 + 60fps 的路）：
-   让 `GBoyConsoleSet` 的 N 核不再经 `netLinkBusHost/Join`（127.0.0.1 TCP），
-   改成同进程共享内存环形缓冲 + 原子/cond，主机广播就是一次 memcpy，
-   从机下一轮直接读，RTT≈µs 且没有每轮 2ms 超时地板。
-2. **轮次索引对齐**：修主机 `==index` 与从机 `max(自身, busHostIndex)` 不收敛，
-   但**不要放宽配对**；必须与第 1 项同时做，否则对齐了仍是 5.6fps。
-   不要再在 `busgame` 里调栅栏/超时，也不要寄望 ncore 上真机自愈。
-3. **N 设备按键槽位路由**：`GBoyLinkSession` 已能接 4 槽并有单元测试，但发送侧
+1. **游戏侧 LINKUP**：`busgame` 本地总线模式的 `cb2=0` / `cnt=0` 是 BIOS 多启动
+   与菜单脚本问题，与链路无关。需要一份能稳定把三核推进联机菜单的存档/按键序列
+   （参考 2P 直连已验证的 `.workbuddy/drive/walk_battle.py`），再验证
+   `ts=0x80` → 训练家卡片交换 → `BattleMainCB2`。这是目前唯一挡在
+   「3/4 人可玩」前面的一步。
+2. **N 设备按键槽位路由**：`GBoyLinkSession` 已能接 4 槽并有单元测试，但发送侧
    只发 `TYPE_KEYS`、接收侧不带 `senderSlot`（恒落 slot 2），需补
    `TYPE_INPUT_2/READY(带 int)/INPUT_4` 的发送与槽位映射。
-4. **iOS 对齐**：补 `WsLink` 隧道 fallback、SIO 分开控制桥、`self`+nonce 过滤；
+3. **iOS 对齐**：补 `WsLink` 隧道 fallback、SIO 分开控制桥、`self`+nonce 过滤；
    改动需 macOS + Xcode 做类型检查（本机只能 `swiftc -parse`）。
-5. **WSS 房间信令逐行对齐官方混淆类**：需账号 + 真机抓包；`query_room`、
+4. **WSS 房间信令逐行对齐官方混淆类**：需账号 + 真机抓包；`query_room`、
    `create_game_room` 调用次数（脚本 2 次 / iOS 3 次）三端尚未统一。
+5. **路径 C 的跨设备 3/4 人**：仍受 TCP 星型总线每轮 1.5 RTT 限制。若要公网可玩，
+   需改成每台设备各跑 N 核、网络只传按键（路径 B 的多设备版），并先完成第 2 项。
 
-回归入口：`mgba_mobile_test --bus` / `--link` / `--dual`、`test-gboylink busgame`
-（诊断，默认关）、完整 C 套件；驱动脚本 `.workbuddy/drive/walk_battle.py`。
+回归入口：`mgba_mobile_test --bus` / `--link` / `--dual`、完整 C 套件；
+`test-gboylink busgame`（诊断，默认关，`BUSGAME_LOCAL_BUS=1` 切本地总线）；
+Java `gradlew :app:compileDebugJavaWithJavac`、
+NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/walk_battle.py`。
+
+---
+
+## 9. 本轮工程改动与验证（2026-11-11）
+
+### 9.1 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `src/platform/mobile/link_net.c` | ① `struct LocalBus` 加 `inited`，`localBusCreate` 改为逐字段重置数据，不再 memset 后对已初始化的 mutex/cond 重复 init；② `busRoundLocal` 统计改为「每轮一次」，修掉把 2ms 轮询迭代记成空槽轮次；③ 会合改为一次性绝对 deadline 的 `cond_timedwait`，消除 2ms 分片在 Windows 上的定时器粒度；④ `netLinkBusDiag` 本地分支返回与头文件、`busgame` 打印一致的 7 项契约；⑤ 新增 `netLinkBusDiagTiming`（内部累计墙钟 / 从机调用次数） |
+| `src/platform/mobile/link_net.h` | 声明 `netLinkBusDiagTiming` |
+| `src/platform/mobile/mgba_mobile.h/.c` | 新增 `mgbaMobileLinkHostLocal/JoinLocal`，转发到已有的 `netLinkBusHostLocal/JoinLocal` |
+| `android/app/src/main/cpp/jni_bridge.cpp` | 新增 `nativeLinkHostLocal` / `nativeLinkJoinLocal` 两个 JNI 入口 |
+| `android/app/src/main/java/io/mgba/android/MgbaCore.java` | 新增两个 native 声明与 `linkHostLocal(key, players)` / `linkJoinLocal(key)` 包装 |
+| `android/app/src/main/java/io/mgba/android/GBoyConsoleSet.java` | `players>2` 由 TCP 星型总线改走进程内总线（`basePort` 作 key）；两人直连路径一字未动；类注释同步 |
+| `src/platform/mobile/mobile_test.c` | 新增 `testBusLocal`：4/3/4 人三个 case 各 120 轮，验证轮次由主机唯一决定、四槽逐字一致、`full/empty/stale/future/lead`、槽位复用、未知 key 拒绝、无每轮 2ms 地板；挂到 `--bus` / `--link` |
+
+### 9.2 验证结果
+
+| 检查 | 结果 |
+|---|---|
+| 桌面 C 增量构建 | 通过（仅 4 条既有 warning） |
+| `mgba_mobile_test --bus` | 全绿；4 人 120 轮 elapsed=16ms、inside=37,469µs、`diag=120/120/0/0/0/0/0` |
+| `--link` / `--dual` / 完整套件 | 155 ok / 16 ok / 242 ok，均 0 FAIL、EXIT=0 |
+| Java 编译 / Android NDK 原生构建 | 均 `BUILD SUCCESSFUL` |
+| Qt `test-gboylink` 重建 | 通过 |
+| `busgame` 本地总线（3 人） | 6000 帧、`wait=0ms`、`lead=[0,0]`、`empty=0`、`full=111/115`；**LINKUP 仍未达成**，`cb2=0` |
+
+### 9.3 已知限制
+
+- 3/4 人游戏侧 LINKUP 未达成，卡点已缩小到 BIOS 多启动 / 菜单脚本与存档状态，
+  不再是链路轮次或帧率。`BUSGAME_ATTACH_AT=1000` 之后 `lead` 已完全对齐。
+- 进程内总线只覆盖**同一进程**的 N 核（Android ncore 与 Qt busgame）。
+  跨设备 3/4 人（路径 C）仍是 TCP 星型总线，未改动。
+- 未做真机验证；本轮验证均为本机 C/Java/NDK 构建与 Qt 诊断程序。
 
