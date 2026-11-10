@@ -8,6 +8,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* link_net.c is compiled as C; Qt/PC harnesses include this from C++.
+ * Without the C linkage the first direct call from C++ (netLinkBusDiag)
+ * fails to link with a mangled name. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct NetLink;
 
 struct NetLink* netLinkCreate(void);
@@ -112,6 +119,10 @@ int netLinkBusPlayers(struct NetLink* link);
 uint16_t netLinkBusRoundIndex(struct NetLink* link);
 /* 主机最近一次广播里带的模拟时钟戳（从机对齐轮次节奏用）；没有则为 0。 */
 uint32_t netLinkBusRoundCycles(struct NetLink* link);
+/* 只读轮次对齐诊断，输出 7 个 int32：
+ * [轮数, 收齐轮数, 空槽轮数, 落后PUSH数, 超前PUSH数, 最小偏差, 最大偏差]。
+ * 偏差 = (int16_t)(从机 PUSH 的 index - 主机本轮 index)。 */
+void netLinkBusDiag(struct NetLink* link, int32_t* out);
 /* 一轮聚合。values[0..players-1] 按槽位排列，缺席的槽位填 0xFFFF。
  *
  * 主机：等所有**已连接**从机把 index 这一轮的字推上来，然后广播给所有从机。
@@ -134,5 +145,9 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
  *   3. me 不在 0..3（例如链路还没连上、player 号无效）时不做第 2 条，
  *      不能越界写。 */
 void netLinkBusSlots(const uint32_t* values, int players, int me, uint16_t own, uint16_t out[4]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

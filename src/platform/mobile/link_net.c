@@ -430,6 +430,15 @@ struct NetLink {
 	/* 主机广播里带的模拟时钟戳：从机靠它对齐自己每帧的轮次数（与两人直连
 	 * 路径用 PUSH.cycles 做的事完全一样）。 */
 	uint32_t busInCycles;
+	/* 轮次对齐诊断（只读，锁内累加、不打日志）：量出主机期望轮次与从机
+	 * 实际 PUSH 轮次的偏差分布，判断「收不齐字」是索引错配还是真的迟到。 */
+	int32_t busDiagRounds;
+	int32_t busDiagFull;
+	int32_t busDiagEmpty;
+	int32_t busDiagStalePush;
+	int32_t busDiagFuturePush;
+	int32_t busDiagMinLead;
+	int32_t busDiagMaxLead;
 	/* 从机侧只有一条连接，半个包的缓冲区挂在链路上。 */
 	unsigned char busRx[sizeof(struct BusPacket) * 2];
 	size_t busRxLen;
@@ -1582,6 +1591,25 @@ void netLinkBusSlots(const uint32_t* values, int players, int me, uint16_t own, 
 	}
 }
 
+/* Read-only star-bus round counters (7 ints, see the struct for the order). */
+void netLinkBusDiag(struct NetLink* link, int32_t* out) {
+	for (int i = 0; i < 7; ++i) {
+		out[i] = 0;
+	}
+	if (!link) {
+		return;
+	}
+	pthread_mutex_lock(&link->mu);
+	out[0] = link->busDiagRounds;
+	out[1] = link->busDiagFull;
+	out[2] = link->busDiagEmpty;
+	out[3] = link->busDiagStalePush;
+	out[4] = link->busDiagFuturePush;
+	out[5] = link->busDiagMinLead;
+	out[6] = link->busDiagMaxLead;
+	pthread_mutex_unlock(&link->mu);
+}
+
 uint16_t netLinkBusRoundIndex(struct NetLink* link) {
 	if (!link) {
 		return 0;
@@ -1657,12 +1685,42 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 			if (got >= wantPeers || timeoutMs <= 0 || link->stop) {
 				break;
 			}
-			if ((int32_t) (expireAt - nowMs()) <= 0) {
-				break;
+		if ((int32_t) (expireAt - nowMs()) <= 0) {
+			break;
+		}
+		int32_t remain = (int32_t) (expireAt - nowMs());
+		if (remain > 20) {
+			remain = 20;
+		}
+		struct timespec ts;
+		deadline(&ts, remain > 0 ? remain : 1);
+		pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+	}
+	/* 轮次对齐诊断：统计每个从机最后一次 PUSH 的轮次号相对本轮的偏差。 */
+		for (int i = 0; i < link->busPeerCount; ++i) {
+			struct BusPeer* p = &link->busPeers[i];
+			if (!p->valid) {
+				continue;
 			}
-			struct timespec ts;
-			deadline(&ts, 20);
-			pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+			int16_t lead = (int16_t) (p->index - index);
+			if (lead < 0) {
+				++link->busDiagStalePush;
+			} else if (lead > 0) {
+				++link->busDiagFuturePush;
+			}
+			if (link->busDiagRounds == 0 || lead < link->busDiagMinLead) {
+				link->busDiagMinLead = lead;
+			}
+			if (link->busDiagRounds == 0 || lead > link->busDiagMaxLead) {
+				link->busDiagMaxLead = lead;
+			}
+		}
+		++link->busDiagRounds;
+		if (got >= wantPeers) {
+			++link->busDiagFull;
+		}
+		if (got == 0) {
+			++link->busDiagEmpty;
 		}
 		/* 收集到的字数（0..players）留给广播。 */
 		ret = got;
@@ -1726,14 +1784,18 @@ int netLinkBusRound(struct NetLink* link, uint16_t index, uint32_t own,
 			if (timeoutMs <= 0 || link->stop || link->state != LINK_CONNECTED) {
 				break;
 			}
-			if ((int32_t) (expireAt - nowMs()) <= 0) {
-				break;
-			}
-			struct timespec ts;
-			deadline(&ts, 20);
-			pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+		if ((int32_t) (expireAt - nowMs()) <= 0) {
+			break;
 		}
-		if (link->busInValid && (int16_t) (link->busInIndex - useIndex) >= 0) {
+		int32_t remain = (int32_t) (expireAt - nowMs());
+		if (remain > 20) {
+			remain = 20;
+		}
+		struct timespec ts;
+		deadline(&ts, remain > 0 ? remain : 1);
+		pthread_cond_timedwait(&link->cv, &link->mu, &ts);
+	}
+	if (link->busInValid && (int16_t) (link->busInIndex - useIndex) >= 0) {
 			got = 0;
 			for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
 				vals[i] = link->busInWord[i];

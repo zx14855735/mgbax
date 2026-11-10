@@ -310,10 +310,9 @@ struct MgbaMobile {
 	 * audio once before the next WSOLA run so a re-enable never replays stale
 	 * samples. Kept as a flag so the UI thread never touches the buffers. */
 	bool wsolaClearPending;
-	/* Last three raw window readings; the middle one feeds the estimator. A
-	 * free-running front end's window readings scatter with a heavy tail
-	 * (scheduler jitter shows up as one window running several percent off),
-	 * and a median strips those single-window spikes without adding lag. */
+	/* 上一次的原始窗口读数（audioPaceHist[0]），HistLen>0 表示有效。
+	 * 估算器按「两个连续读数一致才跳」过滤单点调度卡顿：三点中值会把
+	 * 一次真实的速度变化也拖到 3~5 个窗口才确认，反而更慢。 */
 	double audioPaceHist[3];
 	int audioPaceHistLen;
 	/* Front-end overrides applied on the next load. */
@@ -1311,6 +1310,11 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		emu->rewindInited = false;
 	}
 	emu->rewindCounter = 0;
+	/* 加载新 ROM 不能让加载前的一个读数与加载后的读数凑成「连续两次」，
+	 * 否则换游戏那一瞬间的卡顿会被当成持续变慢。保留已锁定的 pace
+	 * 与吞吐记忆，只清掉未确认的反馈历史。 */
+	emu->audioPaceHistLen = 0;
+	emu->audioPaceOutliers = 0;
 	MOBILE_LOGI("Loaded %s (%ux%u, %u Hz)", filename, emu->width, emu->height, core->audioSampleRate(core));
 	return true;
 }
@@ -2651,6 +2655,22 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	if (!emu->link || netLinkState(emu->link) != 2) {
 		return 0;
 	}
+	if (netLinkBusActive(emu->link)) {
+		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
+		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
+		 * 两边都等满窗。给 3 倍实测 RTT，下限 2ms（本机环回 RTT≈0.1ms，
+		 * 原 12ms 下限让每个落后轮次都付满 12ms，9 轮/帧把帧率压到约 5fps）；
+		 * 字到达时 cond_broadcast 仍会立刻唤醒，LAN（RTT≥3ms×3≈9~12ms）
+		 * 行为不变。 */
+		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (ms < 2u) {
+			ms = 2u;
+		}
+		if (ms > 120u) {
+			ms = 120u;
+		}
+		return (int) ms;
+	}
 	if (netLinkPeerPending(emu->link) > 0) {
 		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
 		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
@@ -2715,6 +2735,10 @@ static bool sioPipelineMode(struct MgbaMobile* emu) {
 }
 
 static int sioPipelineWaitMs(struct MgbaMobile* emu, int want) {
+	/* 总线不受两人按帧流水线开关影响，始终用局域网短窗。 */
+	if (emu->link && netLinkBusActive(emu->link)) {
+		return sioPeerWaitMs(emu);
+	}
 	if (!sioPipelineMode(emu)) {
 		return sioPeerWaitMs(emu);
 	}
@@ -3817,26 +3841,7 @@ void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode) {
  * Readings far outside the estimate are treated as stalls and need a
  * confirming window before the estimate follows them at all.
  */
-/* Middle value of three readings. */
-static double median3(double x, double y, double z) {
-	double t;
-	if (x > y) {
-		t = x;
-		x = y;
-		y = t;
-	}
-	if (y > z) {
-		t = y;
-		y = z;
-		z = t;
-	}
-	if (x > y) {
-		t = x;
-		x = y;
-		y = t;
-	}
-	return y;
-}
+/* 两点确认：只保留上一次读数，不再用三点中值（见 mgbaMobileSetAudioPaceFps）。 */
 
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	if (!emu || !(fps > 0.0)) {
@@ -3847,42 +3852,45 @@ void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	} else if (fps > MOBILE_AUDIO_PACE_FPS_MAX) {
 		fps = MOBILE_AUDIO_PACE_FPS_MAX;
 	}
-	if (emu->audioPaceHistLen < 3) {
-		emu->audioPaceHist[emu->audioPaceHistLen++] = fps;
-	} else {
-		emu->audioPaceHist[0] = emu->audioPaceHist[1];
-		emu->audioPaceHist[1] = emu->audioPaceHist[2];
-		emu->audioPaceHist[2] = fps;
-	}
-	double reading = emu->audioPaceHistLen < 3
-			? fps
-			: median3(emu->audioPaceHist[0], emu->audioPaceHist[1], emu->audioPaceHist[2]);
-	if (emu->audioPaceFps <= 0.0) {
-		// First reading after a reset: lock at once so the resampler stops
-		// running at the seeded rate.
-		emu->audioPaceFps = reading;
+	/* 回到「两个连续读数一致才跳」的设计意图（见 struct 注释）。
+	 * 旧实现用 median3 三点中值，确认一次变化要 3~5 个窗口；更糟的是
+	 * audioPaceFps==0（未测量）时首个读数直接锁定，一次调度卡顿就把
+	 * 音乐拖成半速。现在 audioPaceHist[0] 只存上一次读数，
+	 * audioPaceHistLen>0 表示它有效。未锁定时以控制台标称帧率作基准，
+	 * 首个离群读数只记一次、不改 pace —— 0 仍表示「未测量」，
+	 * readAudioOut 继续按标称输出，AudioPaceSeeded 的语义不变。 */
+	double baseline = emu->audioPaceFps > 0.0
+			? emu->audioPaceFps : audioNativeFps(emu);
+	bool havePrevious = emu->audioPaceHistLen > 0;
+	double previous = emu->audioPaceHist[0];
+	emu->audioPaceHist[0] = fps;
+	emu->audioPaceHistLen = 1;
+
+	double delta = fabs(fps - baseline);
+	if (delta > baseline * MOBILE_AUDIO_PACE_OUTLIER) {
+		/* 离群：上一次读数与本次一致（同方向）才确认；单次只是卡顿。 */
+		bool agreed = havePrevious
+				&& fabs(previous - fps) <= fps * MOBILE_AUDIO_PACE_OUTLIER;
+		if (!agreed && ++emu->audioPaceOutliers < 2) {
+			return;
+		}
+		emu->audioPaceFps = fps;
 		emu->audioPaceOutliers = 0;
 		emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-				emu->audioPaceFps * emu->audioPaceSpeed);
-		return;
-	}
-	double delta = reading > emu->audioPaceFps ? reading - emu->audioPaceFps : emu->audioPaceFps - reading;
-	if (delta > emu->audioPaceFps * MOBILE_AUDIO_PACE_OUTLIER) {
-		// One window can be a stall, not the pacing rate: wait for the next
-		// window to agree before moving the stream.
-		if (++emu->audioPaceOutliers >= 2) {
-			emu->audioPaceFps = reading;
-			emu->audioPaceOutliers = 0;
-			emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-					emu->audioPaceFps * emu->audioPaceSpeed);
-		}
+						emu->audioPaceFps * emu->audioPaceSpeed);
 		return;
 	}
 	emu->audioPaceOutliers = 0;
-	double share = reading < emu->audioPaceFps ? MOBILE_AUDIO_PACE_EMA_DOWN : MOBILE_AUDIO_PACE_EMA_UP;
-	emu->audioPaceFps += (reading - emu->audioPaceFps) * share;
+	if (emu->audioPaceFps <= 0.0) {
+		/* deadband 内的首个正常读数：直接锁定，不必等两次。 */
+		emu->audioPaceFps = fps;
+	} else {
+		double share = fps < emu->audioPaceFps
+				? MOBILE_AUDIO_PACE_EMA_DOWN : MOBILE_AUDIO_PACE_EMA_UP;
+		emu->audioPaceFps += (fps - emu->audioPaceFps) * share;
+	}
 	emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-			emu->audioPaceFps * emu->audioPaceSpeed);
+					emu->audioPaceFps * emu->audioPaceSpeed);
 }
 
 /*

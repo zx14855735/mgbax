@@ -17,18 +17,20 @@ import java.io.OutputStream;
  * and advances them with a single native {@code Link.runFrame(boolean)}; SIO
  * never crosses the network. The network carries only key masks, injected per
  * console with {@code Console.setKeys(int)}. This class reproduces that shape on
- * mGBA: the visible core is slot 1, a hidden mirror core is slot 2, and the two
- * are joined over the 127.0.0.1 loopback SIO link.</p>
+ * mGBA: the visible core is slot 1, and {@code players - 1} hidden mirror cores
+ * occupy slots 2..N, all joined over the 127.0.0.1 loopback SIO link.</p>
  *
- * <p>mGBA's native link driver blocks waiting for the peer word, so the two
- * cores must run on separate threads - a single thread alternating
- * {@code runFrames} deadlocks. The official native {@code runFrame} hides the
- * same requirement inside the library.</p>
+ * <p>mGBA's native link driver blocks waiting for the peer word, so every core
+ * must run on its own thread - a single thread alternating {@code runFrames}
+ * deadlocks. A frame barrier keeps the mirrors aligned with the visible loop.</p>
  *
- * <p>Key masks come from {@link GBoyLinkSession#keysForSlot(int)}, which keeps
- * the official five-frame (12 Hz) sample cadence. The current loopback link is
- * point to point, so this drives two consoles; the slot-indexed API leaves room
- * for the three- and four-player layouts.</p>
+ * <p>Two-player sessions use the original point-to-point loopback
+ * ({@code linkHost(port)} / {@code linkJoin(host, port)}); 3/4-player sessions
+ * use the star bus ({@code linkHost(port, players)} /
+ * {@code linkJoin(host, port, players)}). Mixing the two packet formats on one
+ * connection silently drops every word, so {@code players} must match on all
+ * cores of the set. Keeping all of them local also avoids the 1.5 RTT cost of
+ * running the bus across devices: only key masks travel over the network.</p>
  */
 public final class GBoyConsoleSet {
 
@@ -40,43 +42,55 @@ public final class GBoyConsoleSet {
     private static final int CONNECT_TIMEOUT_MS = 3000;
     private static final int PORT_ATTEMPTS = 8;
     private static final String LOOPBACK = "127.0.0.1";
-    private static final String MIRROR_DIR = "mirror";
+    private static final String MIRROR_DIR_PREFIX = "mirror";
+    private static final int MAX_CONSOLES = GBoyLinkSession.MAX_CONSOLES;
 
     private final Object lock = new Object();
     private final File rom;
     private final File saveDir;
     private final File stateDir;
     private final int basePort;
+    private final int players;
 
     private MgbaCore primary;
-    private MgbaCore mirror;
+    private MgbaCore[] mirrors;
+    private Thread[] mirrorThreads;
+    private long[] mirrorFrames;
     private GBoyLinkSession session;
-    private Thread mirrorThread;
     private volatile State state = State.NEW;
     private volatile String failure = "";
 
     private long targetFrame = -1L;
-    private long mirrorFrame = -1L;
     private long frameTimeouts;
     private int linkPort;
 
+    /** Two-player session (original behaviour, unchanged). */
     public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort) {
+        this(rom, saveDir, stateDir, basePort, 2);
+    }
+
+    /** @param players 2..4 consoles in this process; 3/4 use the star bus. */
+    public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort, int players) {
         if (rom == null || saveDir == null || stateDir == null) {
             throw new IllegalArgumentException("rom and save directories are required");
         }
         if (basePort < 1 || basePort > 65535 - PORT_ATTEMPTS) {
             throw new IllegalArgumentException("invalid loopback port: " + basePort);
         }
+        if (players < 2 || players > MAX_CONSOLES) {
+            throw new IllegalArgumentException("invalid console count: " + players);
+        }
         this.rom = rom;
         this.saveDir = saveDir;
         this.stateDir = stateDir;
         this.basePort = basePort;
+        this.players = players;
     }
 
     /**
-     * Creates the mirror core, copies the current battery save so both cores
-     * start deterministically, connects them over loopback, then starts the
-     * mirror thread. Returns false with {@link #failure()} on any error.
+     * Creates the mirror cores, copies the current battery save so they all
+     * start deterministically, joins them over loopback, then starts one thread
+     * per mirror. Returns false with {@link #failure()} on any error.
      */
     public boolean start(MgbaCore visible, GBoyLinkSession linkSession) {
         if (visible == null || !visible.isLoaded()) {
@@ -91,27 +105,36 @@ public final class GBoyConsoleSet {
         session = linkSession;
         state = State.LINKING;
 
-        File mirrorSave = new File(saveDir, MIRROR_DIR);
-        File mirrorState = new File(stateDir, MIRROR_DIR);
-        if (!mkdirs(mirrorSave) || !mkdirs(mirrorState)) {
-            return fail("无法创建镜像存档目录");
+        final int count = players - 1;
+        mirrors = new MgbaCore[count];
+        mirrorThreads = new Thread[count];
+        mirrorFrames = new long[count];
+        for (int i = 0; i < count; ++i) {
+            String dir = MIRROR_DIR_PREFIX + (i + 1);
+            File mirrorSave = new File(saveDir, dir);
+            File mirrorState = new File(stateDir, dir);
+            if (!mkdirs(mirrorSave) || !mkdirs(mirrorState)) {
+                return fail("无法创建镜像存档目录 " + dir);
+            }
+            String saveError = copyPrimarySave(primary.saveFile(), mirrorSave);
+            if (saveError != null) {
+                return fail(saveError);
+            }
+            MgbaCore core = new MgbaCore(mirrorSave, mirrorState);
+            if (!core.load(rom.getAbsolutePath())) {
+                core.destroy();
+                return fail("镜像核心加载 ROM 失败: " + rom.getAbsolutePath());
+            }
+            mirrors[i] = core;
         }
-        String saveError = copyPrimarySave(primary.saveFile(), mirrorSave);
-        if (saveError != null) {
-            return fail(saveError);
-        }
-
-        MgbaCore second = new MgbaCore(mirrorSave, mirrorState);
-        if (!second.load(rom.getAbsolutePath())) {
-            second.destroy();
-            return fail("镜像核心加载 ROM 失败: " + rom.getAbsolutePath());
-        }
-        mirror = second;
 
         int port = -1;
         for (int attempt = 0; attempt < PORT_ATTEMPTS && port < 0; ++attempt) {
             int candidate = basePort + attempt;
-            if (primary.linkHost(candidate)) {
+            boolean listening = players > 2
+                    ? primary.linkHost(candidate, players)
+                    : primary.linkHost(candidate);
+            if (listening) {
                 port = candidate;
             }
         }
@@ -120,26 +143,36 @@ public final class GBoyConsoleSet {
         }
         linkPort = port;
 
-        boolean joined = false;
-        for (int attempt = 0; attempt < JOIN_ATTEMPTS && !joined; ++attempt) {
-            joined = mirror.linkJoin(LOOPBACK, linkPort);
-            if (!joined) {
-                sleep(JOIN_RETRY_MS);
+        for (int i = 0; i < count; ++i) {
+            boolean joined = false;
+            for (int attempt = 0; attempt < JOIN_ATTEMPTS && !joined; ++attempt) {
+                joined = players > 2
+                        ? mirrors[i].linkJoin(LOOPBACK, linkPort, players)
+                        : mirrors[i].linkJoin(LOOPBACK, linkPort);
+                if (!joined) {
+                    sleep(JOIN_RETRY_MS);
+                }
             }
-        }
-        if (!joined) {
-            return fail("镜像核心无法连上环回端口 " + linkPort);
+            if (!joined) {
+                return fail("镜像核心 " + (i + 2) + " 无法连上环回端口 " + linkPort);
+            }
         }
 
         long deadline = System.currentTimeMillis() + CONNECT_TIMEOUT_MS;
         boolean connected = false;
         while (System.currentTimeMillis() < deadline) {
-            if (connectedStatus(primary) && connectedStatus(mirror)) {
+            boolean all = connectedStatus(primary);
+            for (int i = 0; i < count && all; ++i) {
+                all = connectedStatus(mirrors[i]);
+            }
+            if (all) {
                 connected = true;
                 break;
             }
             primary.pumpLink();
-            mirror.pumpLink();
+            for (int i = 0; i < count; ++i) {
+                mirrors[i].pumpLink();
+            }
             sleep(JOIN_RETRY_MS);
         }
         if (!connected) {
@@ -148,17 +181,23 @@ public final class GBoyConsoleSet {
 
         synchronized (lock) {
             targetFrame = -1L;
-            mirrorFrame = -1L;
+            for (int i = 0; i < count; ++i) {
+                mirrorFrames[i] = -1L;
+            }
             frameTimeouts = 0L;
         }
         state = State.READY;
-        mirrorThread = new Thread(this::mirrorLoop, "mGBA-console-2");
-        mirrorThread.setPriority(Thread.MAX_PRIORITY);
-        mirrorThread.start();
+        for (int i = 0; i < count; ++i) {
+            final int index = i;
+            Thread thread = new Thread(() -> mirrorLoop(index), "mGBA-console-" + (index + 2));
+            thread.setPriority(Thread.MAX_PRIORITY);
+            mirrorThreads[i] = thread;
+            thread.start();
+        }
         return true;
     }
 
-    /** Publishes a frame to the mirror core. Call before the visible core runs it. */
+    /** Publishes a frame to every mirror core. Call before the visible core runs it. */
     public void beginFrame(long frame) {
         if (state != State.READY) {
             return;
@@ -172,16 +211,16 @@ public final class GBoyConsoleSet {
     }
 
     /**
-     * Waits until the mirror core has executed the same frame. A timeout is
+     * Waits until every mirror core has executed the same frame. A timeout is
      * recorded but never freezes the visible loop.
      */
     public void endFrame(long frame) {
-        if (state != State.READY) {
+        if (state != State.READY || mirrorFrames == null) {
             return;
         }
         synchronized (lock) {
             long deadline = System.currentTimeMillis() + FRAME_WAIT_MS;
-            while (mirrorFrame < frame && state == State.READY
+            while (slowestMirror() < frame && state == State.READY
                     && System.currentTimeMillis() < deadline) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0) {
@@ -194,13 +233,13 @@ public final class GBoyConsoleSet {
                     break;
                 }
             }
-            if (mirrorFrame < frame) {
+            if (slowestMirror() < frame) {
                 ++frameTimeouts;
             }
         }
     }
 
-    /** Closes the loopback link, stops the mirror thread and destroys the core. */
+    /** Closes the loopback link, stops every mirror thread and destroys the cores. */
     public void stop() {
         if (state == State.NEW || state == State.STOPPED) {
             return;
@@ -209,19 +248,27 @@ public final class GBoyConsoleSet {
         synchronized (lock) {
             lock.notifyAll();
         }
-        Thread thread = mirrorThread;
-        if (thread != null) {
-            try {
-                thread.join(FRAME_WAIT_MS * 2);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        if (mirrorThreads != null) {
+            for (Thread thread : mirrorThreads) {
+                if (thread == null) {
+                    continue;
+                }
+                try {
+                    thread.join(FRAME_WAIT_MS * 2);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
-            mirrorThread = null;
+            mirrorThreads = null;
         }
-        if (mirror != null) {
-            mirror.linkClose();
-            mirror.destroy();
-            mirror = null;
+        if (mirrors != null) {
+            for (MgbaCore core : mirrors) {
+                if (core != null) {
+                    core.linkClose();
+                    core.destroy();
+                }
+            }
+            mirrors = null;
         }
         if (primary != null) {
             primary.linkClose();
@@ -235,10 +282,18 @@ public final class GBoyConsoleSet {
         return visible == null ? null : visible.saveStateToMemory();
     }
 
-    /** Applies a peer state blob to the hidden mirror console. */
+    /** Applies a peer state blob to every hidden mirror console. */
     public boolean applyRemoteState(byte[] state) {
-        MgbaCore hidden = mirror;
-        return hidden != null && hidden.loadStateFromMemory(state);
+        if (mirrors == null) {
+            return false;
+        }
+        boolean applied = false;
+        for (MgbaCore core : mirrors) {
+            if (core != null && core.loadStateFromMemory(state)) {
+                applied = true;
+            }
+        }
+        return applied;
     }
 
     public State state() {
@@ -253,9 +308,14 @@ public final class GBoyConsoleSet {
         return linkPort;
     }
 
+    public int players() {
+        return players;
+    }
+
+    /** Frame number of the slowest mirror (-1 before the first frame). */
     public long mirrorFrame() {
         synchronized (lock) {
-            return mirrorFrame;
+            return slowestMirror();
         }
     }
 
@@ -265,11 +325,24 @@ public final class GBoyConsoleSet {
         }
     }
 
-    private void mirrorLoop() {
+    private long slowestMirror() {
+        if (mirrorFrames == null || mirrorFrames.length == 0) {
+            return -1L;
+        }
+        long slowest = mirrorFrames[0];
+        for (int i = 1; i < mirrorFrames.length; ++i) {
+            if (mirrorFrames[i] < slowest) {
+                slowest = mirrorFrames[i];
+            }
+        }
+        return slowest;
+    }
+
+    private void mirrorLoop(int index) {
         while (state == State.READY) {
             long frame;
             synchronized (lock) {
-                while (state == State.READY && mirrorFrame >= targetFrame) {
+                while (state == State.READY && mirrorFrames[index] >= targetFrame) {
                     try {
                         lock.wait(FRAME_WAIT_MS);
                     } catch (InterruptedException e) {
@@ -280,19 +353,19 @@ public final class GBoyConsoleSet {
                 if (state != State.READY) {
                     return;
                 }
-                frame = mirrorFrame + 1;
+                frame = mirrorFrames[index] + 1;
             }
-            MgbaCore core = mirror;
+            MgbaCore core = mirrors == null ? null : mirrors[index];
             if (core == null) {
                 return;
             }
             GBoyLinkSession net = session;
-            int keys = net != null ? net.keysForSlot(2) : 0;
+            int keys = net != null ? net.keysForSlot(index + 2) : 0;
             core.setKeys(keys);
             core.pumpLink();
             core.runFrames(keys, 1);
             synchronized (lock) {
-                mirrorFrame = frame;
+                mirrorFrames[index] = frame;
                 lock.notifyAll();
             }
         }
@@ -301,11 +374,14 @@ public final class GBoyConsoleSet {
     private boolean fail(String reason) {
         failure = reason;
         state = State.FAILED;
-        MgbaCore second = mirror;
-        if (second != null) {
-            second.linkClose();
-            second.destroy();
-            mirror = null;
+        if (mirrors != null) {
+            for (MgbaCore core : mirrors) {
+                if (core != null) {
+                    core.linkClose();
+                    core.destroy();
+                }
+            }
+            mirrors = null;
         }
         MgbaCore visible = primary;
         if (visible != null) {

@@ -770,6 +770,23 @@ static int sioPeerWaitMs(struct SioLink* sio) {
 	if (!sio->link || netLinkState(sio->link) != 2) {
 		return 0;
 	}
+	if (netLinkBusActive(sio->link)) {
+		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
+		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
+		 * 两边都等满窗 —— busgame 实测从机 45s 只推进 312 帧（6.9fps）、
+		 * cnt 恒 0。给 3 倍实测 RTT，下限 2ms（本机环回 RTT≈0.1ms，原 12ms
+		 * 下限让每个落后轮次都付满 12ms，9 轮/帧把帧率压到约 5fps、永远到
+		 * 不了游戏侧 MULTI）、上限 120ms；字到达时 cond_broadcast 仍会立刻
+		 * 唤醒，所以本机环回几乎零等待，LAN（RTT≥3ms×3≈9~12ms）行为不变。 */
+		uint32_t ms = (netLinkRttUs(sio->link) / 1000u) * 3u;
+		if (ms < 2u) {
+			ms = 2u;
+		}
+		if (ms > 120u) {
+			ms = 120u;
+		}
+		return (int) ms;
+	}
 	if (netLinkPeerPending(sio->link) > 0) {
 		return 1200;
 	}
@@ -832,6 +849,10 @@ static bool sioPipelineMode(void) {
 }
 
 static int sioPipelineWaitMs(struct SioLink* sio, int want) {
+	/* 总线不受两人按帧流水线开关影响，始终用局域网短窗。 */
+	if (sio->link && netLinkBusActive(sio->link)) {
+		return sioPeerWaitMs(sio);
+	}
 	if (!sioPipelineMode()) {
 		return sioPeerWaitMs(sio);
 	}

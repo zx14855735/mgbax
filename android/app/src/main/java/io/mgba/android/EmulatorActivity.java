@@ -215,18 +215,22 @@ public class EmulatorActivity extends AppCompatActivity {
             File stateDir = defaultStateDir != null
                     ? defaultStateDir : new File(getFilesDir(), "state");
             int players = intent.getIntExtra("players", 2);
+            // headless 开关：3/4 人改走「本机 N 核 + 本机环回星型总线」，
+            // 网络只传按键，避开跨设备每轮 1.5 RTT 的锁步。默认 false，
+            // 保持已验证的单核跨设备总线路径不变。
+            boolean ncore = intent.getBooleanExtra("ncore", false);
             boolean ok;
-            if (players > 2) {
+            if (players > 2 && !ncore) {
                 // 3/4 人：每台设备只跑自己的核，走 native 星型总线（主机汇聚
                 // 每一轮的字再广播），不再起本机镜像核。
                 ok = startBusLink(players, tcpPort, peer, asHost);
             } else {
                 ok = startGBoyLocalLink(new File(romPath), save, stateDir,
-                        sioPort, tcpPort, peer, asHost);
+                        sioPort, tcpPort, peer, asHost, players);
             }
             Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
-                    + " sio=" + sioPort + " players=" + players + " started=" + ok
-                    + " err=" + gboyLinkFailure());
+                    + " sio=" + sioPort + " players=" + players + " ncore=" + ncore
+                    + " started=" + ok + " err=" + gboyLinkFailure());
         }
     };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
@@ -1958,10 +1962,22 @@ public class EmulatorActivity extends AppCompatActivity {
         return true;
     }
 
+    /** Two-player entry kept for callers that do not specify a console count. */
     public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
                                       int sioPort, int tcpPort, String peer,
                                       boolean asHost) {
+        return startGBoyLocalLink(rom, saveDir, stateDir, sioPort, tcpPort, peer, asHost, 2);
+    }
+
+    /**
+     * @param players 2..4 consoles in this process. 3/4 join a local star bus;
+     *                the network link still carries only key masks.
+     */
+    public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
+                                      int sioPort, int tcpPort, String peer,
+                                      boolean asHost, int players) {
         stopGBoyLink();
+        final int consoleCount = Math.max(2, Math.min(players, GBoyLinkSession.MAX_CONSOLES));
         if (core == null || !core.isLoaded() || (!asHost && (peer == null || peer.isEmpty()))) {
             return false;
         }
@@ -2020,7 +2036,7 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         };
         try {
-            GBoySocketLink link = new GBoySocketLink(1, 2, events);
+            GBoySocketLink link = new GBoySocketLink(1, consoleCount, events);
             if (asHost) {
                 link.startHost(tcpPort);
             } else {
@@ -2029,7 +2045,7 @@ public class EmulatorActivity extends AppCompatActivity {
             localLink = link;
             gboyRemoteKeysEnabled = false;
             gboyRemoteKeys = 0;
-            GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort);
+            GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort, consoleCount);
             boolean ok = set.start(core, link.session());
             consoleSet = set;
             return ok;

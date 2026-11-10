@@ -58,7 +58,11 @@
 #include <QTimer>
 #include <QWaitCondition>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -462,9 +466,9 @@ static int webdavTest() {
 					              "<D:response><D:href>/dav/mGBAx/test.sav</D:href>"
 					              "<D:propstat><D:prop><D:getlastmodified>%1</D:getlastmodified>"
 					              "</D:prop></D:propstat></D:response></D:multistatus>").arg(lastModified);
-					reply(207, xml.toUtf8(), "application/xml");
-				}
-			} else {
+				reply(207, xml.toUtf8(), "application/xml");
+			}
+		} else {
 				reply(405);
 			}
 		});
@@ -1268,6 +1272,15 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	const int port = 18767;
 	const int maxFrames = envInt("BUSGAME_FRAMES", 6000);
 	const int wallLimitMs = envInt("BUSGAME_TIMEOUT_MS", 45000);
+	/* GBoyConsoleSet 的 N 核路线靠帧栅栏让所有镜像核与可见核同步推进。
+	 * 打开后每个核心跑完一帧必须等齐其他核心，模拟安卓本机多核的形态。
+	 * 只用于默认 45s 短窗口诊断：45s 实测三核帧号完全一致、lead=[0,0]；
+	 * 把 BUSGAME_TIMEOUT_MS 拉到 330s 时进程会挂死在 join，不要那样跑。 */
+	const bool frameBarrier = envInt("BUSGAME_BARRIER", 0) != 0;
+	/* GBoyConsoleSet.endFrame() times out instead of freezing the visible loop;
+	 * the harness must do the same, or one slow core stalls all of them. */
+	const int barrierWaitMs = envInt("BUSGAME_BARRIER_MS", 50);
+	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
 	struct mCore* cores[4] = { nullptr, nullptr, nullptr, nullptr };
 	struct SioLink* links[4] = { nullptr, nullptr, nullptr, nullptr };
 	static mColor video[4][240 * 160];
@@ -1353,20 +1366,31 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	std::atomic<int> sawBattle[4];
 	std::atomic<uint32_t> lastCb2[4];
 	std::atomic<int> lastFrame[4];
+	std::atomic<int> frameProgress[4];
 	for (int i = 0; i < players; ++i) {
 		maxCnt[i].store(0);
 		sawCards[i].store(0);
 		sawBattle[i].store(0);
 		lastCb2[i].store(0);
 		lastFrame[i].store(-1);
+		frameProgress[i].store(-1);
 	}
+	/* Leader-follower 栅栏（与安卓 GBoyConsoleSet 同构）：主机（核 0，可见核）
+	 * 先跑本帧、把本帧的字广播出去，再等所有从机跟上；从机在自己的帧里消费
+	 * 主机刚广播的字，零等待。对称栅栏会把主机也冻在栅栏处，饿死从机的广播
+	 * 等待，把整机拖到 ~5fps 且轮次错位；这里主机先广播再等，从机不会被饿。 */
+	std::mutex barrierMu;
+	std::condition_variable barrierCv;
+	int barrierTarget = -1;
+	std::vector<int> barrierDone(players, -1);
 	std::vector<std::thread> threads;
 	for (int i = 0; i < players; ++i) {
 		threads.emplace_back([&, i]() {
 			const uint32_t A = 1, START = 8, LEFT = 32, UP = 64, DOWN = 128;
-			const int boot = 240, menuAt = 1500, saveAt = menuAt + 240;
+			const int boot = 240;
+			const int saveAt = menuAt + 240;
 			struct GBA* g = (struct GBA*) cores[i]->board;
-			for (int f = 0; f < maxFrames && !stop.load(); ++f) {
+			auto step = [&](int f) {
 				uint32_t keys = 0;
 				if (f >= boot && f < boot + 6) {
 					keys = START;
@@ -1405,6 +1429,62 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 				}
 				lastCb2[i].store(cb2);
 				lastFrame[i].store(f);
+				frameProgress[i].store(f);
+			};
+			if (i == 0) {
+				for (int f = 0; f < maxFrames && !stop.load(); ++f) {
+					step(f);
+					if (frameBarrier) {
+						std::unique_lock<std::mutex> lk(barrierMu);
+						barrierTarget = f;
+						barrierCv.notify_all();
+						while (!stop.load()) {
+							bool all = true;
+							for (int j = 1; j < players; ++j) {
+								if (barrierDone[j] < f) {
+									all = false;
+									break;
+								}
+							}
+							if (all) {
+								break;
+							}
+							barrierCv.wait_for(lk, std::chrono::milliseconds(barrierWaitMs));
+						}
+					}
+				}
+				 } else {
+				if (frameBarrier) {
+					while (!stop.load()) {
+						int f;
+						{
+							std::unique_lock<std::mutex> lk(barrierMu);
+							/* Timed wait, not wait(): the host may stop producing
+							 * barrierTarget (stop / maxFrames) and never notify, which
+							 * deadlocks join() -- that is what hung 330s runs. */
+							while (!stop.load() && barrierTarget <= barrierDone[i]) {
+								barrierCv.wait_for(lk, std::chrono::milliseconds(barrierWaitMs));
+							}
+							if (stop.load()) {
+								break;
+							}
+							f = barrierDone[i] + 1;
+						}
+						if (f >= maxFrames) {
+							break;
+						}
+						step(f);
+						{
+							std::unique_lock<std::mutex> lk(barrierMu);
+							barrierDone[i] = f;
+							barrierCv.notify_all();
+						}
+					}
+				} else {
+					for (int f = 0; f < maxFrames && !stop.load(); ++f) {
+						step(f);
+					}
+				}
 			}
 			finished.fetch_add(1);
 		});
@@ -1413,13 +1493,15 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 		QThread::msleep(100);
 	}
 	stop.store(true);
+	/* Wake every slave parked in the barrier so join() cannot hang. */
+	barrierCv.notify_all();
 	for (auto& t : threads) {
 		t.join();
 	}
 
 	int failures = 0;
-	fprintf(stderr, "BUSGAME: players=%d frames=%d finished=%d/%d\n",
-	        players, maxFrames, finished.load(), players);
+	fprintf(stderr, "BUSGAME: players=%d frames=%d finished=%d/%d barrier=%d\n",
+	        players, maxFrames, finished.load(), players, frameBarrier ? 1 : 0);
 	for (int i = 0; i < players; ++i) {
 		int cnt = maxCnt[i].load();
 		fprintf(stderr, "  core %d: frame=%d/%d maxCnt=%d cards=%d battle=%d cb2=%08X state=%d\n",
@@ -1432,6 +1514,13 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	}
 	if (!failures) {
 		fprintf(stderr, "BUSGAME: PASS (%d cores linked up through the star bus)\n", players);
+	}
+	{
+		int32_t diag[7] = {0, 0, 0, 0, 0, 0, 0};
+		netLinkBusDiag((struct NetLink*) sioLinkHandle(links[0]), diag);
+		fprintf(stderr,
+		        "BUSGAME diag host: rounds=%d full=%d empty=%d stalePush=%d futurePush=%d lead=[%d,%d]\n",
+		        diag[0], diag[1], diag[2], diag[3], diag[4], diag[5], diag[6]);
 	}
 	for (int i = 0; i < players; ++i) {
 		sioLinkDestroy(links[i]);
