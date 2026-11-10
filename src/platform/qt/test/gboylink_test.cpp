@@ -1475,14 +1475,19 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 				/* 三核对齐取证：同一帧内 SIOMULTI0..3 三核应完全一致（MULTI 的
 				 * 语义就是人人看到相同的四个槽）。若不一致＝desync；一致但游戏
 				 * 不推进＝格式/时序。每 300 帧采样一次，供事后逐帧比对。 */
-				if (f % 300 == 0) {
+				bool dense = (f >= 1180 && f <= 1360 && (f % 10) == 0) || (f % 300) == 0;
+				if (dense) {
 					fprintf(stderr,
-					        "MULTI f=%d c=%d m=%04X,%04X,%04X,%04X im=%d pc=%d cnt=%d cb2=%08X\n",
+					        "MULTI f=%d c=%d sio=%04X rcnt=%04X m=%04X,%04X,%04X,%04X im=%d lc=%d pc=%d st=%d res=%d cnt=%d cb2=%08X pc32=%08X\n",
 					        f, i,
+					        GBAView16(g->cpu, 0x04000128u), GBAView16(g->cpu, 0x04000134u),
 					        GBAView16(g->cpu, 0x04000120u), GBAView16(g->cpu, 0x04000122u),
 					        GBAView16(g->cpu, 0x04000124u), GBAView16(g->cpu, 0x04000126u),
-					        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF7u),
-					        cnt, cb2);
+					        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF6u),
+					        GBAView8(g->cpu, 0x03002AF7u),
+					        GBAView8(g->cpu, 0x03002AF5u),
+					        GBAView16(g->cpu, 0x0202197Cu),
+					        cnt, cb2, (unsigned) g->cpu->gprs[15]);
 				}
 				if (f < SMP_FRAMES) {
 					smp[i][f][0] = GBAView16(g->cpu, 0x04000128u);  /* SIOCNT */
