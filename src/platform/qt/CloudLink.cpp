@@ -1648,12 +1648,15 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	emit connected(asHost);
 	m_mirror = new GBoyMirror(this);
 	QString savePath = m_config.savePath;
-	if (savePath.isEmpty()) {
-		savePath = QFileInfo(m_config.romPath).dir().filePath(
-		        QFileInfo(m_config.romPath).completeBaseName() + QStringLiteral(".sav"));
+	{
+		// savePath 可能是目录（核心存档路径尚未定型）或为空：一律退化成
+		// ROM 旁边的 <rom>.sav，那正是 updatePlayerSave 最终要写的地方。
+		QFileInfo saveInfo(savePath);
+		if (savePath.isEmpty() || !saveInfo.isFile()) {
+			savePath = QFileInfo(m_config.romPath).dir().filePath(
+			        QFileInfo(m_config.romPath).completeBaseName() + QStringLiteral(".sav"));
+		}
 	}
-	GbCloud::debugLog(QStringLiteral("[official] rom=[%1] len=%2 save=[%3]")
-	                          .arg(m_config.romPath, QString::number(m_config.romPath.size()), savePath));
 	QString mirrorRoot = QFileInfo(savePath).dir().filePath(QStringLiteral("mirror1"));
 	QString error;
 	if (!m_mirror->start(m_config.romPath, savePath, mirrorRoot, port, m_gboySession, &error)) {
