@@ -420,12 +420,15 @@ NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/wal
 | `--link` / `--dual` / 完整套件 | 155 ok / 16 ok / 242 ok，均 0 FAIL、EXIT=0 |
 | Java 编译 / Android NDK 原生构建 | 均 `BUILD SUCCESSFUL` |
 | Qt `test-gboylink` 重建 | 通过 |
-| `busgame` 本地总线（3 人） | 6000 帧、`wait=0ms`、`lead=[0,0]`、`empty=0`、`full=111/115`；**LINKUP 仍未达成**，`cb2=0` |
+| `busgame` 本地总线（3 人） | 三次诊断：`battle_pc/rom.sav` + `attachAt=0` → 6000 帧但卡 BIOS；`attachAt=1000` → `wait=0ms`、`lead=[0,0]`、`empty=0`、`full=111/115`；换 `arena_save.sav` → 前 2048 帧 **SIO 零分叉**、三核各跑到 5600+ 帧、`rounds=0`。**LINKUP 仍未达成**（`cnt=0`、`cb2=0`），但已证明游戏从未发起 MULTI 轮次 |
 
 ### 9.3 已知限制
 
-- 3/4 人游戏侧 LINKUP 未达成，卡点已缩小到 BIOS 多启动 / 菜单脚本与存档状态，
-  不再是链路轮次或帧率。`BUSGAME_ATTACH_AT=1000` 之后 `lead` 已完全对齐。
+- 3/4 人游戏侧 LINKUP 未达成，卡点已确定在**菜单脚本与存档状态**：换用
+  `arena_save.sav` 后前 2048 帧 SIO 完全无分叉、`rounds=0`（一轮 MULTI 都没发起），
+  说明游戏根本没走到联机菜单，与链路轮次、帧率、SIO 数据均无关。
+  `BUSGAME_ATTACH_AT=1000` 时 `lead=[0,0]`、`empty=0` 已完全对齐。
+  三次诊断（不同 attachAt / 不同存档）均未达成 LINKUP，按纪律暂停，不再调链路参数。
 - 进程内总线只覆盖**同一进程**的 N 核（Android ncore 与 Qt busgame）。
   跨设备 3/4 人（路径 C）仍是 TCP 星型总线，未改动。
 - 未做真机验证；本轮验证均为本机 C/Java/NDK 构建与 Qt 诊断程序。
