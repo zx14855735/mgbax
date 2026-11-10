@@ -1509,6 +1509,7 @@ struct LocalBus {
 	uint64_t totalUs;             /* busRoundLocal 内累计墙钟（诊断） */
 	bool stop;
 	bool used;
+	bool inited;              /* mutex/cond 已初始化：槽位复用时不得重复 init */
 	int key;
 };
 
@@ -1539,16 +1540,39 @@ static struct LocalBus* localBusCreate(int key, int players) {
 	for (int i = 0; i < LOCALBUS_MAX_BUSES && !lb; ++i) {
 		if (!gLocalBuses[i].used) {
 			lb = &gLocalBuses[i];
-			memset(lb, 0, sizeof(*lb));
-			pthread_mutex_init(&lb->mu, NULL);
-			pthread_cond_init(&lb->cv, NULL);
-			lb->used = true;
-			lb->key = key;
+			if (!lb->inited) {
+				pthread_mutex_init(&lb->mu, NULL);
+				pthread_cond_init(&lb->cv, NULL);
+				lb->inited = true;
+			}
+			/* 槽位复用：host 退出只清 used，mutex/cond 仍然有效。这里必须逐字段
+			 * 重置数据，不能 memset 整块后再对已初始化的 mutex/cond 重复 init。 */
+			lb->attached = 0;
+			lb->index = 0;
+			lb->roundOpen = false;
+			for (int s = 0; s < BUS_MAX_PLAYERS; ++s) {
+				lb->word[s] = 0;
+				lb->pushed[s] = false;
+				lb->pushIdx[s] = 0;
+				lb->doneIdx[s] = 0;
+				lb->seenGen[s] = 0;
+				lb->bcastWord[s] = 0;
+			}
+			lb->bcastIndex = 0;
+			lb->bcastCycles = 0;
+			lb->bcastGen = 0;
+			lb->rounds = 0;
+			lb->full = 0;
+			lb->empty = 0;
+			lb->stale = 0;
+			lb->future = 0;
 			lb->minLead = 9999;
 			lb->maxLead = -9999;
-			for (int s = 0; s < BUS_MAX_PLAYERS; ++s) {
-				lb->doneIdx[s] = 0;
-			}
+			lb->slaveCalls = 0;
+			lb->totalUs = 0;
+			lb->stop = false;
+			lb->used = true;
+			lb->key = key;
 		}
 	}
 	if (lb) {

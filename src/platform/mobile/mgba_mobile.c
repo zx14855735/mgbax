@@ -4535,6 +4535,23 @@ bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int 
 	return netLinkJoin(emu->link, host, port);
 }
 
+bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players) {
+	if (!emu || !emu->link) {
+		return false;
+	}
+	if (players < 3) {
+		players = 3;
+	}
+	return netLinkBusHostLocal(emu->link, key, players);
+}
+
+bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key) {
+	if (!emu || !emu->link) {
+		return false;
+	}
+	return netLinkBusJoinLocal(emu->link, key);
+}
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu) {
 	if (!emu || !emu->link) {
 		return;

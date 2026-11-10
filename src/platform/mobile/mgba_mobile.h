@@ -136,6 +136,12 @@ void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen);
 void mgbaMobilePumpLink(struct MgbaMobile* emu);
 bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port, int players);
 bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int players);
+
+/* 进程内总线：同一进程里 N 个核心经共享内存回合屏障互联，不开 socket、不起
+ * IO 线程。key 区分同一进程内的不同会话，主机必须先于从机建立。3/4 人本机
+ * 多核用它，跨设备仍走 mgbaMobileLinkHost/Join。 */
+bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players);
+bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key);
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

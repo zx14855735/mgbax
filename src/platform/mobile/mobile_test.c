@@ -1492,6 +1492,196 @@ static void testBusPlayers(void) {
 	netLinkDestroy(host);
 }
 
+/* ---- 进程内总线（同进程 N 核，无 socket）----------------------------------
+ *
+ * TCP 星型总线在 busgame 里暴露的是两个独立缺陷：full=0（从机轮次索引不
+ * 收敛）和 5.6fps（每轮 2ms 超时地板）。这里的断言直接对着这两件事：
+ *   - 从机故意传一个与主机完全不同的 index，仍必须每轮采用主机轮次号；
+ *   - full == rounds、empty == 0、future == 0、四个槽位逐字一致；
+ *   - 120 轮墙钟必须远小于「每轮都付 2ms 地板」的量级。
+ * 连续三个 case 复用同一个 LocalBus 槽位，覆盖会话结束后 mutex/cond 不能
+ * 被 memset 后重复 init 的边界。 */
+#define LOCALBUS_TEST_MAX 4
+
+struct LocalBusBarrier {
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	int need;
+	int arrived;
+	int gen;
+};
+
+struct LocalBusArg {
+	struct NetLink* link;
+	struct LocalBusBarrier* barrier;
+	int slot;
+	int players;
+	int rounds;
+	int okRounds;
+	int badIndex;
+	int badWords;
+};
+
+static uint64_t localBusNowMs(void) {
+#ifdef _WIN32
+	return (uint64_t) GetTickCount64();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t) ts.tv_sec * 1000u + (uint64_t) (ts.tv_nsec / 1000000);
+#endif
+}
+
+static uint32_t localBusWord(int r, int slot) {
+	return 0x1000u + (uint32_t) (r * 0x10) + (uint32_t) slot;
+}
+
+static void localBusBarrierInit(struct LocalBusBarrier* b, int need) {
+	pthread_mutex_init(&b->mu, NULL);
+	pthread_cond_init(&b->cv, NULL);
+	b->need = need;
+	b->arrived = 0;
+	b->gen = 0;
+}
+
+static void localBusBarrierWait(struct LocalBusBarrier* b) {
+	pthread_mutex_lock(&b->mu);
+	int gen = b->gen;
+	if (++b->arrived >= b->need) {
+		b->arrived = 0;
+		++b->gen;
+		pthread_cond_broadcast(&b->cv);
+	} else {
+		while (gen == b->gen) {
+			pthread_cond_wait(&b->cv, &b->mu);
+		}
+	}
+	pthread_mutex_unlock(&b->mu);
+}
+
+static void* localBusThread(void* arg) {
+	struct LocalBusArg* a = (struct LocalBusArg*) arg;
+	int r;
+	for (r = 1; r <= a->rounds; ++r) {
+		uint32_t vals[LOCALBUS_TEST_MAX];
+		uint16_t used = 0;
+		int ret = -1;
+		int tries = 0;
+		/* 主机是唯一时钟源：从机传的 index 故意和主机差很远。 */
+		uint16_t bogus = a->slot == 0 ? (uint16_t) r
+		                              : (uint16_t) (r * 7u + 1000u);
+		localBusBarrierWait(a->barrier);
+		while (ret < 0 && tries++ < 400) {
+			int i;
+			for (i = 0; i < LOCALBUS_TEST_MAX; ++i) {
+				vals[i] = 0xDEADu;
+			}
+			ret = netLinkBusRound(a->link, bogus, localBusWord(r, a->slot),
+			                      vals, a->players, 200, &used);
+			if (ret < 0) {
+				linkSleepMs(1);
+			}
+		}
+		if (ret >= 0 && used == (uint16_t) r) {
+			++a->okRounds;
+		} else {
+			++a->badIndex;
+		}
+		{
+			int s;
+			for (s = 0; s < LOCALBUS_TEST_MAX; ++s) {
+				uint32_t want = s < a->players ? localBusWord(r, s) : 0xFFFFu;
+				if (vals[s] != want) {
+					++a->badWords;
+				}
+			}
+		}
+		localBusBarrierWait(a->barrier);
+	}
+	return NULL;
+}
+
+static void testBusLocalCase(int players, int key, int rounds) {
+	struct NetLink* links[LOCALBUS_TEST_MAX];
+	struct LocalBusArg args[LOCALBUS_TEST_MAX];
+	pthread_t th[LOCALBUS_TEST_MAX];
+	struct LocalBusBarrier barrier;
+	char label[160];
+	int32_t diag[7];
+	uint64_t t0;
+	uint64_t elapsed;
+	int i;
+
+	for (i = 0; i < players; ++i) {
+		links[i] = netLinkCreate();
+	}
+	snprintf(label, sizeof(label), "local bus %dp: host up (key=%d)", players, key);
+	expect(netLinkBusHostLocal(links[0], key, players), label);
+	for (i = 1; i < players; ++i) {
+		snprintf(label, sizeof(label), "local bus %dp: join slot %d", players, i);
+		expect(netLinkBusJoinLocal(links[i], key), label);
+		expect(netLinkPlayer(links[i]) == i, "local bus: slot is assigned in join order");
+	}
+	expect(netLinkBusActive(links[0]), "local bus: active without any socket");
+	expect(netLinkBusPlayers(links[players - 1]) == players,
+	       "local bus: joiner learns the player count");
+	expect(netLinkState(links[0]) == 2, "local bus: state is connected");
+
+	localBusBarrierInit(&barrier, players);
+	for (i = 0; i < players; ++i) {
+		args[i].link = links[i];
+		args[i].barrier = &barrier;
+		args[i].slot = i;
+		args[i].players = players;
+		args[i].rounds = rounds;
+		args[i].okRounds = 0;
+		args[i].badIndex = 0;
+		args[i].badWords = 0;
+	}
+	t0 = localBusNowMs();
+	for (i = 0; i < players; ++i) {
+		expect(pthread_create(&th[i], NULL, localBusThread, &args[i]) == 0,
+		       "local bus: worker started");
+	}
+	for (i = 0; i < players; ++i) {
+		pthread_join(th[i], NULL);
+	}
+	elapsed = localBusNowMs() - t0;
+
+	for (i = 0; i < players; ++i) {
+		expect(args[i].okRounds == rounds, "local bus: every round completed");
+		expect(args[i].badIndex == 0, "local bus: master round index adopted");
+		expect(args[i].badWords == 0, "local bus: all slots agree");
+	}
+	netLinkBusDiag(links[0], diag);
+	expect(diag[0] == rounds, "local bus: diag round count");
+	expect(diag[1] == rounds, "local bus: every round full");
+	expect(diag[2] == 0, "local bus: no empty rounds");
+	expect(diag[4] == 0, "local bus: no future pushes");
+	expect((int64_t) elapsed < (int64_t) rounds * 5,
+	       "local bus: no per-round 2ms wait floor");
+	fprintf(stderr, "[local-bus] players=%d key=%d rounds=%d elapsed=%llums diag=%d/%d/%d/%d/%d\n",
+	        players, key, rounds, (unsigned long long) elapsed,
+	        diag[0], diag[1], diag[2], diag[3], diag[4]);
+
+	/* 从机先退出，主机最后一个：host 的 detach 会释放槽位并叫醒所有等待者。 */
+	for (i = 1; i < players; ++i) {
+		netLinkDestroy(links[i]);
+	}
+	netLinkDestroy(links[0]);
+	pthread_mutex_destroy(&barrier.mu);
+	pthread_cond_destroy(&barrier.cv);
+}
+
+static void testBusLocal(void) {
+	struct NetLink* stray = netLinkCreate();
+	expect(!netLinkBusJoinLocal(stray, 987654), "local bus: unknown key is rejected");
+	netLinkDestroy(stray);
+	testBusLocalCase(4, 91001, 120);
+	testBusLocalCase(3, 91002, 120);
+	testBusLocalCase(4, 91003, 120);
+}
+
 /* 3 人总线：人数少于 4 时，第 4 个槽位必须是空槽 0xFFFF。
  * 这条和四点用例是两件事：四点测「四个槽都能填对」，三点测「人数不足时
  * 不能把别人的字错填进多余的槽」——后者一旦错了，游戏的玩家数判定会多出
@@ -3357,6 +3547,7 @@ int main(int argc, char** argv) {
 	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
+		testBusLocal();
 		return g_failed ? 1 : 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
@@ -3367,6 +3558,7 @@ int main(int argc, char** argv) {
 	testBusSinglePeer();
 	testBusThree();
 		testBusPlayers();
+		testBusLocal();
 		return g_failed ? 1 : 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--state") == 0) {

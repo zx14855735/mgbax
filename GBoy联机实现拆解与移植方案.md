@@ -214,3 +214,169 @@ gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等
 
 关键环境变量：`MGBAX_NO_DIRECT=1`（禁 P2P，只走服务器）、`MGBAX_SIO_PIPELINE=1`
 （按帧流水线，一帧一次往返）、`MGBAX_LINK_DIAG=1`（`[diag]`/`[room]` 打点）。
+
+---
+
+## 7. 本地代码实现全图（2026-11-11 接手分析）
+
+> 上一节拆的是**官方 APK**；本节落到**本仓库实际存在的代码**上。依据：只读勘查
+> PC/Qt、Android、iOS 三端 + `src/platform/mobile/{link_net.c,mgba_mobile.c}`
+> + `.workbuddy/gboy/PROTOCOL.md`（624 行）。行号对应本次勘查时的版本。
+
+### 7.1 代码地图（按层）
+
+| 层 | PC / Qt | Android | iOS |
+|---|---|---|---|
+| UI 入口 | `LobbyView.cpp:217`（云房间）、`LinkView.cpp:29`（LAN） | `EmulatorActivity.java:181-235`（广播入口） | `EmulatorViewController.swift:5669,5702` |
+| 编排 | `CloudLink.cpp`（2303 行，三级通道择优/降级） | `GBoyCloudLink.java`（2341 行，同构） | `LobbyLink.swift`（980 行，KCP only） |
+| 信令 | `GbCloud.cpp/h`（HTTPS + WSS） | 同上（Java 内） | `LobbySignaling.swift`、`tools/gboy_room.py` |
+| 传输 | `KcpChannel.cpp`、`DirectLink.cpp`、`WsLink`（`CloudLink.cpp:327-589`） | `KcpChannel.java`、`GBoyDirectLink.java`、`WsLink`（`GBoyCloudLink.java:1425-1706`） | `LobbyKcp.swift`；**无 WsLink** |
+| 帧协议 | `GBoyFrames.cpp/h`、`GBoyLink.cpp`（另一套 LAN 协议） | `GBoyFrames.java`、`GBoyLinkSession.java` | `LobbyFrames.swift`、`GBoyLink.swift`（LAN 版） |
+| 会话/按键 | `GBoyLinkSession.cpp`、`GBoyMirror.cpp` | `GBoyLinkSession.java`、`GBoyConsoleSet.java` | `EmulatorViewController.swift` 直接 `publishKeys` |
+| native SIO | `sio_link.c` | `mgba_mobile.c` + `link_net.c`（JNI 桥 `jni_bridge.cpp:290-334` 仅转发） | `RemoteLink.swift`（Wi-Fi 中继，非 SIO 桥） |
+| 回归 | `src/platform/qt/test/gboylink_test.cpp`、`mobile_test.c` | `GBoyLinkSessionTest.java`、`GBoySocketLinkTest.java` | 无 |
+
+`jni_bridge.cpp` 里没有任何 GBoy/帧层代码，`nativeLinkHostPlayers` (`:300`) 只是
+转到 `mgbaMobileLinkHost`。**云联机全在 Java 层**，这一点与官方 APK 拆解结论一致。
+
+### 7.2 三条对战路径与唯一分叉点
+
+分叉就在 `EmulatorActivity.java:221-229` 的 `ncore` 布尔：
+
+| 路径 | 触发 | 数据在网络上跑什么 | 现状 |
+|---|---|---|---|
+| A 单核跨设备 SIO | 默认 / `officialMode=false` | 20 字节 `struct Packet` 逐轮透传 | 2P 直连 60fps ✅；云端隧道 0.7~1.5fps ❌ |
+| B 本机 N 核 + 按键 | `ncore=true` 或 `MGBAX_OFFICIAL_LINK=1` | 只有 12Hz 按键掩码 | 本机 2P 60fps ✅；**3/4 人未验证** |
+| C 3/4 人 native 星型总线 | `players>2 && !ncore` | 28 字节 `BusPacket` 逐轮汇聚广播 | 链路层 ✅，`busgame` 游戏侧 LINKUP `cnt=0` ❌ |
+
+路径 A 调用链：`LobbyView::startRoom` → `CloudLink::runLobby`（`create_game_room`
+**两次**，第二次才带 `node_address/node_port`）→ `connectRelay` 择优
+`KCP 中继 → WS 隧道 → P2P 直连`（`CloudLink.cpp:857-872, 1326-1331`，断线自动回落
+`:1439-1448, 1599-1605`）→ `attachDriverLoopback`（本机 `127.0.0.1:18765+t`
+挂 native 驱动，`:1353-1404`）→ `startSioRelayBridge` / `startSioBridge` →
+`core` 每帧 `sioLinkPump` → 游戏写 `SIOCNT` → `beginMultiTransfer`
+(`sio_link.c:1132`) → `netLinkPush` → `sioDoneEvent` 取对端字 → `finishMultiTransfer`。
+
+路径 B（`GBoyConsoleSet.java`）：可见核 slot 1 + `players-1` 个镜像核占 slot 2..N，
+**一核一线程**（`:190-196`，单线程交替 `runFrame` 会死锁），`beginFrame/endFrame`
+帧栅栏（`:201-240`），镜像线程 `keysForSlot(index+2)` 取按键（`:363`）。网络侧
+`GBoyLinkSession.onLocalFrame` 每 5 帧（12Hz）广播一次 `TYPE_KEYS`
+(`GBoyLinkSession.java:102-127`)，超 `BACKLOG_LIMIT=2` 丢最旧。
+
+**⚠️ 路径 B 并没有绕开 TCP**：`GBoyConsoleSet.java:134-151` →
+`MgbaCore.linkHost(port, players)` → `jni_bridge.cpp:300` →
+`mgba_mobile.c:4523 netLinkBusHost(...)`。3/4 人的核间 SIO 仍是
+**127.0.0.1 TCP 星型总线**，与 `busgame` 用的是同一份实现；「网络只传按键」
+只针对跨设备，核间依旧逐轮跨线程会合。别再指望上真机跑 ncore 会自己变快。
+
+### 7.3 帧协议：三处易混淆点
+
+1. **wire 布局三端一致**：`[u32 BE length][u16 BE type][payload]`，
+   `length = 2 + payload.length`（`GBoyFrames.cpp:28-35`、
+   `GBoyFrames.java:84-90`、`LobbyFrames.swift:56-82`）；`Reader` 增量拆包，
+   上限 16 MiB。旧上限 65535 会把 ~790 KiB 的存档帧判非法并丢弃整段流，
+   造成后续按键从错误偏移解析（幻影输入），已有大帧回归测试。
+2. **同一个客户端里并存两套语义不同的协议**：`GBoyLink.cpp:36-41`（WiFi 局域网，
+   1=HELLO / 4=KEYS / 6=STATE）与 `GBoyFrames.h:38-50`（云房间，
+   0=KEYS / 2=INPUT_2 / 3=READY / 4=INPUT_4 / 6=STATE / 7..10）线格式相同但
+   type 编号含义不同，分别服务 `LinkView` / `LobbyView`，不共用一条流。
+   `GBoyLink.cpp:417` 里的 `6` 是 HELLO 版本号，不是 `TYPE_STATE`。
+3. **type 6 有三种含义**：① 存档 = `int len + blob`；② SIO 桥 = **裸 20 字节
+   netLink 包、无长度头**（`CloudLink.cpp:1571`、`GBoyCloudLink.java:1297`）；
+   ③ iOS LAN 的 `msgState=6` 是 zlib 压缩的 GBASTATE v4。
+   `stateOf()` 用 `length > payload.size()-4` 拒绝裸包（`GBoyFrames.cpp:54-66`）。
+   官方中继对 type 1..6 透明转发，所以桥「借壳」type 6 而没另开类型。
+
+历史缺陷已修、证据完整：`startSioRelayBridge` 出向曾把裸 `MBL1` 包直接发进 KCP，
+对端 `Reader` 把头 4 字节当 length（≈826 MB）而丢弃整条流 —— 提交
+`3fa798899` 改为 `frame(TYPE_STATE, packet)`（`CloudLink.cpp:1567-1572`）；
+入向配套过滤 `typeOf(body) != TYPE_STATE → continue`（`:1580-1582`）。
+注意 **WS 隧道路径仍发裸 20 字节是设计如此**：两端都不经过 `Reader`，
+`WsLink` 只做 20 字节切片 + hex/base64 信封，是透明字节管道。
+
+WS 信封还有一处「代码领先文档」：`PROTOCOL.md §12.2` 记的是
+`{"gboy_ws":"f","room":...,"from":...,"d":base64}`，而当前代码已因服务器
+**关键词过滤 + 100 字符上限**改成短键名 hex `{"w":"f","r":...,"o":...,"d":...}`
+（`CloudLink.cpp:358-378`、`GBoyCloudLink.java:1516-1531`），靠 hello/accept
+里的 `"c":1` 能力协商与老版本互通。分析以代码为准。
+
+### 7.4 锁步：性能边界与两个独立缺陷
+
+gen8 每帧要跑 **9 轮 MULTI**，每轮的字互为函数（第 k+1 轮要等第 k 轮数据到手），
+因此严格锁步下**每轮至少 1 个 RTT**，跨公网必然 0.7~1.5fps。代码层面对应：
+
+- `sioFastFrame`（`sio_link.c:936-984`）：仅在 `netLinkState==2`、`sioOk>=256`、
+  `gLink.state>=2` 且 `fieldLinkPlayerCount>=2` 后锁存「复用上一轮对端字」零等待，
+  LINKUP 之后才能回到 ~60fps。**安卓 `mgba_mobile.c` 没有等价实现**，这是 PC/安卓
+  可对比的行为差异。
+- `sioPeerWaitMs`（`sio_link.c:804-861` / `mgba_mobile.c:2648-2700` 同构）：
+  总线模式为 `RTT×3` clamp `[2,120]` ms；对端没动静时返回 0 立刻空槽收尾，
+  防止整帧假死。
+- 帧率必须按 115200 baud（5755 cycles）调度，否则一帧只有 3.7 次 SIO 中断，
+  游戏直接报通信错误（`sio_link.c:1300-1307`）。
+
+**3/4 人游戏侧 LINKUP 至今 `cnt=0`，已定量定位为两个独立缺陷，只修一个不够**：
+
+| 缺陷 | 实测证据 | 性质 |
+|---|---|---|
+| `full=0` 空槽 | `netLinkBusDiag` 461 轮里 220 轮空槽、495 次从机 PUSH 全部落后（`lead=[-32,0]`）；主机严格 `p->index == index`，从机 `max(自身, busHostIndex)` 不收敛 | 轮次索引对齐（架构级节奏） |
+| 5.6fps | `BUSGAME_BARRIER=1` 且 `barrier=1` 时三核帧号 `242/242/242`、`full=1`，但 c0 `run=592ms`（2.3ms/帧）、c1/c2 `run≈49.5s`（**195ms/帧**），瓶颈在从机 `runFrame` 内部逐轮跨线程会合吃满 2ms 地板 | TCP 总线 + 帧锁步的物理冲突 |
+
+四种栅栏顺序实测：**零等待 → 73fps 但 `full=0` 全空槽；有等待 → 有字但 5.6fps**。
+`full=1` 与 60fps 不可兼得，这是 A 路线的终点。轮次对齐**不要放宽 `==index` 配对**
+（会把 32 轮前的陈旧字喂进握手块校验）。
+
+### 7.5 三端对齐矩阵
+
+| 能力 | PC / Qt | Android | iOS |
+|---|---|---|---|
+| `TYPE_STATE` 收发 | ✅ `CloudLink.cpp:1571,1580,1970` | ✅ `GBoyCloudLink.java:1297,1315` | ✅ `LobbyLink.swift:632,662` |
+| SIO 分开控制桥（§13） | ✅ `CloudLink.cpp:1353-1404` | ✅ `GBoyCloudLink.java:1121-1178` | ❌ 未找到（仍是按键合并） |
+| WS 隧道 fallback | ✅ `WsLink` `:327-589` | ✅ `WsLink` `:1425-1706` | ❌ 未找到（KCP 死等 5 分钟） |
+| `self` + nonce 双重回显过滤 | ✅ `CloudLink.cpp:2079-2080` | ⚠️ 仅 nonce（`:2077-2079`） | ❌ 未找到 |
+| `query_room` | ❌ | ❌ | ❌ |
+| 3/4 人按键槽位发送侧 | — | ❌ 只发 `TYPE_KEYS`，`INPUT_2/READY/INPUT_4` 无发送方 | — |
+| 本机 N 核 / 星型总线 | ✅ `GBoyMirror` | ✅ `GBoyConsoleSet` + `netLinkBusHost` | ❌ |
+
+`query_room` 在 `PROTOCOL.md §2.4` 被列为已知动作，但三端生产代码全无调用
+（只在 `tools/probe_node.py:158` 的探测候选里）——**文档列出的动作 ≠ 客户端已实现**。
+三端改用房主每 2s 广播 `gboy_node` 或手动 `NODE2:` 传节点地址。
+
+### 7.6 接手基线（已验证 / 未验证，勿凭印象推翻）
+
+- **已绿**（历史实测记录，本轮未重跑）：完整 C 套件 242 ok / 0 FAIL / EXIT=0；`--dual` 16 条确定性用例
+  证明两核不串扰；`--bus` 37 条、`--link` 42 条断言通过。此前「完整套件段错误
+  139」已定位修复（`nativeHoldGenerate` budget 未钳到 scratch 容量导致堆溢出；
+  `netLinkClose` 未 join `pingThread` 导致 UAF）。
+- **已实测可用**：P2P 直连两端各 1 核 → LINKUP `cnt=2`、训练家卡片块交换 `ts=0x80`、
+  走位到座位、进 `BattleMainCB2`、60fps；本机双核心 → 同样到 `ts=0x80`、60fps。
+- **LINKUP 判据**：用 `ts`（0x80 进房 / 0x82 就绪）与 `gLink.playerCount`，
+  **不要用 `brs`**（卡片拷完会被 `ResetBlockReceivedFlags()` 清零）。
+- **未达成**：3/4 人游戏侧 LINKUP；`busgame` 是诊断入口，不进默认套件。
+- **环境前提**：构建前 `export PATH="/c/msys64/mingw64/bin:$PATH"`；起测前
+  `taskkill /F /IM mGBA.exe`（残留进程锁住 `rom.sav`）；ROM 必须复制进工作区
+  （工作区外 `D:/gen8` 的 `VFileOpen` 返回 NULL）；`gboy_tcp_relay.py` 连上后
+  必须 `settimeout(None)`，否则 3 秒空闲超时会掐断总线。
+
+---
+
+## 8. 下一步（按优先级）
+
+1. **真·进程内总线**（唯一能同时做到帧同步 + `full` 轮次 + 60fps 的路）：
+   让 `GBoyConsoleSet` 的 N 核不再经 `netLinkBusHost/Join`（127.0.0.1 TCP），
+   改成同进程共享内存环形缓冲 + 原子/cond，主机广播就是一次 memcpy，
+   从机下一轮直接读，RTT≈µs 且没有每轮 2ms 超时地板。
+2. **轮次索引对齐**：修主机 `==index` 与从机 `max(自身, busHostIndex)` 不收敛，
+   但**不要放宽配对**；必须与第 1 项同时做，否则对齐了仍是 5.6fps。
+   不要再在 `busgame` 里调栅栏/超时，也不要寄望 ncore 上真机自愈。
+3. **N 设备按键槽位路由**：`GBoyLinkSession` 已能接 4 槽并有单元测试，但发送侧
+   只发 `TYPE_KEYS`、接收侧不带 `senderSlot`（恒落 slot 2），需补
+   `TYPE_INPUT_2/READY(带 int)/INPUT_4` 的发送与槽位映射。
+4. **iOS 对齐**：补 `WsLink` 隧道 fallback、SIO 分开控制桥、`self`+nonce 过滤；
+   改动需 macOS + Xcode 做类型检查（本机只能 `swiftc -parse`）。
+5. **WSS 房间信令逐行对齐官方混淆类**：需账号 + 真机抓包；`query_room`、
+   `create_game_room` 调用次数（脚本 2 次 / iOS 3 次）三端尚未统一。
+
+回归入口：`mgba_mobile_test --bus` / `--link` / `--dual`、`test-gboylink busgame`
+（诊断，默认关）、完整 C 套件；驱动脚本 `.workbuddy/drive/walk_battle.py`。
+
