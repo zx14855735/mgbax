@@ -446,3 +446,36 @@ NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/wal
   跨设备 3/4 人（路径 C）仍是 TCP 星型总线，未改动。
 - 未做真机验证；本轮验证均为本机 C/Java/NDK 构建与 Qt 诊断程序。
 
+---
+
+## 10. 3/4 人按键槽位路由（2026-11-11 续）
+
+### 10.1 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `android/.../GBoyLinkSession.java` | `playerCount>2` 时 `onLocalFrame` 按 `localSlot` 发带槽位帧：1→`TYPE_KEYS`、2→`TYPE_INPUT_2`、3→带 int 的 `TYPE_READY`、4→`TYPE_INPUT_4`；无参 `onFrameBody`/`onWireFrame` 的默认 `senderSlot` 在 3/4 人时固定为 1；新增 `localSlot()`/`playerCount()`；**两人路径一字不动** |
+| `android/.../EmulatorActivity.java` | 新增 9 参 `startGBoyLocalLink(..., localSlot)`，从 `GBOY_LOCAL_LINK` 广播读 `--ei slot`；8 参重载默认 slot 1；日志带 slot |
+| `android/.../GBoyLinkSessionTest.java` | 新增三个用例：四槽发送帧类型、四设备会话级槽位路由（含 slot 3 带 int 的 READY 不触发握手）、两人路径回归 |
+| `android/.../GBoySocketLinkTest.java` | 新增 `slotTypedKeysOverLoopback`：4 人会话下 slot 1 / slot 2 两台设备经真实 loopback TCP 交换带槽位键位帧，验证落到对端正确槽位 |
+
+### 10.2 验证
+
+| 检查 | 结果 |
+|---|---|
+| `javac -encoding UTF-8` + `GBoyLinkSessionTest` | `GBoyLinkSessionTest ok`，EXIT=0 |
+| `javac -encoding UTF-8` + `GBoySocketLinkTest`（含新增 socket 用例） | `GBoySocketLinkTest ok`，EXIT=0 |
+| `gradlew :app:compileDebugJavaWithJavac --offline` | BUILD SUCCESSFUL |
+| `gradlew :app:testDebugUnitTest --offline` | **既有配置问题**：项目单测是 plain JVM `main`、无 JUnit 依赖，任务报 `did not discover any tests`；等价验证以上述 javac 直跑为准 |
+
+### 10.3 已知限制
+
+- native 链路仍把可见核固定在链路槽位 1：`netLinkBusHostLocal` 把 host 设为
+  player 0、`netLinkBusJoinLocal` 按接入顺序分配槽位。因此 `localSlot > 1`
+  的设备在 SIO 层仍被游戏认成玩家 1。要真正跑通 N 台设备，需要给
+  `netLinkBusJoinLocal` 增加「指定槽位」入口，并让 `GBoyConsoleSet` 的镜像核
+  映射到除 `localSlot` 外的全局槽位（§8 第 2 项）。
+- `GBoyCloudLink.newSession` 固定 `playerCount=2`，云端 officialMode 仍是两人
+  会话，不受本次改动影响。
+- 未做真机多设备验证；本轮为 JVM 单测与 Android Java 编译。
+

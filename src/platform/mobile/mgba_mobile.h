@@ -142,6 +142,8 @@ bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int 
  * 多核用它，跨设备仍走 mgbaMobileLinkHost/Join。 */
 bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players);
 bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key);
+/* 占用指定链路槽位（0 归主机）。本机可见核要占全局会话里它自己的槽位。 */
+bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot);
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

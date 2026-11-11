@@ -28,6 +28,7 @@
  */
 #include "GBoyFrames.h"
 #include "GBoyLink.h"
+#include "GBoyLinkSession.h"
 #include "ExternalShader.h"
 #include "WebDavSync.h"
 #include "audio_stretch.h"
@@ -1091,6 +1092,121 @@ static int dualTest(const QString& rom, const QString& sav) {
  *   2. 每个从机的 SIOMULTI0 里是**主机某一轮的字**（0x7000..0x7007）——
  *      这就是「主机广播真的过了总线、进了游戏的接收寄存器」。
  */
+/* 进程内总线的指定槽位 join：PC/Qt 与 Android 共用同一份 link_net.c，
+ * 这里验证 Qt 侧入口把 slot 正确透传；C 层的会合语义由 mobile_test 覆盖。 */
+static int busLocalSlotTest(void) {
+	const int key = 18770;
+	struct SioLink* links[4];
+	struct SioLink* spare = sioLinkCreate();
+	int failures = 0;
+	for (int i = 0; i < 4; ++i) {
+		links[i] = sioLinkCreate();
+	}
+	auto check = [&](bool ok, const char* what) {
+		if (!ok) {
+			fprintf(stderr, "BUSLOCAL TEST: FAIL %s\n", what);
+			++failures;
+		}
+	};
+	check(sioLinkHostPlayersLocal(links[0], key, 4), "local host up");
+	check(sioLinkPlayer(links[0]) == 0, "host owns link slot 0");
+	check(sioLinkJoinPlayersLocalSlot(links[2], key, 2), "join slot 2 out of order");
+	check(sioLinkPlayer(links[2]) == 2, "slot 2 recorded on the Qt side");
+	check(!sioLinkJoinPlayersLocalSlot(spare, key, 2), "duplicate slot rejected");
+	check(!sioLinkJoinPlayersLocalSlot(spare, key, 0), "host slot reserved");
+	check(!sioLinkJoinPlayersLocalSlot(spare, key, 4), "slot beyond players rejected");
+	check(sioLinkJoinPlayersLocalSlot(links[1], key, 1), "join slot 1");
+	check(sioLinkJoinPlayersLocalSlot(links[3], key, 3), "join slot 3");
+	check(sioLinkPlayerCount(links[0]) == 4, "all four slots attached");
+	if (!failures) {
+		fprintf(stderr, "BUSLOCAL TEST: PASS (slot-tagged local bus join)\n");
+	}
+	sioLinkDestroy(spare);
+	for (int i = 1; i < 4; ++i) {
+		sioLinkDestroy(links[i]);
+	}
+	sioLinkDestroy(links[0]);
+	return failures;
+}
+
+/* PC 会话层与 Android GBoyLinkSession.java / iOS LobbyLink.swift 的槽位规则
+ * 必须一致：3/4 人按本机槽位发带槽位帧，TYPE_KEYS 固定代表 slot 1；
+ * 两人会话仍发 TYPE_KEYS。 */
+static int gboySessionSlotTest(void) {
+	int failures = 0;
+	auto check = [&](bool ok, const char* what) {
+		if (!ok) {
+			fprintf(stderr, "SESSIONSLOT TEST: FAIL %s\n", what);
+			++failures;
+		}
+	};
+	const int expected[4] = {GBoyFrames::TYPE_KEYS, GBoyFrames::TYPE_INPUT_2,
+	                         GBoyFrames::TYPE_READY, GBoyFrames::TYPE_INPUT_4};
+	for (int slot = 1; slot <= 4; ++slot) {
+		QByteArray sent;
+		GBoyLinkSession::Events ev;
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession session([&](const QByteArray& f) { sent = f; }, ev, slot, 4);
+		QByteArray wire = session.onLocalFrame(0, 0x100 + slot);
+		check(!wire.isNull(), "session broadcasts on frame 0");
+		check(GBoyFrames::getInt(wire, 0) == 6, "key frame keeps the 10 byte layout");
+		check((int) GBoyFrames::getShort(wire, 4) == expected[slot - 1],
+		      "PC session uses the slot-tagged frame type");
+		check((int) GBoyFrames::getInt(wire, 6) == 0x100 + slot,
+		      "PC session carries its own key mask");
+	}
+	{
+		QByteArray sent;
+		GBoyLinkSession::Events ev;
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession two([&](const QByteArray& f) { sent = f; }, ev, 2, 2);
+		QByteArray wire = two.onLocalFrame(0, 0x55);
+		check(GBoyFrames::getShort(wire, 4) == GBoyFrames::TYPE_KEYS,
+		      "two-player session still sends TYPE_KEYS");
+	}
+	{
+		QByteArray sent;
+		GBoyLinkSession::Events ev;
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession peer([&](const QByteArray& f) { sent = f; }, ev, 2, 4);
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x5A));
+		for (int f = 1; f <= 5; ++f) {
+			peer.onLocalFrame(f, 0);
+		}
+		check(peer.keysForSlot(1) == 0x5A,
+		      "4-player default sender slot is 1 on the PC side");
+	}
+	/* 镜像核槽位映射必须与 Android / iOS 逐项一致。 */
+	const int expectedMap[4][3] = {
+		{2, 3, 4}, {1, 3, 4}, {1, 2, 4}, {1, 2, 3}
+	};
+	for (int slot = 1; slot <= 4; ++slot) {
+		for (int index = 0; index < 3; ++index) {
+			check(GBoyLinkSession::mirrorSlotFor(slot, 4, index) == expectedMap[slot - 1][index],
+			      "PC mirror slot map matches the other clients");
+		}
+	}
+	check(GBoyLinkSession::mirrorSlotFor(2, 3, 0) == 1,
+	      "PC three-player mirror map matches");
+	check(GBoyLinkSession::mirrorSlotFor(1, 2, 0) == 2,
+	      "PC two-player mirror map is unchanged");
+	check(GBoyLinkSession::mirrorSlotFor(3, 2, 0) == 0,
+	      "PC rejects an out of range slot");
+	if (!failures) {
+		fprintf(stderr, "SESSIONSLOT TEST: PASS (PC session slot routing)\n");
+	}
+	return failures;
+}
+
 static int busSioTest(const QString& rom, int players) {
 	if (players < 3) {
 		players = 3;
@@ -2757,6 +2873,11 @@ int main(int argc, char** argv) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
 		int players = args.size() > 3 ? args[3].toInt() : 4;
 		return busSioTest(rom, players);
+	}
+	if (mode == QStringLiteral("buslocal")) {
+		int failures = busLocalSlotTest();
+		failures += gboySessionSlotTest();
+		return failures;
 	}
 	if (mode == QStringLiteral("busgame")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/gen8/rom.gba");

@@ -55,6 +55,10 @@ final class LobbyLink {
     var onRemoteState: (Data) -> Void = { _ in }
     /// Key mask received from the peer; called from the reader thread.
     var onRemoteKeys: (Int32) -> Void = { _ in }
+    /// Slot owned by this device's visible console (1...4). Devices in a
+    /// 3/4-player session must use distinct slots so key frames reach the
+    /// right mirror console; slot 1 keeps the two-player TYPE_KEYS behaviour.
+    var localSlot: Int = 1
     /// Called from background threads; the owner hops to the main queue.
     var onStatus: (String) -> Void = { _ in }
     /// The link is up: `true` when this device is the 1P.
@@ -636,7 +640,7 @@ final class LobbyLink {
                 if keys != sentKeys || now - lastKey >= 500 {
                     sentKeys = keys
                     lastKey = now
-                    link.send(LobbyFrames.frame(LobbyFrames.typeKeys, keys))
+                    link.send(LobbyFrames.frame(keyFrameType(), keys))
                 }
             }
             if now - lastFps >= 1000 {
@@ -653,10 +657,43 @@ final class LobbyLink {
         }
     }
 
+    /// Same mirror-console slot map as GBoyLinkSession.java on Android and
+    /// GBoyLinkSession.cpp on the PC build. Kept here so a future multi-core
+    /// iOS layout assigns key masks to exactly the same global slots.
+    static func mirrorSlotFor(localSlot: Int, playerCount: Int, index: Int) -> Int {
+        guard (2...4).contains(playerCount), (1...playerCount).contains(localSlot),
+              index >= 0, index < playerCount - 1 else { return 0 }
+        var seen = 0
+        for slot in 1...playerCount where slot != localSlot {
+            if seen == index { return slot }
+            seen += 1
+        }
+        return 0
+    }
+
+    /// Official protocol tags key frames with the target console slot once
+    /// more than two consoles are in play. Mirrors GBoyLinkSession on Android
+    /// and GBoyLinkSession.cpp on the PC build.
+    private func keyFrameType() -> Int {
+        switch localSlot {
+        case 2: return LobbyFrames.typeInput2
+        case 3: return LobbyFrames.typeReady
+        case 4: return LobbyFrames.typeInput4
+        default: return LobbyFrames.typeKeys
+        }
+    }
+
     private func handle(_ body: Data) {
         switch LobbyFrames.type(of: body) {
         case LobbyFrames.typeKeys, LobbyFrames.typeKeysLocal:
             onRemoteKeys(LobbyFrames.intValue(of: body))
+        case LobbyFrames.typeInput2, LobbyFrames.typeInput4:
+            onRemoteKeys(LobbyFrames.intValue(of: body))
+        case LobbyFrames.typeReady:
+            // Bare type 3 is the handshake; with an int it is slot 3's keys.
+            if LobbyFrames.payload(of: body).count >= 4 {
+                onRemoteKeys(LobbyFrames.intValue(of: body))
+            }
         case LobbyFrames.typeReset:
             onRemoteReset()
         case LobbyFrames.typeState:

@@ -1695,6 +1695,47 @@ static void testBusLocalCase(int players, int key, int rounds) {
 	pthread_cond_destroy(&barrier.cv);
 }
 
+/* 指定槽位 join：多台设备各跑 N 核时，本机可见核必须占它在全局会话里的
+ * 那个槽位。乱序占用、冲突拒绝、释放后复用都要覆盖。 */
+static void testBusLocalSlots(void) {
+	const int key = 91004;
+	struct NetLink* links[4];
+	struct NetLink* spare = netLinkCreate();
+	int i;
+	for (i = 0; i < 4; ++i) {
+		links[i] = netLinkCreate();
+	}
+	expect(netLinkBusHostLocal(links[0], key, 4), "local bus: host up");
+	expect(netLinkBusIsLocal(links[0]), "local bus: host reports local mode");
+	expect(netLinkBusLocalSlot(links[0]) == 0, "local bus: host owns link slot 0");
+	expect(netLinkBusJoinLocalSlot(links[2], key, 2),
+	       "local bus: slot 2 can be claimed out of order");
+	expect(netLinkBusLocalSlot(links[2]) == 2, "local bus: claimed slot recorded");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 2),
+	       "local bus: duplicate slot is rejected");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 0),
+	       "local bus: host slot is reserved");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 4),
+	       "local bus: slot beyond player count is rejected");
+	expect(!netLinkBusJoinLocalSlot(spare, 987654, 1),
+	       "local bus: unknown key is rejected for a slot join");
+	expect(netLinkBusJoinLocalSlot(links[1], key, 1),
+	       "local bus: slot 1 can be claimed after slot 2");
+	expect(netLinkBusJoinLocalSlot(links[3], key, 3),
+	       "local bus: slot 3 can be claimed last");
+	expect(netLinkBusPlayers(links[0]) == 4, "local bus: all four slots attached");
+	/* 退出某个从机后，它的槽位必须能被重新占用。 */
+	netLinkDestroy(links[2]);
+	expect(netLinkBusJoinLocalSlot(spare, key, 2),
+	       "local bus: freed slot can be reused");
+	expect(netLinkBusLocalSlot(spare) == 2, "local bus: reused slot recorded");
+
+	netLinkDestroy(spare);
+	netLinkDestroy(links[1]);
+	netLinkDestroy(links[3]);
+	netLinkDestroy(links[0]);
+}
+
 static void testBusLocal(void) {
 	struct NetLink* stray = netLinkCreate();
 	expect(!netLinkBusJoinLocal(stray, 987654), "local bus: unknown key is rejected");
@@ -1702,6 +1743,7 @@ static void testBusLocal(void) {
 	testBusLocalCase(4, 91001, 120);
 	testBusLocalCase(3, 91002, 120);
 	testBusLocalCase(4, 91003, 120);
+	testBusLocalSlots();
 }
 
 /* 3 人总线：人数少于 4 时，第 4 个槽位必须是空槽 0xFFFF。

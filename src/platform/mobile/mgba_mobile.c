@@ -4552,6 +4552,13 @@ bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key) {
 	return netLinkBusJoinLocal(emu->link, key);
 }
 
+bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot) {
+	if (!emu || !emu->link) {
+		return false;
+	}
+	return netLinkBusJoinLocalSlot(emu->link, key, slot);
+}
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu) {
 	if (!emu || !emu->link) {
 		return;

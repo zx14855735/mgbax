@@ -2063,7 +2063,8 @@ public class EmulatorActivity extends AppCompatActivity {
             localLink = link;
             gboyRemoteKeysEnabled = false;
             gboyRemoteKeys = 0;
-            GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort, consoleCount);
+            GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort,
+                    consoleCount, slot);
             boolean ok = set.start(core, link.session());
             consoleSet = set;
             return ok;

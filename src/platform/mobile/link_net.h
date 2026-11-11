@@ -119,6 +119,14 @@ bool netLinkBusJoin(struct NetLink* link, const char* host, int port);
  * 超时（实测 198ms/帧、5.6fps）。key 用来在同一进程里区分不同的会话。 */
 bool netLinkBusHostLocal(struct NetLink* link, int key, int players);
 bool netLinkBusJoinLocal(struct NetLink* link, int key);
+/* 占用指定链路槽位（0 归主机，1..players-1 可被从机指定）。多台设备各自
+ * 跑 N 核时，本机可见核必须占它在全局会话里的那个槽位，否则游戏会把它
+ * 认成玩家 1。slot 已被占用或越界时返回 false。 */
+bool netLinkBusJoinLocalSlot(struct NetLink* link, int key, int slot);
+/* 是否处于进程内总线模式，以及本机占用的链路槽位；SIO 驱动用它把「谁起
+ * 一轮 MULTI」的判据从链路 player 号切到游戏认定的主机。 */
+bool netLinkBusIsLocal(struct NetLink* link);
+int netLinkBusLocalSlot(struct NetLink* link);
 /* 本机是否处于总线模式（players > 2 且已启动）。 */
 bool netLinkBusActive(struct NetLink* link);
 /* 当前已连上的玩家数（含本机）。未连上或非总线模式返回 0。 */

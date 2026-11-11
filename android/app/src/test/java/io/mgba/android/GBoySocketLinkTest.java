@@ -55,6 +55,7 @@ public final class GBoySocketLinkTest {
             stateAndResetRoundTrip();
             largeStateFrameRoundTrip();
             stateSentAfterHandshake();
+            slotTypedKeysOverLoopback();
             closeReleasesBothSides();
             System.out.println("GBoySocketLinkTest ok");
         } finally {
@@ -171,6 +172,39 @@ public final class GBoySocketLinkTest {
                 "handshake-triggered state payload is intact");
         h.close();
         g.close();
+    }
+
+    /**
+     * 3/4 人会话里不同槽位的设备必须发不同 type 的键位帧，并且这些帧穿过
+     * 真实 socket 后要落到对端对应的槽位。两人路径由其他用例覆盖。
+     */
+    private static void slotTypedKeysOverLoopback() throws Exception {
+        Recorder hEvents = new Recorder();
+        Recorder gEvents = new Recorder();
+        GBoySocketLink h = new GBoySocketLink(1, 4, hEvents);
+        int port = h.startHost(0);
+        GBoySocketLink g = new GBoySocketLink(2, 4, gEvents);
+        try {
+            g.startJoin("127.0.0.1", port);
+            check(waitFor(() -> h.isReady() && g.isReady(), 3000),
+                    "4-player sessions complete the socket handshake");
+            h.session().onLocalFrame(0, 0xA1);
+            g.session().onLocalFrame(0, 0xB2);
+            check(waitFor(() -> g.session().backlog(1) > 0
+                            && h.session().backlog(2) > 0, 3000),
+                    "slot-typed key frames cross the TCP link");
+            for (int f = 1; f <= 5; ++f) {
+                h.session().onLocalFrame(f, 0);
+                g.session().onLocalFrame(f, 0);
+            }
+            check(g.session().keysForSlot(1) == 0xA1,
+                    "slot 1 TYPE_KEYS reaches the peer's slot 1");
+            check(h.session().keysForSlot(2) == 0xB2,
+                    "slot 2 TYPE_INPUT_2 reaches the peer's slot 2");
+        } finally {
+            h.close();
+            g.close();
+        }
     }
 
     private static void closeReleasesBothSides() {

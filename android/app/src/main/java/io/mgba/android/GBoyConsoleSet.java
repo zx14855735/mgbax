@@ -56,6 +56,7 @@ public final class GBoyConsoleSet {
     private final File stateDir;
     private final int basePort;
     private final int players;
+    private final int localSlot;   /* 本机可见核在全局会话里的槽位，1..players */
 
     private MgbaCore primary;
     private MgbaCore[] mirrors;
@@ -76,6 +77,18 @@ public final class GBoyConsoleSet {
 
     /** @param players 2..4 consoles in this process; 3/4 use the star bus. */
     public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort, int players) {
+        this(rom, saveDir, stateDir, basePort, players, 1);
+    }
+
+    /**
+     * @param players 2..4 consoles in this process; 3/4 use the in-process bus.
+     * @param localSlot slot owned by this device's visible core (1..players).
+     *                  Devices in a multi-device session must use distinct
+     *                  slots; the visible core joins that exact link slot so
+     *                  the game identifies it as the right player.
+     */
+    public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort,
+                          int players, int localSlot) {
         if (rom == null || saveDir == null || stateDir == null) {
             throw new IllegalArgumentException("rom and save directories are required");
         }
@@ -85,11 +98,15 @@ public final class GBoyConsoleSet {
         if (players < 2 || players > MAX_CONSOLES) {
             throw new IllegalArgumentException("invalid console count: " + players);
         }
+        if (localSlot < 1 || localSlot > players) {
+            throw new IllegalArgumentException("invalid local slot: " + localSlot);
+        }
         this.rom = rom;
         this.saveDir = saveDir;
         this.stateDir = stateDir;
         this.basePort = basePort;
         this.players = players;
+        this.localSlot = localSlot;
     }
 
     /**
@@ -138,10 +155,18 @@ public final class GBoyConsoleSet {
          * 不动，仍是已经验证过的环回直连。 */
         final boolean localBus = players > 2;
         final int busKey = basePort;
+        /* localSlot > 1 时可见核必须占它自己的链路槽位，而 host 恒占槽位 0，
+         * 所以让第一个镜像核当 host（代表全局槽位 1），可见核 join 到
+         * localSlot - 1。localSlot == 1 时保持原样：可见核就是 host。 */
+        final int hostMirrorIndex = (localBus && localSlot > 1) ? 0 : -1;
         int port = -1;
         if (localBus) {
-            if (primary.linkHostLocal(busKey, players)) {
-                port = busKey;
+            MgbaCore host = hostMirrorIndex >= 0 ? mirrors[hostMirrorIndex] : primary;
+            if (host.linkHostLocal(busKey, players)) {
+                if (hostMirrorIndex < 0
+                        || primary.linkJoinLocal(busKey, localSlot - 1)) {
+                    port = busKey;
+                }
             }
         } else {
             for (int attempt = 0; attempt < PORT_ATTEMPTS && port < 0; ++attempt) {
@@ -152,12 +177,15 @@ public final class GBoyConsoleSet {
             }
         }
         if (port < 0) {
-            return fail(localBus ? "进程内总线创建失败: key=" + busKey
+            return fail(localBus ? "进程内总线创建失败: key=" + busKey + " slot=" + localSlot
                                  : "环回监听端口不可用: " + basePort);
         }
         linkPort = port;
 
         for (int i = 0; i < count; ++i) {
+            if (i == hostMirrorIndex) {
+                continue;   // 它已经是 host
+            }
             boolean joined = false;
             for (int attempt = 0; attempt < JOIN_ATTEMPTS && !joined; ++attempt) {
                 joined = localBus
@@ -341,6 +369,15 @@ public final class GBoyConsoleSet {
         }
     }
 
+    /**
+     * 第 index 个镜像核代表的全局槽位：跳过本机 localSlot 后的第 index 个。
+     * localSlot == 1 时结果恒为 index + 2，与原来的固定映射完全一致。
+     * 静态纯函数，便于 JVM 单测覆盖四台设备的所有槽位组合。
+     */
+    public static int mirrorSlotFor(int localSlot, int players, int index) {
+        return GBoyLinkSession.mirrorSlotFor(localSlot, players, index);
+    }
+
     private long slowestMirror() {
         if (mirrorFrames == null || mirrorFrames.length == 0) {
             return -1L;
@@ -376,7 +413,7 @@ public final class GBoyConsoleSet {
                 return;
             }
             GBoyLinkSession net = session;
-            int keys = net != null ? net.keysForSlot(index + 2) : 0;
+            int keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
             core.setKeys(keys);
             core.pumpLink();
             core.runFrames(keys, 1);

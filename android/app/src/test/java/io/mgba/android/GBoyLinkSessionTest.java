@@ -59,6 +59,7 @@ public final class GBoyLinkSessionTest {
         multiPlayerSendsSlotTypedFrames();
         multiPlayerRoutesKeysToOwnSlots();
         twoPlayerKeepsTypeKeys();
+        mirrorSlotMapping();
         readyHandshake();
         resetAndStateRoundTrip();
         readerAcceptsLargeStateFrames();
@@ -215,6 +216,37 @@ public final class GBoyLinkSessionTest {
             peer.onLocalFrame(f, 0);
         }
         check(peer.keysForSlot(2) == 0x55, "two-player default sender slot unchanged");
+    }
+
+    /** 三端共用的镜像核槽位映射：跳过本机槽位后按顺序分配其余槽位。 */
+    private static void mirrorSlotMapping() {
+        check(GBoyLinkSession.mirrorSlotFor(1, 4, 0) == 2, "slot 1 device mirrors 2 first");
+        check(GBoyLinkSession.mirrorSlotFor(1, 4, 1) == 3, "slot 1 device mirrors 3 second");
+        check(GBoyLinkSession.mirrorSlotFor(1, 4, 2) == 4, "slot 1 device mirrors 4 third");
+        check(GBoyLinkSession.mirrorSlotFor(2, 4, 0) == 1, "slot 2 device mirrors 1 first");
+        check(GBoyLinkSession.mirrorSlotFor(2, 4, 1) == 3, "slot 2 device mirrors 3 second");
+        check(GBoyLinkSession.mirrorSlotFor(2, 4, 2) == 4, "slot 2 device mirrors 4 third");
+        check(GBoyLinkSession.mirrorSlotFor(3, 4, 0) == 1, "slot 3 device mirrors 1 first");
+        check(GBoyLinkSession.mirrorSlotFor(3, 4, 1) == 2, "slot 3 device mirrors 2 second");
+        check(GBoyLinkSession.mirrorSlotFor(3, 4, 2) == 4, "slot 3 device mirrors 4 third");
+        check(GBoyLinkSession.mirrorSlotFor(4, 4, 0) == 1, "slot 4 device mirrors 1 first");
+        check(GBoyLinkSession.mirrorSlotFor(4, 4, 1) == 2, "slot 4 device mirrors 2 second");
+        check(GBoyLinkSession.mirrorSlotFor(4, 4, 2) == 3, "slot 4 device mirrors 3 third");
+        check(GBoyLinkSession.mirrorSlotFor(2, 3, 0) == 1, "three-player slot 2 mirrors 1");
+        check(GBoyLinkSession.mirrorSlotFor(2, 3, 1) == 3, "three-player slot 2 mirrors 3");
+        check(GBoyLinkSession.mirrorSlotFor(1, 2, 0) == 2, "two-player device mirrors slot 2");
+        check(GBoyLinkSession.mirrorSlotFor(1, 2, 1) == 0, "out of range index rejected");
+        check(GBoyLinkSession.mirrorSlotFor(3, 2, 0) == 0, "out of range slot rejected");
+        for (int slot = 1; slot <= 4; ++slot) {
+            boolean[] seen = new boolean[5];
+            for (int index = 0; index < 3; ++index) {
+                int mapped = GBoyLinkSession.mirrorSlotFor(slot, 4, index);
+                check(mapped >= 1 && mapped <= 4 && mapped != slot,
+                        "mirror slot stays in range and skips the local slot");
+                check(!seen[mapped], "mirror slot is unique for slot " + slot);
+                seen[mapped] = true;
+            }
+        }
     }
 
     private static void readyHandshake() {

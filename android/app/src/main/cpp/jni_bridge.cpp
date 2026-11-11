@@ -322,6 +322,11 @@ Java_io_mgba_android_MgbaCore_nativeLinkJoinLocal(JNIEnv*, jobject, jlong handle
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLinkJoinLocalSlot(JNIEnv*, jobject, jlong handle, jint key, jint slot) {
+	return mgbaMobileLinkJoinLocalSlot((struct MgbaMobile*) handle, key, slot) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeLinkJoinPlayers(JNIEnv* env, jobject, jlong handle, jstring host, jint port, jint players) {
 	const char* text = host ? env->GetStringUTFChars(host, NULL) : NULL;
 	bool ok = text && mgbaMobileLinkJoin((struct MgbaMobile*) handle, text, port, players);

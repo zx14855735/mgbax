@@ -348,7 +348,7 @@ struct BusPeer {
 };
 
 struct LocalBus;
-static void localBusDetach(struct LocalBus* lb, bool host);
+static void localBusDetach(struct LocalBus* lb, bool host, int slot);
 
 struct NetLink {
 	pthread_mutex_t mu;
@@ -1311,11 +1311,12 @@ void netLinkClose(struct NetLink* link) {
 	link->busPeerCount = 0;
 	struct LocalBus* localBus = link->localBus;
 	bool localHost = link->busHost;
+	int localSlot = link->player;
 	link->localBus = NULL;
 	pthread_cond_broadcast(&link->cv);
 	pthread_mutex_unlock(&link->mu);
 	if (localBus) {
-		localBusDetach(localBus, localHost);
+		localBusDetach(localBus, localHost, localSlot);
 	}
 	if (sock >= 0) {
 		struct Packet bye;
@@ -1491,6 +1492,7 @@ static void* busJoinThread(void* arg) {
 struct LocalBus {
 	int players;
 	int attached;                 /* 已 attach 的从机数（不含主机） */
+	bool slotTaken[BUS_MAX_PLAYERS]; /* slot 0 归 host，其余可被指定槽位 join 占用 */
 	pthread_mutex_t mu;
 	pthread_cond_t cv;
 	uint16_t index;               /* 主机当前开的轮次号 */
@@ -1559,7 +1561,9 @@ static struct LocalBus* localBusCreate(int key, int players) {
 				lb->doneIdx[s] = 0;
 				lb->seenGen[s] = 0;
 				lb->bcastWord[s] = 0;
+				lb->slotTaken[s] = false;
 			}
+			lb->slotTaken[0] = true;   /* 主机恒占链路槽位 0 */
 			lb->bcastIndex = 0;
 			lb->bcastCycles = 0;
 			lb->bcastGen = 0;
@@ -1584,7 +1588,7 @@ static struct LocalBus* localBusCreate(int key, int players) {
 	return lb;
 }
 
-static void localBusDetach(struct LocalBus* lb, bool host) {
+static void localBusDetach(struct LocalBus* lb, bool host, int slot) {
 	if (!lb) {
 		return;
 	}
@@ -1594,8 +1598,17 @@ static void localBusDetach(struct LocalBus* lb, bool host) {
 		/* 主机退出 = 整个会话结束：叫醒所有从机让它们 bail，释放槽位。 */
 		lb->stop = true;
 		lb->used = false;
-	} else if (lb->attached > 0) {
-		--lb->attached;
+	} else {
+		if (slot > 0 && slot < BUS_MAX_PLAYERS) {
+			lb->slotTaken[slot] = false;
+		}
+		int taken = 0;
+		for (int s = 1; s < BUS_MAX_PLAYERS; ++s) {
+			if (lb->slotTaken[s]) {
+				++taken;
+			}
+		}
+		lb->attached = taken;
 	}
 	pthread_cond_broadcast(&lb->cv);
 	pthread_mutex_unlock(&lb->mu);
@@ -1817,6 +1830,7 @@ bool netLinkBusHostLocal(struct NetLink* link, int key, int players) {
 	link->state = LINK_CONNECTED;
 	pthread_mutex_unlock(&link->mu);
 	pthread_mutex_lock(&lb->mu);
+	lb->slotTaken[0] = true;   /* 主机恒占链路槽位 0 */
 	lb->roundOpen = false;
 	lb->roundAborted = false;
 	lb->stop = false;
@@ -1825,7 +1839,8 @@ bool netLinkBusHostLocal(struct NetLink* link, int key, int players) {
 	return true;
 }
 
-bool netLinkBusJoinLocal(struct NetLink* link, int key) {
+/* requestedSlot < 0 时按空闲槽位自动分配；否则占用指定槽位。 */
+static bool localBusJoin(struct NetLink* link, int key, int requestedSlot) {
 	if (!link) {
 		return false;
 	}
@@ -1834,12 +1849,29 @@ bool netLinkBusJoinLocal(struct NetLink* link, int key) {
 		return false;
 	}
 	pthread_mutex_lock(&lb->mu);
-	int slot = lb->attached + 1;
-	if (slot >= lb->players || slot >= BUS_MAX_PLAYERS) {
+	int slot = requestedSlot;
+	if (slot < 0) {
+		slot = -1;
+		for (int s = 1; s < lb->players && s < BUS_MAX_PLAYERS; ++s) {
+			if (!lb->slotTaken[s]) {
+				slot = s;
+				break;
+			}
+		}
+	}
+	if (slot < 1 || slot >= lb->players || slot >= BUS_MAX_PLAYERS
+	    || lb->slotTaken[slot]) {
 		pthread_mutex_unlock(&lb->mu);
 		return false;
 	}
-	lb->attached = slot;
+	lb->slotTaken[slot] = true;
+	int taken = 0;
+	for (int s = 1; s < BUS_MAX_PLAYERS; ++s) {
+		if (lb->slotTaken[s]) {
+			++taken;
+		}
+	}
+	lb->attached = taken;
 	lb->pushed[slot] = false;
 	lb->doneIdx[slot] = 0;
 	lb->seenGen[slot] = 0;
@@ -1854,6 +1886,23 @@ bool netLinkBusJoinLocal(struct NetLink* link, int key) {
 	pthread_mutex_unlock(&link->mu);
 	LINK_LOG("Link LOCAL bus join key=%d slot=%d players=%d", key, slot, lb->players);
 	return true;
+}
+
+bool netLinkBusJoinLocal(struct NetLink* link, int key) {
+	return localBusJoin(link, key, -1);
+}
+
+bool netLinkBusJoinLocalSlot(struct NetLink* link, int key, int slot) {
+	/* slot 是链路层 0-based 编号：全局槽位 N 对应 slot N-1。 */
+	return localBusJoin(link, key, slot);
+}
+
+bool netLinkBusIsLocal(struct NetLink* link) {
+	return link && link->localBus != NULL;
+}
+
+int netLinkBusLocalSlot(struct NetLink* link) {
+	return link ? link->player : -1;
 }
 
 bool netLinkBusHost(struct NetLink* link, int port, int players) {

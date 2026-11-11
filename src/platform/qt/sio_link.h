@@ -47,6 +47,8 @@ bool sioLinkHostPlayers(struct SioLink* sio, int port, int players);
 /* 进程内总线（同进程 N 核）：不建 socket，用共享内存回合屏障。 */
 bool sioLinkHostPlayersLocal(struct SioLink* sio, int key, int players);
 bool sioLinkJoinPlayersLocal(struct SioLink* sio, int key);
+/* 占用指定链路槽位（0 归 host）；多设备各跑 N 核时可见核用它占自己的槽位。 */
+bool sioLinkJoinPlayersLocalSlot(struct SioLink* sio, int key, int slot);
 bool sioLinkJoin(struct SioLink* sio, const char* host, int port);
 bool sioLinkJoinPlayers(struct SioLink* sio, const char* host, int port, int players);
 void sioLinkClose(struct SioLink* sio);

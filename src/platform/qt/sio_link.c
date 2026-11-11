@@ -1609,6 +1609,13 @@ bool sioLinkJoinPlayersLocal(struct SioLink* sio, int key) {
 	return netLinkBusJoinLocal(sio->link, key);
 }
 
+bool sioLinkJoinPlayersLocalSlot(struct SioLink* sio, int key, int slot) {
+	if (!sio || !sio->link) {
+		return false;
+	}
+	return netLinkBusJoinLocalSlot(sio->link, key, slot);
+}
+
 bool sioLinkJoin(struct SioLink* sio, const char* host, int port) {
 	return sioLinkJoinPlayers(sio, host, port, 2);
 }

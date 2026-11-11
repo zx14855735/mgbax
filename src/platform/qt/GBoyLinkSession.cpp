@@ -36,7 +36,7 @@ QByteArray GBoyLinkSession::onLocalFrame(long frame, int localKeys) {
 					queue.pop_front();
 				}
 			}
-			out = GBoyFrames::frame(GBoyFrames::TYPE_KEYS, localKeys);
+			out = keyFrameForLocalSlot(localKeys);
 			++m_sentFrames;
 		}
 	}
@@ -44,6 +44,46 @@ QByteArray GBoyLinkSession::onLocalFrame(long frame, int localKeys) {
 		m_transport(out);
 	}
 	return out;
+}
+
+int GBoyLinkSession::mirrorSlotFor(int localSlot, int playerCount, int index) {
+	if (playerCount < 2 || playerCount > MAX_CONSOLES || localSlot < 1
+	    || localSlot > playerCount || index < 0 || index >= playerCount - 1) {
+		return 0;
+	}
+	int seen = 0;
+	for (int slot = 1; slot <= playerCount; ++slot) {
+		if (slot == localSlot) {
+			continue;
+		}
+		if (seen == index) {
+			return slot;
+		}
+		++seen;
+	}
+	return 0;
+}
+
+/* 3/4 人时键位帧必须自带目标槽位，与 Android 的 GBoyLinkSession.java、
+ * iOS 的 LobbyLink.swift 保持同一套规则；两人会话仍发 TYPE_KEYS。 */
+QByteArray GBoyLinkSession::keyFrameForLocalSlot(int keys) {
+	if (m_playerCount <= 2 || m_localSlot == 1) {
+		return GBoyFrames::frame(GBoyFrames::TYPE_KEYS, keys);
+	}
+	switch (m_localSlot) {
+	case 2:
+		return GBoyFrames::frame(GBoyFrames::TYPE_INPUT_2, keys);
+	case 3:
+		return GBoyFrames::frame(GBoyFrames::TYPE_READY, keys);
+	case 4:
+		return GBoyFrames::frame(GBoyFrames::TYPE_INPUT_4, keys);
+	default:
+		return GBoyFrames::frame(GBoyFrames::TYPE_KEYS, keys);
+	}
+}
+
+int GBoyLinkSession::defaultSenderSlot() {
+	return m_playerCount > 2 ? 1 : (m_localSlot == 2 ? 1 : 2);
 }
 
 int GBoyLinkSession::keysForSlot(int slot) {
@@ -135,7 +175,7 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 }
 
 void GBoyLinkSession::onFrameBody(const QByteArray& body) {
-	onFrameBody(body, m_localSlot == 2 ? 1 : 2);
+	onFrameBody(body, defaultSenderSlot());
 }
 
 void GBoyLinkSession::onWireFrame(const QByteArray& wire, int senderSlot) {
@@ -151,7 +191,7 @@ void GBoyLinkSession::onWireFrame(const QByteArray& wire, int senderSlot) {
 }
 
 void GBoyLinkSession::onWireFrame(const QByteArray& wire) {
-	onWireFrame(wire, m_localSlot == 2 ? 1 : 2);
+	onWireFrame(wire, defaultSenderSlot());
 }
 
 void GBoyLinkSession::pushKeys(int slot, int keys) {

@@ -73,7 +73,7 @@ public:
 	 */
 	void onFrameBody(const QByteArray& body, int senderSlot);
 
-	/** Two-player sessions receive from slot 2. */
+	/** Uses the default sender slot (1 in 3/4-player sessions). */
 	void onFrameBody(const QByteArray& body);
 
 	/**
@@ -106,7 +106,15 @@ public:
 	int remoteFps();
 	long droppedFrames();
 
+	/** 第 index 个镜像核代表的全局槽位；三端共用同一套布局规则。 */
+	static int mirrorSlotFor(int localSlot, int playerCount, int index);
+
+	int localSlot() const { return m_localSlot; }
+	int playerCount() const { return m_playerCount; }
+
 private:
+	QByteArray keyFrameForLocalSlot(int keys);
+	int defaultSenderSlot();
 	void pushKeys(int slot, int keys);
 
 	Transport m_transport;

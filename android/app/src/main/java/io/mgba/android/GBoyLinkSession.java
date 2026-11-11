@@ -127,6 +127,29 @@ public final class GBoyLinkSession {
     }
 
     /**
+     * 第 index 个镜像核代表的全局槽位：跳过本机 localSlot 后的第 index 个。
+     * localSlot == 1 时结果恒为 index + 2，与原来的固定映射一致。
+     * 纯函数，PC / Android / iOS 三端的本机多核布局共用同一套规则。
+     */
+    public static int mirrorSlotFor(int localSlot, int playerCount, int index) {
+        if (playerCount < 2 || playerCount > MAX_CONSOLES || localSlot < 1
+                || localSlot > playerCount || index < 0 || index >= playerCount - 1) {
+            return 0;
+        }
+        int seen = 0;
+        for (int slot = 1; slot <= playerCount; ++slot) {
+            if (slot == localSlot) {
+                continue;
+            }
+            if (seen == index) {
+                return slot;
+            }
+            ++seen;
+        }
+        return 0;
+    }
+
+    /**
      * 3/4 人时键位帧必须自带槽位：官方协议用 type 2 / 带 int 的 3 / 4 指定
      * 目标 console，TYPE_KEYS 只代表发送方自己占的 slot 1。若所有设备都发
      * TYPE_KEYS，接收侧只能按默认槽位落键，slot 3/4 的镜像核永远收不到按键。

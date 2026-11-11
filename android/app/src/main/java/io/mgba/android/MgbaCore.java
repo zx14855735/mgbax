@@ -287,6 +287,11 @@ public final class MgbaCore {
         return handle != 0 && nativeLinkJoinLocal(handle, key);
     }
 
+    /** 占用指定链路槽位：0 归主机，1..players-1 可由任意核指定。 */
+    public boolean linkJoinLocal(int key, int slot) {
+        return handle != 0 && nativeLinkJoinLocalSlot(handle, key, slot);
+    }
+
     public void linkClose() {
         if (handle != 0) {
             nativeLinkClose(handle);
@@ -500,6 +505,8 @@ public final class MgbaCore {
     private static native boolean nativeLinkHostLocal(long handle, int key, int players);
 
     private static native boolean nativeLinkJoinLocal(long handle, int key);
+
+    private static native boolean nativeLinkJoinLocalSlot(long handle, int key, int slot);
 
     private static native void nativeLinkClose(long handle);
 
