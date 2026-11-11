@@ -1850,18 +1850,17 @@ struct LsCtx {
 	int modeDowns;
 };
 
-/* 自定义 mLockstepUser：用 per-user 的 mutex+condvar 实现 sleep/wake，等价
- * 于官方 mLockstepThreadUser（后者绑定 mCoreThread，在本 harness 的
- * mCoreThreadStart 反复崩溃）。sleep 阻塞调用线程（即该核 worker），wake
- * 由协调器在另一核线程上调用解除阻塞；二者用独立 mutex，不会与
- * coordinator->mutex 死锁。 */
+/* 自定义 mLockstepUser：等价于官方 mLockstepThreadUser（后者绑定 mCoreThread，
+ * 在本 harness 的 mCoreThreadStart 反复崩溃）。关键语义（与官方一致）：sleep /
+ * wake 是「请求某核暂停 / 恢复」的非阻塞原语，不阻塞调用方；真正的挂起由该核
+ * 自己的 worker 在 runLoop 后检查 pauseRequested 并自我 park。二者用独立
+ * mutex，不会与 coordinator->mutex 死锁。 */
 struct LsUser {
 	struct mLockstepUser d;
 	int id;
 	std::mutex m;
 	std::condition_variable c;
-	bool sleeping;
-	bool wakePending;
+	bool pauseRequested;
 };
 
 void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns) {
@@ -1937,15 +1936,14 @@ void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns)
 static void lsUserSleep(struct mLockstepUser* u) {
 	LsUser* lu = (LsUser*) u;
 	std::unique_lock<std::mutex> lk(lu->m);
-	lu->sleeping = true;
-	lu->c.wait(lk, [lu] { return lu->wakePending; });
-	lu->sleeping = false;
-	lu->wakePending = false;
+	lu->pauseRequested = true;
 }
 static void lsUserWake(struct mLockstepUser* u) {
 	LsUser* lu = (LsUser*) u;
-	std::unique_lock<std::mutex> lk(lu->m);
-	lu->wakePending = true;
+	{
+		std::unique_lock<std::mutex> lk(lu->m);
+		lu->pauseRequested = false;
+	}
 	lu->c.notify_one();
 }
 static int lsUserRequestedId(struct mLockstepUser* u) {
@@ -2036,7 +2034,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		pctx[i].modeDowns = modeDowns;
 		memset(&nodes[i], 0, sizeof(nodes[i]));
 		users[i].id = i;
-		users[i].sleeping = false;
+		users[i].pauseRequested = false;
 		users[i].d.sleep = lsUserSleep;
 		users[i].d.wake = lsUserWake;
 		users[i].d.requestedId = lsUserRequestedId;
@@ -2048,7 +2046,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	 * 避免 runFrame 一次跑 ~28 万周期把单核冲到前面、睡死其它核的死锁。导航
 	 * 仍按真实帧计数（f），runLoop 跑到 frameCounter 进一帧即算一帧。hold 旗
 	 * 标用于干净地暂停 worker 以便挂锁步驱动。 */
-	for (int i = 0; i < players; ++i) {
+		for (int i = 0; i < players; ++i) {
 		threads[i] = std::thread([&, i]() {
 			struct mCore* core = cores[i];
 			struct GBA* gba = (struct GBA*) core->board;
@@ -2066,6 +2064,14 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 				lsInjectKeys(core, i, f, pctx[i].menuAt, pctx[i].modeDowns);
 				uint32_t startFc = gba->video.frameCounter;
 				do {
+					/* 锁步暂停：协调器通过 sleep 置 pauseRequested（非阻塞），
+					 * 本核在 runLoop 后自我 park，直到 wake 清标志并通知。 */
+					{
+						std::unique_lock<std::mutex> lk(users[i].m);
+						if (users[i].pauseRequested) {
+							users[i].c.wait(lk, [&] { return !users[i].pauseRequested; });
+						}
+					}
 					core->runLoop(core);
 					if (gba->video.frameCounter == startFc) {
 						std::this_thread::yield();
