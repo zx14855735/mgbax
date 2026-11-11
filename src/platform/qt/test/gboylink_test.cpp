@@ -1881,31 +1881,51 @@ void lsSetKeys(struct mCoreThread* t) {
 		keys = ((f % 40) < 25) ? A : 0u;
 	}
 	t->core->setKeys(t->core, keys);
-	/* 终端位修正：gen8 的 CheckMasterOrSlave 用 SIOCNT 的 SD(bit3)/SI(bit2)
-	 * 判主从（`(SIOCNT & 0xC)==0x8` 才是主机）。mGBA 锁步只按「全员 mode 一致」
-	 * 置 Ready(bit3)，对 gen8 永远凑不齐 → 主机被判成从机（实测 sio=0x6003
-	 * bit3=0）。这里照搬自定义驱动的 applyLinkTerminalBits：host 位2=0/位3=1，
-	 * 从机位2=1/位3=1，让游戏能正确判主从。 */
-	{
+	/* 仅给 0 号核（主机）补 SD/Ready(bit3)：gen8 的 CheckMasterOrSlave 用
+	 * `(SIOCNT & 0xC)==0x8` 判主机，要求 SD=1 且 SI=0。协调器对从机置了
+	 * Ready，但对主机偶发不置（其 _setReady 的 ready 判定依赖其余玩家的
+	 * otherModes 全齐，主机作为时钟所有者可能晚半拍）。只置 bit3、不碰
+	 * bit2(SI/主从，协调器已正确置 0)、bit7(START，协调器管理)，避免旧
+	 * hack 把 SIOMLT_SEND 读成 0 的数据损坏。 */
+	if (p->idx == 0) {
 		struct GBA* g = (struct GBA*) t->core->board;
-		uint16_t sc = g->sio.siocnt & (uint16_t) ~0x000Cu;
-		if (p->idx != 0) {
-			sc |= 0x0004u;   /* SI/Slave 位：非 0 号核置从 */
-		}
-		sc |= 0x0008u;       /* SD 终端拉高（主机判据需要） */
-		g->sio.siocnt = sc;
+		g->sio.siocnt |= 0x0008u;
 	}
-	if ((f % 400) == 0) {
+	if ((f % 100) == 0) {
 		struct GBA* g = (struct GBA*) t->core->board;
-		fprintf(stderr, "LST f=%d c=%d pc=%d st=%d im=%d lc=%d sio=%04X m=%04X,%04X,%04X,%04X cb2=%08X\n",
+		fprintf(stderr, "LST f=%d c=%d pc=%d st=%d im=%d lc=%d hm=%d tr=%04X,%04X,%04X,%04X sio=%04X m=%04X,%04X,%04X,%04X cb2=%08X\n",
 		        f, p->idx,
 		        GBAView8(g->cpu, 0x03002AF7u), GBAView8(g->cpu, 0x03002AF5u),
 		        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF6u),
+		        GBAView8(g->cpu, 0x03002B02u),
+		        GBAView16(g->cpu, 0x03002AF8u), GBAView16(g->cpu, 0x03002AFAu),
+		        GBAView16(g->cpu, 0x03002AFCu), GBAView16(g->cpu, 0x03002AFEu),
 		        GBAView16(g->cpu, 0x04000128u),
 		        GBAView16(g->cpu, 0x04000120u), GBAView16(g->cpu, 0x04000122u),
 		        GBAView16(g->cpu, 0x04000124u), GBAView16(g->cpu, 0x04000126u),
 		        (unsigned) (GBAView16(g->cpu, 0x03002AD4u)
 		                    | ((uint32_t) GBAView16(g->cpu, 0x03002AD6u) << 16)));
+	}
+	/* 主机握手逐帧追踪：看 gShouldAdvanceLinkState 是否到 1、gLinkStatus 是否带
+	 * MASTER(0x20) 与 playerCount(bits2-4)。 */
+	{
+		static int hslOn = -1;
+		if (hslOn < 0) { hslOn = qEnvironmentVariableIntValue("BUSGAME_HSL", nullptr) ? 1 : 0; }
+		if (hslOn && p->idx == 0) {
+			struct GBA* g = (struct GBA*) t->core->board;
+			int st = GBAView8(g->cpu, 0x03002AF5u);
+			if (st == 2 || st == 4) {
+				uint32_t gs = GBAView32(g->cpu, 0x03002A9Cu);
+				uint8_t sa = GBAView8(g->cpu, 0x03002AD8u);
+				fprintf(stderr, "HSL f=%d st=%d pc=%d im=%d hm=%d sa=%d gstat=%08X(M=%d pc=%d) sio=%04X tr0=%04X\n",
+				        f, st, GBAView8(g->cpu, 0x03002AF7u),
+				        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002B02u),
+				        (int) sa, gs, (int)((gs & 0x20u) ? 1 : 0),
+				        (int)((gs & 0x1Cu) >> 2),
+				        GBAView16(g->cpu, 0x04000128u),
+				        GBAView16(g->cpu, 0x03002AF8u));
+			}
+		}
 	}
 }
 
@@ -2010,10 +2030,15 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	};
 
 	bool attached = false;
+	/* 早期 attach：内核在启动后自由跑的帧数越少，三个核的 boot/菜单相位差越小。
+	 * 之前等 frame>=900 才挂锁步驱动，导致三核 BIOS/菜单起步相差几百帧，
+	 * 握手窗口错开、LINKUP 无法在三核同时成立。这里只等线程起来（约 10 帧）
+	 * 就挂驱动，让锁步协调器从 boot 起就统一驱动三核。 */
+	const int attachThreshold = 10;
 	while (elapsedMs() < wallLimitMs) {
 		bool all = true;
 		for (int i = 0; i < players; ++i) {
-			if (frames[i].load() < attachAt) {
+			if (frames[i].load() < attachThreshold) {
 				all = false;
 			}
 		}
@@ -2021,7 +2046,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 			attached = true;
 			break;
 		}
-		QThread::msleep(10);
+		QThread::msleep(2);
 	}
 	if (attached) {
 		for (int i = 0; i < players; ++i) {
@@ -2037,9 +2062,9 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		for (int i = 0; i < players; ++i) {
 			mCoreThreadContinue(threads[i]);
 		}
-		fprintf(stderr, "LS: attached %d cores at frame>=%d\n", players, attachAt);
+		fprintf(stderr, "LS: attached %d cores at frame>=%d\n", players, attachThreshold);
 	} else {
-		fprintf(stderr, "LS: FAIL (never reached attach frame %d)\n", attachAt);
+		fprintf(stderr, "LS: FAIL (never reached attach frame %d)\n", attachThreshold);
 	}
 
 	while (elapsedMs() < wallLimitMs) {
