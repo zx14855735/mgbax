@@ -1521,7 +1521,18 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	std::atomic<int> frameProgress[4];
 	std::atomic<uint64_t> coreStepUs[4];
 	std::atomic<uint64_t> pumpUs[4], runUs[4];
+	/* 链路状态迁移追踪（BUSGAME_TRACE=1）：每当某核的 (pc,st,cb2) 变化就打一条，
+	 * 用来精确定位「链路何时建立(pc=3)、何时崩(st=2→4→1, cb2→0)」以及与按键的
+	 * 时序关系。默认关，零开销。 */
+	const bool traceOn = envInt("BUSGAME_TRACE", 0) != 0;
+	/* 握手内部量追踪（BUSGAME_H2=1）：gLink.isMaster/state/playerCount/
+	 * handshakeAsMaster(+0x0e)、gShouldAdvanceLinkState、gLinkStatus、tempRecvBuffer[0]。
+	 * 用来定位『主机为何不发 MASTER_HANDSHAKE(0x8FFF)』。 */
+	const bool h2On = envInt("BUSGAME_H2", 0) != 0;
+	std::atomic<int> prevH2[4];
+	std::atomic<int> prevPc[4], prevSt[4], prevCb[4];
 	for (int i = 0; i < players; ++i) {
+		prevH2[i].store(-1);
 		maxCnt[i].store(0);
 		sawCards[i].store(0);
 		sawBattle[i].store(0);
@@ -1531,6 +1542,9 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 		coreStepUs[i].store(0);
 		pumpUs[i].store(0);
 		runUs[i].store(0);
+		prevPc[i].store(-1);
+		prevSt[i].store(-1);
+		prevCb[i].store(0);
 	}
 	/* 帧栅栏用对称并行模式：所有核并行跑同一帧，见下方 worker 内注释。
 	 * barrierDone[i] 记录每个核最后跑完的帧号，全部追平 f-1 才放行 f。 */
@@ -1604,6 +1618,42 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 					        GBAView8(g->cpu, 0x03002AF5u),
 					        GBAView16(g->cpu, 0x0202197Cu),
 					        cnt, cb2, (unsigned) g->cpu->gprs[15]);
+				}
+				if (traceOn) {
+					int _im = GBAView8(g->cpu, 0x03002AF4u);
+					int _lc = GBAView8(g->cpu, 0x03002AF6u);
+					int _pc = GBAView8(g->cpu, 0x03002AF7u);
+					int _st = GBAView8(g->cpu, 0x03002AF5u);
+					int _pca = prevPc[i].exchange(_pc);
+					int _sta = prevSt[i].exchange(_st);
+					int _cba = prevCb[i].exchange((int) cb2);
+					if (_pca != _pc || _sta != _st || _cba != (int) cb2) {
+						fprintf(stderr,
+						        "TRACE f=%d c=%d keys=%02X im=%d lc=%d pc=%d st=%d cnt=%d cb2=%08X m=%04X,%04X,%04X,%04X\n",
+						        f, i, keys, _im, _lc, _pc, _st, cnt, cb2,
+						        GBAView16(g->cpu, 0x04000120u), GBAView16(g->cpu, 0x04000122u),
+						        GBAView16(g->cpu, 0x04000124u), GBAView16(g->cpu, 0x04000126u));
+					}
+				}
+				if (h2On) {
+					int _h2im = GBAView8(g->cpu, 0x03002AF4u);
+					int _h2st = GBAView8(g->cpu, 0x03002AF5u);
+					int _h2pc = GBAView8(g->cpu, 0x03002AF7u);
+					int _h2hsm = GBAView8(g->cpu, 0x03002B02u);
+					int _h2adv = GBAView8(g->cpu, 0x03002AD8u);
+					uint32_t _h2gs = (uint32_t) GBAView16(g->cpu, 0x03002A9Cu)
+					               | ((uint32_t) GBAView16(g->cpu, 0x03002A9Eu) << 16);
+					uint16_t _h2tr0 = GBAView16(g->cpu, 0x03002AF8u);
+					int _h2sig = _h2im | (_h2st << 4) | (_h2pc << 8) | (_h2hsm << 12)
+					           | (_h2adv << 16) | (((int) (_h2tr0 & 0xFFFFu)) << 20);
+					int _h2prev = prevH2[i].exchange(_h2sig);
+					if (_h2prev != _h2sig) {
+						fprintf(stderr,
+						        "H2 f=%d c=%d im=%d st=%d pc=%d hsm=%d sadv=%d gstat=%08X tr0=%04X tr=%04X,%04X,%04X,%04X\n",
+						        f, i, _h2im, _h2st, _h2pc, _h2hsm, _h2adv, _h2gs, _h2tr0,
+						        GBAView16(g->cpu, 0x03002AF8u), GBAView16(g->cpu, 0x03002AFAu),
+						        GBAView16(g->cpu, 0x03002AFCu), GBAView16(g->cpu, 0x03002AFEu));
+					}
 				}
 				if (f < SMP_FRAMES) {
 					smp[i][f][0] = GBAView16(g->cpu, 0x04000128u);  /* SIOCNT */

@@ -1637,12 +1637,25 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 	}
 	int ret = -1;
 	int budgetMs = timeoutMs > 0 ? timeoutMs : 0;
-	if (link->busHost && budgetMs > 0 && budgetMs < 25) {
+	if (link->busHost && budgetMs > 0) {
 		/* 主机是屏障的另一端，必须等齐从机再广播；2ms 会让它提前甩开从机，
-		 * 落后从机的 PUSH 全变 stale。25ms 足够覆盖从机 µs 级响应，又不会
-		 * 在「从机此刻不在 MULTI」时把整帧按死（200ms/1000ms 实测把吞吐
-		 * 从 68fps 拖到 31fps 或直接卡在 cb2=0）。 */
-		budgetMs = 25;
+		 * 落后从机的 PUSH 全变 stale。默认下限 25ms 覆盖从机 µs 级响应，又
+		 * 不会在「从机此刻不在 MULTI」时把整帧按死（200ms/1000ms 单独调大
+		 * 实测把吞吐从 68fps 拖到 31fps 或卡 cb2=0）。
+		 * MGBAX_BUS_HOST_MS 可覆盖该下限：配合硬帧栅栏（帧锁步）把主机预算
+		 * 拉大，就能验证「主机不再 abort 空槽、等帧内慢从机」是否能消除
+		 * empty/stale 并跑通 3 人握手。默认不设=25ms，行为不变。 */
+		static int hostFloorMs = -1;
+		if (hostFloorMs < 0) {
+			const char* e = getenv("MGBAX_BUS_HOST_MS");
+			hostFloorMs = e ? atoi(e) : 25;
+			if (hostFloorMs < 1) {
+				hostFloorMs = 1;
+			}
+		}
+		if (budgetMs < hostFloorMs) {
+			budgetMs = hostFloorMs;
+		}
 	}
 	uint32_t expireAt = nowMs() + (uint32_t) budgetMs;
 	/* 一次性绝对 deadline：2ms 分片轮询在 Windows 上会按 ~15ms 定时器粒度

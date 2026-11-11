@@ -514,6 +514,21 @@ static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4]
 		        (unsigned) vals[0], (unsigned) vals[1], (unsigned) vals[2], (unsigned) vals[3],
 		        data[0], data[1], data[2], data[3]);
 	}
+	/* 握手取证：MASTER_HANDSHAKE=0x8FFF / SLAVE_HANDSHAKE=0xB9A0（gen8/link.h）。
+	 * DoHandshake 要求四槽 = 8FFF,SLAVE,SLAVE,FFFF 且连续两轮稳定才 LINKUP。
+	 * 只要本核这一轮出现了握手字（8FFF 或 B9A0），就把「投递给游戏的 data」
+	 * 打出来，看是投递 bug 还是从机 2 还没跟上。BUSGAME_HSL=1 时开。 */
+	static uint32_t s_hslN;
+	if (getenv("BUSGAME_HSL")
+	    && ((data[0] == 0x8FFFu) || (data[1] == 0xB9A0u) || (data[2] == 0xB9A0u)
+	        || (vals[0] == 0x8FFFu) || (vals[1] == 0xB9A0u) || (vals[2] == 0xB9A0u))) {
+		if (++s_hslN <= 120) {
+			fprintf(stderr, "HSL n=%u me=%d players=%d data=%04X,%04X,%04X,%04X vals=%04X,%04X,%04X,%04X\n",
+			        (unsigned) s_hslN, me, players,
+			        data[0], data[1], data[2], data[3],
+			        (unsigned) vals[0], (unsigned) vals[1], (unsigned) vals[2], (unsigned) vals[3]);
+		}
+	}
 	finishMultiTransfer(sio, data, cyclesLate);
 }
 
