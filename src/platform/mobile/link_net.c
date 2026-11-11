@@ -1498,6 +1498,7 @@ struct LocalBus {
 	uint16_t index;               /* 主机当前开的轮次号 */
 	bool roundOpen;
 	bool roundAborted;        /* 本轮没收齐、主机放弃广播：从机立即返回 -1 */
+	bool roundBroadcast;      /* 本轮是否已广播过（锁步：广播一次后等全员消费） */
 	uint16_t word[BUS_MAX_PLAYERS];
 	bool pushed[BUS_MAX_PLAYERS];
 	uint16_t pushIdx[BUS_MAX_PLAYERS];
@@ -1554,6 +1555,7 @@ static struct LocalBus* localBusCreate(int key, int players) {
 			lb->index = 0;
 			lb->roundOpen = false;
 			lb->roundAborted = false;
+			lb->roundBroadcast = false;
 			for (int s = 0; s < BUS_MAX_PLAYERS; ++s) {
 				lb->word[s] = 0;
 				lb->pushed[s] = false;
@@ -1656,29 +1658,25 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 		lb->index = index;
 		lb->roundOpen = true;
 		lb->roundAborted = false;
+		lb->roundBroadcast = false;
 		lb->word[0] = (uint16_t) own;
 		lb->pushed[0] = true;
 		lb->pushIdx[0] = index;
 		pthread_cond_broadcast(&lb->cv);
 		for (;;) {
-			int got = 0;
+			int got = 0, consumed = 0;
 			for (int s = 1; s < lb->players; ++s) {
 				if (lb->pushed[s] && lb->pushIdx[s] == index) {
 					++got;
 				}
+				if (lb->doneIdx[s] == index) {
+					++consumed;
+				}
 			}
-			if (got >= lb->attached || timeoutMs <= 0 || lb->stop
-			    || (int32_t) (expireAt - nowMs()) <= 0) {
-				/* 诊断按「轮」记，不按「2ms 轮询迭代」记。之前每迭代 +1，
-				 * 只是等了半拍的正常轮也被记成 empty，busgame 的 full/empty
-				 * 因此完全不可读。只在广播决策点统计一次。 */
+			if (got >= lb->attached && !lb->roundBroadcast) {
+				/* 收齐即快照广播一次（缺席槽只可能是掉线的从机）。 */
 				++lb->rounds;
-				if (got >= lb->attached) {
-					++lb->full;
-				}
-				if (got == 0) {
-					++lb->empty;
-				}
+				++lb->full;
 				for (int s = 1; s < lb->players; ++s) {
 					if (lb->pushed[s]) {
 						int16_t lead = (int16_t) (lb->pushIdx[s] - index);
@@ -1695,19 +1693,6 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 						}
 					}
 				}
-				if (got < lb->attached && !lb->stop) {
-					/* 没收齐就不广播：空槽一旦发出，从机把「少一个人」的
-					 * SIOMULTI 交给游戏，DoHandshake 会把 playerCount 清 0，
-					 * 三核的 SIOMULTI 从此分叉（busgame 实测 pw=1100、
-					 * bw=...,FFFF,FFFF、f=1191 起 M0 分叉）。按
-					 * netLinkBusRound 的契约返回 -1，所有核重挂本轮事件，
-					 * 而不是拿空槽收尾。广播通知从机别等满 deadline。 */
-					lb->roundAborted = true;
-					ret = -1;
-					pthread_cond_broadcast(&lb->cv);
-					break;
-				}
-				/* 快照广播：此时已收齐，缺席槽只可能是掉线的从机。 */
 				lb->bcastIndex = index;
 				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
 					bool ok = lb->pushed[i] && lb->pushIdx[i] == index;
@@ -1727,16 +1712,48 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				}
 				lb->bcastCycles = __atomic_load_n(&link->pushCycles, __ATOMIC_ACQUIRE);
 				++lb->bcastGen;
+				lb->roundBroadcast = true;
 				pthread_cond_broadcast(&lb->cv);
-				/* 主机自己也要拿到「全槽」结果：bcastWord 就是本轮聚合结果，
-				 * 必须整体回填给 values。之前只写 vals[0]=own，主机本地的
-				 * SIOMULTI1..3 因此全是 0xFFFF，游戏判定 playerCount=1、永远
-				 * 停在握手（实测 host pc=1 / slave pc=3）。 */
+			}
+			if (got >= lb->attached && consumed >= lb->attached) {
+				/* 锁步：全员消费完这一轮，主机才返回（冻结的模拟时钟随之
+				 * 放行、进下一轮）。三核因此永远在同一总线轮次上收尾，写同一
+				 * 份 SIOMULTI 快照，握手不再互异（busgame 实测 f=228 起 M2
+				 * 分叉即主机比从机早一轮所致）。 */
 				for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
 					vals[i] = lb->bcastWord[i];
 				}
 				vals[0] = own;
 				ret = got;
+				break;
+			}
+			/* 未收齐、或收齐了但还有从机没消费：继续等推送/消费通知。
+			 * 诊断只在终止（超时/stop）时计一次，避免一轮被迭代多次计数。 */
+			if (lb->stop || (int32_t) (expireAt - nowMs()) <= 0) {
+				/* 终止：超时放弃本轮，返回 -1 让所有核重挂事件。 */
+				++lb->rounds;
+				if (got == 0) {
+					++lb->empty;
+				}
+				for (int s = 1; s < lb->players; ++s) {
+					if (lb->pushed[s]) {
+						int16_t lead = (int16_t) (lb->pushIdx[s] - index);
+						if (lead < 0) {
+							++lb->stale;
+						} else if (lead > 0) {
+							++lb->future;
+						}
+						if (lead < lb->minLead) {
+							lb->minLead = lead;
+						}
+						if (lead > lb->maxLead) {
+							lb->maxLead = lead;
+						}
+					}
+				}
+				lb->roundAborted = true;
+				ret = -1;
+				pthread_cond_broadcast(&lb->cv);
 				break;
 			}
 			pthread_cond_timedwait(&lb->cv, &lb->mu, &absDeadline);
@@ -1790,6 +1807,9 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 				}
 				lb->doneIdx[slot] = lb->bcastIndex;
 				lb->seenGen[slot] = lb->bcastGen;
+				/* 刚消费完这一轮：唤醒可能在 cond_wait 里等「全员消费」
+				 * 的主机，避免主机等到 deadline 才看到（否则每轮白付墙钟）。 */
+				pthread_cond_broadcast(&lb->cv);
 				if (indexOut) {
 					*indexOut = lb->bcastIndex;
 				}
