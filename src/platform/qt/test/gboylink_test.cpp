@@ -42,6 +42,14 @@
 #include "sio_link.h"
 #include "../mobile/link_net.h"
 
+/* GBA 真锁步（验证 mGBA 自带 GBASIOLockstepCoordinator 能否解决 3/4 人
+ * SerialCB 不同相位的问题）。走 mCoreThread + mLockstepThreadUser，
+ * 与 mGBA 官方 MultiplayerController 同一套机制。 */
+#include <mgba/core/core.h>
+#include <mgba/core/thread.h>
+#include <mgba/core/lockstep.h>
+#include <mgba/internal/gba/sio/lockstep.h>
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -1823,6 +1831,259 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 	return failures;
 }
 
+/* ---- GBA 真锁步原型（busgame-lockstep）----------------------------------
+ * 目标：用 mGBA 自带 GBASIOLockstepCoordinator 把 N 个核在 SIO 层真正锁步
+ * 推进（共享时钟/事件队列/硬同步），验证它能否解决 3/4 人「SerialCB 不同
+ * 相位 → 主机独通握手、从机落空」的问题。这是 PC 参考实现，跑通后同一套
+ * 机制移植到 native（Android/iOS）。
+ *
+ * 结构：每核包一层 mCoreThread（提供 sleep/wake 的挂起/恢复），挂
+ * GBASIOLockstepDriver；全核共享一个 GBASIOLockstepCoordinator。按键脚本
+ * 在 frameCallback 里按帧号注入（与 busgame 同一套），BIOS 多启动期不挂
+ * 驱动（attachAt 帧之后才挂），避免卡 boot。
+ */
+namespace {
+struct LsCtx {
+	int idx;
+	std::atomic<int>* frame;
+	int menuAt;
+	int modeDowns;
+};
+
+void lsSetKeys(struct mCoreThread* t) {
+	LsCtx* p = (LsCtx*) t->userData;
+	int f = p->frame->fetch_add(1) + 1;
+	const uint32_t A = 1, START = 8, LEFT = 32, UP = 64, DOWN = 128;
+	const int boot = 240;
+	const int menuAt = p->menuAt;
+	uint32_t keys = 0;
+	if (f >= boot && f < boot + 6) {
+		keys = START;
+	} else if (f >= boot + 10 && f < boot + 16) {
+		keys = START;
+	} else if (f >= boot + 20 && f < menuAt) {
+		keys = ((f % 45) < 30) ? A : 0u;
+	} else if (f >= menuAt && f < menuAt + 8) {
+		keys = DOWN;
+	} else if (f >= menuAt + 30 && f < menuAt + 40) {
+		keys = A;
+	} else if (f >= menuAt + 40 && f < menuAt + 60) {
+		keys = UP;
+	} else if (f >= menuAt + 60 && f < menuAt + 80) {
+		keys = LEFT;
+	} else if (p->modeDowns > 0 && f >= menuAt + 80
+	           && f < menuAt + 80 + p->modeDowns * 14) {
+		keys = (((f - menuAt - 80) % 14) < 4) ? DOWN : 0u;
+	} else if (f >= menuAt + 80 + p->modeDowns * 14
+	           && f < menuAt + 92 + p->modeDowns * 14) {
+		keys = A;
+	} else if (f >= menuAt + 240) {
+		keys = ((f % 40) < 25) ? A : 0u;
+	}
+	t->core->setKeys(t->core, keys);
+	/* 终端位修正：gen8 的 CheckMasterOrSlave 用 SIOCNT 的 SD(bit3)/SI(bit2)
+	 * 判主从（`(SIOCNT & 0xC)==0x8` 才是主机）。mGBA 锁步只按「全员 mode 一致」
+	 * 置 Ready(bit3)，对 gen8 永远凑不齐 → 主机被判成从机（实测 sio=0x6003
+	 * bit3=0）。这里照搬自定义驱动的 applyLinkTerminalBits：host 位2=0/位3=1，
+	 * 从机位2=1/位3=1，让游戏能正确判主从。 */
+	{
+		struct GBA* g = (struct GBA*) t->core->board;
+		uint16_t sc = g->sio.siocnt & (uint16_t) ~0x000Cu;
+		if (p->idx != 0) {
+			sc |= 0x0004u;   /* SI/Slave 位：非 0 号核置从 */
+		}
+		sc |= 0x0008u;       /* SD 终端拉高（主机判据需要） */
+		g->sio.siocnt = sc;
+	}
+	if ((f % 400) == 0) {
+		struct GBA* g = (struct GBA*) t->core->board;
+		fprintf(stderr, "LST f=%d c=%d pc=%d st=%d im=%d lc=%d sio=%04X m=%04X,%04X,%04X,%04X cb2=%08X\n",
+		        f, p->idx,
+		        GBAView8(g->cpu, 0x03002AF7u), GBAView8(g->cpu, 0x03002AF5u),
+		        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF6u),
+		        GBAView16(g->cpu, 0x04000128u),
+		        GBAView16(g->cpu, 0x04000120u), GBAView16(g->cpu, 0x04000122u),
+		        GBAView16(g->cpu, 0x04000124u), GBAView16(g->cpu, 0x04000126u),
+		        (unsigned) (GBAView16(g->cpu, 0x03002AD4u)
+		                    | ((uint32_t) GBAView16(g->cpu, 0x03002AD6u) << 16)));
+	}
+}
+
+struct mLockstepThreadUser* g_lsUsers = nullptr;
+
+int lsRequestedId(struct mLockstepUser* ctx) {
+	return (int) (((struct mLockstepThreadUser*) ctx) - g_lsUsers);
+}
+} // namespace
+
+static int busGameLockstepTest(const QString& rom, const QString& sav, int players) {
+	if (players < 3) {
+		players = 3;
+	}
+	if (players > 4) {
+		players = 4;
+	}
+	auto envInt = [](const char* k, int dflt) {
+		bool ok = false;
+		int v = qEnvironmentVariableIntValue(k, &ok);
+		return ok ? v : dflt;
+	};
+	const int wallLimitMs = envInt("BUSGAME_TIMEOUT_MS", 45000);
+	const int maxFrames = envInt("BUSGAME_FRAMES", 3000);
+	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
+	const int modeDowns = envInt("BUSGAME_MODE_DOWNS", 2);
+	const int attachAt = envInt("BUSGAME_ATTACH_AT", 900);
+
+	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
+	QString savCopy[4];
+	for (int i = 0; i < players; ++i) {
+		savCopy[i] = sav + QStringLiteral(".lslock%1").arg(i);
+		QFile::remove(savCopy[i]);
+		QFile::copy(sav, savCopy[i]);
+	}
+
+	static mColor video[4][240 * 160];
+	struct mCore* cores[4] = {};
+	for (int i = 0; i < players; ++i) {
+		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+		if (!romVf) {
+			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+		}
+		if (!romVf) {
+			fprintf(stderr, "LS: FAIL (cannot open rom)\n");
+			return 1;
+		}
+		cores[i] = mCoreFindVF(romVf);
+		if (!cores[i]) {
+			fprintf(stderr, "LS: FAIL (cannot find core)\n");
+			return 1;
+		}
+		cores[i]->init(cores[i]);
+		mCoreConfigInit(&cores[i]->config, NULL);
+		int lvl = envInt("BUSGAME_LOGLEVEL", mLOG_WARN);
+		mCoreConfigSetIntValue(&cores[i]->config, "logLevel", lvl);
+		if (!cores[i]->loadROM(cores[i], romVf)) {
+			fprintf(stderr, "LS: FAIL (cannot load rom)\n");
+			return 1;
+		}
+		const QByteArray savUtf8 = savCopy[i].toUtf8();
+		VFile* sv = VFileOpen(savUtf8.constData(), O_RDWR);
+		if (sv && !cores[i]->loadSave(cores[i], sv)) {
+			fprintf(stderr, "LS: WARN (core %d loadSave failed)\n", i);
+		}
+		cores[i]->reset(cores[i]);
+		cores[i]->setVideoBuffer(cores[i], video[i], 240);
+	}
+
+	struct GBASIOLockstepCoordinator coord;
+	GBASIOLockstepCoordinatorInit(&coord);
+
+	static std::atomic<int> frames[4];
+	static LsCtx pctx[4];
+	static struct mCoreThread* threads[4];
+	static struct GBASIOLockstepDriver nodes[4];
+	static struct mLockstepThreadUser users[4];
+	memset(nodes, 0, sizeof(nodes));
+	memset(users, 0, sizeof(users));
+	g_lsUsers = users;
+
+	for (int i = 0; i < players; ++i) {
+		frames[i].store(0);
+		pctx[i].idx = i;
+		pctx[i].frame = &frames[i];
+		pctx[i].menuAt = menuAt;
+		pctx[i].modeDowns = modeDowns;
+		threads[i] = (struct mCoreThread*) calloc(1, sizeof(struct mCoreThread));
+		threads[i]->core = cores[i];
+		threads[i]->frameCallback = lsSetKeys;
+		threads[i]->userData = &pctx[i];
+		if (!mCoreThreadStart(threads[i])) {
+			fprintf(stderr, "LS: FAIL (cannot start thread %d)\n", i);
+			return 1;
+		}
+	}
+
+	auto t0 = std::chrono::steady_clock::now();
+	auto elapsedMs = [&]() {
+		return (int) std::chrono::duration_cast<std::chrono::milliseconds>(
+		    std::chrono::steady_clock::now() - t0).count();
+	};
+
+	bool attached = false;
+	while (elapsedMs() < wallLimitMs) {
+		bool all = true;
+		for (int i = 0; i < players; ++i) {
+			if (frames[i].load() < attachAt) {
+				all = false;
+			}
+		}
+		if (all) {
+			attached = true;
+			break;
+		}
+		QThread::msleep(10);
+	}
+	if (attached) {
+		for (int i = 0; i < players; ++i) {
+			mCoreThreadInterrupt(threads[i]);
+		}
+		for (int i = 0; i < players; ++i) {
+			mLockstepThreadUserInit(&users[i], threads[i]);
+			users[i].d.requestedId = lsRequestedId;
+			GBASIOLockstepDriverCreate(&nodes[i], &users[i].d);
+			GBASIOLockstepCoordinatorAttach(&coord, &nodes[i]);
+			cores[i]->setPeripheral(cores[i], mPERIPH_GBA_LINK_PORT, &nodes[i].d);
+		}
+		for (int i = 0; i < players; ++i) {
+			mCoreThreadContinue(threads[i]);
+		}
+		fprintf(stderr, "LS: attached %d cores at frame>=%d\n", players, attachAt);
+	} else {
+		fprintf(stderr, "LS: FAIL (never reached attach frame %d)\n", attachAt);
+	}
+
+	while (elapsedMs() < wallLimitMs) {
+		bool all = true;
+		for (int i = 0; i < players; ++i) {
+			if (frames[i].load() < maxFrames) {
+				all = false;
+			}
+		}
+		if (all) {
+			break;
+		}
+		QThread::msleep(50);
+	}
+
+	int maxPc[4] = {0, 0, 0, 0};
+	for (int i = 0; i < players; ++i) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		int pc = GBAView8(gba->cpu, 0x03002AF7u);
+		int st = GBAView8(gba->cpu, 0x03002AF5u);
+		int im = GBAView8(gba->cpu, 0x03002AF4u);
+		int lc = GBAView8(gba->cpu, 0x03002AF6u);
+		maxPc[i] = pc;
+		fprintf(stderr, "LS core %d: frame=%d im=%d lc=%d pc=%d st=%d\n",
+		        i, frames[i].load(), im, lc, pc, st);
+	}
+
+	int failures = 0;
+	for (int i = 0; i < players; ++i) {
+		if (maxPc[i] < players) {
+			++failures;
+		}
+	}
+	fprintf(stderr, "LS: %s (%d cores reached playerCount=%d)\n",
+	        failures ? "FAIL" : "PASS", players, players);
+	fflush(stderr);
+
+	/* 核仍卡在锁步 wait 里，逐一 End/Join + deinit 会与协调器互相等待而
+	 * 段错误（实测 139）。这是一次性诊断进程，直接 _Exit 让 OS 回收，
+	 * 避免脆弱的拆解顺序。 */
+	_Exit(failures ? 1 : 0);
+	return failures ? 1 : 0;
+}
+
 
 /**
  * 帧长上限：一个 GBA 状态约 790 KiB，必须能完整穿过 Reader。
@@ -2934,6 +3195,12 @@ int main(int argc, char** argv) {
 		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/gen8/rom.sav");
 		int players = args.size() > 4 ? args[4].toInt() : 3;
 		return busGameTest(rom, sav, players);
+	}
+	if (mode == QStringLiteral("busgame-lockstep")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/gen8/rom.gba");
+		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/gen8/rom.sav");
+		int players = args.size() > 4 ? args[4].toInt() : 3;
+		return busGameLockstepTest(rom, sav, players);
 	}
 	if (mode == QStringLiteral("lanio")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
