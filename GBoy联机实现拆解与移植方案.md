@@ -345,7 +345,7 @@ Qt `busgame` 本地总线模式 6000 帧 `wait=0ms`、`lead=[0,0]`、`empty=0`�
 | WS 隧道 fallback | ✅ `WsLink` `:327-589` | ✅ `WsLink` `:1425-1706` | ❌ 未找到（KCP 死等 5 分钟） |
 | `self` + nonce 双重回显过滤 | ✅ `CloudLink.cpp:2079-2080` | ⚠️ 仅 nonce（`:2077-2079`） | ❌ 未找到 |
 | `query_room` | ❌ | ❌ | ❌ |
-| 3/4 人按键槽位发送侧 | — | ❌ 只发 `TYPE_KEYS`，`INPUT_2/READY/INPUT_4` 无发送方 | — |
+| 3/4 人按键槽位发送侧 | — | ✅ 按 `localSlot` 发 `TYPE_KEYS/INPUT_2/READY(带 int)/INPUT_4`（见 §10），两人路径不变 | — |
 | 本机 N 核 / 星型总线 | ✅ `GBoyMirror` | ✅ `GBoyConsoleSet` + `netLinkBusHost` | ❌ |
 
 `query_room` 在 `PROTOCOL.md §2.4` 被列为已知动作，但三端生产代码全无调用
@@ -375,14 +375,24 @@ Qt `busgame` 本地总线模式 6000 帧 `wait=0ms`、`lead=[0,0]`、`empty=0`�
 
 ## 8. 下一步（按优先级，2026-11-11 重排）
 
-1. **游戏侧 LINKUP**：`busgame` 本地总线模式的 `cb2=0` / `cnt=0` 是 BIOS 多启动
-   与菜单脚本问题，与链路无关。需要一份能稳定把三核推进联机菜单的存档/按键序列
-   （参考 2P 直连已验证的 `.workbuddy/drive/walk_battle.py`），再验证
-   `ts=0x80` → 训练家卡片交换 → `BattleMainCB2`。这是目前唯一挡在
-   「3/4 人可玩」前面的一步。
-2. **N 设备按键槽位路由**：`GBoyLinkSession` 已能接 4 槽并有单元测试，但发送侧
-   只发 `TYPE_KEYS`、接收侧不带 `senderSlot`（恒落 slot 2），需补
-   `TYPE_INPUT_2/READY(带 int)/INPUT_4` 的发送与槽位映射。
+1. **游戏侧 LINKUP（当前唯一未解决项）**：用 2P 已验证的干净存档
+   （`D:/gen8/rom.sav.bak-before-link`，已复制到 `tmp_bus/`）后，2P 直连对照
+   `cnt=2` 成功、3 人本地总线 `cnt=0`；链路侧已做到 `lead=[0,0]`、
+   `stalePush=0`、`empty` 接近 0，但三核 SIOMULTI 仍从 **f=1191** 起分叉。
+   卡点是**三核 SIO 中断在同一模拟帧内的收尾时刻不一致**，属帧内节奏，
+   不是轮次聚合、帧栅栏或超时参数：`BUSGAME_BARRIER=1` 实测反而把 `full`
+   从 118/122 拉到 157/346、`empty` 涨到 165。可行方向是让三核在每一轮 SIO
+   上同时收尾，或由主机统一广播收尾后的 SIOMULTI 四槽快照，其余核不再自行写
+   SIOMULTI。三次机制性尝试（空槽广播修复保留、从机等待开轮按实测回退、
+   帧栅栏否决）后按纪律停止调参。
+2. **N 设备按键槽位路由（协议层已完成，见 §10）**：`GBoyLinkSession` 已按
+   `localSlot` 发 `TYPE_KEYS/INPUT_2/READY(带 int)/INPUT_4`，`TYPE_KEYS` 固定
+   代表 slot 1，`EmulatorActivity` 支持 `--ei slot N`，四设备槽位路由有 JVM 单测。
+   **剩余限制**：native 链路仍把可见核固定在链路槽位 1（`netLinkBusHostLocal`
+   把 host 设为 player 0、`netLinkBusJoinLocal` 按接入顺序分配），因此
+   `localSlot > 1` 的设备在 SIO 层仍被游戏认成玩家 1。要真正跑通 N 台设备，
+   需要给 `netLinkBusJoinLocal` 增加「指定槽位」入口，并让 `GBoyConsoleSet`
+   的镜像核映射到除 `localSlot` 外的全局槽位。
 3. **iOS 对齐**：补 `WsLink` 隧道 fallback、SIO 分开控制桥、`self`+nonce 过滤；
    改动需 macOS + Xcode 做类型检查（本机只能 `swiftc -parse`）。
 4. **WSS 房间信令逐行对齐官方混淆类**：需账号 + 真机抓包；`query_room`、
@@ -403,7 +413,7 @@ NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/wal
 
 | 文件 | 改动 |
 |---|---|
-| `src/platform/mobile/link_net.c` | ① `struct LocalBus` 加 `inited`，`localBusCreate` 改为逐字段重置数据，不再 memset 后对已初始化的 mutex/cond 重复 init；② `busRoundLocal` 统计改为「每轮一次」，修掉把 2ms 轮询迭代记成空槽轮次；③ 会合改为一次性绝对 deadline 的 `cond_timedwait`，消除 2ms 分片在 Windows 上的定时器粒度；④ `netLinkBusDiag` 本地分支返回与头文件、`busgame` 打印一致的 7 项契约；⑤ 新增 `netLinkBusDiagTiming`（内部累计墙钟 / 从机调用次数） |
+| `src/platform/mobile/link_net.c` | ① `struct LocalBus` 加 `inited`，`localBusCreate` 改为逐字段重置数据，不再 memset 后对已初始化的 mutex/cond 重复 init；② `busRoundLocal` 统计改为「每轮一次」，修掉把 2ms 轮询迭代记成空槽轮次；③ 会合改为一次性绝对 deadline 的 `cond_timedwait`，消除 2ms 分片在 Windows 上的定时器粒度；④ `netLinkBusDiag` 本地分支返回与头文件、`busgame` 打印一致的 7 项契约；⑤ 新增 `netLinkBusDiagTiming`（内部累计墙钟 / 从机调用次数）；⑥ 新增 `roundAborted`：主机会合没收齐时不再广播空槽，按契约返回 -1 并通知从机立即放弃本轮（`empty` 清零、`lead` 从 `[-15,0]` 改善到 `[0,0]`） |
 | `src/platform/mobile/link_net.h` | 声明 `netLinkBusDiagTiming` |
 | `src/platform/mobile/mgba_mobile.h/.c` | 新增 `mgbaMobileLinkHostLocal/JoinLocal`，转发到已有的 `netLinkBusHostLocal/JoinLocal` |
 | `android/app/src/main/cpp/jni_bridge.cpp` | 新增 `nativeLinkHostLocal` / `nativeLinkJoinLocal` 两个 JNI 入口 |
@@ -420,15 +430,18 @@ NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/wal
 | `--link` / `--dual` / 完整套件 | 155 ok / 16 ok / 242 ok，均 0 FAIL、EXIT=0 |
 | Java 编译 / Android NDK 原生构建 | 均 `BUILD SUCCESSFUL` |
 | Qt `test-gboylink` 重建 | 通过 |
-| `busgame` 本地总线（3 人） | 三次诊断：`battle_pc/rom.sav` + `attachAt=0` → 6000 帧但卡 BIOS；`attachAt=1000` → `wait=0ms`、`lead=[0,0]`、`empty=0`、`full=111/115`；换 `arena_save.sav` → 前 2048 帧 **SIO 零分叉**、三核各跑到 5600+ 帧、`rounds=0`。**LINKUP 仍未达成**（`cnt=0`、`cb2=0`），但已证明游戏从未发起 MULTI 轮次 |
+| `busgame` 本地总线（3 人） | 多轮诊断：`battle_pc/rom.sav` + `attachAt=0` → 卡 BIOS；换 `arena_save.sav` → 前 2048 帧 SIO 零分叉但 `rounds=0`；改用 2P 已验证的干净存档（`tmp_bus/rom.sav`）→ `cb2=0815329F`、ROM 正常启动、`rounds=122 full=118`；**2P 直连同存档对照 `cnt=2` 成功**。空槽广播修复后 `lead=[0,0]`、`stalePush=0`、`rounds=120 full=114`。**LINKUP 仍未达成**（`cnt=0`），f=1191 起 SIOMULTI 分叉 |
 
 ### 9.3 已知限制
 
-- 3/4 人游戏侧 LINKUP 未达成，卡点已确定在**菜单脚本与存档状态**：换用
-  `arena_save.sav` 后前 2048 帧 SIO 完全无分叉、`rounds=0`（一轮 MULTI 都没发起），
-  说明游戏根本没走到联机菜单，与链路轮次、帧率、SIO 数据均无关。
-  `BUSGAME_ATTACH_AT=1000` 时 `lead=[0,0]`、`empty=0` 已完全对齐。
-  三次诊断（不同 attachAt / 不同存档）均未达成 LINKUP，按纪律暂停，不再调链路参数。
+- 3/4 人游戏侧 LINKUP 未达成。卡点已缩小到**三核 SIO 中断在同一模拟帧内的
+  收尾时刻不一致**：用 2P 干净存档后 ROM 正常启动（`cb2=0815329F`）、2P 对照
+  `cnt=2` 成功，链路侧 `lead=[0,0]` / `stalePush=0` / `empty≈0` 也已对齐，
+  但 f=1191 起 c0/c1/c2 的 `SIOMULTI0..3` 仍分叉（例：c1 还停在 `494E`）。
+  **帧栅栏不是解药**：`BUSGAME_BARRIER=1` 让三核帧号完全一致，却把 `full`
+  从 118/122 拉到 157/346、`empty` 涨到 165、`wait=23s`。
+  三次机制性尝试后按纪律停止调链路参数（空槽广播修复保留；「从机等待主机
+  开轮」实测 `stalePush` 1→39、`lead` [-1,0]→[-17,0]，已回退）。
 - 进程内总线只覆盖**同一进程**的 N 核（Android ncore 与 Qt busgame）。
   跨设备 3/4 人（路径 C）仍是 TCP 星型总线，未改动。
 - 未做真机验证；本轮验证均为本机 C/Java/NDK 构建与 Qt 诊断程序。

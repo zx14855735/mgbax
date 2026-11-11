@@ -56,6 +56,9 @@ public final class GBoyLinkSessionTest {
         remoteKeysSampledEveryFifthFrame();
         missingKeyFramesHoldLastMask();
         slotTypedFrames();
+        multiPlayerSendsSlotTypedFrames();
+        multiPlayerRoutesKeysToOwnSlots();
+        twoPlayerKeepsTypeKeys();
         readyHandshake();
         resetAndStateRoundTrip();
         readerAcceptsLargeStateFrames();
@@ -139,6 +142,79 @@ public final class GBoyLinkSessionTest {
         check(four.keysForSlot(2) == 0x21, "type 2 targets slot 2");
         check(four.keysForSlot(3) == 0x31, "type 3 targets slot 3 while running");
         check(four.keysForSlot(4) == 0x41, "type 4 targets slot 4");
+    }
+
+    /** 3/4 人时每台设备必须发自带槽位的键位帧，否则对端无法区分来源。 */
+    private static void multiPlayerSendsSlotTypedFrames() {
+        int[] expected = {GBoyFrames.TYPE_KEYS, GBoyFrames.TYPE_INPUT_2,
+                GBoyFrames.TYPE_READY, GBoyFrames.TYPE_INPUT_4};
+        for (int slot = 1; slot <= 4; ++slot) {
+            Sink s = new Sink();
+            GBoyLinkSession dev = new GBoyLinkSession(s, new Recorder(), slot, 4);
+            byte[] wire = dev.onLocalFrame(0, 0x100 + slot);
+            check(wire != null, "slot " + slot + " broadcasts on frame 0");
+            check(GBoyFrames.getShort(wire, 4) == expected[slot - 1],
+                    "slot " + slot + " uses its slot-tagged frame type");
+            check(GBoyFrames.getInt(wire, 6) == 0x100 + slot,
+                    "slot " + slot + " carries its own key mask");
+            if (slot == 3) {
+                byte[] body = Arrays.copyOfRange(wire, 4, wire.length);
+                check(GBoyFrames.payloadOf(body).length == 4,
+                        "slot 3 READY carries an int so it is not a handshake");
+            }
+        }
+    }
+
+    /** 四台设备各占一个槽位时，每个槽位的按键都要落到正确的镜像核。 */
+    private static void multiPlayerRoutesKeysToOwnSlots() {
+        Sink[] sinks = new Sink[4];
+        Recorder[] recorders = new Recorder[4];
+        GBoyLinkSession[] devices = new GBoyLinkSession[4];
+        int[] keys = {0x11, 0x22, 0x33, 0x44};
+        for (int i = 0; i < 4; ++i) {
+            sinks[i] = new Sink();
+            recorders[i] = new Recorder();
+            devices[i] = new GBoyLinkSession(sinks[i], recorders[i], i + 1, 4);
+            devices[i].onLocalFrame(0, keys[i]);
+        }
+        for (int receiver = 0; receiver < 4; ++receiver) {
+            for (int sender = 0; sender < 4; ++sender) {
+                if (sender != receiver) {
+                    devices[receiver].onWireFrame(sinks[sender].frames.get(0));
+                }
+            }
+        }
+        for (int f = 1; f <= 5; ++f) {
+            for (int i = 0; i < 4; ++i) {
+                devices[i].onLocalFrame(f, 0);
+            }
+        }
+        for (int receiver = 0; receiver < 4; ++receiver) {
+            for (int slot = 1; slot <= 4; ++slot) {
+                if (slot != receiver + 1) {
+                    check(devices[receiver].keysForSlot(slot) == keys[slot - 1],
+                            "device " + (receiver + 1) + " routes slot " + slot + " keys");
+                }
+            }
+            check(recorders[receiver].readies == 0,
+                    "slot 3 key frames never fire the READY handshake");
+        }
+    }
+
+    /** 两人会话的发送帧与默认槽位必须保持原样，不影响已验证的直连。 */
+    private static void twoPlayerKeepsTypeKeys() {
+        Sink s = new Sink();
+        GBoyLinkSession dev = new GBoyLinkSession(s, new Recorder(), 2, 2);
+        byte[] wire = dev.onLocalFrame(0, 0x55);
+        check(GBoyFrames.getShort(wire, 4) == GBoyFrames.TYPE_KEYS,
+                "two-player device on slot 2 still sends TYPE_KEYS");
+        Sink t = new Sink();
+        GBoyLinkSession peer = new GBoyLinkSession(t, new Recorder(), 1, 2);
+        peer.onWireFrame(wire);
+        for (int f = 1; f <= 5; ++f) {
+            peer.onLocalFrame(f, 0);
+        }
+        check(peer.keysForSlot(2) == 0x55, "two-player default sender slot unchanged");
     }
 
     private static void readyHandshake() {

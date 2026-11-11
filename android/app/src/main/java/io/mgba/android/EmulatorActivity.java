@@ -215,6 +215,9 @@ public class EmulatorActivity extends AppCompatActivity {
             File stateDir = defaultStateDir != null
                     ? defaultStateDir : new File(getFilesDir(), "state");
             int players = intent.getIntExtra("players", 2);
+            // 每台设备必须占用不同的槽位，3/4 人时按键帧才会带上目标槽位。
+            // 不传时保持 1，与已验证的两人直连行为一致。
+            int slot = intent.getIntExtra("slot", 1);
             // headless 开关：3/4 人改走「本机 N 核 + 本机环回星型总线」，
             // 网络只传按键，避开跨设备每轮 1.5 RTT 的锁步。默认 false，
             // 保持已验证的单核跨设备总线路径不变。
@@ -226,11 +229,11 @@ public class EmulatorActivity extends AppCompatActivity {
                 ok = startBusLink(players, tcpPort, peer, asHost);
             } else {
                 ok = startGBoyLocalLink(new File(romPath), save, stateDir,
-                        sioPort, tcpPort, peer, asHost, players);
+                        sioPort, tcpPort, peer, asHost, players, slot);
             }
             Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
-                    + " sio=" + sioPort + " players=" + players + " ncore=" + ncore
-                    + " started=" + ok + " err=" + gboyLinkFailure());
+                    + " sio=" + sioPort + " players=" + players + " slot=" + slot
+                    + " ncore=" + ncore + " started=" + ok + " err=" + gboyLinkFailure());
         }
     };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
@@ -1966,18 +1969,33 @@ public class EmulatorActivity extends AppCompatActivity {
     public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
                                       int sioPort, int tcpPort, String peer,
                                       boolean asHost) {
-        return startGBoyLocalLink(rom, saveDir, stateDir, sioPort, tcpPort, peer, asHost, 2);
+        return startGBoyLocalLink(rom, saveDir, stateDir, sioPort, tcpPort, peer, asHost, 2, 1);
+    }
+
+    /** Keeps the console visible on slot 1 for callers without a slot. */
+    public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
+                                      int sioPort, int tcpPort, String peer,
+                                      boolean asHost, int players) {
+        return startGBoyLocalLink(rom, saveDir, stateDir, sioPort, tcpPort, peer,
+                                  asHost, players, 1);
     }
 
     /**
      * @param players 2..4 consoles in this process. 3/4 join a local star bus;
      *                the network link still carries only key masks.
+     * @param localSlot slot of the console owned by this device (1..players).
+     *                  Devices in a 3/4-player session must use distinct slots
+     *                  so key frames reach the right mirror console. The native
+     *                  link still pins the visible core to link slot 1; making
+     *                  the visible core occupy an arbitrary global slot needs a
+     *                  matching change in GBoyConsoleSet and link_net.c.
      */
     public boolean startGBoyLocalLink(File rom, File saveDir, File stateDir,
                                       int sioPort, int tcpPort, String peer,
-                                      boolean asHost, int players) {
+                                      boolean asHost, int players, int localSlot) {
         stopGBoyLink();
         final int consoleCount = Math.max(2, Math.min(players, GBoyLinkSession.MAX_CONSOLES));
+        final int slot = Math.max(1, Math.min(localSlot, consoleCount));
         if (core == null || !core.isLoaded() || (!asHost && (peer == null || peer.isEmpty()))) {
             return false;
         }
@@ -2036,7 +2054,7 @@ public class EmulatorActivity extends AppCompatActivity {
             }
         };
         try {
-            GBoySocketLink link = new GBoySocketLink(1, consoleCount, events);
+            GBoySocketLink link = new GBoySocketLink(slot, consoleCount, events);
             if (asHost) {
                 link.startHost(tcpPort);
             } else {

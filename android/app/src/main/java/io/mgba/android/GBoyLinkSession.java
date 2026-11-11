@@ -116,7 +116,7 @@ public final class GBoyLinkSession {
                         currentKeys[slot] = queue.poll();
                     }
                 }
-                out = GBoyFrames.frame(GBoyFrames.TYPE_KEYS, localKeys);
+                out = keyFrameForLocalSlot(localKeys);
                 ++sentFrames;
             }
         }
@@ -124,6 +124,36 @@ public final class GBoyLinkSession {
             transport.send(out);
         }
         return out;
+    }
+
+    /**
+     * 3/4 人时键位帧必须自带槽位：官方协议用 type 2 / 带 int 的 3 / 4 指定
+     * 目标 console，TYPE_KEYS 只代表发送方自己占的 slot 1。若所有设备都发
+     * TYPE_KEYS，接收侧只能按默认槽位落键，slot 3/4 的镜像核永远收不到按键。
+     * 两人会话保持原来的 TYPE_KEYS，已验证的直连路径一字不动。
+     */
+    private byte[] keyFrameForLocalSlot(int keys) {
+        if (playerCount <= 2 || localSlot == 1) {
+            return GBoyFrames.frame(GBoyFrames.TYPE_KEYS, keys);
+        }
+        switch (localSlot) {
+            case 2:
+                return GBoyFrames.frame(GBoyFrames.TYPE_INPUT_2, keys);
+            case 3:
+                return GBoyFrames.frame(GBoyFrames.TYPE_READY, keys);
+            case 4:
+                return GBoyFrames.frame(GBoyFrames.TYPE_INPUT_4, keys);
+            default:
+                return GBoyFrames.frame(GBoyFrames.TYPE_KEYS, keys);
+        }
+    }
+
+    /**
+     * 3/4 人时 TYPE_KEYS 只由占 slot 1 的设备发出，其余槽位都走带槽位的
+     * type；两人会话沿用历史的「本机是 2 号就认为对端是 1 号」规则。
+     */
+    private int defaultSenderSlot() {
+        return playerCount > 2 ? 1 : (localSlot == 2 ? 1 : 2);
     }
 
     /** Key mask the frame loop must inject into the console of {@code slot}. */
@@ -205,9 +235,8 @@ public final class GBoyLinkSession {
         }
     }
 
-    /** Two-player sessions receive from slot 2. */
     public void onFrameBody(byte[] body) {
-        onFrameBody(body, localSlot == 2 ? 1 : 2);
+        onFrameBody(body, defaultSenderSlot());
     }
 
     /**
@@ -230,7 +259,7 @@ public final class GBoyLinkSession {
     }
 
     public void onWireFrame(byte[] wire) {
-        onWireFrame(wire, localSlot == 2 ? 1 : 2);
+        onWireFrame(wire, defaultSenderSlot());
     }
 
     private void pushKeys(int slot, int keys) {
@@ -303,6 +332,16 @@ public final class GBoyLinkSession {
 
     public void sendFps(int fps) {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_FPS, fps));
+    }
+
+    /** Slot of the console owned by this device (1..4). */
+    public int localSlot() {
+        return localSlot;
+    }
+
+    /** Number of consoles in this session (2..4). */
+    public int playerCount() {
+        return playerCount;
     }
 
     public long frameNo() {
