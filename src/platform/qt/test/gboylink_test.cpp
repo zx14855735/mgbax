@@ -1850,12 +1850,24 @@ struct LsCtx {
 	int modeDowns;
 };
 
-void lsSetKeys(struct mCoreThread* t) {
-	LsCtx* p = (LsCtx*) t->userData;
-	int f = p->frame->fetch_add(1) + 1;
+/* 自定义 mLockstepUser：用 per-user 的 mutex+condvar 实现 sleep/wake，等价
+ * 于官方 mLockstepThreadUser（后者绑定 mCoreThread，在本 harness 的
+ * mCoreThreadStart 反复崩溃）。sleep 阻塞调用线程（即该核 worker），wake
+ * 由协调器在另一核线程上调用解除阻塞；二者用独立 mutex，不会与
+ * coordinator->mutex 死锁。 */
+struct LsUser {
+	struct mLockstepUser d;
+	int id;
+	std::mutex m;
+	std::condition_variable c;
+	bool sleeping;
+	bool wakePending;
+};
+
+void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns) {
+	struct GBA* g = (struct GBA*) core->board;
 	const uint32_t A = 1, START = 8, LEFT = 32, UP = 64, DOWN = 128;
 	const int boot = 240;
-	const int menuAt = p->menuAt;
 	uint32_t keys = 0;
 	if (f >= boot && f < boot + 6) {
 		keys = START;
@@ -1871,30 +1883,24 @@ void lsSetKeys(struct mCoreThread* t) {
 		keys = UP;
 	} else if (f >= menuAt + 60 && f < menuAt + 80) {
 		keys = LEFT;
-	} else if (p->modeDowns > 0 && f >= menuAt + 80
-	           && f < menuAt + 80 + p->modeDowns * 14) {
+	} else if (modeDowns > 0 && f >= menuAt + 80
+	           && f < menuAt + 80 + modeDowns * 14) {
 		keys = (((f - menuAt - 80) % 14) < 4) ? DOWN : 0u;
-	} else if (f >= menuAt + 80 + p->modeDowns * 14
-	           && f < menuAt + 92 + p->modeDowns * 14) {
+	} else if (f >= menuAt + 80 + modeDowns * 14
+	           && f < menuAt + 92 + modeDowns * 14) {
 		keys = A;
 	} else if (f >= menuAt + 240) {
 		keys = ((f % 40) < 25) ? A : 0u;
 	}
-	t->core->setKeys(t->core, keys);
-	/* 仅给 0 号核（主机）补 SD/Ready(bit3)：gen8 的 CheckMasterOrSlave 用
-	 * `(SIOCNT & 0xC)==0x8` 判主机，要求 SD=1 且 SI=0。协调器对从机置了
-	 * Ready，但对主机偶发不置（其 _setReady 的 ready 判定依赖其余玩家的
-	 * otherModes 全齐，主机作为时钟所有者可能晚半拍）。只置 bit3、不碰
-	 * bit2(SI/主从，协调器已正确置 0)、bit7(START，协调器管理)，避免旧
-	 * hack 把 SIOMLT_SEND 读成 0 的数据损坏。 */
-	if (p->idx == 0) {
-		struct GBA* g = (struct GBA*) t->core->board;
+	core->setKeys(core, keys);
+	/* 仅给 0 号核（主机）补 SD/Ready(bit3)：gen8 用 (SIOCNT & 0xC)==0x8 判主机。
+	 * 只置 bit3、不碰 bit2(SI/主从，协调器已置 0)、bit7(START，协调器管理)。 */
+	if (idx == 0) {
 		g->sio.siocnt |= 0x0008u;
 	}
 	if ((f % 100) == 0) {
-		struct GBA* g = (struct GBA*) t->core->board;
 		fprintf(stderr, "LST f=%d c=%d pc=%d st=%d im=%d lc=%d hm=%d tr=%04X,%04X,%04X,%04X sio=%04X m=%04X,%04X,%04X,%04X cb2=%08X\n",
-		        f, p->idx,
+		        f, idx,
 		        GBAView8(g->cpu, 0x03002AF7u), GBAView8(g->cpu, 0x03002AF5u),
 		        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF6u),
 		        GBAView8(g->cpu, 0x03002B02u),
@@ -1911,8 +1917,7 @@ void lsSetKeys(struct mCoreThread* t) {
 	{
 		static int hslOn = -1;
 		if (hslOn < 0) { hslOn = qEnvironmentVariableIntValue("BUSGAME_HSL", nullptr) ? 1 : 0; }
-		if (hslOn && p->idx == 0) {
-			struct GBA* g = (struct GBA*) t->core->board;
+		if (hslOn && idx == 0) {
 			int st = GBAView8(g->cpu, 0x03002AF5u);
 			if (st == 2 || st == 4) {
 				uint32_t gs = GBAView32(g->cpu, 0x03002A9Cu);
@@ -1929,16 +1934,31 @@ void lsSetKeys(struct mCoreThread* t) {
 	}
 }
 
-struct mLockstepThreadUser* g_lsUsers = nullptr;
-
-int lsRequestedId(struct mLockstepUser* ctx) {
-	return (int) (((struct mLockstepThreadUser*) ctx) - g_lsUsers);
+static void lsUserSleep(struct mLockstepUser* u) {
+	LsUser* lu = (LsUser*) u;
+	std::unique_lock<std::mutex> lk(lu->m);
+	lu->sleeping = true;
+	lu->c.wait(lk, [lu] { return lu->wakePending; });
+	lu->sleeping = false;
+	lu->wakePending = false;
+}
+static void lsUserWake(struct mLockstepUser* u) {
+	LsUser* lu = (LsUser*) u;
+	std::unique_lock<std::mutex> lk(lu->m);
+	lu->wakePending = true;
+	lu->c.notify_one();
+}
+static int lsUserRequestedId(struct mLockstepUser* u) {
+	return ((LsUser*) u)->id;
 }
 } // namespace
 
 static int busGameLockstepTest(const QString& rom, const QString& sav, int players) {
-	if (players < 3) {
-		players = 3;
+	/* gen8 没有 3 人战斗模式：单打/双打=2 人、多人(multi-battle)=4 人。
+	 * 3 核测试本质无效（主机 linkPlayerCount=3 < tMinPlayers=4 → 永不
+	 * SaveLinkPlayers → 握手不触发）。这里强制 4 核，对应 multi-battle。 */
+	if (players < 4) {
+		players = 4;
 	}
 	if (players > 4) {
 		players = 4;
@@ -1998,29 +2018,62 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	struct GBASIOLockstepCoordinator coord;
 	GBASIOLockstepCoordinatorInit(&coord);
 
-	static std::atomic<int> frames[4];
-	static LsCtx pctx[4];
-	static struct mCoreThread* threads[4];
-	static struct GBASIOLockstepDriver nodes[4];
-	static struct mLockstepThreadUser users[4];
-	memset(nodes, 0, sizeof(nodes));
-	memset(users, 0, sizeof(users));
-	g_lsUsers = users;
-
+	std::atomic<int> frames[4];
+	LsCtx pctx[4];
+	struct GBASIOLockstepDriver nodes[4];
+	LsUser users[4];
+	std::thread threads[4];
+	std::atomic<bool> hold[4];
+	std::atomic<bool> held[4];
+	std::atomic<bool> stop(false);
 	for (int i = 0; i < players; ++i) {
 		frames[i].store(0);
+		hold[i].store(false);
+		held[i].store(false);
 		pctx[i].idx = i;
 		pctx[i].frame = &frames[i];
 		pctx[i].menuAt = menuAt;
 		pctx[i].modeDowns = modeDowns;
-		threads[i] = (struct mCoreThread*) calloc(1, sizeof(struct mCoreThread));
-		threads[i]->core = cores[i];
-		threads[i]->frameCallback = lsSetKeys;
-		threads[i]->userData = &pctx[i];
-		if (!mCoreThreadStart(threads[i])) {
-			fprintf(stderr, "LS: FAIL (cannot start thread %d)\n", i);
-			return 1;
-		}
+		memset(&nodes[i], 0, sizeof(nodes[i]));
+		users[i].id = i;
+		users[i].sleeping = false;
+		users[i].d.sleep = lsUserSleep;
+		users[i].d.wake = lsUserWake;
+		users[i].d.requestedId = lsUserRequestedId;
+		users[i].d.playerIdChanged = nullptr;
+	}
+
+	/* 每核一个 std::thread，用 runLoop 按“真实帧”推进（与官方 mCoreThread 的
+	 * runLoop 等价：一次只跑到下一个 timing 事件，锁步以小步跨线程同步）。这
+	 * 避免 runFrame 一次跑 ~28 万周期把单核冲到前面、睡死其它核的死锁。导航
+	 * 仍按真实帧计数（f），runLoop 跑到 frameCounter 进一帧即算一帧。hold 旗
+	 * 标用于干净地暂停 worker 以便挂锁步驱动。 */
+	for (int i = 0; i < players; ++i) {
+		threads[i] = std::thread([&, i]() {
+			struct mCore* core = cores[i];
+			struct GBA* gba = (struct GBA*) core->board;
+			int f = 0;
+			while (!stop.load()) {
+				if (hold[i].load()) {
+					held[i].store(true);
+					while (hold[i].load() && !stop.load()) {
+						std::this_thread::yield();
+					}
+					held[i].store(false);
+					continue;
+				}
+				f = frames[i].fetch_add(1) + 1;
+				lsInjectKeys(core, i, f, pctx[i].menuAt, pctx[i].modeDowns);
+				uint32_t startFc = gba->video.frameCounter;
+				do {
+					core->runLoop(core);
+					if (gba->video.frameCounter == startFc) {
+						std::this_thread::yield();
+					}
+				} while (gba->video.frameCounter == startFc
+				         && !stop.load() && !hold[i].load());
+			}
+		});
 	}
 
 	auto t0 = std::chrono::steady_clock::now();
@@ -2030,10 +2083,8 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	};
 
 	bool attached = false;
-	/* 早期 attach：内核在启动后自由跑的帧数越少，三个核的 boot/菜单相位差越小。
-	 * 之前等 frame>=900 才挂锁步驱动，导致三核 BIOS/菜单起步相差几百帧，
-	 * 握手窗口错开、LINKUP 无法在三核同时成立。这里只等线程起来（约 10 帧）
-	 * 就挂驱动，让锁步协调器从 boot 起就统一驱动三核。 */
+	/* 早期 attach：内核启动后自由跑约 10 帧再挂锁步驱动，避开 BIOS/菜单的
+	 * SIO 探测相位差。挂驱动前用 hold 干净暂停所有 worker。 */
 	const int attachThreshold = 10;
 	while (elapsedMs() < wallLimitMs) {
 		bool all = true;
@@ -2050,17 +2101,28 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	}
 	if (attached) {
 		for (int i = 0; i < players; ++i) {
-			mCoreThreadInterrupt(threads[i]);
+			hold[i].store(true);
+		}
+		int waited = 0;
+		while (waited++ < 5000) {
+			bool allHeld = true;
+			for (int i = 0; i < players; ++i) {
+				if (!held[i].load()) {
+					allHeld = false;
+				}
+			}
+			if (allHeld) {
+				break;
+			}
+			QThread::msleep(2);
 		}
 		for (int i = 0; i < players; ++i) {
-			mLockstepThreadUserInit(&users[i], threads[i]);
-			users[i].d.requestedId = lsRequestedId;
 			GBASIOLockstepDriverCreate(&nodes[i], &users[i].d);
 			GBASIOLockstepCoordinatorAttach(&coord, &nodes[i]);
 			cores[i]->setPeripheral(cores[i], mPERIPH_GBA_LINK_PORT, &nodes[i].d);
 		}
 		for (int i = 0; i < players; ++i) {
-			mCoreThreadContinue(threads[i]);
+			hold[i].store(false);
 		}
 		fprintf(stderr, "LS: attached %d cores at frame>=%d\n", players, attachThreshold);
 	} else {
@@ -3224,7 +3286,7 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("busgame-lockstep")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/gen8/rom.gba");
 		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/gen8/rom.sav");
-		int players = args.size() > 4 ? args[4].toInt() : 3;
+		int players = args.size() > 4 ? args[4].toInt() : 4;
 		return busGameLockstepTest(rom, sav, players);
 	}
 	if (mode == QStringLiteral("lanio")) {
