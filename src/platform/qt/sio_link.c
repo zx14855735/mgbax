@@ -495,13 +495,17 @@ static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4]
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
 		return;
 	}
-	struct GBA* gba = (struct GBA*) sio->core->board;
 	int me = netLinkPlayer(sio->link);
 	uint16_t data[4];
-	netLinkBusSlots(vals, players, me, gba->memory.io[GBA_REG(SIOMLT_SEND)], data);
+	/* 3/4 人总线：四槽来自主机唯一一次聚合广播（vals[4]），所有核（含主机）
+	 * 都写入同一份快照，不再用本核当前 SIOMLT_SEND 覆盖自身槽位——那样会让
+	 * 三核的 SIOMULTI 互不相同，握手永远对不齐（busgame 实测 f=1191 起分叉）。
+	 * vals 里未连上的槽位已是 0xFFFF（主机缺席槽 + 掉线从机）。 */
+	for (int i = 0; i < 4; ++i) {
+		data[i] = (i < players && vals) ? (uint16_t) vals[i] : 0xFFFF;
+	}
 	/* 逐轮取证（前 80 轮 + 每 500 轮一条）：三核同一轮写入的四个槽应该
-	 * 完全一致，主机尤其不能写 0。用来判断握手首轮到底是「主机没收到」
-	 * 还是「收到了但写错」。 */
+	 * 完全一致（现在 data 就是 vals 的逐字拷贝，用来确认三核收到同一份）。 */
 	static uint32_t s_busLogN;
 	uint32_t n = ++s_busLogN;
 	if (n <= 80 || (n % 500) == 0) {

@@ -2336,12 +2336,14 @@ static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals
 	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
 		return;
 	}
-	struct GBA* gba = (struct GBA*) emu->core->board;
-	int me = netLinkPlayer(emu->link);
 	uint16_t data[4];
-	/* 四槽的装配规则在 link_net 里做成纯函数，方便单测（人数不足的槽必须
-	 * 是空槽、自己的槽一定用本机这一轮的字）。 */
-	netLinkBusSlots(vals, players, me, gba->memory.io[GBA_REG(SIOMLT_SEND)], data);
+	/* 3/4 人总线：四槽来自主机唯一一次聚合广播（vals[4]），所有核（含主机）
+	 * 都写入同一份快照，不再用本核当前 SIOMLT_SEND 覆盖自身槽位——那样会让
+	 * 三核的 SIOMULTI 互不相同，握手永远对不齐（busgame 实测 f=1191 起分叉）。
+	 * vals 里未连上的槽位已是 0xFFFF（主机缺席槽 + 掉线从机）。 */
+	for (int i = 0; i < 4; ++i) {
+		data[i] = (i < players && vals) ? (uint16_t) vals[i] : 0xFFFF;
+	}
 	finishMultiTransfer(emu, data, cyclesLate);
 }
 
