@@ -385,14 +385,13 @@ Qt `busgame` 本地总线模式 6000 帧 `wait=0ms`、`lead=[0,0]`、`empty=0`�
    上同时收尾，或由主机统一广播收尾后的 SIOMULTI 四槽快照，其余核不再自行写
    SIOMULTI。三次机制性尝试（空槽广播修复保留、从机等待开轮按实测回退、
    帧栅栏否决）后按纪律停止调参。
-2. **N 设备按键槽位路由（协议层已完成，见 §10）**：`GBoyLinkSession` 已按
-   `localSlot` 发 `TYPE_KEYS/INPUT_2/READY(带 int)/INPUT_4`，`TYPE_KEYS` 固定
-   代表 slot 1，`EmulatorActivity` 支持 `--ei slot N`，四设备槽位路由有 JVM 单测。
-   **剩余限制**：native 链路仍把可见核固定在链路槽位 1（`netLinkBusHostLocal`
-   把 host 设为 player 0、`netLinkBusJoinLocal` 按接入顺序分配），因此
-   `localSlot > 1` 的设备在 SIO 层仍被游戏认成玩家 1。要真正跑通 N 台设备，
-   需要给 `netLinkBusJoinLocal` 增加「指定槽位」入口，并让 `GBoyConsoleSet`
-   的镜像核映射到除 `localSlot` 外的全局槽位。
+2. **N 设备按键槽位路由（已完成，见 §10）**：三端会话层按 `localSlot`
+   发 `TYPE_KEYS/INPUT_2/READY(带 int)/INPUT_4`，共享 C 层的本地总线支持指定
+   槽位 join（`netLinkBusJoinLocalSlot` + `slotTaken[]`，host 恒占链路槽位 0），
+   `GBoyConsoleSet` 让可见核占 `localSlot-1` 的链路槽位、镜像核按 `mirrorSlotFor`
+   读按键。三端（Android/PC-Qt/iOS）都有槽位映射与帧类型的回归断言。
+   **剩余的是真机验证**：本机只能跑 C/Qt/JVM/Swift 语法与构建回归，
+   N 台设备同时开玩仍需上机确认（§10.3）。
 3. **iOS 对齐**：补 `WsLink` 隧道 fallback、SIO 分开控制桥、`self`+nonce 过滤；
    改动需 macOS + Xcode 做类型检查（本机只能 `swiftc -parse`）。
 4. **WSS 房间信令逐行对齐官方混淆类**：需账号 + 真机抓包；`query_room`、
@@ -448,34 +447,53 @@ NDK `gradlew :app:externalNativeBuildDebug`；驱动脚本 `.workbuddy/drive/wal
 
 ---
 
-## 10. 3/4 人按键槽位路由（2026-11-11 续）
+## 10. 3/4 人按键槽位路由（三端同步，2026-11-11）
+
+> 目标：让 `localSlot > 1` 的设备在 SIO 层也占正确槽位，而不再被游戏认成玩家 1。
+> 关键不变量：**host 恒占链路槽位 0**（恰是游戏认定的 1P），所以 `sio_link.c` /
+> `mgba_mobile.c` 里「`player != 0` 才起轮」的判据仍然成立，**两端 SIO 驱动无需改动**。
 
 ### 10.1 改动清单
 
-| 文件 | 改动 |
-|---|---|
-| `android/.../GBoyLinkSession.java` | `playerCount>2` 时 `onLocalFrame` 按 `localSlot` 发带槽位帧：1→`TYPE_KEYS`、2→`TYPE_INPUT_2`、3→带 int 的 `TYPE_READY`、4→`TYPE_INPUT_4`；无参 `onFrameBody`/`onWireFrame` 的默认 `senderSlot` 在 3/4 人时固定为 1；新增 `localSlot()`/`playerCount()`；**两人路径一字不动** |
-| `android/.../EmulatorActivity.java` | 新增 9 参 `startGBoyLocalLink(..., localSlot)`，从 `GBOY_LOCAL_LINK` 广播读 `--ei slot`；8 参重载默认 slot 1；日志带 slot |
-| `android/.../GBoyLinkSessionTest.java` | 新增三个用例：四槽发送帧类型、四设备会话级槽位路由（含 slot 3 带 int 的 READY 不触发握手）、两人路径回归 |
-| `android/.../GBoySocketLinkTest.java` | 新增 `slotTypedKeysOverLoopback`：4 人会话下 slot 1 / slot 2 两台设备经真实 loopback TCP 交换带槽位键位帧，验证落到对端正确槽位 |
+| 层 | 文件 | 改动 |
+|---|---|---|
+| native | `src/platform/mobile/link_net.c` / `.h` | `struct LocalBus` 加 `slotTaken[BUS_MAX_PLAYERS]`（`slot 0` 恒归 host）；新增 `netLinkBusJoinLocalSlot(link, key, slot)`，校验 `1≤slot<players` 且未被占用，占用后写入 `slotTaken`；`netLinkBusJoinLocal` 改为按接入顺序求第一个空槽（旧行为）。`localBusCreate` 用 `inited` 标记 + 逐字段重置，避免对已初始化的 mutex/cond 重复 init |
+| native | `src/platform/mobile/mgba_mobile.c` / `.h` | 新增 `mgbaMobileLinkJoinLocalSlot(emu, key, slot)` 转发到 `netLinkBusJoinLocalSlot` |
+| JNI | `android/.../jni_bridge.cpp` / `MgbaCore.java` | 新增 `nativeLinkJoinLocalSlot` 与 `linkJoinLocal(key, slot)` 重载（旧 `linkJoinLocal(key)` 保留） |
+| Android | `android/.../GBoyConsoleSet.java` | 构造器加 `localSlot` 字段（1..players）；`localSlot>1` 时可见核占链路槽位 `localSlot-1`（`primary.linkJoinLocal(busKey, localSlot-1)`），`localSlot==1` 时仍作 host；镜像核按 `mirrorSlotFor(localSlot, players, index)` 读按键；新增 `mirrorSlotFor` 静态转发 |
+| Android | `android/.../GBoyLinkSession.java` | `playerCount>2` 时 `onLocalFrame` 按 `localSlot` 发带槽位帧：1→`TYPE_KEYS`、2→`TYPE_INPUT_2`、3→带 int 的 `TYPE_READY`、4→`TYPE_INPUT_4`；无参 `onFrameBody`/`onWireFrame` 的默认 `senderSlot` 在 3/4 人时固定 1；新增 `localSlot()`/`playerCount()`/`mirrorSlotFor`/`keysForSlot`；**两人路径一字不动** |
+| Android | `android/.../EmulatorActivity.java` | 新增 9 参 `startGBoyLocalLink(..., localSlot)`，从 `GBOY_LOCAL_LINK` 广播读 `--ei slot`；8 参重载默认 slot 1；日志带 slot |
+| PC/Qt | `src/platform/qt/sio_link.c` / `.h` | 新增 `sioLinkJoinPlayersLocalSlot(sio, key, slot)` 转发到 `netLinkBusJoinLocalSlot`（旧 `sioLinkJoinPlayersLocal` 保留） |
+| PC/Qt | `src/platform/qt/GBoyLinkSession.cpp` / `.h` | 与 Android 同源移植：`localSlot`/`playerCount` 构造参数，`pushKeys` 按 `localSlot` 选帧类型，`keysForSlot` 按帧 type 反解槽位，`mirrorSlotFor` 静态方法；**两人路径不变** |
+| iOS | `ios/mGBA/LobbyLink.swift` | `keyFrameType()` 按 `localSlot` 选 `typeKeys/typeInput2/typeReady/typeInput4`；`handle` 对 `typeInput2/typeReady/typeInput4` 按 type 反解目标槽位（`typeReady` 带 int 荷载） |
+| 测试 | `src/platform/mobile/mobile_test.c` | 新增 `testBusLocalSlots`：乱序指定槽位（2→1→3）、冲突拒绝（同一槽位二次 join 失败）、未知 key 拒绝、槽位 0/超界拒绝、退出后槽位释放复用；挂 `--bus`/`--link` |
+| 测试 | `src/platform/qt/test/gboylink_test.cpp` | 新增 `busLocalSlotTest`（指定槽位本地总线建链）+ `sessionSlotTest`（PC 会话层四槽帧类型与 `mirrorSlotFor` 映射），分发到 `buslocal` 模式 |
+| 测试 | `android/.../GBoyLinkSessionTest.java` | 新增三个用例：四槽发送帧类型、四设备会话级槽位路由（含 slot 3 带 int 的 READY 不触发握手）、两人路径回归 |
+| 测试 | `android/.../GBoySocketLinkTest.java` | 新增 `slotTypedKeysOverLoopback`：4 人会话下 slot 1 / slot 2 两台设备经真实 loopback TCP 交换带槽位键位帧，验证落到对端正确槽位 |
 
 ### 10.2 验证
 
 | 检查 | 结果 |
 |---|---|
-| `javac -encoding UTF-8` + `GBoyLinkSessionTest` | `GBoyLinkSessionTest ok`，EXIT=0 |
-| `javac -encoding UTF-8` + `GBoySocketLinkTest`（含新增 socket 用例） | `GBoySocketLinkTest ok`，EXIT=0 |
-| `gradlew :app:compileDebugJavaWithJavac --offline` | BUILD SUCCESSFUL |
+| C 回归 `mgba_mobile_test --bus` | 含 `testBusLocalSlots`，164 ok / 0 FAIL、EXIT=0 |
+| C 回归 `--link` / `--dual` / 完整套件 | 155 ok / 16 ok / 242 ok，均 0 FAIL、EXIT=0 |
+| Qt `test-gboylink buslocal` | `BUSLOCAL TEST: PASS` + `SESSIONSLOT TEST: PASS`（含指定槽位建链与 PC 会话层路由），EXIT=0 |
+| JVM `javac -encoding UTF-8` + `GBoyLinkSessionTest` | `GBoyLinkSessionTest ok`，EXIT=0 |
+| JVM `javac -encoding UTF-8` + `GBoySocketLinkTest`（含 socket 用例） | `GBoySocketLinkTest ok`，EXIT=0 |
+| `gradlew :app:compileDebugJavaWithJavac` / `:app:externalNativeBuildDebug` | 均 BUILD SUCCESSFUL |
+| `swiftc -parse` on `LobbyLink.swift` / `LobbyFrames.swift` | 语法 OK（本机无 Xcode，仅解析级检查） |
 | `gradlew :app:testDebugUnitTest --offline` | **既有配置问题**：项目单测是 plain JVM `main`、无 JUnit 依赖，任务报 `did not discover any tests`；等价验证以上述 javac 直跑为准 |
 
 ### 10.3 已知限制
 
-- native 链路仍把可见核固定在链路槽位 1：`netLinkBusHostLocal` 把 host 设为
-  player 0、`netLinkBusJoinLocal` 按接入顺序分配槽位。因此 `localSlot > 1`
-  的设备在 SIO 层仍被游戏认成玩家 1。要真正跑通 N 台设备，需要给
-  `netLinkBusJoinLocal` 增加「指定槽位」入口，并让 `GBoyConsoleSet` 的镜像核
-  映射到除 `localSlot` 外的全局槽位（§8 第 2 项）。
+- **未做真机多设备验证**：本机只能跑 C/Qt/JVM/Swift 语法与构建回归，N 台设备
+  同时开玩（每台 `localSlot` 不同）仍需上机确认。`mirrorSlotFor` 的布局规则
+  已在三端共享同一份纯函数逻辑并各有单测，但仍缺真机多核同时推进联机菜单的
+  端到端证据。
 - `GBoyCloudLink.newSession` 固定 `playerCount=2`，云端 officialMode 仍是两人
   会话，不受本次改动影响。
-- 未做真机多设备验证；本轮为 JVM 单测与 Android Java 编译。
+- iOS 改动仅做了 `swiftc -parse` 级语法检查；类型检查与真机跑通需 macOS + Xcode。
+- 3/4 人游戏侧 LINKUP（`cnt=0`）仍是 §8 第 1 项记录的架构级卡点（三核 SIO 中断
+  帧内收尾不同步），与本次槽位路由无关；槽位路由是「链路层身份正确」的前提，
+  但游戏侧起轮本身尚未打通。
 
