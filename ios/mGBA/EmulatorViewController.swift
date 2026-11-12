@@ -1,4 +1,4 @@
-import CoreMotion
+﻿import CoreMotion
 import Darwin
 import GameController
 import Photos
@@ -5418,7 +5418,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.defaults.set(true, forKey: "link_use_lockstep")
                 self.defaults.set(Int(p), forKey: "link_port")
                 self.defaults.set(Int(n), forKey: "link_players")
-                self.startLocalLockstep(players: n, port: Int(p), status: status)
+                self.startLocalLockstep(players: Int(n), port: Int(p), status: status)
                 return
             }
             self.consoleSet?.stop()
@@ -5449,7 +5449,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.defaults.set(ip, forKey: "link_host")
                 self.defaults.set(Int(p), forKey: "link_port")
                 self.defaults.set(Int(n), forKey: "link_players")
-                self.startLocalLockstep(players: n, port: Int(p), status: status)
+                self.startLocalLockstep(players: Int(n), port: Int(p), status: status)
                 return
             }
             self.consoleSet?.stop()
