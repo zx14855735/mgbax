@@ -1873,6 +1873,7 @@ static std::atomic<int> g_walkDbg[4];   /* idx<<24 | px<<16 | py<<8 | keys */
  * gSelectedOrderFromParty @0x02032AD0，前两字节非 0 表示已选 2 只。 */
 static std::atomic<int> g_partyType[4];
 static std::atomic<int> g_selOrder[4];   /* (s0<<8)|s1 */
+static std::atomic<int> g_partySlot[4];  /* gPartyMenu.slotId */
 /* 联机房间按键码握手：sPlayerTradingStates @0x03004A10 (4×u8)，
  * 0x82=PLAYER_TRADING_STATE_UNK_2(已准备)；gFieldLinkPlayerCount @0x03004A39。
  * sub_8087214() 要全员 0x82 才让 Task_EnterCableClubSeat 推进到开战。 */
@@ -1970,14 +1971,28 @@ void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns)
 			g_partyType[idx].store(ptype);
 			g_selOrder[idx].store((s0 << 8) | s1);
 			if (ptype == 4) {
-				uint32_t want;
-				if (s0 == 0 || s1 == 0) {
-					want = A;                    /* 还没选够 2 只 */
-				} else {
-					/* 选够：交替 START(移光标到确认) / A(确认) */
-					want = (((f / 24) % 2) == 0) ? START : A;
+				/* 选怪状态机。按 A 会先弹「Enter/No Entry」小窗口，需两次 A
+				 * 才写入一只；且在同一 slot 再按 A 会触发 CursorCb_NoEntry
+				 * 取消选择（实测 sel 在 0/1 只间震荡）。gPartyMenu.slotId
+				 * @0x02032A91。选满 2 只后游戏自动 MoveCursorToConfirm()，
+				 * 再按 A 即验证关闭菜单。每个动作只按 1 帧产生单次 JOY_NEW。 */
+				int slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
+				g_partySlot[idx].store(slot);
+				/* 直接用内存完成「选 2 只」这个 UI 步骤：写
+				 * gSelectedOrderFromParty[0..1]={1,2}，并把 slotId 置为
+				 * PARTY_SIZE(6)=确认位。校验(Task_ValidateChosenHalfParty)、
+				 * 关闭菜单、后续开战仍由游戏自己的代码执行，不绕过游戏逻辑。
+				 * 这样避开「选择窗口 / CursorCb_NoEntry 取消 / 按键相位」的全部
+				 * 时序坑（实测按键方案总有一半核卡在 1 只）。 */
+				if (s0 == 0 || s1 == 0 || slot != 6) {
+					int cc = 0;
+					if (s0 == 0) { GBAStore8(g->cpu, 0x02032AD0u, (int8_t) 1, &cc); }
+					if (s1 == 0) { GBAStore8(g->cpu, 0x02032AD1u, (int8_t) 2, &cc); }
+					if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
 				}
-				keys = ((f % 24) < 8) ? want : 0u;
+				/* 按 A 让游戏走 HandleChooseMonSelection → slotPtr==PARTY_SIZE
+				 * → gPartyMenu.task = Task_ValidateChosenHalfParty → 关菜单。 */
+				keys = ((f % 12) < 2) ? A : 0u;
 			} else {
 				/* 队伍菜单未弹出：闭环走位到 4P 座位（后备）。 */
 				static const int seatX[4] = {3, 10, 3, 10};
@@ -2117,7 +2132,11 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	const int maxFrames = envInt("BUSGAME_FRAMES", 3000);
 	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
 	const int modeDowns = envInt("BUSGAME_MODE_DOWNS", 2);
-	const int attachAt = envInt("BUSGAME_ATTACH_AT", 900);
+	/* 挂锁步驱动的帧号。原来硬编码 10，BIOS 阶段 SIO 模式会连续抖动
+	 * (GPIO→NORMAL32→…→MULTI)，每次 SetMode 都给所有核 enqueue 一个
+	 * MODE_SET 事件，事件池耗尽后 "No free events" → 偶发段错误(139)。
+	 * 推迟到 BIOS 探测结束再挂，避开这段洪泛。可用环境变量覆盖做 A/B。 */
+	const int attachThreshold = envInt("BUSGAME_ATTACH_AT", 300);
 
 	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
 	QString savCopy[4];
@@ -2306,7 +2325,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 				}
 				/* 第 10 帧后挂锁步驱动：单线程、且此刻无 runLoop 在跑，
 				 * 无需 threaded 路径的 hold 暂停协议。 */
-				if (!serAttached && f >= 10) {
+				if (!serAttached && f >= attachThreshold) {
 					for (int k = 0; k < players; ++k) {
 						GBASIOLockstepDriverCreate(&nodes[k], &users[k].d);
 						GBASIOLockstepCoordinatorAttach(&coord, &nodes[k]);
@@ -2363,9 +2382,8 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	};
 
 	bool attached = false;
-	/* 早期 attach：内核启动后自由跑约 10 帧再挂锁步驱动，避开 BIOS/菜单的
-	 * SIO 探测相位差。挂驱动前用 hold 干净暂停所有 worker。 */
-	const int attachThreshold = 10;
+	/* 等所有核跑到 attachThreshold 帧再挂锁步驱动（避开 BIOS 的 SIO 模式
+	 * 抖动洪泛）。挂驱动前用 hold 干净暂停所有 worker。 */
 	while (elapsedMs() < wallLimitMs) {
 		bool all = true;
 		for (int i = 0; i < players; ++i) {
@@ -2559,7 +2577,8 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	        "multiTypeMask=%X varMultiMask=%X forceWrites=%d menuMaxSeen=%d\n"
 	        "LS field: pos=[(%d,%d),(%d,%d),(%d,%d),(%d,%d)]\n"
 	        "LS dbg: menuMax=[%d,%d,%d,%d] walk=[%08X,%08X,%08X,%08X]\n"
-	        "LS party: type=[%d,%d,%d,%d] sel=[%04X,%04X,%04X,%04X]\n"
+	        "LS party: type=[%d,%d,%d,%d] sel=[%04X,%04X,%04X,%04X] "
+	        "slot=[%d,%d,%d,%d]\n"
 	        "LS room: tradeEver=[%08X,%08X,%08X,%08X] maxFieldPc=%d\n",
 	        linkedUp ? "LINKUP-ACHIEVED" : "FAIL",
 	        inBattle ? "YES" : "NO",
@@ -2589,6 +2608,8 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	        g_partyType[2].load(), g_partyType[3].load(),
 	        g_selOrder[0].load(), g_selOrder[1].load(),
 	        g_selOrder[2].load(), g_selOrder[3].load(),
+	        g_partySlot[0].load(), g_partySlot[1].load(),
+	        g_partySlot[2].load(), g_partySlot[3].load(),
 	        g_tradeStates[0].load(), g_tradeStates[1].load(),
 	        g_tradeStates[2].load(), g_tradeStates[3].load(),
 	        g_fieldPc.load());
