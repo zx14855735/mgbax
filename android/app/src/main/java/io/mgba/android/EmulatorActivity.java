@@ -257,6 +257,7 @@ public class EmulatorActivity extends AppCompatActivity {
             // 重载早被消费掉，武装条件永远等不到，实测镜像核孤跑卡死）。
             pendingBusGameMenuAt = menuAt;
             pendingBusGameModeDowns = modeDowns;
+            suppressAutoState = true;
             pendingPath.set(romPath);
             Log.i(TAG, "busgame mirrors armed, reload+arm queued menuAt="
                     + menuAt + " modeDowns=" + modeDowns);
@@ -409,6 +410,9 @@ public class EmulatorActivity extends AppCompatActivity {
     /** busgame 调试脚本：>=0 表示重载完成后由模拟线程以该 menuAt 武装可见核。 */
     private volatile int pendingBusGameMenuAt = -1;
     private int pendingBusGameModeDowns;
+    /** busgame 期间禁用 auto_load_state：镜像核从电池存档冷启动，可见核若读旧
+     * 即时存档，游戏上下文会与镜像错位（实测可见核 var8004=0 卡 lt=1133）。 */
+    private boolean suppressAutoState;
     /** True while a picked/opened ROM is being imported, so startEmulator() does not arm the old one. */
     private volatile boolean importingRom;
     /** Last "open with" URI already handled, so config changes do not load it twice. */
@@ -2561,7 +2565,9 @@ public class EmulatorActivity extends AppCompatActivity {
         nextFastPresent = 0L;
         setupAudio();
         paused = false;
-        if (getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+        boolean autoState = getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+                && !suppressAutoState;
+        if (autoState
                 && core.loadState(AUTO_SLOT)) {
             core.clearAudio();
             core.runFrames(userKeys(), 1);

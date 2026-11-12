@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QScreen>
+#include <QTimer>
 #include <QWindow>
 
 #ifdef Q_OS_WIN
@@ -2599,6 +2600,16 @@ void Window::startAutoCloudLink() {
 	connect(link, &CloudLink::linkEnded, this, [](const QString& text) {
 		qInfo().noquote() << "[AUTOLINK] ended:" << text;
 	});
+	// 官方镜像模式：对端的镜像核要靠 1P 的按键帧来复现本机进度。LobbyView
+	// 自带 60ms 的 setLocalKeys 轮询，AUTOLINK 没有界面，必须在这里补上同款
+	// 馈送，否则对端镜像核永远拿不到按键、停在开机画面，游戏内联机握不上手。
+	QTimer* keyFeed = new QTimer(link);
+	QObject::connect(keyFeed, &QTimer::timeout, link, [this, link]() {
+		if (m_controller) {
+			link->setLocalKeys(m_controller->localKeys());
+		}
+	});
+	keyFeed->start(16);
 	qInfo().noquote() << "[AUTOLINK] 启动云端联机，房号" << (config.roomId.isEmpty() ? QStringLiteral("(建房)") : config.roomId);
 	link->startLink(config);
 }

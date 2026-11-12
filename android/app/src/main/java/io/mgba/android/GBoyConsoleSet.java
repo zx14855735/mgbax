@@ -525,14 +525,13 @@ public final class GBoyConsoleSet {
                 done = mirrorFrames[index];
             }
             while (state == State.READY && done < ceiling) {
-                int keys;
-                if (busGame) {
-                    /* 调试脚本接管：与可见核同源的状态机（每核独立帧计数，
-                     * 由本循环的追平节拍保证与可见核同帧同相）。 */
-                    keys = core.busGameTick();
-                } else {
+                int keys = 0;
+                if (!busGame) {
                     keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
                 }
+                /* busgame 时 keys 传 0 即可：镜像核的脚本由它自己 runFrames 里的
+                 * beginFrameKeys 接管（native 每帧 tick 一次）。绝不能再在 Java 层
+                 * 调 busGameTick——那会一帧 tick 两次（实测镜像 2 倍速冲出天花板）。 */
                 core.setKeys(keys);
                 core.pumpLink();
                 core.runFrames(keys, 1);
