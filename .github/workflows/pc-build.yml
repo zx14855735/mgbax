@@ -17,17 +17,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up MSYS2 MINGW64 (Qt6 + deps)
+      - name: Set up MSYS2 MINGW64 (toolchain)
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: false
           install: git
-          pacboy: >-
-            toolchain:p cmake:p ninja:p make:p pkgconf:p
-            qt6-base:p qt6-multimedia:p qt6-websockets:p qt6-tools:p
-            SDL2:p libepoxy:p libpng:p zlib:p freetype:p sqlite3:p
-            xz:p ffmpeg:p wineditline:p
+          pacboy: toolchain:p cmake:p ninja:p make:p pkgconf:p
+
+      - name: Install Qt6 + deps (with retries)
+        shell: msys2 {0}
+        run: |
+          for i in 1 2 3; do
+            echo "== attempt $i =="
+            pacman -S --needed --noconfirm \
+              mingw-w64-x86_64-qt6-base \
+              mingw-w64-x86_64-qt6-multimedia \
+              mingw-w64-x86_64-qt6-websockets \
+              mingw-w64-x86_64-qt6-tools \
+              mingw-w64-x86_64-SDL2 \
+              mingw-w64-x86_64-libepoxy \
+              mingw-w64-x86_64-libpng \
+              mingw-w64-x86_64-zlib \
+              mingw-w64-x86_64-freetype \
+              mingw-w64-x86_64-sqlite3 \
+              mingw-w64-x86_64-xz \
+              mingw-w64-x86_64-wineditline \
+              && break
+            sleep 20
+          done
+          pacman -Q | grep -E 'qt6-base|libepoxy|SDL2' || exit 1
 
       - name: Configure (Release, LTO off)
         shell: msys2 {0}
@@ -36,7 +55,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_LTO=OFF \
             -DBUILD_QT=ON -DBUILD_SDL=ON -DBUILD_SHARED=ON \
-            -DBUILD_STATIC=OFF -DBUILD_SUITE=OFF -DBUILD_TEST=OFF
+            -DBUILD_STATIC=OFF -DBUILD_SUITE=OFF -DBUILD_TEST=OFF \
+            -DUSE_FFMPEG=OFF
 
       - name: Build mgba-qt + mgba-sdl
         shell: msys2 {0}
