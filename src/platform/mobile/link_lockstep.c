@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "link_lockstep.h"
 
+#include <mgba/core/core.h>
 #include <mgba/core/lockstep.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/sio/lockstep.h>
