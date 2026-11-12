@@ -37,6 +37,7 @@
 		B1000000000000000000001E /* GifBall.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001E /* GifBall.swift */; };
 		B1000000000000000000001F /* ExternalShader.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000000000000000000001F /* ExternalShader.swift */; };
 		B10000000000000000000020 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000020 /* Assets.xcassets */; };
+		B10000000000000000000021 /* GBoyConsoleSet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000021 /* GBoyConsoleSet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -70,6 +71,7 @@
 		E1000000000000000000001E /* GifBall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GifBall.swift; sourceTree = "<group>"; };
 		E1000000000000000000001F /* ExternalShader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalShader.swift; sourceTree = "<group>"; };
 		E10000000000000000000020 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E10000000000000000000021 /* GBoyConsoleSet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyConsoleSet.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -126,6 +128,7 @@
 				E1000000000000000000001E /* GifBall.swift */,
 				E1000000000000000000001F /* ExternalShader.swift */,
 				E10000000000000000000020 /* Assets.xcassets */,
+				E10000000000000000000021 /* GBoyConsoleSet.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -262,6 +265,7 @@
 				B1000000000000000000001D /* WebDavSync.swift in Sources */,
 				B1000000000000000000001E /* GifBall.swift in Sources */,
 				B1000000000000000000001F /* ExternalShader.swift in Sources */,
+				B10000000000000000000021 /* GBoyConsoleSet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

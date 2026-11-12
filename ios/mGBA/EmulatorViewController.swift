@@ -10,6 +10,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let defaults = UserDefaults.standard
     private let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     private var core: OpaquePointer?
+    /// 3/4 人显式启用进程内锁步时的 N 核集合（默认 nil，保持原单核路径）。
+    private var consoleSet: GBoyConsoleSet?
     private let gameView = GameView()
     private let controls = ControlsView()
     private let shellStage = ShellStageView()
@@ -5399,6 +5401,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(host)
         box.addArrangedSubview(port)
         box.addArrangedSubview(players)
+        let lockstepRow = labeledSwitch("3/4 人启用进程内锁步（实验性）",
+                                        defaults.bool(forKey: "link_use_lockstep"))
+        let lockstepToggle = lockstepRow.1
+        box.addArrangedSubview(lockstepRow.0)
         box.addArrangedSubview(row(linkButton("局域网创建") { [weak self] in
             guard let self else { return }
             let p = Int32(port.text ?? "") ?? -1
@@ -5408,6 +5414,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let n = self.linkPlayerCount(players)
             self.remote?.close()
+            if n > 2 && lockstepToggle.isOn {
+                self.defaults.set(true, forKey: "link_use_lockstep")
+                self.defaults.set(Int(p), forKey: "link_port")
+                self.defaults.set(Int(n), forKey: "link_players")
+                self.startLocalLockstep(players: n, port: Int(p), status: status)
+                return
+            }
+            self.consoleSet?.stop()
+            self.consoleSet = nil
+            self.defaults.set(false, forKey: "link_use_lockstep")
             if let core = self.core, mgbaMobileLinkHost(core, p, n) {
                 self.defaults.set(Int(p), forKey: "link_port")
                 self.defaults.set(Int(n), forKey: "link_players")
@@ -5428,6 +5444,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let n = self.linkPlayerCount(players)
             self.remote?.close()
+            if n > 2 && lockstepToggle.isOn {
+                self.defaults.set(true, forKey: "link_use_lockstep")
+                self.defaults.set(ip, forKey: "link_host")
+                self.defaults.set(Int(p), forKey: "link_port")
+                self.defaults.set(Int(n), forKey: "link_players")
+                self.startLocalLockstep(players: n, port: Int(p), status: status)
+                return
+            }
+            self.consoleSet?.stop()
+            self.consoleSet = nil
+            self.defaults.set(false, forKey: "link_use_lockstep")
             self.defaults.set(ip, forKey: "link_host")
             self.defaults.set(Int(p), forKey: "link_port")
             self.defaults.set(Int(n), forKey: "link_players")
@@ -5607,6 +5634,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         })
         box.addArrangedSubview(linkButton("断开") { [weak self] in
             guard let self else { return }
+            self.consoleSet?.stop()
+            self.consoleSet = nil
             if let remote = self.remote {
                 remote.close()
             } else if let core = self.core {
@@ -5666,6 +5695,31 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return link
     }
 
+    /// 显式启用进程内锁步：创建 N-1 个镜像核并接入同一锁步房间。
+    /// 与 Android GBoyConsoleSet(useLockstep=true) 走同一条 C API；默认关闭，
+    /// 未启用时仍走 iOS 原有的单核跨设备联机。
+    private func startLocalLockstep(players n: Int, port: Int, status: UILabel) {
+        guard let core = self.core, let rom = currentRomPath else {
+            status.text = "请先加载 ROM 再启用进程内锁步"
+            return
+        }
+        let saves = docs.appendingPathComponent("saves").path
+        let states = docs.appendingPathComponent("states").path
+        guard let set = GBoyConsoleSet(romPath: rom, saveDir: saves, stateDir: states,
+                                       players: n, localSlot: 1,
+                                       roomKey: Int32(port)) else {
+            status.text = "锁步参数无效（人数需为 3 或 4）"
+            return
+        }
+        if let error = set.start(visible: core) {
+            status.text = error
+            return
+        }
+        consoleSet?.stop()
+        consoleSet = set
+        status.text = "进程内锁步已启用：本机 \(n) 核，SIO 不跨网络\n网络仍只传按键"
+    }
+
     private func ensureGboy() -> GBoyLink {
         if let gboyLink { return gboyLink }
         let link = GBoyLink()
@@ -5678,6 +5732,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gboyRemoteKeys = Int(keys)
+                // 回调目前不带槽位，先按 2P 语义把远端按键喂给槽位 1；
+                // 完整的 N 设备按键槽位路由仍是全项目待办。
+                self.consoleSet?.setRemoteKeys(slot: 1, mask: UInt32(truncatingIfNeeded: keys))
                 self.publishKeys()
             }
         }
@@ -5711,6 +5768,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gboyRemoteKeys = Int(keys)
+                // 回调目前不带槽位，先按 2P 语义把远端按键喂给槽位 1；
+                // 完整的 N 设备按键槽位路由仍是全项目待办。
+                self.consoleSet?.setRemoteKeys(slot: 1, mask: UInt32(truncatingIfNeeded: keys))
                 self.publishKeys()
             }
         }

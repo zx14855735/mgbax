@@ -41,6 +41,15 @@
 #endif
 #include "sio_link.h"
 #include "../mobile/link_net.h"
+#include "../mobile/link_lockstep.h"
+#include "../mobile/mgba_mobile.h"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <mutex>
+#include <thread>
 
 /* GBA 真锁步（验证 mGBA 自带 GBASIOLockstepCoordinator 能否解决 3/4 人
  * SerialCB 不同相位的问题）。走 mCoreThread + mLockstepThreadUser，
@@ -3699,6 +3708,133 @@ static LONG WINAPI testCrashFilter(EXCEPTION_POINTERS* info) {
 }
 #endif
 
+/* ---- 产品侧进程内锁步入口（product-lockstep）---------------------------
+ * 与 Android GBoyConsoleSet(useLockstep=true) 走完全相同的 C API：
+ * mgbaMobileLinkHostLockstep / LinkJoinLockstep + mgbaMobileRunFrames 的小步
+ * runLoop 帧循环。Qt 桌面前端的可见核是 CoreController（不是 MgbaMobile），
+ * 它的进程内锁步由 MultiplayerController 负责；这里给 PC 补一个显式、
+ * 可运行、可回归的产品路径入口，不触碰已验证的 2P 官方镜像布局。
+ *
+ * 用法：test-gboylink product-lockstep [rom]
+ */
+struct ProductLockstepCtx {
+	struct MgbaMobile* emu = nullptr;
+	int slot = 0;
+	uint32_t recv[4] = {0, 0, 0, 0};
+	uint32_t finalFrame = 0;
+	bool everClean = false;
+};
+
+static std::atomic<int> g_plsClean{0};
+static std::atomic<bool> g_plsStop{false};
+static std::mutex g_plsMu;
+static std::condition_variable g_plsCv;
+
+static void productLockstepWorker(ProductLockstepCtx* ctx) {
+	for (int f = 0; f < 64 && !g_plsStop.load(); ++f) {
+		/* 空测试 ROM 不会自己发起 MULTI：主机每帧拉起 START，模拟真实
+		 * gen8 在联机中心里的每帧 MULTI 传输。 */
+		if (ctx->slot == 0 && f >= 8) {
+			mgbaMobilePoke16(ctx->emu, 0x04000128u, 0x2083u);
+		}
+		mgbaMobileRunFrames(ctx->emu, 1);
+		uint32_t r[4];
+		for (int i = 0; i < 4; ++i) {
+			r[i] = mgbaMobilePeek16(ctx->emu, 0x04000120u + uint32_t(i) * 2u);
+		}
+		if (r[0] == 0x1000u && r[1] == 0x1001u && r[2] == 0x1002u && r[3] == 0x1003u) {
+			/* 快照：主机下一次 START 会把 SIOMULTI 重置成 0xFFFF。 */
+			memcpy(ctx->recv, r, sizeof(r));
+			if (!ctx->everClean) {
+				ctx->everClean = true;
+				std::lock_guard<std::mutex> lock(g_plsMu);
+				++g_plsClean;
+				g_plsCv.notify_all();
+			}
+		}
+	}
+	ctx->finalFrame = mgbaMobileFrameCounter(ctx->emu);
+}
+
+static int productLockstepTest(const QString& rom) {
+	const int players = 4;
+	const int key = 0x4C53;
+	ProductLockstepCtx ctx[players];
+	g_plsClean.store(0);
+	g_plsStop.store(false);
+	mgbaLockstepSetAbort(0);
+	mgbaMobileSioSetInject(true);
+
+	for (int i = 0; i < players; ++i) {
+		ctx[i].slot = i;
+		ctx[i].emu = mgbaMobileCreate(".", ".", "pcproduct");
+		if (!ctx[i].emu || !mgbaMobileLoad(ctx[i].emu, rom.toUtf8().constData())) {
+			fprintf(stderr, "product-lockstep: ROM load failed: %s\n", rom.toUtf8().constData());
+			mgbaMobileSioSetInject(false);
+			return 1;
+		}
+		/* BIOS 阶段先不挂锁步驱动，避免多启动探测卡住。 */
+		mgbaMobileRunFrames(ctx[i].emu, 60);
+	}
+
+	bool attached = mgbaMobileLinkHostLockstep(ctx[0].emu, key, players, 0);
+	for (int i = 1; i < players && attached; ++i) {
+		attached = mgbaMobileLinkJoinLockstep(ctx[i].emu, key, i);
+	}
+	if (!attached) {
+		fprintf(stderr, "product-lockstep: attach failed\n");
+		mgbaMobileSioSetInject(false);
+		return 1;
+	}
+	/* BIOS 之后 rcnt=0x8000 把 SIO 留在 JOYBUS；只写 SIOCNT 不会触发
+	 * _switchMode，必须再写 RCNT=0 清掉 JOYBUS 位才会进 MULTI。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobilePoke16(ctx[i].emu, 0x04000128u, 0x2003u);
+		mgbaMobilePoke16(ctx[i].emu, 0x04000134u, 0x0000u);
+	}
+
+	std::thread workers[players];
+	for (int i = 0; i < players; ++i) {
+		workers[i] = std::thread(productLockstepWorker, &ctx[i]);
+	}
+	{
+		std::unique_lock<std::mutex> lock(g_plsMu);
+		g_plsCv.wait_for(lock, std::chrono::seconds(10),
+		                 []() { return g_plsClean.load() == 4; });
+	}
+	bool allClean = g_plsClean.load() == players;
+	/* 主动收尾：空 ROM 最后一轮 MULTI 之后不会再有 SIO 事件，从机会
+	 * park 等一个永远不会来的事件。 */
+	g_plsStop.store(true);
+	mgbaLockstepSetAbort(1);
+	for (int i = 0; i < players; ++i) {
+		workers[i].join();
+	}
+	mgbaLockstepSetAbort(0);
+	mgbaMobileSioSetInject(false);
+
+	bool ok = allClean;
+	for (int i = 0; i < players; ++i) {
+		for (int j = 0; j < players; ++j) {
+			if (ctx[i].recv[j] != uint32_t(0x1000 + j)) {
+				ok = false;
+			}
+		}
+		if (ctx[i].finalFrame <= 30) {
+			ok = false;
+		}
+		fprintf(stderr, "product-lockstep: core %d recv %04X %04X %04X %04X fc=%u\n",
+		        i, ctx[i].recv[0], ctx[i].recv[1], ctx[i].recv[2], ctx[i].recv[3],
+		        ctx[i].finalFrame);
+		mgbaMobileLinkClose(ctx[i].emu);
+		mgbaMobileDestroy(ctx[i].emu);
+		ctx[i].emu = nullptr;
+	}
+	fprintf(stderr, "product-lockstep: %s (4 cores, product SIO lockstep)\n",
+	        ok ? "PASS" : "FAIL");
+	return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -3712,10 +3848,14 @@ int main(int argc, char** argv) {
 	if (args.size() < 2) {
 		qInfo() << "usage: test-gboylink wifi [rom] | cloud <user> <pass> [room] [rom]"
 		        << "| cloud2 <user> <pass> <roomFile> <host|join> [rom]"
-		        << "| webdav | glsl <in.glsl>";
+		        << "| product-lockstep [rom] | webdav | glsl <in.glsl>";
 		return 2;
 	}
 	QString mode = args[1];
+	if (mode == QStringLiteral("product-lockstep")) {
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
+		return productLockstepTest(rom);
+	}
 	if (mode == QStringLiteral("wifi")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
 		return wifiTest(rom);

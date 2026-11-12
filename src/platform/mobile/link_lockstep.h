@@ -11,6 +11,12 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* link_lockstep.c 按 C 编译；Qt/PC harness（C++）直接调用这里的函数时
+ * 缺了 C linkage 会按 mangled name 链接失败（mgbaLockstepSetAbort）。 */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * 进程内锁步 SIO 通道。
  *
@@ -57,5 +63,9 @@ void mgbaLockstepUserWake(struct MgbaLockstepSlot* slot);
 /* 看门狗：置 1 后 mgbaLockstepRunFrame 在 park 等待与每帧循环里立即返回，
  * 避免测试线程被永久 park 在 cond_wait 里。仅用于测试/诊断。 */
 void mgbaLockstepSetAbort(int abort);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
