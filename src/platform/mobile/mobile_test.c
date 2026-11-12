@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "link_net.h"
+#include "link_lockstep.h"
 #include "mgba_mobile.h"
 #include "remote_link.h"
 
@@ -10,6 +11,7 @@
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
 #include <mgba/internal/gba/memory.h>
+#include <mgba/internal/gba/sio.h>
 #include <mgba/internal/gba/video.h>
 #include <mgba-util/vfs.h>
 #include <mgba-util/image.h>
@@ -3504,6 +3506,79 @@ static void testRom64Mobile(const char* dir, const char* rompath) {
 	mgbaMobileDestroy(emu);
 }
 
+/* 进程内锁步 SIO 的 C 层契约测试。不加载 ROM、不跑帧（游戏侧由 PC 的
+ * busgame-lockstep 端到端验证）；这里钉住房共享、槽位 ID、协调器设备 ID、
+ * sleep/wake 非阻塞语义、拆离与房间复用，避免产品接线时踩空。 */
+static void testLockstep(const char* romPath) {
+	const int key = 0x4C53;   /* "LS" */
+	const int players = 4;
+	struct mCore* cores[4] = {0};
+	struct MgbaLockstepSlot* slots[4] = {0};
+	struct MgbaLockstepRoom* rooms[4] = {0};
+
+	for (int i = 0; i < players; ++i) {
+		cores[i] = mCoreCreate(mPLATFORM_GBA);
+		expect(cores[i] != NULL, "lockstep: core created");
+		if (cores[i]) {
+			cores[i]->init(cores[i]);
+			/* 和 loadRomForBusTest 一致：不 loadROM 就 reset 会访问未初始化
+			 * 的 ROM 映射而段错误。 */
+			expect(mCoreLoadFile(cores[i], romPath), "lockstep: rom loaded");
+		}
+	}
+	rooms[0] = mgbaLockstepHost(key, players);
+	expect(rooms[0] != NULL, "lockstep: host created room");
+	for (int i = 1; i < players; ++i) {
+		rooms[i] = mgbaLockstepJoin(key);
+		expect(rooms[i] == rooms[0], "lockstep: join shares the same room");
+	}
+	expect(mgbaLockstepJoin(key + 1) == NULL, "lockstep: unknown key rejected");
+	expect(mgbaLockstepHost(key, players) == NULL, "lockstep: duplicate host rejected");
+
+	for (int i = 0; i < players; ++i) {
+		slots[i] = mgbaLockstepAttach(rooms[0], cores[i], i);
+		expect(slots[i] != NULL, "lockstep: core attached");
+		expect(mgbaLockstepSlotId(slots[i]) == i, "lockstep: slot id preserved");
+	}
+	expect(mgbaLockstepAttached(rooms[0]) == (size_t) players,
+	       "lockstep: coordinator has all players");
+
+	/* 设备 ID 由协调器按 requestedId 分配，必须是 0..3。
+	 * 注意 _GBACoreGetPeripheral 没实现 mPERIPH_GBA_LINK_PORT（直接返回 NULL），
+	 * 必须从 gba->sio.driver 读。 */
+	for (int i = 0; i < players; ++i) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		struct GBASIODriver* d = gba->sio.driver;
+		expect(d != NULL && d->deviceId && d->deviceId(d) == i,
+		       "lockstep: device id matches requested slot");
+	}
+
+	/* sleep 只是非阻塞请求，wake 清除并通知，都不阻塞调用方。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepUserSleep(slots[i]);
+		expect(mgbaLockstepPaused(slots[i]), "lockstep: sleep requests pause");
+		mgbaLockstepUserWake(slots[i]);
+		expect(!mgbaLockstepPaused(slots[i]), "lockstep: wake clears pause");
+	}
+
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepDetach(slots[i]);
+	}
+	expect(mgbaLockstepAttached(rooms[0]) == 0, "lockstep: detach removes all players");
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepRelease(rooms[i]);
+	}
+	struct MgbaLockstepRoom* again = mgbaLockstepHost(key, players);
+	expect(again != NULL, "lockstep: room reusable after all releases");
+	mgbaLockstepRelease(again);
+
+	for (int i = 0; i < players; ++i) {
+		if (cores[i]) {
+			cores[i]->deinit(cores[i]);
+		}
+	}
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
@@ -3639,6 +3714,10 @@ int main(int argc, char** argv) {
 	}
 	if (argc >= 2 && strcmp(argv[1], "--dual") == 0) {
 		testDualCoreIsolation();
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--lockstep") == 0) {
+		testLockstep(argc > 2 ? argv[2] : "test.gba");
 		return g_failed ? 1 : 0;
 	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");

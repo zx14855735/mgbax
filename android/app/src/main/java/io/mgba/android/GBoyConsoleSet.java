@@ -57,6 +57,7 @@ public final class GBoyConsoleSet {
     private final int basePort;
     private final int players;
     private final int localSlot;   /* 本机可见核在全局会话里的槽位，1..players */
+    private final boolean useLockstep;  /* 默认 false，保持共享内存总线不变 */
 
     private MgbaCore primary;
     private MgbaCore[] mirrors;
@@ -89,6 +90,12 @@ public final class GBoyConsoleSet {
      */
     public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort,
                           int players, int localSlot) {
+        this(rom, saveDir, stateDir, basePort, players, localSlot, false);
+    }
+
+    /** @param useLockstep 3/4 人时改用进程内锁步 SIO（默认 false 走共享内存总线）。 */
+    public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort,
+                          int players, int localSlot, boolean useLockstep) {
         if (rom == null || saveDir == null || stateDir == null) {
             throw new IllegalArgumentException("rom and save directories are required");
         }
@@ -107,6 +114,7 @@ public final class GBoyConsoleSet {
         this.basePort = basePort;
         this.players = players;
         this.localSlot = localSlot;
+        this.useLockstep = useLockstep;
     }
 
     /**
@@ -154,13 +162,52 @@ public final class GBoyConsoleSet {
          * 会合靠 cond 广播（µs 级），也没有每轮 2ms 超时地板。两人路径一字
          * 不动，仍是已经验证过的环回直连。 */
         final boolean localBus = players > 2;
+        final boolean lockstepMode = useLockstep && localBus;
         final int busKey = basePort;
         /* localSlot > 1 时可见核必须占它自己的链路槽位，而 host 恒占槽位 0，
          * 所以让第一个镜像核当 host（代表全局槽位 1），可见核 join 到
          * localSlot - 1。localSlot == 1 时保持原样：可见核就是 host。 */
-        final int hostMirrorIndex = (localBus && localSlot > 1) ? 0 : -1;
+        final int hostMirrorIndex = (!lockstepMode && localBus && localSlot > 1) ? 0 : -1;
         int port = -1;
-        if (localBus) {
+        if (lockstepMode) {
+            /* 进程内锁步：所有核共享一个 GBASIOLockstepCoordinator。
+             * 槽位必须显式分配（协调器不自动排号）：host 恒 0，本机可见核
+             * 占 localSlot-1，其余按空闲槽位填。host 必须先建房间，否则
+             * join 找不到 key。 */
+            final int cores = players;   // primary + mirrors
+            int[] slotOf = new int[cores];
+            boolean[] taken = new boolean[players];
+            int hostIdx = (localSlot > 1) ? 1 : 0;  // 0=primary, 1..=mirrors
+            slotOf[hostIdx] = 0;
+            taken[0] = true;
+            if (hostIdx != 0) {
+                slotOf[0] = localSlot - 1;
+                taken[localSlot - 1] = true;
+            }
+            int next = 1;
+            for (int k = 0; k < cores; ++k) {
+                if (k == hostIdx || (k == 0 && hostIdx != 0)) {
+                    continue;
+                }
+                while (next < players && taken[next]) {
+                    ++next;
+                }
+                slotOf[k] = next;
+                taken[next] = true;
+            }
+            MgbaCore hostCore = (hostIdx == 0) ? primary : mirrors[hostIdx - 1];
+            boolean ok = hostCore.linkHostLockstep(busKey, players, 0);
+            for (int k = 0; k < cores && ok; ++k) {
+                if (k == hostIdx) {
+                    continue;
+                }
+                MgbaCore c = (k == 0) ? primary : mirrors[k - 1];
+                ok = c.linkJoinLockstep(busKey, slotOf[k]);
+            }
+            if (ok) {
+                port = busKey;
+            }
+        } else if (localBus) {
             MgbaCore host = hostMirrorIndex >= 0 ? mirrors[hostMirrorIndex] : primary;
             if (host.linkHostLocal(busKey, players)) {
                 if (hostMirrorIndex < 0
@@ -177,14 +224,15 @@ public final class GBoyConsoleSet {
             }
         }
         if (port < 0) {
-            return fail(localBus ? "进程内总线创建失败: key=" + busKey + " slot=" + localSlot
-                                 : "环回监听端口不可用: " + basePort);
+            return fail(lockstepMode ? "进程内锁步创建失败: key=" + busKey + " slot=" + localSlot
+                        : localBus ? "进程内总线创建失败: key=" + busKey + " slot=" + localSlot
+                                   : "环回监听端口不可用: " + basePort);
         }
         linkPort = port;
 
         for (int i = 0; i < count; ++i) {
-            if (i == hostMirrorIndex) {
-                continue;   // 它已经是 host
+            if (lockstepMode || i == hostMirrorIndex) {
+                continue;   // 锁步模式已在上面逐个 attach 完；否则跳过 host
             }
             boolean joined = false;
             for (int attempt = 0; attempt < JOIN_ATTEMPTS && !joined; ++attempt) {

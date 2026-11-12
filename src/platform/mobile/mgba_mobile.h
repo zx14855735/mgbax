@@ -144,6 +144,16 @@ bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players);
 bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key);
 /* 占用指定链路槽位（0 归主机）。本机可见核要占全局会话里它自己的槽位。 */
 bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot);
+
+/* 进程内锁步 SIO（默认关闭，显式调用才启用）。与上面的共享内存轮次总线
+ * 不同，它直接挂 mGBA 官方 GBASIOLockstepCoordinator，在 SIO 传输轮次粒度
+ * 会合，没有墙钟超时、没有轮次索引配对、不开 socket。
+ * 启用后该核的帧循环自动切到小步 runLoop（见 mgbaLockstepRunFrame）。
+ * PC 侧已用同一协调器让 4 核 gen8 multi-battle 进对战并稳定维持。 */
+bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot);
+bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot);
+bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu);
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

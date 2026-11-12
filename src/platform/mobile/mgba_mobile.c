@@ -21,6 +21,7 @@
 #include <mgba-util/vfs.h>
 
 #include "link_net.h"
+#include "link_lockstep.h"
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -112,6 +113,11 @@ struct MgbaMobile {
 	struct GbLinkDriver gbLink;
 	struct mTimingEvent linkEvent;
 	bool linkAttached;
+	/* 进程内锁步 SIO（mgbaMobileLinkHostLockstep/JoinLockstep 启用）。
+	 * 非空时帧循环走 mgbaLockstepRunFrame 的小步 runLoop，并跳过 netLink
+	 * 的 poll/service，避免自研 gbaLink 驱动覆盖协调器。 */
+	struct MgbaLockstepRoom* lockstepRoom;
+	struct MgbaLockstepSlot* lockstepSlot;
 	/* 一次 MULTI 传输的挂起状态：发起时把本帧数据发出去，传输应当结束的时刻
 	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
 	 * 毫秒，游戏内的联机握手会直接超时。 */
@@ -1119,6 +1125,16 @@ void mgbaMobileDestroy(struct MgbaMobile* emu) {
 	if (emu->rewindInited) {
 		mCoreRewindContextDeinit(&emu->rewind);
 		emu->rewindInited = false;
+	}
+	/* 必须在 destroyCore 之前卸下锁步驱动：driver 内存由 slot 持有，core
+	 * 销毁后 gba->sio.driver 会悬空。 */
+	if (emu->lockstepSlot) {
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+	}
+	if (emu->lockstepRoom) {
+		mgbaLockstepRelease(emu->lockstepRoom);
+		emu->lockstepRoom = NULL;
 	}
 	destroyCore(emu);
 	deinitAudioOutput(emu);
@@ -3461,7 +3477,9 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	if (count < 1) {
 		count = 1;
 	}
-	pollLink(emu);
+	if (!emu->lockstepSlot) {
+		pollLink(emu);
+	}
 	/* 真实速度探针：模拟帧率是判断「游戏是不是被网络等待拖死」的第一指标。
 	 * 联机时模拟时钟会在等对端应答的那段时间里冻住，所以模拟帧率远低于
 	 * 真实帧率就说明有阻塞。每 60 个模拟帧打一行，带上真实耗时。 */
@@ -3655,7 +3673,13 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 			MOBILE_LOGI("FrameKeys 0x%x", nowKeys);
 		}
 		emu->core->setKeys(emu->core, nowKeys);
-		emu->core->runFrame(emu->core);
+		if (emu->lockstepSlot) {
+			/* 协调器靠 sleep/wake 在 SIO 传输轮次会合，必须小步推进；
+			 * runFrame 会在帧内忙等并破坏锁步。 */
+			mgbaLockstepRunFrame(emu->lockstepSlot, emu->core);
+		} else {
+			emu->core->runFrame(emu->core);
+		}
 		if (emu->rewindEnabled && ++emu->rewindCounter >= REWIND_DIVIDER) {
 			emu->rewindCounter = 0;
 			if (!emu->rewindInited) {
@@ -4506,7 +4530,9 @@ void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen) 
 }
 
 void mgbaMobilePumpLink(struct MgbaMobile* emu) {
-	if (!emu) {
+	if (!emu || emu->lockstepSlot) {
+		/* 锁步模式下 SIO 由协调器驱动，netLink 的 poll/service 会挂上自研
+		 * gbaLink 驱动并把终端位改坏，必须完全旁路。 */
 		return;
 	}
 	pollLink(emu);
@@ -4561,8 +4587,67 @@ bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot) {
 	return netLinkBusJoinLocalSlot(emu->link, key, slot);
 }
 
+bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot) {
+	if (!emu || !emu->core || emu->lockstepSlot) {
+		return false;
+	}
+	struct MgbaLockstepRoom* room = mgbaLockstepHost(key, players);
+	if (!room) {
+		return false;
+	}
+	struct MgbaLockstepSlot* ls = mgbaLockstepAttach(room, emu->core, slot);
+	if (!ls) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	emu->lockstepRoom = room;
+	emu->lockstepSlot = ls;
+	/* 自研 gbaLink 驱动与协调器互斥：linkAttached=false 让 attachLink 不再
+	 * 尝试挂它；帧循环也会据此跳过 netLink 的 poll/service。 */
+	emu->linkAttached = false;
+	MOBILE_LOGI("Link LOCKSTEP host key=%d players=%d slot=%d", key, players, slot);
+	return true;
+}
+
+bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot) {
+	if (!emu || !emu->core || emu->lockstepSlot) {
+		return false;
+	}
+	struct MgbaLockstepRoom* room = mgbaLockstepJoin(key);
+	if (!room) {
+		return false;
+	}
+	struct MgbaLockstepSlot* ls = mgbaLockstepAttach(room, emu->core, slot);
+	if (!ls) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	emu->lockstepRoom = room;
+	emu->lockstepSlot = ls;
+	emu->linkAttached = false;
+	MOBILE_LOGI("Link LOCKSTEP join key=%d slot=%d", key, slot);
+	return true;
+}
+
+bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu) {
+	return emu && emu->lockstepSlot != NULL;
+}
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu) {
-	if (!emu || !emu->link) {
+	if (!emu) {
+		return;
+	}
+	if (emu->lockstepSlot) {
+		MOBILE_LOGI("Link LOCKSTEP close");
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		if (emu->lockstepRoom) {
+			mgbaLockstepRelease(emu->lockstepRoom);
+			emu->lockstepRoom = NULL;
+		}
+		return;
+	}
+	if (!emu->link) {
 		return;
 	}
 	MOBILE_LOGI("Link close requested by app (state=%d)", netLinkState(emu->link));
@@ -4574,7 +4659,18 @@ void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen
 		return;
 	}
 	out[0] = '\0';
-	if (emu && emu->link) {
+	if (!emu) {
+		return;
+	}
+	if (emu->lockstepSlot) {
+		/* 上层（GBoyConsoleSet.connectedStatus）用首字符 '2' 判定已连接。
+		 * 锁步模式不走 netLink，这里给出等价状态，Java 侧无需分支。 */
+		snprintf(out, outLen, "2 lockstep slot=%d attached=%zu",
+		         mgbaLockstepSlotId(emu->lockstepSlot),
+		         mgbaLockstepAttached(emu->lockstepRoom));
+		return;
+	}
+	if (emu->link) {
 		netLinkStatusText(emu->link, out, outLen);
 	}
 }

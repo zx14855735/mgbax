@@ -326,6 +326,21 @@ Java_io_mgba_android_MgbaCore_nativeLinkJoinLocalSlot(JNIEnv*, jobject, jlong ha
 	return mgbaMobileLinkJoinLocalSlot((struct MgbaMobile*) handle, key, slot) ? JNI_TRUE : JNI_FALSE;
 }
 
+/* 进程内锁步 SIO：显式启用才生效，默认仍走共享内存总线/环回直连。 */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLinkHostLockstep(JNIEnv*, jobject, jlong handle,
+                                                     jint key, jint players, jint slot) {
+	return mgbaMobileLinkHostLockstep((struct MgbaMobile*) handle, key, players, slot)
+		? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeLinkJoinLockstep(JNIEnv*, jobject, jlong handle,
+                                                     jint key, jint slot) {
+	return mgbaMobileLinkJoinLockstep((struct MgbaMobile*) handle, key, slot)
+		? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeLinkJoinPlayers(JNIEnv* env, jobject, jlong handle, jstring host, jint port, jint players) {
 	const char* text = host ? env->GetStringUTFChars(host, NULL) : NULL;

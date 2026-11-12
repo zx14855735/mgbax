@@ -292,6 +292,17 @@ public final class MgbaCore {
         return handle != 0 && nativeLinkJoinLocalSlot(handle, key, slot);
     }
 
+    /** 进程内锁步 SIO（默认关闭）：3/4 人本机多核专用，用 mGBA 官方
+     *  GBASIOLockstepCoordinator 在 SIO 传输轮次会合，无墙钟超时、不开 socket。
+     *  启用后该核帧循环自动切到小步 runLoop。key 同一进程内唯一，slot 0 归主机。 */
+    public boolean linkHostLockstep(int key, int players, int slot) {
+        return handle != 0 && nativeLinkHostLockstep(handle, key, players, slot);
+    }
+
+    public boolean linkJoinLockstep(int key, int slot) {
+        return handle != 0 && nativeLinkJoinLockstep(handle, key, slot);
+    }
+
     public void linkClose() {
         if (handle != 0) {
             nativeLinkClose(handle);
@@ -507,6 +518,10 @@ public final class MgbaCore {
     private static native boolean nativeLinkJoinLocal(long handle, int key);
 
     private static native boolean nativeLinkJoinLocalSlot(long handle, int key, int slot);
+
+    private static native boolean nativeLinkHostLockstep(long handle, int key, int players, int slot);
+
+    private static native boolean nativeLinkJoinLockstep(long handle, int key, int slot);
 
     private static native void nativeLinkClose(long handle);
 
