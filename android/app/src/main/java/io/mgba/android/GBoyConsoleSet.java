@@ -74,6 +74,9 @@ public final class GBoyConsoleSet {
      * 共享内存总线（它就是那种模式下的同步手段）；native 锁步自己会在 SIO
      * 轮次会合，帧栅栏会把镜像门成每帧一停、可见核每帧吃满超时。 */
     private boolean lockstepActive;
+    /* busgame 调试脚本：true 时镜像线程不再取会话按键，改走 native 判据脚本
+     * （与可见核的 beginFrameKeys 接管同源），4 核各按各自序号跑同一份脚本。 */
+    private volatile boolean busGame;
     /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
      * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
      * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
@@ -300,17 +303,43 @@ public final class GBoyConsoleSet {
     }
 
     /** Publishes a frame to every mirror core. Call before the visible core runs it.
-     *  锁步模式下是空操作：native 协调器已经在 SIO 轮次上把各核会合，镜像线程
-     *  自由推进即可，这里再按帧放行反而把镜像门成每帧一停。 */
+     *  这是镜像核的帧钟来源（所有模式都要发）：镜像自由追到天花板即停，
+     *  可见核每帧推一格。没有它，镜像会在无 SIO 轮的菜单期以 CPU 全速冲到
+     *  比可见核多几万帧——四核游戏时钟错位，联机握手永远凑不齐 4 家
+     *  （实测 pc=3、lt=1133 卡死）。 */
     public void beginFrame(long frame) {
-        if (state != State.READY || lockstepActive) {
+        if (state != State.READY) {
             return;
         }
         synchronized (lock) {
             long rel = relativeFrame(frame);
             if (rel > targetFrame) {
                 targetFrame = rel;
+                if (rel % 600 == 0) {
+                    android.util.Log.i("mGBA-App", "publish rel=" + rel
+                            + " netFrame=" + frame + " epoch=" + frameEpoch);
+                }
                 lock.notifyAll();
+            }
+        }
+    }
+
+    /** 开/关 busgame 调试脚本：可见核由调用方直接调 MgbaCore.busGameStart，
+     *  这里负责镜像核（脚本序号 = 镜像下标 + 1，与 PC 的 idx/座位表对应）。 */
+    public void setBusGame(boolean on, int menuAt, int modeDowns) {
+        busGame = on;
+        if (mirrors == null) {
+            return;
+        }
+        for (int i = 0; i < mirrors.length; ++i) {
+            MgbaCore core = mirrors[i];
+            if (core == null) {
+                continue;
+            }
+            if (on) {
+                core.busGameStart(i + 1, menuAt, modeDowns);
+            } else {
+                core.busGameStop();
             }
         }
     }
@@ -463,26 +492,15 @@ public final class GBoyConsoleSet {
     }
 
     private void mirrorLoop(int index) {
-        if (lockstepActive) {
-            /* native 锁步：协调器在 SIO 轮次上会合各核，镜像线程自由推进即可
-             * （跑太快会在下一个 SIO 轮被 park 住等可见核，正是锁步语义）。
-             * 走 beginFrame/endFrame 的逐帧放行会让可见核的 native 帧永远
-             * 等不到已入睡的镜像到场，每帧退化成一次超时。 */
-            while (state == State.READY) {
-                MgbaCore core = mirrors == null ? null : mirrors[index];
-                if (core == null) {
-                    return;
-                }
-                GBoyLinkSession net = session;
-                int keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
-                core.setKeys(keys);
-                core.pumpLink();
-                core.runFrames(keys, 1);
-            }
-            return;
-        }
+        /* 帧钟追平模型（所有模式一致）：
+         *  - 可见核每帧 beginFrame(netFrameNo) 推高 targetFrame（天花板）；
+         *  - 镜像线程追到 mirrorFrames == targetFrame 即等下一格，来了就
+         *    一次性追平。既不会逐帧等通知饿死（250ms 超时的旧病），也不会
+         *    自由跑把菜单期冲到比可见核多几万帧（四核时钟错位、握手凑不齐
+         *    4 家——实测 pc=3、lt=1133 卡死）。
+         *  native 锁步照旧在 SIO 传输轮次上会合各核；这层只对齐帧钟。 */
         while (state == State.READY) {
-            long frame;
+            long ceiling;
             synchronized (lock) {
                 while (state == State.READY && mirrorFrames[index] >= targetFrame) {
                     try {
@@ -495,19 +513,34 @@ public final class GBoyConsoleSet {
                 if (state != State.READY) {
                     return;
                 }
-                frame = mirrorFrames[index] + 1;
+                ceiling = targetFrame;
             }
             MgbaCore core = mirrors == null ? null : mirrors[index];
             if (core == null) {
                 return;
             }
             GBoyLinkSession net = session;
-            int keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
-            core.setKeys(keys);
-            core.pumpLink();
-            core.runFrames(keys, 1);
+            long done;
             synchronized (lock) {
-                mirrorFrames[index] = frame;
+                done = mirrorFrames[index];
+            }
+            while (state == State.READY && done < ceiling) {
+                int keys = 0;
+                if (!busGame) {
+                    keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
+                }
+                /* busgame 时 keys 传 0 即可：镜像核的脚本由它自己 runFrames 里的
+                 * beginFrameKeys 接管（native 每帧 tick 一次）。绝不能再在 Java 层
+                 * 调 busGameTick——那会一帧 tick 两次（实测镜像 2 倍速冲出天花板）。 */
+                core.setKeys(keys);
+                core.pumpLink();
+                core.runFrames(keys, 1);
+                ++done;
+                synchronized (lock) {
+                    mirrorFrames[index] = done;
+                }
+            }
+            synchronized (lock) {
                 lock.notifyAll();
             }
         }

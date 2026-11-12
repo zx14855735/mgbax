@@ -240,10 +240,60 @@ public class EmulatorActivity extends AppCompatActivity {
                 ok = startGBoyLocalLink(new File(romPath), save, stateDir,
                         sioPort, tcpPort, peer, asHost, players, slot);
             }
-            Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
-                    + " sio=" + sioPort + " players=" + players + " slot=" + slot
-                    + " ncore=" + ncore + " lockstep=" + useLockstep
-                    + " started=" + ok + " err=" + gboyLinkFailure());
+        Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
+                + " sio=" + sioPort + " players=" + players + " slot=" + slot
+                + " ncore=" + ncore + " lockstep=" + useLockstep
+                + " started=" + ok + " err=" + gboyLinkFailure());
+        if (ok && intent.getBooleanExtra("busgame", false)) {
+            int menuAt = intent.getIntExtra("menu_at", 1500);
+            int modeDowns = intent.getIntExtra("mode_downs", 2);
+            if (consoleSet != null) {
+                consoleSet.setBusGame(true, menuAt, modeDowns);   // 镜像核 = 序号 1..3
+            }
+            // 先置标志、后投重载：模拟线程下一拍消费 pendingPath → loadRom
+            // （f=0 = 复位帧）→ 立刻武装可见核。不能在广播线程直接 loadRom
+            // （跨线程换核会让模拟线程踩已释放的旧核，实测 SIGSEGV）；
+            // 也不能先投重载（startGBoyLocalLink 要几百 ms，标志置上时
+            // 重载早被消费掉，武装条件永远等不到，实测镜像核孤跑卡死）。
+            pendingBusGameMenuAt = menuAt;
+            pendingBusGameModeDowns = modeDowns;
+            suppressAutoState = true;
+            pendingPath.set(romPath);
+            Log.i(TAG, "busgame mirrors armed, reload+arm queued menuAt="
+                    + menuAt + " modeDowns=" + modeDowns);
+        }
+        }
+    };
+    /** busgame 调试脚本桥：PC busgame-lockstep 判据脚本的设备端入口。
+     *  {@code am broadcast -a io.mgba.android.action.GBOY_BUSGAME --ez enable true
+     *  --ei menu_at 1500 --ei mode_downs 2}。可见核走 beginFrameKeys 接管
+     *  （帧精确），镜像核由 GBoyConsoleSet 镜像线程逐帧调 native tick。
+     *  关闭用 --ez enable false。 */
+    private final BroadcastReceiver busGameReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "busgame broadcast ignored: no rom loaded");
+                return;
+            }
+            boolean enable = intent.getBooleanExtra("enable", true);
+            int menuAt = intent.getIntExtra("menu_at", 1500);
+            int modeDowns = intent.getIntExtra("mode_downs", 2);
+            GBoyConsoleSet set = consoleSet;
+            if (enable) {
+                core.busGameStart(0, menuAt, modeDowns);   // 可见核 = 脚本序号 0（主机）
+                if (set != null) {
+                    set.setBusGame(true, menuAt, modeDowns);
+                }
+                Log.i(TAG, "busgame enabled menuAt=" + menuAt
+                        + " modeDowns=" + modeDowns + " mirrors=" + (set != null));
+            } else {
+                core.busGameStop();
+                if (set != null) {
+                    set.setBusGame(false, menuAt, modeDowns);
+                }
+                Log.i(TAG, "busgame disabled");
+            }
         }
     };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
@@ -357,6 +407,12 @@ public class EmulatorActivity extends AppCompatActivity {
     private Button speedCustom;
 
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
+    /** busgame 调试脚本：>=0 表示重载完成后由模拟线程以该 menuAt 武装可见核。 */
+    private volatile int pendingBusGameMenuAt = -1;
+    private int pendingBusGameModeDowns;
+    /** busgame 期间禁用 auto_load_state：镜像核从电池存档冷启动，可见核若读旧
+     * 即时存档，游戏上下文会与镜像错位（实测可见核 var8004=0 卡 lt=1133）。 */
+    private boolean suppressAutoState;
     /** True while a picked/opened ROM is being imported, so startEmulator() does not arm the old one. */
     private volatile boolean importingRom;
     /** Last "open with" URI already handled, so config changes do not load it twice. */
@@ -582,6 +638,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(localLinkReceiver, localLinkFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(localLinkReceiver, localLinkFilter);
+        }
+        IntentFilter busGameFilter = new IntentFilter("io.mgba.android.action.GBOY_BUSGAME");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(busGameReceiver, busGameFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(busGameReceiver, busGameFilter);
         }
         IntentFilter cloudFilter = new IntentFilter("io.mgba.android.action.CLOUD");
         if (Build.VERSION.SDK_INT >= 33) {
@@ -2177,6 +2239,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
                 String path = pendingPath.getAndSet(null);
                 if (path != null) {
+                    Log.i(TAG, "emu loop reloading " + path);
                     loadRom(path);
                     // Loading blocks for a while; start the pacing schedule
                     // and the feedback window fresh so the stall is not
@@ -2184,6 +2247,14 @@ public class EmulatorActivity extends AppCompatActivity {
                     nextSlice = System.nanoTime();
                     slices = 0;
                     fpsStamp = nextSlice;
+                    // busgame 调试脚本：重载后立刻武装可见核（f=0 = 复位帧），
+                    // 必须在模拟线程做——广播线程直接换核会踩已释放的旧核。
+                    if (pendingBusGameMenuAt >= 0) {
+                        core.busGameStart(0, pendingBusGameMenuAt, pendingBusGameModeDowns);
+                        Log.i(TAG, "busgame visible core armed menuAt="
+                                + pendingBusGameMenuAt + " modeDowns=" + pendingBusGameModeDowns);
+                        pendingBusGameMenuAt = -1;
+                    }
                 }
                 int cmd = command.getAndSet(0);
                 if (cmd != 0) {
@@ -2397,6 +2468,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     break;
                 }
             } catch (Exception e) {
+                Log.i(TAG, "emu loop exception", e);
                 toast(e.getMessage() == null ? getString(R.string.load_failed) : e.getMessage());
                 try {
                     Thread.sleep(200);
@@ -2493,7 +2565,9 @@ public class EmulatorActivity extends AppCompatActivity {
         nextFastPresent = 0L;
         setupAudio();
         paused = false;
-        if (getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+        boolean autoState = getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+                && !suppressAutoState;
+        if (autoState
                 && core.loadState(AUTO_SLOT)) {
             core.clearAudio();
             core.runFrames(userKeys(), 1);

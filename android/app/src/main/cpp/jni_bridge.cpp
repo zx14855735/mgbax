@@ -73,6 +73,22 @@ Java_io_mgba_android_MgbaCore_nativeSetRewind(JNIEnv*, jobject, jlong handle, jb
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusGameStart(JNIEnv*, jobject, jlong handle,
+                                                 jint idx, jint menuAt, jint modeDowns) {
+	mgbaMobileBusGameStart((struct MgbaMobile*) handle, idx, menuAt, modeDowns);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusGameStop(JNIEnv*, jobject, jlong handle) {
+	mgbaMobileBusGameStop((struct MgbaMobile*) handle);
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_io_mgba_android_MgbaCore_nativeBusGameTick(JNIEnv*, jobject, jlong handle) {
+	return (jint) mgbaMobileBusGameTick((struct MgbaMobile*) handle);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_io_mgba_android_MgbaCore_nativeSetChannelVolumes(JNIEnv* env, jobject, jlong handle, jintArray gains) {
 	if (!gains) {
 		return;

@@ -119,6 +119,15 @@ struct MgbaMobile {
 	 * 的 poll/service，避免自研 gbaLink 驱动覆盖协调器。 */
 	struct MgbaLockstepRoom* lockstepRoom;
 	struct MgbaLockstepSlot* lockstepSlot;
+	/* busgame 调试脚本：PC busgame-lockstep 判据脚本
+	 * （test/gboylink_test.cpp lsInjectKeys）的设备端移植。idx<0 = 关闭。
+	 * 每核独立计数；可见核在 beginFrameKeys 里接管按键，镜像核由
+	 * GBoyConsoleSet 的镜像线程调 mgbaMobileBusGameTick 取掩码。 */
+	int busGameIdx;
+	int busGameMenuAt;
+	int busGameModeDowns;
+	uint32_t busGameFrame;
+	int busGameMenuMax;
 	/* 一次 MULTI 传输的挂起状态：发起时把本帧数据发出去，传输应当结束的时刻
 	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
 	 * 毫秒，游戏内的联机握手会直接超时。 */
@@ -1096,6 +1105,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	emu->unstickModeCached = -1;
 	emu->rearmEnabled = -1;
 	emu->sioPipelineEnabled = -1;
+	emu->busGameIdx = -1;
 	emu->link = netLinkCreate();
 	emu->gbaLink.emu = emu;
 	emu->gbLink.emu = emu;
@@ -1362,7 +1372,176 @@ static uint32_t applyTurbo(struct MgbaMobile* emu, uint32_t keys) {
 	return keys;
 }
 
+/* == busgame 调试脚本：PC busgame-lockstep 判据脚本的设备端移植 ==
+ * 与 test/gboylink_test.cpp 的 lsInjectKeys 逐行对应（常量、相位、内存判据
+ * 全部一致）。差异只有载体：PC 走测试线程逐帧调用，这里可见核挂在
+ * beginFrameKeys（帧精确）、镜像核由 GBoyConsoleSet 镜像线程逐帧调
+ * mgbaMobileBusGameTick。队伍选择仍由内存写入完成（避开 Enter/NoEntry
+ * 震荡），校验/关菜单/开战由游戏自己的代码执行。 */
+void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int modeDowns) {
+	if (!emu) {
+		return;
+	}
+	emu->busGameIdx = idx;
+	emu->busGameMenuAt = menuAt;
+	emu->busGameModeDowns = modeDowns;
+	emu->busGameFrame = 0;
+	emu->busGameMenuMax = 0;
+	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d", idx, menuAt, modeDowns);
+}
+
+void mgbaMobileBusGameStop(struct MgbaMobile* emu) {
+	if (!emu) {
+		return;
+	}
+	emu->busGameIdx = -1;
+	MOBILE_LOGI("BUSGAME stop");
+}
+
+static uint32_t busGameKeys(struct MgbaMobile* emu) {
+	struct mCore* core = emu->core;
+	struct GBA* g = (struct GBA*) core->board;
+	const int idx = emu->busGameIdx;
+	const int menuAt = emu->busGameMenuAt;
+	const int modeDowns = emu->busGameModeDowns;
+	const uint32_t f = emu->busGameFrame++;
+	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手（f≈1365）就会出现，
+	 * 远早于菜单导航（menuAt=1500）。一旦那时停手，导航到 multi-battle 的
+	 * DOWN/A/UP/LEFT/modeDowns 按键全被跳过，游戏永远进不了对战。 */
+	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
+	const int boot = 240;
+	uint32_t keys = 0;
+	if (f >= boot && f < boot + 6) {
+		keys = START;
+	} else if (f >= boot + 10 && f < boot + 16) {
+		keys = START;
+	} else if (f >= boot + 20 && f < menuAt) {
+		keys = ((f % 45) < 30) ? A : 0u;
+	} else if (f >= menuAt && f < menuAt + 8) {
+		keys = DOWN;
+	} else if (f >= menuAt + 30 && f < menuAt + 40) {
+		keys = A;
+	} else if (f >= menuAt + 40 && f < menuAt + 60) {
+		keys = UP;
+	} else if (f >= menuAt + 60 && f < menuAt + 80) {
+		keys = LEFT;
+	} else if (modeDowns > 0 && f >= menuAt + 80
+	           && f < menuAt + 80 + modeDowns * 14) {
+		keys = (((f - menuAt - 80) % 14) < 4) ? DOWN : 0u;
+	} else if (f >= menuAt + 80 + modeDowns * 14
+	           && f < menuAt + 92 + modeDowns * 14) {
+		keys = A;
+	} else if (f >= menuAt + 240) {
+		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
+		 * 开始走位。菜单/握手阶段继续按 A。 */
+		int v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
+		int lt = (int) GBAView16(g->cpu, 0x02027B82u);
+		int fpc = (int) GBAView8(g->cpu, 0x03004A39u);
+		if (v8 != 5 || (lt != 0x2255 && lt != 0x2211) || fpc < 4) {
+			keys = ((f % 40) < 25) ? A : 0u;
+		} else {
+			int mb = (int) GBAView8(g->cpu, 0x020219D0u);
+			if (mb != 0) {
+				keys = ((f % 20) < 8) ? A : 0u;   /* 脉冲产生 JOY_NEW */
+			} else {
+				int ptype = (int) GBAView8(g->cpu, 0x02032A90u) & 0x0Fu;
+				int s0 = (int) GBAView8(g->cpu, 0x02032AD0u);
+				int s1 = (int) GBAView8(g->cpu, 0x02032AD1u);
+				if (ptype == 4) {
+					/* 选怪状态机：内存写完成「选 2 只」
+					 * （gSelectedOrderFromParty={1,2}、slotId=6=确认位），
+					 * 校验/关菜单/开战仍由游戏自己执行。 */
+					int slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
+					if (s0 == 0 || s1 == 0 || slot != 6) {
+						int cc = 0;
+						if (s0 == 0) { GBAStore8(g->cpu, 0x02032AD0u, (int8_t) 1, &cc); }
+						if (s1 == 0) { GBAStore8(g->cpu, 0x02032AD1u, (int8_t) 2, &cc); }
+						if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
+					}
+					keys = ((f % 12) < 2) ? A : 0u;
+				} else {
+					/* 队伍菜单未弹出：闭环走位到 4P 座位。 */
+					static const int seatX[4] = {3, 10, 3, 10};
+					static const int seatY[4] = {4, 4, 6, 6};
+					uint32_t sb1 = GBAView32(g->cpu, 0x03004964u);
+					int px = -1, py = -1;
+					if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+						px = (int16_t) GBAView16(g->cpu, sb1 + 0u);
+						py = (int16_t) GBAView16(g->cpu, sb1 + 2u);
+					}
+					if (px < 0) {
+						keys = ((f % 40) < 25) ? A : 0u;
+					} else if (py > seatY[idx]) {
+						keys = UP;
+					} else if (py < seatY[idx]) {
+						keys = DOWN;
+					} else if (px > seatX[idx]) {
+						keys = LEFT;
+					} else if (px < seatX[idx]) {
+						keys = RIGHT;
+					} else {
+						keys = ((f % 40) < 25) ? A : 0u;
+					}
+				}
+			}
+		}
+	}
+	/* 内存驱动的确定性导航：战斗模式菜单（maxCursorPos==4）把光标钳到 2
+	 * （多人/4P）。联机服务菜单 4 项不能钳。 */
+	if (f >= menuAt) {
+		int mx = (int) GBAView8(g->cpu, 0x020296C4u);
+		if (mx > emu->busGameMenuMax) {
+			emu->busGameMenuMax = mx;
+		}
+		if (mx == 4) {
+			int cur = (int) GBAView8(g->cpu, 0x020296C2u);
+			if (cur != 2) {
+				int cc = 0;
+				GBAStore8(g->cpu, 0x020296C2u, (int8_t) 2, &cc);
+			}
+		}
+	}
+	/* 仅 0 号核（主机）补 SD/Ready(bit3)：gen8 用 (SIOCNT & 0xC)==0x8 判主机。 */
+	if (idx == 0) {
+		g->sio.siocnt |= 0x0008u;
+	}
+	if ((f % 600) == 0) {
+		/* 进对战判据：callback2 @0x020290E8 落 battle_main.o
+		 * （BattleMainCB2+1=0x0809AFCD）。0x03002AD4 是 gLinkCallback，
+		 * 不是 callback2，别读错（与 PC 判据一致）。 */
+		uint32_t cb2 = GBAView32(g->cpu, 0x020290E8u);
+		uint32_t sb1 = GBAView32(g->cpu, 0x03004964u);
+		int px = -1, py = -1;
+		if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+			px = (int16_t) GBAView16(g->cpu, sb1 + 0u);
+			py = (int16_t) GBAView16(g->cpu, sb1 + 2u);
+		}
+		MOBILE_LOGI("BUSGAME f=%u idx=%d pc=%d st=%d var8004=%d lt=%04X pos=%d,%d mm=%d cb2=%08X%s",
+		            f, idx,
+		            (int) GBAView8(g->cpu, 0x03004A39u),
+		            (int) GBAView8(g->cpu, 0x020219D0u),
+		            (int) GBAView16(g->cpu, 0x0202196Cu),
+		            (unsigned) GBAView16(g->cpu, 0x02027B82u),
+		            px, py, emu->busGameMenuMax, cb2,
+		            cb2 == 0x0809AFCDu ? " BATTLE=YES" : "");
+	}
+	return keys;
+}
+
+/* 镜像核路径：GBoyConsoleSet 镜像线程每帧调一次，拿掩码喂 setKeys/runFrames。 */
+uint32_t mgbaMobileBusGameTick(struct MgbaMobile* emu) {
+	if (!emu || emu->busGameIdx < 0) {
+		return 0;
+	}
+	return busGameKeys(emu);
+}
+
 static uint32_t beginFrameKeys(struct MgbaMobile* emu) {
+	if (emu->busGameIdx >= 0) {
+		/* 脚本接管：按键完全由判据脚本决定（与 PC busgame 一致）。 */
+		emu->frameKeys = busGameKeys(emu);
+		return emu->frameKeys;
+	}
 	uint32_t held = loadHeld(emu);
 	uint32_t latch = __atomic_exchange_n(&emu->latchedKeys, 0, __ATOMIC_ACQ_REL);
 	emu->frameKeys = applyTurbo(emu, held | latch);

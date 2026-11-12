@@ -161,6 +161,14 @@ uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr);
 /* 当前已渲染帧号（gba->video.frameCounter），用于验证锁步帧循环推进。 */
 uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
 
+/* busgame 调试脚本：PC busgame-lockstep 判据脚本（test/gboylink_test.cpp
+ * lsInjectKeys）的设备端移植。Start 后可见核由 beginFrameKeys 接管按键；
+ * 镜像核由镜像线程逐帧调 BusGameTick 取掩码。idx 为核的脚本序号
+ * （0=主机），与 PC 的 seatX/seatY 座位表对应。仅调试广播使用。 */
+void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int modeDowns);
+void mgbaMobileBusGameStop(struct MgbaMobile* emu);
+uint32_t mgbaMobileBusGameTick(struct MgbaMobile* emu);
+
 /* 测试钩子：开启后锁步多玩家传输直接注入 0x1000+playerId 作为发送字，绕开
  * 真实游戏对 SIOMLT_SEND 的改写，得到确定性传输用于验证收集/广播。仅测试使用，
  * 必须在跑锁步集成测试前打开、跑完关闭。 */
