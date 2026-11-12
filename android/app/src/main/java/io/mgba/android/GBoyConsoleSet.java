@@ -70,6 +70,9 @@ public final class GBoyConsoleSet {
     private long targetFrame = -1L;
     private long frameTimeouts;
     private int linkPort;
+    private boolean visibleIsHost;
+    private int visibleSlot;
+    private int[] mirrorSlots;
     /* start() 里实际生效的锁步模式：beginFrame/endFrame 的 Java 帧栅栏只服务
      * 共享内存总线（它就是那种模式下的同步手段）；native 锁步自己会在 SIO
      * 轮次会合，帧栅栏会把镜像门成每帧一停、可见核每帧吃满超时。 */
@@ -196,6 +199,10 @@ public final class GBoyConsoleSet {
                 slotOf[0] = localSlot - 1;
                 taken[localSlot - 1] = true;
             }
+            /* busgame reload 后可见核的 SIO 驱动会被核复位卸掉（drv=0、退出
+             * 锁步房间），需要按原槽位重挂；把这两个量存下来供重挂用。 */
+            visibleIsHost = (hostIdx == 0);
+            visibleSlot = slotOf[0];
             int next = 1;
             for (int k = 0; k < cores; ++k) {
                 if (k == hostIdx || (k == 0 && hostIdx != 0)) {
@@ -206,6 +213,12 @@ public final class GBoyConsoleSet {
                 }
                 slotOf[k] = next;
                 taken[next] = true;
+            }
+            mirrorSlots = new int[mirrors == null ? 0 : mirrors.length];
+            for (int k = 1; k < cores; ++k) {
+                if (k - 1 < mirrorSlots.length) {
+                    mirrorSlots[k - 1] = slotOf[k];
+                }
             }
             MgbaCore hostCore = (hostIdx == 0) ? primary : mirrors[hostIdx - 1];
             boolean ok = hostCore.linkHostLockstep(busKey, players, 0);
@@ -324,8 +337,9 @@ public final class GBoyConsoleSet {
         }
     }
 
-    /** 开/关 busgame 调试脚本：可见核由调用方直接调 MgbaCore.busGameStart，
-     *  这里负责镜像核（脚本序号 = 镜像下标 + 1，与 PC 的 idx/座位表对应）。 */
+    /** 开/关 busgame 调试脚本：脚本序号 = 核的链路槽位（PC 的 c 索引与座位表
+     *  对应）。镜像核在各自线程首帧取 keys 时不经 Java——它们的 native tick
+     *  由自己 runFrames 里的 beginFrameKeys 驱动，这里只负责武装。 */
     public void setBusGame(boolean on, int menuAt, int modeDowns) {
         busGame = on;
         if (mirrors == null) {
@@ -337,11 +351,35 @@ public final class GBoyConsoleSet {
                 continue;
             }
             if (on) {
-                core.busGameStart(i + 1, menuAt, modeDowns);
+                core.busGameStart(slotOfCore(i + 1), menuAt, modeDowns);
             } else {
                 core.busGameStop();
             }
         }
+    }
+
+    /** 可见核的脚本序号（= 它的链路槽位）。 */
+    public int visibleSlotIdx() {
+        return visibleSlot;
+    }
+
+    /** 镜像下标 → 链路槽位。 */
+    private int slotOfCore(int coreIdx) {
+        return mirrorSlots != null && coreIdx - 1 < mirrorSlots.length
+                ? mirrorSlots[coreIdx - 1] : coreIdx;
+    }
+
+    /** 可见核经 loadRom 复位后，其锁步驱动随 SIO 复位被卸掉（实测 SIO poll
+     *  出现 drv=0，房间只剩 3 家，握手永远 pc=3）。按原槽位把可见核重新挂
+     *  回房间——native 入口会先清残留槽位。重挂一律走 Join：房间此刻仍被
+     *  镜像持有，Host 语义（建房）对已存在的 key 会返回 NULL（实测 ok=false）。 */
+    public void rearmLockstepVisible() {
+        if (!lockstepActive || primary == null || linkPort < 0) {
+            return;
+        }
+        boolean ok = primary.linkJoinLockstep(linkPort, visibleSlot);
+        android.util.Log.i("mGBA-App", "rearm visible lockstep slot=" + visibleSlot
+                + " wasHost=" + visibleIsHost + " ok=" + ok);
     }
 
     /**
@@ -381,6 +419,20 @@ public final class GBoyConsoleSet {
         }
         long rel = frame - frameEpoch;
         return rel < 0 ? 0 : rel;
+    }
+
+    /** 把镜像核的帧钟基线拉到当前天花板（=可见核已发布的帧位）。用于快照
+     *  同步后：镜像从可见核的「现在」起步，不追历史帧。 */
+    public void syncMirrorFramesToVisible() {
+        synchronized (lock) {
+            if (mirrorFrames == null) {
+                return;
+            }
+            for (int i = 0; i < mirrorFrames.length; ++i) {
+                mirrorFrames[i] = targetFrame;
+            }
+            lock.notifyAll();
+        }
     }
 
     /** Closes the loopback link, stops every mirror thread and destroys the cores. */

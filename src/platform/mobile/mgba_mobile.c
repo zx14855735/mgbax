@@ -3755,20 +3755,20 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 				emu->sioPrevAdv = (uint32_t) adv;
 			}
 			if ((uint32_t) hs != emu->sioPrevHs) {
-				MOBILE_LOGI("HS %u->%d st=%d pc=%d adv=%d m0=%04X m1=%04X me=%d",
-				            emu->sioPrevHs, hs, st, pc, adv, m0, m1, netLinkPlayer(emu->link));
+				MOBILE_LOGI("HS idx=%d %u->%d st=%d pc=%d adv=%d m0=%04X m1=%04X me=%d",
+				            emu->busGameIdx, emu->sioPrevHs, hs, st, pc, adv, m0, m1, netLinkPlayer(emu->link));
 				emu->sioPrevHs = (uint32_t) hs;
 			}
 			if (st != emu->sioPrevLinkState || pc != emu->sioPrevPc) {
-				MOBILE_LOGI("ST %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
-				            emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
+				MOBILE_LOGI("ST idx=%d %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
+				            emu->busGameIdx, emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
 				            netLinkPlayer(emu->link));
 				emu->sioPrevLinkState = st;
 				emu->sioPrevPc = pc;
 			}
 			if (m0 != emu->sioPrevM0 || m1 != emu->sioPrevM1) {
-				MOBILE_LOGI("MLT m0=%04X m1=%04X st=%d pc=%d hs=%d adv=%d me=%d",
-				            m0, m1, st, pc, hs, adv, netLinkPlayer(emu->link));
+				MOBILE_LOGI("MLT idx=%d m0=%04X m1=%04X st=%d pc=%d hs=%d adv=%d me=%d",
+				            emu->busGameIdx, m0, m1, st, pc, hs, adv, netLinkPlayer(emu->link));
 				emu->sioPrevM0 = m0;
 				emu->sioPrevM1 = m1;
 			}
@@ -4768,8 +4768,16 @@ bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot) {
 }
 
 bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot) {
-	if (!emu || !emu->core || emu->lockstepSlot) {
+	if (!emu || !emu->core) {
 		return false;
+	}
+	if (emu->lockstepSlot) {
+		/* 残留槽位：loadROM 的复位会 deinit 锁步驱动（玩家已退出房间）但
+		 * 不动本结构，指针从此悬空。干净拆掉再重挂，否则重挂永远被拒
+		 * （busgame reload 后主机重新入房依赖这一点）。 */
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		emu->lockstepRoom = NULL;
 	}
 	struct MgbaLockstepRoom* room = mgbaLockstepHost(key, players);
 	if (!room) {
@@ -4790,8 +4798,14 @@ bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, in
 }
 
 bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot) {
-	if (!emu || !emu->core || emu->lockstepSlot) {
+	if (!emu || !emu->core) {
 		return false;
+	}
+	if (emu->lockstepSlot) {
+		/* 残留槽位：同 Host 侧——loadROM 复位后驱动已 deinit，先拆再挂。 */
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		emu->lockstepRoom = NULL;
 	}
 	struct MgbaLockstepRoom* room = mgbaLockstepJoin(key);
 	if (!room) {

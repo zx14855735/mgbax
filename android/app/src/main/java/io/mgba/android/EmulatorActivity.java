@@ -248,18 +248,16 @@ public class EmulatorActivity extends AppCompatActivity {
             int menuAt = intent.getIntExtra("menu_at", 1500);
             int modeDowns = intent.getIntExtra("mode_downs", 2);
             if (consoleSet != null) {
-                consoleSet.setBusGame(true, menuAt, modeDowns);   // 镜像核 = 序号 1..3
+                consoleSet.setBusGame(true, menuAt, modeDowns);   // 镜像核立刻武装（各自复位帧起跑）
             }
-            // 先置标志、后投重载：模拟线程下一拍消费 pendingPath → loadRom
-            // （f=0 = 复位帧）→ 立刻武装可见核。不能在广播线程直接 loadRom
-            // （跨线程换核会让模拟线程踩已释放的旧核，实测 SIGSEGV）；
-            // 也不能先投重载（startGBoyLocalLink 要几百 ms，标志置上时
-            // 重载早被消费掉，武装条件永远等不到，实测镜像核孤跑卡死）。
+            // 可见核也复位到与镜像同一起点：投给模拟线程重载（loadRom 复位会
+            // 卸掉锁步驱动，模拟线程武装可见核后立即按原槽位重挂回房间——
+            // native 侧 Host/Join 入口会先清残留槽位）。
             pendingBusGameMenuAt = menuAt;
             pendingBusGameModeDowns = modeDowns;
             suppressAutoState = true;
             pendingPath.set(romPath);
-            Log.i(TAG, "busgame mirrors armed, reload+arm queued menuAt="
+            Log.i(TAG, "busgame mirrors armed, reload+rearm queued menuAt="
                     + menuAt + " modeDowns=" + modeDowns);
         }
         }
@@ -611,6 +609,16 @@ public class EmulatorActivity extends AppCompatActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         applyOrientation();
+        // busgame 调试脚本可经启动 intent 直接启用（--ez busgame true），让
+        // 可见核武装发生在启动加载完成的第一帧（f=0 = 复位帧）。
+        Intent launchIntent = getIntent();
+        if (launchIntent != null && launchIntent.getBooleanExtra("busgame", false)) {
+            pendingBusGameMenuAt = launchIntent.getIntExtra("menu_at", 1500);
+            pendingBusGameModeDowns = launchIntent.getIntExtra("mode_downs", 2);
+            suppressAutoState = true;
+            Log.i(TAG, "busgame armed at launch menuAt=" + pendingBusGameMenuAt
+                    + " modeDowns=" + pendingBusGameModeDowns);
+        }
         setContentView(R.layout.activity_emulator);
         gameView = findViewById(R.id.game);
         // Exported so `adb shell am broadcast` can drive headless test runs;
@@ -2249,8 +2257,15 @@ public class EmulatorActivity extends AppCompatActivity {
                     fpsStamp = nextSlice;
                     // busgame 调试脚本：重载后立刻武装可见核（f=0 = 复位帧），
                     // 必须在模拟线程做——广播线程直接换核会踩已释放的旧核。
+                    // loadRom 的复位会卸掉可见核的锁步驱动，武装后按原槽位
+                    // 重挂回房间（native 入口已会清残留槽位）。
                     if (pendingBusGameMenuAt >= 0) {
-                        core.busGameStart(0, pendingBusGameMenuAt, pendingBusGameModeDowns);
+                        core.busGameStart(consoleSet != null ? consoleSet.visibleSlotIdx() : 0,
+                                pendingBusGameMenuAt, pendingBusGameModeDowns);
+                        GBoyConsoleSet set = consoleSet;
+                        if (set != null) {
+                            set.rearmLockstepVisible();
+                        }
                         Log.i(TAG, "busgame visible core armed menuAt="
                                 + pendingBusGameMenuAt + " modeDowns=" + pendingBusGameModeDowns);
                         pendingBusGameMenuAt = -1;
