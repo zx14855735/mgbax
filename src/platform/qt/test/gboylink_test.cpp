@@ -1874,6 +1874,12 @@ static std::atomic<int> g_walkDbg[4];   /* idx<<24 | px<<16 | py<<8 | keys */
 static std::atomic<int> g_partyType[4];
 static std::atomic<int> g_selOrder[4];   /* (s0<<8)|s1 */
 static std::atomic<int> g_partySlot[4];  /* gPartyMenu.slotId */
+/* 走位停滞检测：实测 4 核会一起卡在 (9,1) 不动（y 方向被柜台/NPC 挡住），
+ * 此时切换成水平优先绕行。各核独立，threaded/serial 下均无跨线程写同一槽。 */
+static int g_lastPX[4] = {-1, -1, -1, -1};
+static int g_lastPY[4] = {-1, -1, -1, -1};
+static int g_stall[4] = {0, 0, 0, 0};
+static int g_detour[4] = {0, 0, 0, 0};
 /* 联机房间按键码握手：sPlayerTradingStates @0x03004A10 (4×u8)，
  * 0x82=PLAYER_TRADING_STATE_UNK_2(已准备)；gFieldLinkPlayerCount @0x03004A39。
  * sub_8087214() 要全员 0x82 才让 Task_EnterCableClubSeat 推进到开战。 */
@@ -2132,11 +2138,12 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	const int maxFrames = envInt("BUSGAME_FRAMES", 3000);
 	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
 	const int modeDowns = envInt("BUSGAME_MODE_DOWNS", 2);
-	/* 挂锁步驱动的帧号。原来硬编码 10，BIOS 阶段 SIO 模式会连续抖动
-	 * (GPIO→NORMAL32→…→MULTI)，每次 SetMode 都给所有核 enqueue 一个
-	 * MODE_SET 事件，事件池耗尽后 "No free events" → 偶发段错误(139)。
-	 * 推迟到 BIOS 探测结束再挂，避开这段洪泛。可用环境变量覆盖做 A/B。 */
-	const int attachThreshold = envInt("BUSGAME_ATTACH_AT", 300);
+	/* 挂锁步驱动的帧号，默认 10。曾试过推迟到 300 规避 BIOS 阶段 SIO 模式
+	 * 洪泛导致的 "No free events" 段错误，但会让 4 核帧号发散(frameSpread
+	 * 2→10~15)、降低进对战成功率。该崩溃已在 src/gba/sio/lockstep.c 的
+	 * _enqueueEvent 里根治（池满复用最老事件），故无需再推迟。
+	 * 可用 BUSGAME_ATTACH_AT 覆盖做 A/B。 */
+	const int attachThreshold = envInt("BUSGAME_ATTACH_AT", 10);
 
 	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
 	QString savCopy[4];

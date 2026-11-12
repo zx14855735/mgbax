@@ -882,9 +882,24 @@ void _enqueueEvent(struct GBASIOLockstepCoordinator* coordinator, const struct G
 			continue;
 		}
 		struct GBASIOLockstepPlayer* player = TableLookup(&coordinator->players, coordinator->attachedPlayers[i]);
-		mASSERT_LOG(GBA_SIO, player->freeList, "No free events");
 		struct GBASIOLockstepEvent* newEvent = player->freeList;
-		player->freeList = newEvent->next;
+		if (newEvent) {
+			player->freeList = newEvent->next;
+		} else {
+			/* 事件池耗尽（BIOS 阶段 SIO 模式连续切换会连续 enqueue
+			 * MODE_SET，8 槽很快打满）。原实现在 freeList==NULL 时直接
+			 * 解引用 newEvent->next 段错误。这里摘下队头（timestamp 最小的
+			 * 最老事件）复用：丢最老、保最新，避免崩溃且让进度继续。
+			 * 协调器有 HARD_SYNC 兜底，丢一个早期模式通知可自愈。
+			 * 不增大 buffer（会破坏 savestate 的 0x1F0 尺寸断言）。 */
+			struct GBASIOLockstepEvent* oldest = player->queue;
+			if (!oldest) {
+				continue;
+			}
+			player->queue = oldest->next;
+			newEvent = oldest;
+			mLOG(GBA_SIO, WARN, "Lockstep event pool exhausted; recycling oldest event");
+		}
 
 		memcpy(newEvent, event, sizeof(*event));
 		struct GBASIOLockstepEvent** previous = &player->queue;
