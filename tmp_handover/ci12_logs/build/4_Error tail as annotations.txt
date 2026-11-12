@@ -1,0 +1,45 @@
+﻿2026-11-12T17:06:19.7823190Z ##[group]Run if [ -f build.log ]; then
+2026-11-12T17:06:19.7823470Z [36;1mif [ -f build.log ]; then[0m
+2026-11-12T17:06:19.7823680Z [36;1m  echo "===== matching lines ====="[0m
+2026-11-12T17:06:19.7824130Z [36;1m  grep -nEi 'error|fatal|usage|FAILED' build.log | tail -20 | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-12T17:06:19.7824560Z [36;1m  echo "===== last 25 lines ====="[0m
+2026-11-12T17:06:19.7824880Z [36;1m  tail -25 build.log | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-12T17:06:19.7825180Z [36;1melse[0m
+2026-11-12T17:06:19.7825390Z [36;1m  echo "::error::build.log missing - xcodebuild did not run"[0m
+2026-11-12T17:06:19.7825650Z [36;1mfi[0m
+2026-11-12T17:06:19.8823920Z shell: /bin/bash -e {0}
+2026-11-12T17:06:19.8824140Z ##[endgroup]
+2026-11-12T17:06:20.0129320Z ===== matching lines =====
+2026-11-12T17:06:20.0390570Z ##[error]349:    export GCC_TREAT_WARNINGS_AS_ERRORS\=NO
+2026-11-12T17:06:20.0403770Z ##[error]643:    export TREAT_MISSING_SCRIPT_PHASE_OUTPUTS_AS_ERRORS\=NO
+2026-11-12T17:06:20.0411400Z ##[error]656:    export VALIDATE_DEVELOPMENT_ASSET_PATHS\=YES_ERROR
+2026-11-12T17:06:20.0430020Z ##[error]795:[2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:06:20.0431530Z ##[error]1103:[2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:06:20.0436020Z ##[error]1367:1 error generated.
+2026-11-12T17:06:20.0441360Z ##[error]1368:2 errors generated.
+2026-11-12T17:06:20.0442620Z ##[error]1369:Failed frontend command:
+2026-11-12T17:06:20.0444800Z ##[error]1378:/Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/link_lockstep.h:9:10: error: 'mgba/core/core.h' file not found
+2026-11-12T17:06:20.0448910Z ##[error]1381:<unknown>:0: error: failed to emit precompiled header '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders/mGBA-Bridging-Header-swift_2NVWVOH57GQGH-clang_1XY1N72FQ625N.pch' for bridging header '/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h'
+2026-11-12T17:06:20.0483050Z ##[error]1393:** BUILD FAILED **
+2026-11-12T17:06:20.0484580Z ##[error]1396:The following build commands failed:
+2026-11-12T17:06:20.0487480Z ===== last 25 lines =====
+2026-11-12T17:06:20.0492640Z ##[error]#import "link_lockstep.h"
+2026-11-12T17:06:20.0505910Z ##[error]        ^
+2026-11-12T17:06:20.0518080Z ##[error]/Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/link_lockstep.h:9:10: error: 'mgba/core/core.h' file not found
+2026-11-12T17:06:20.0519800Z ##[error]#include <mgba/core/core.h>
+2026-11-12T17:06:20.0521020Z ##[error]         ^
+2026-11-12T17:06:20.0523710Z ##[error]<unknown>:0: error: failed to emit precompiled header '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders/mGBA-Bridging-Header-swift_2NVWVOH57GQGH-clang_1XY1N72FQ625N.pch' for bridging header '/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h'
+2026-11-12T17:06:20.0527230Z ##[error]/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:9: note: in file included from /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:
+2026-11-12T17:06:20.0530860Z ##[error]#import "link_lockstep.h"
+2026-11-12T17:06:20.0533430Z ##[error]        ^
+2026-11-12T17:06:20.0538750Z ##[error]SwiftGeneratePch normal arm64 Compiling\ bridging\ header (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:20.0545250Z ##[error]MetalLink /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app/default.metallib (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:20.0549920Z ##[error]    cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:20.0558430Z ##[error]    /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal -target air64-apple-ios15.0-simulator -frecord-sources -o /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app/default.metallib /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Metal/Shaders.air
+2026-11-12T17:06:20.0569680Z ##[error]note: Run script build phase 'Build mGBA core' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:20.0573270Z ##[error]** BUILD FAILED **
+2026-11-12T17:06:20.0578740Z ##[error]The following build commands failed:
+2026-11-12T17:06:20.0582220Z ##[error]	SwiftGeneratePch normal x86_64 Compiling\ bridging\ header (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:20.0585680Z ##[error]	PrecompileSwiftBridgingHeader normal x86_64 (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:20.0588640Z ##[error]	Building project mGBA with scheme mGBA and configuration Debug
+2026-11-12T17:06:20.0591030Z ##[error](3 failures)

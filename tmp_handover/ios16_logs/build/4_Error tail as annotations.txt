@@ -1,0 +1,44 @@
+﻿2026-11-12T17:49:10.5072770Z ##[group]Run if [ -f build.log ]; then
+2026-11-12T17:49:10.5075100Z [36;1mif [ -f build.log ]; then[0m
+2026-11-12T17:49:10.5075360Z [36;1m  echo "===== matching lines ====="[0m
+2026-11-12T17:49:10.5075830Z [36;1m  grep -nEi 'error|fatal|usage|FAILED' build.log | tail -20 | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-12T17:49:10.5076300Z [36;1m  echo "===== last 25 lines ====="[0m
+2026-11-12T17:49:10.5076690Z [36;1m  tail -25 build.log | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-12T17:49:10.5077000Z [36;1melse[0m
+2026-11-12T17:49:10.5077220Z [36;1m  echo "::error::build.log missing - xcodebuild did not run"[0m
+2026-11-12T17:49:10.5077510Z [36;1mfi[0m
+2026-11-12T17:49:10.8512690Z shell: /bin/bash -e {0}
+2026-11-12T17:49:10.8512920Z ##[endgroup]
+2026-11-12T17:49:10.9791240Z ===== matching lines =====
+2026-11-12T17:49:11.0117860Z ##[error]349:    export GCC_TREAT_WARNINGS_AS_ERRORS\=NO
+2026-11-12T17:49:11.0132700Z ##[error]643:    export TREAT_MISSING_SCRIPT_PHASE_OUTPUTS_AS_ERRORS\=NO
+2026-11-12T17:49:11.0170640Z ##[error]656:    export VALIDATE_DEVELOPMENT_ASSET_PATHS\=YES_ERROR
+2026-11-12T17:49:11.0172550Z ##[error]795:[2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:49:11.0173980Z ##[error]1103:[2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:49:11.0175850Z ##[error]1406:/Users/runner/work/mgbax/mgbax/ios/mGBA/LobbySignaling.swift:172:20: warning: value 'error' was defined but never used; consider replacing with boolean test
+2026-11-12T17:49:11.0177160Z ##[error]1407:            if let error {
+2026-11-12T17:49:11.0178750Z ##[error]1612:Failed frontend command:
+2026-11-12T17:49:11.0180420Z ##[error]1645:/Users/runner/work/mgbax/mgbax/ios/mGBA/EmulatorViewController.swift:5421:50: error: cannot convert value of type 'Int32' to expected argument type 'Int'
+2026-11-12T17:49:11.0182400Z ##[error]1649:/Users/runner/work/mgbax/mgbax/ios/mGBA/EmulatorViewController.swift:5452:50: error: cannot convert value of type 'Int32' to expected argument type 'Int'
+2026-11-12T17:49:11.0183830Z ##[error]1740:Command SwiftCompile failed with a nonzero exit code
+2026-11-12T17:49:11.0184850Z ##[error]1743:** BUILD FAILED **
+2026-11-12T17:49:11.0185850Z ##[error]1746:The following build commands failed:
+2026-11-12T17:49:11.0186630Z ===== last 25 lines =====
+2026-11-12T17:49:11.0187220Z ##[error]    
+2026-11-12T17:49:11.0200510Z ##[error]SwiftCompile normal arm64 /Users/runner/work/mgbax/mgbax/ios/mGBA/ShaderRenderer.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0202020Z ##[error]    cd /Users/runner/work/mgbax/mgbax/ios
+2026-11-12T17:49:11.0202990Z ##[error]    
+2026-11-12T17:49:11.0205090Z ##[error]SwiftCompile normal arm64 /Users/runner/work/mgbax/mgbax/ios/mGBA/GifEncoder.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0206360Z ##[error]    cd /Users/runner/work/mgbax/mgbax/ios
+2026-11-12T17:49:11.0207350Z ##[error]    
+2026-11-12T17:49:11.0210420Z ##[error]SwiftDriverJobDiscovery normal arm64 Compiling AiOverlayView.swift, AiTranslate.swift, BackupStore.swift, RomLibrary.swift, RomSettings.swift, ShellStageView.swift, SkinStore.swift, SkinTheme.swift, StickerOverlayView.swift, Zip.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0218290Z ##[error]SwiftCompile normal arm64 Compiling\ LobbyFrames.swift,\ LobbyKcp.swift,\ LobbySignaling.swift,\ LobbyLink.swift,\ DebugViewers.swift,\ WebDavSync.swift,\ GifBall.swift,\ ExternalShader.swift,\ GBoyConsoleSet.swift,\ GeneratedAssetSymbols.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyFrames.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyKcp.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbySignaling.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyLink.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/DebugViewers.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/WebDavSync.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GifBall.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/ExternalShader.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GBoyConsoleSet.swift /Users/runner/work/mgbax/mgbax/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0223960Z ##[error]Command SwiftCompile failed with a nonzero exit code
+2026-11-12T17:49:11.0227010Z ##[error]note: Run script build phase 'Build mGBA core' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0229110Z ##[error]** BUILD FAILED **
+2026-11-12T17:49:11.0256150Z ##[error]The following build commands failed:
+2026-11-12T17:49:11.0261860Z ##[error]	SwiftCompile normal x86_64 Compiling\ AppDelegate.swift,\ EmulatorViewController.swift,\ GameView.swift,\ ControlsView.swift,\ AudioOut.swift,\ RemoteLink.swift,\ KeyLayout.swift,\ GBoyLink.swift,\ ShaderRenderer.swift,\ GifEncoder.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/AppDelegate.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/EmulatorViewController.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GameView.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/ControlsView.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/AudioOut.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/RemoteLink.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/KeyLayout.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GBoyLink.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/ShaderRenderer.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GifEncoder.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0266290Z ##[error]	SwiftCompile normal x86_64 /Users/runner/work/mgbax/mgbax/ios/mGBA/EmulatorViewController.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0274020Z ##[error]	SwiftCompile normal arm64 Compiling\ LobbyFrames.swift,\ LobbyKcp.swift,\ LobbySignaling.swift,\ LobbyLink.swift,\ DebugViewers.swift,\ WebDavSync.swift,\ GifBall.swift,\ ExternalShader.swift,\ GBoyConsoleSet.swift,\ GeneratedAssetSymbols.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyFrames.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyKcp.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbySignaling.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/LobbyLink.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/DebugViewers.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/WebDavSync.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GifBall.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/ExternalShader.swift /Users/runner/work/mgbax/mgbax/ios/mGBA/GBoyConsoleSet.swift /Users/runner/work/mgbax/mgbax/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.swift (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:49:11.0278940Z ##[error]	Building project mGBA with scheme mGBA and configuration Debug
+2026-11-12T17:49:11.0279890Z ##[error](4 failures)

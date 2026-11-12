@@ -1,0 +1,1426 @@
+﻿2026-11-12T17:05:41.2879670Z ##[group]Run xcodebuild -version
+2026-11-12T17:05:41.2880490Z [36;1mxcodebuild -version[0m
+2026-11-12T17:05:41.2880930Z [36;1mxcodebuild -list -project ios/mGBA.xcodeproj[0m
+2026-11-12T17:05:41.2881410Z [36;1mset -o pipefail[0m
+2026-11-12T17:05:41.2882230Z [36;1mxcodebuild -project ios/mGBA.xcodeproj -scheme mGBA -configuration Debug -sdk iphonesimulator -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log[0m
+2026-11-12T17:05:41.2923460Z shell: /bin/bash -e {0}
+2026-11-12T17:05:41.2923950Z ##[endgroup]
+2026-11-12T17:05:41.4760250Z Xcode 16.4
+2026-11-12T17:05:41.4761280Z Build version 16F6
+2026-11-12T17:05:42.6237590Z Command line invocation:
+2026-11-12T17:05:42.6265890Z     /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/xcodebuild -list -project ios/mGBA.xcodeproj
+2026-11-12T17:05:42.6309280Z 
+2026-11-12T17:05:45.0464770Z Information about project "mGBA":
+2026-11-12T17:05:45.0541210Z     Targets:
+2026-11-12T17:05:45.0546310Z         mGBA
+2026-11-12T17:05:45.0569120Z 
+2026-11-12T17:05:45.0580170Z     Build Configurations:
+2026-11-12T17:05:45.0620290Z         Debug
+2026-11-12T17:05:45.0670540Z         Release
+2026-11-12T17:05:45.0772230Z 
+2026-11-12T17:05:45.0844410Z     If no build configuration is specified and -scheme is not passed then "Release" is used.
+2026-11-12T17:05:45.0848910Z 
+2026-11-12T17:05:45.0855420Z     Schemes:
+2026-11-12T17:05:45.0856070Z         mGBA
+2026-11-12T17:05:45.0860300Z 
+2026-11-12T17:05:46.0786140Z Command line invocation:
+2026-11-12T17:05:46.0902190Z     /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/xcodebuild -project ios/mGBA.xcodeproj -scheme mGBA -configuration Debug -sdk iphonesimulator -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
+2026-11-12T17:05:46.1005820Z 
+2026-11-12T17:05:46.1126440Z Build settings from command line:
+2026-11-12T17:05:46.1227790Z     CODE_SIGNING_ALLOWED = NO
+2026-11-12T17:05:46.1280990Z     SDKROOT = iphonesimulator18.5
+2026-11-12T17:05:46.1281910Z 
+2026-11-12T17:05:46.2596470Z --- xcodebuild: WARNING: Using the first of multiple matching destinations:
+2026-11-12T17:05:46.2639460Z { platform:iOS Simulator, id:dvtdevice-DVTiOSDeviceSimulatorPlaceholder-iphonesimulator:placeholder, name:Any iOS Simulator Device }
+2026-11-12T17:05:46.2643940Z { platform:macOS, arch:arm64, variant:Designed for [iPad,iPhone], id:c30cf28d92824d4903cc2f6277356089726cee7a, name:My Mac }
+2026-11-12T17:05:46.2757920Z { platform:iOS, id:dvtdevice-DVTiPhonePlaceholder-iphoneos:placeholder, name:Any iOS Device }
+2026-11-12T17:05:46.8388110Z ComputePackagePrebuildTargetDependencyGraph
+2026-11-12T17:05:46.9313020Z 
+2026-11-12T17:05:46.9363090Z Prepare packages
+2026-11-12T17:05:46.9364970Z 
+2026-11-12T17:05:46.9389850Z CreateBuildRequest
+2026-11-12T17:05:46.9390650Z 
+2026-11-12T17:05:46.9391040Z SendProjectDescription
+2026-11-12T17:05:46.9583200Z 
+2026-11-12T17:05:46.9602510Z CreateBuildOperation
+2026-11-12T17:05:46.9755130Z 
+2026-11-12T17:05:46.9773580Z ComputeTargetDependencyGraph
+2026-11-12T17:05:46.9975640Z note: Building targets in dependency order
+2026-11-12T17:05:46.9976460Z note: Target dependency graph (1 target)
+2026-11-12T17:05:46.9977000Z     Target 'mGBA' in project 'mGBA' (no dependencies)
+2026-11-12T17:05:46.9977400Z 
+2026-11-12T17:05:46.9977610Z GatherProvisioningInputs
+2026-11-12T17:05:46.9977950Z 
+2026-11-12T17:05:47.0050000Z CreateBuildDescription
+2026-11-12T17:05:47.0478710Z 
+2026-11-12T17:05:47.0488740Z ExecuteExternalTool /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/actool --print-asset-tag-combinations --output-format xml1 /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Assets.xcassets
+2026-11-12T17:05:50.9333250Z 
+2026-11-12T17:05:50.9366270Z ExecuteExternalTool /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -v -E -dM -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -x c -c /dev/null
+2026-11-12T17:05:50.9398610Z 
+2026-11-12T17:05:50.9399560Z ExecuteExternalTool /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/actool --version --output-format xml1
+2026-11-12T17:05:50.9584080Z 
+2026-11-12T17:05:50.9591540Z ExecuteExternalTool /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc --version
+2026-11-12T17:05:52.2327370Z 
+2026-11-12T17:05:52.2663510Z ExecuteExternalTool /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld -version_details
+2026-11-12T17:05:52.5311880Z 
+2026-11-12T17:05:52.5788090Z Build description signature: 62f27bcaa806e8543c62375f6083dabe
+2026-11-12T17:05:52.5796080Z Build description path: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/XCBuildData/62f27bcaa806e8543c62375f6083dabe.xcbuilddata
+2026-11-12T17:05:52.6362280Z ClangStatCache /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk /Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache
+2026-11-12T17:05:52.6366860Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:52.6371800Z     /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang-stat-cache /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -o /Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache
+2026-11-12T17:05:56.5422920Z 
+2026-11-12T17:05:56.5427550Z CreateBuildDirectory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex
+2026-11-12T17:05:56.5428340Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5429020Z     builtin-create-build-directory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex
+2026-11-12T17:05:56.5429560Z 
+2026-11-12T17:05:56.5429870Z CreateBuildDirectory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products
+2026-11-12T17:05:56.5430460Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5431100Z     builtin-create-build-directory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products
+2026-11-12T17:05:56.5431570Z 
+2026-11-12T17:05:56.5432440Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA-9bd4fe25229879865f5b77baac12a0b8-VFS-iphonesimulator/all-product-headers.yaml
+2026-11-12T17:05:56.5433480Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5434930Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA-9bd4fe25229879865f5b77baac12a0b8-VFS-iphonesimulator/all-product-headers.yaml
+2026-11-12T17:05:56.5435680Z 
+2026-11-12T17:05:56.5436080Z CreateBuildDirectory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.5436920Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5438940Z     builtin-create-build-directory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.5439490Z 
+2026-11-12T17:05:56.5440020Z CreateBuildDirectory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/EagerLinkingTBDs/Debug-iphonesimulator
+2026-11-12T17:05:56.5440830Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5441610Z     builtin-create-build-directory /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/EagerLinkingTBDs/Debug-iphonesimulator
+2026-11-12T17:05:56.5442220Z 
+2026-11-12T17:05:56.5442860Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5444530Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5445300Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.hmap
+2026-11-12T17:05:56.5445920Z 
+2026-11-12T17:05:56.5446640Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.DependencyStaticMetadataFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5447580Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5448420Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.DependencyStaticMetadataFileList
+2026-11-12T17:05:56.5449140Z 
+2026-11-12T17:05:56.5449860Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.DependencyMetadataFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5450750Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5451570Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx.DependencyMetadataFileList
+2026-11-12T17:05:56.5452370Z 
+2026-11-12T17:05:56.5453070Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-project-headers.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5454030Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5454770Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-project-headers.hmap
+2026-11-12T17:05:56.5455480Z 
+2026-11-12T17:05:56.5456180Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-own-target-headers.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5457080Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5458010Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-own-target-headers.hmap
+2026-11-12T17:05:56.5463280Z 
+2026-11-12T17:05:56.5464030Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-generated-files.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5464910Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5469980Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-generated-files.hmap
+2026-11-12T17:05:56.5471220Z 
+2026-11-12T17:05:56.5507280Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-target-headers.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5514690Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5516440Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-target-headers.hmap
+2026-11-12T17:05:56.5517180Z 
+2026-11-12T17:05:56.5517870Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-non-framework-target-headers.hmap (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5518880Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5519810Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-non-framework-target-headers.hmap
+2026-11-12T17:05:56.5521040Z 
+2026-11-12T17:05:56.5524170Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibPath-normal-x86_64.txt (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5527770Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5529780Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibPath-normal-x86_64.txt
+2026-11-12T17:05:56.5531620Z 
+2026-11-12T17:05:56.5533640Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibPath-normal-arm64.txt (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5536060Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5538140Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibPath-normal-arm64.txt
+2026-11-12T17:05:56.5539890Z 
+2026-11-12T17:05:56.5541690Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibInstallName-normal-x86_64.txt (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5544720Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5547240Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibInstallName-normal-x86_64.txt
+2026-11-12T17:05:56.5548930Z 
+2026-11-12T17:05:56.5550970Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibInstallName-normal-arm64.txt (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5553800Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5555830Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-DebugDylibInstallName-normal-arm64.txt
+2026-11-12T17:05:56.5557820Z 
+2026-11-12T17:05:56.5559720Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Script-C10000000000000000000001.sh (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5562280Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5564180Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Script-C10000000000000000000001.sh
+2026-11-12T17:05:56.5565950Z 
+2026-11-12T17:05:56.5567880Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5570550Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5575930Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftFileList
+2026-11-12T17:05:56.5576750Z 
+2026-11-12T17:05:56.5577470Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftConstValuesFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5578700Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5579620Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftConstValuesFileList
+2026-11-12T17:05:56.5580290Z 
+2026-11-12T17:05:56.5581150Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.LinkFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5582940Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5586710Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.LinkFileList
+2026-11-12T17:05:56.5587560Z 
+2026-11-12T17:05:56.5588340Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA_const_extract_protocols.json (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5589290Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5590330Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA_const_extract_protocols.json
+2026-11-12T17:05:56.5591100Z 
+2026-11-12T17:05:56.5592270Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA-OutputFileMap.json (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5593310Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5594140Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA-OutputFileMap.json
+2026-11-12T17:05:56.5594900Z 
+2026-11-12T17:05:56.5595630Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5596740Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5597540Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftFileList
+2026-11-12T17:05:56.5598240Z 
+2026-11-12T17:05:56.5599250Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.LinkFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5600310Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5601080Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.LinkFileList
+2026-11-12T17:05:56.5601760Z 
+2026-11-12T17:05:56.5602520Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftConstValuesFileList (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5603520Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5604480Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftConstValuesFileList
+2026-11-12T17:05:56.5605150Z 
+2026-11-12T17:05:56.5605930Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA_const_extract_protocols.json (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5606960Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5607950Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA_const_extract_protocols.json
+2026-11-12T17:05:56.5611760Z 
+2026-11-12T17:05:56.5612580Z WriteAuxiliaryFile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA-OutputFileMap.json (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5613520Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5616030Z     write-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA-OutputFileMap.json
+2026-11-12T17:05:56.5618900Z 
+2026-11-12T17:05:56.5620030Z MkDir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5621990Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5623710Z     /bin/mkdir -p /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app
+2026-11-12T17:05:56.5624850Z 
+2026-11-12T17:05:56.5626870Z PhaseScriptExecution Build\ mGBA\ core /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Script-C10000000000000000000001.sh (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:05:56.5629850Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5630940Z     export ACTION\=build
+2026-11-12T17:05:56.5632220Z     export AD_HOC_CODE_SIGNING_ALLOWED\=YES
+2026-11-12T17:05:56.5633290Z     export AGGREGATE_TRACKED_DOMAINS\=YES
+2026-11-12T17:05:56.5634180Z     export ALLOW_BUILD_REQUEST_OVERRIDES\=NO
+2026-11-12T17:05:56.5635240Z     export ALLOW_TARGET_PLATFORM_SPECIALIZATION\=NO
+2026-11-12T17:05:56.5636270Z     export ALTERNATE_GROUP\=staff
+2026-11-12T17:05:56.5647900Z     export ALTERNATE_MODE\=u+w,go-w,a+rX
+2026-11-12T17:05:56.5649150Z     export ALTERNATE_OWNER\=runner
+2026-11-12T17:05:56.5650990Z     export ALTERNATIVE_DISTRIBUTION_WEB\=NO
+2026-11-12T17:05:56.5652760Z     export ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES\=NO
+2026-11-12T17:05:56.5654460Z     export ALWAYS_SEARCH_USER_PATHS\=NO
+2026-11-12T17:05:56.5655610Z     export ALWAYS_USE_SEPARATE_HEADERMAPS\=NO
+2026-11-12T17:05:56.5657350Z     export APPLICATION_EXTENSION_API_ONLY\=NO
+2026-11-12T17:05:56.5657840Z     export APPLY_RULES_IN_COPY_FILES\=NO
+2026-11-12T17:05:56.5658190Z     export APPLY_RULES_IN_COPY_HEADERS\=NO
+2026-11-12T17:05:56.5658770Z     export APP_SHORTCUTS_ENABLE_FLEXIBLE_MATCHING\=YES
+2026-11-12T17:05:56.5659320Z     export ARCHS\=arm64\ x86_64
+2026-11-12T17:05:56.5659680Z     export ARCHS_STANDARD\=arm64\ x86_64
+2026-11-12T17:05:56.5660140Z     export ARCHS_STANDARD_32_64_BIT\=arm64\ x86_64
+2026-11-12T17:05:56.5660550Z     export ARCHS_STANDARD_64_BIT\=arm64\ x86_64
+2026-11-12T17:05:56.5661040Z     export ARCHS_STANDARD_INCLUDING_64_BIT\=arm64\ x86_64
+2026-11-12T17:05:56.5661480Z     export ARCHS_UNIVERSAL_IPHONE_OS\=arm64\ x86_64
+2026-11-12T17:05:56.5665970Z     export ASSETCATALOG_COMPILER_APPICON_NAME\=AppIcon
+2026-11-12T17:05:56.5666650Z     export ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS\=YES
+2026-11-12T17:05:56.5667190Z     export AUTOMATICALLY_MERGE_DEPENDENCIES\=NO
+2026-11-12T17:05:56.5668030Z     export AVAILABLE_PLATFORMS\=android\ appletvos\ appletvsimulator\ driverkit\ iphoneos\ iphonesimulator\ macosx\ qnx\ watchos\ watchsimulator\ xros\ xrsimulator
+2026-11-12T17:05:56.5668820Z     export BITCODE_GENERATION_MODE\=marker
+2026-11-12T17:05:56.5669320Z     export BUILD_ACTIVE_RESOURCES_ONLY\=NO
+2026-11-12T17:05:56.5669770Z     export BUILD_COMPONENTS\=headers\ build
+2026-11-12T17:05:56.5670440Z     export BUILD_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products
+2026-11-12T17:05:56.5670910Z     export BUILD_LIBRARY_FOR_DISTRIBUTION\=NO
+2026-11-12T17:05:56.5671460Z     export BUILD_ROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products
+2026-11-12T17:05:56.5671980Z     export BUILD_STYLE\=
+2026-11-12T17:05:56.5672380Z     export BUILD_VARIANTS\=normal
+2026-11-12T17:05:56.5672930Z     export BUILT_PRODUCTS_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.5673620Z     export BUNDLE_CONTENTS_FOLDER_PATH_deep\=Contents/
+2026-11-12T17:05:56.5674160Z     export BUNDLE_EXECUTABLE_FOLDER_NAME_deep\=MacOS
+2026-11-12T17:05:56.5674590Z     export BUNDLE_EXTENSIONS_FOLDER_PATH\=Extensions
+2026-11-12T17:05:56.5675470Z     export BUNDLE_FORMAT\=shallow
+2026-11-12T17:05:56.5676080Z     export BUNDLE_FRAMEWORKS_FOLDER_PATH\=Frameworks
+2026-11-12T17:05:56.5676570Z     export BUNDLE_PLUGINS_FOLDER_PATH\=PlugIns
+2026-11-12T17:05:56.5677000Z     export BUNDLE_PRIVATE_HEADERS_FOLDER_PATH\=PrivateHeaders
+2026-11-12T17:05:56.5677520Z     export BUNDLE_PUBLIC_HEADERS_FOLDER_PATH\=Headers
+2026-11-12T17:05:56.5678200Z     export CACHE_ROOT\=/var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/C/com.apple.DeveloperTools/16.4-16F6/Xcode
+2026-11-12T17:05:56.5679240Z     export CCHROOT\=/var/folders/2s/vty41l455yv698g4xkgfv7z00000gn/C/com.apple.DeveloperTools/16.4-16F6/Xcode
+2026-11-12T17:05:56.5686050Z     export CHMOD\=/bin/chmod
+2026-11-12T17:05:56.5686430Z     export CHOWN\=/usr/sbin/chown
+2026-11-12T17:05:56.5686890Z     export CLANG_CACHE_FINE_GRAINED_OUTPUTS\=YES
+2026-11-12T17:05:56.5687290Z     export CLANG_ENABLE_EXPLICIT_MODULES\=YES
+2026-11-12T17:05:56.5687750Z     export CLANG_ENABLE_MODULES\=YES
+2026-11-12T17:05:56.5688310Z     export CLANG_ENABLE_OBJC_ARC\=YES
+2026-11-12T17:05:56.5688980Z     export CLANG_MODULES_BUILD_SESSION_FILE\=/Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex/Session.modulevalidation
+2026-11-12T17:05:56.5690030Z     export CLASS_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/JavaClasses
+2026-11-12T17:05:56.5690790Z     export CLEAN_PRECOMPS\=YES
+2026-11-12T17:05:56.5691190Z     export CLONE_HEADERS\=NO
+2026-11-12T17:05:56.5691920Z     export CODESIGNING_FOLDER_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app
+2026-11-12T17:05:56.5692650Z     export CODE_SIGNING_ALLOWED\=NO
+2026-11-12T17:05:56.5693060Z     export CODE_SIGNING_REQUIRED\=YES
+2026-11-12T17:05:56.5693480Z     export CODE_SIGN_CONTEXT_CLASS\=XCiPhoneSimulatorCodeSignContext
+2026-11-12T17:05:56.5694040Z     export CODE_SIGN_ENTITLEMENTS\=mGBA.entitlements
+2026-11-12T17:05:56.5694470Z     export CODE_SIGN_IDENTITY\=-
+2026-11-12T17:05:56.5694940Z     export CODE_SIGN_INJECT_BASE_ENTITLEMENTS\=YES
+2026-11-12T17:05:56.5695420Z     export CODE_SIGN_STYLE\=Automatic
+2026-11-12T17:05:56.5695790Z     export COLOR_DIAGNOSTICS\=NO
+2026-11-12T17:05:56.5696190Z     export COMBINE_HIDPI_IMAGES\=NO
+2026-11-12T17:05:56.5696780Z     export COMPILATION_CACHE_CAS_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/CompilationCache.noindex
+2026-11-12T17:05:56.5699260Z     export COMPILATION_CACHE_KEEP_CAS_DIRECTORY\=YES
+2026-11-12T17:05:56.5706190Z     export COMPILER_INDEX_STORE_ENABLE\=Default
+2026-11-12T17:05:56.5706920Z     export COMPOSITE_SDK_DIRS\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/CompositeSDKs
+2026-11-12T17:05:56.5707510Z     export COMPRESS_PNG_FILES\=YES
+2026-11-12T17:05:56.5707910Z     export CONFIGURATION\=Debug
+2026-11-12T17:05:56.5708510Z     export CONFIGURATION_BUILD_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.5709760Z     export CONFIGURATION_TEMP_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator
+2026-11-12T17:05:56.5725480Z     export CONTENTS_FOLDER_PATH\=mGBAx.app
+2026-11-12T17:05:56.5726090Z     export CONTENTS_FOLDER_PATH_SHALLOW_BUNDLE_NO\=mGBAx.app/Contents
+2026-11-12T17:05:56.5726630Z     export CONTENTS_FOLDER_PATH_SHALLOW_BUNDLE_YES\=mGBAx.app
+2026-11-12T17:05:56.5727090Z     export COPYING_PRESERVES_HFS_DATA\=NO
+2026-11-12T17:05:56.5727570Z     export COPY_HEADERS_RUN_UNIFDEF\=NO
+2026-11-12T17:05:56.5728020Z     export COPY_PHASE_STRIP\=NO
+2026-11-12T17:05:56.5728640Z     export CORRESPONDING_DEVICE_PLATFORM_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform
+2026-11-12T17:05:56.5729340Z     export CORRESPONDING_DEVICE_PLATFORM_NAME\=iphoneos
+2026-11-12T17:05:56.5730030Z     export CORRESPONDING_DEVICE_SDK_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.5.sdk
+2026-11-12T17:05:56.5731630Z     export CORRESPONDING_DEVICE_SDK_NAME\=iphoneos18.5
+2026-11-12T17:05:56.5732160Z     export CP\=/bin/cp
+2026-11-12T17:05:56.5732610Z     export CREATE_INFOPLIST_SECTION_IN_BINARY\=NO
+2026-11-12T17:05:56.5733050Z     export CURRENT_ARCH\=undefined_arch
+2026-11-12T17:05:56.5734570Z     export CURRENT_PROJECT_VERSION\=1
+2026-11-12T17:05:56.5735560Z     export CURRENT_VARIANT\=normal
+2026-11-12T17:05:56.5736690Z     export DEAD_CODE_STRIPPING\=YES
+2026-11-12T17:05:56.5737560Z     export DEBUGGING_SYMBOLS\=YES
+2026-11-12T17:05:56.5738640Z     export DEBUG_INFORMATION_FORMAT\=dwarf
+2026-11-12T17:05:56.5739780Z     export DEBUG_INFORMATION_VERSION\=compiler-default
+2026-11-12T17:05:56.5740880Z     export DEFAULT_COMPILER\=com.apple.compilers.llvm.clang.1_0
+2026-11-12T17:05:56.5742200Z     export DEFAULT_DEXT_INSTALL_PATH\=/System/Library/DriverExtensions
+2026-11-12T17:05:56.5743430Z     export DEFAULT_KEXT_INSTALL_PATH\=/System/Library/Extensions
+2026-11-12T17:05:56.5744720Z     export DEFINES_MODULE\=NO
+2026-11-12T17:05:56.5745150Z     export DEPLOYMENT_LOCATION\=NO
+2026-11-12T17:05:56.5746170Z     export DEPLOYMENT_POSTPROCESSING\=NO
+2026-11-12T17:05:56.5747510Z     export DEPLOYMENT_TARGET_SETTING_NAME\=IPHONEOS_DEPLOYMENT_TARGET
+2026-11-12T17:05:56.5749580Z     export DEPLOYMENT_TARGET_SUGGESTED_VALUES\=12.0\ 12.1\ 12.2\ 12.3\ 12.4\ 13.0\ 13.1\ 13.2\ 13.3\ 13.4\ 13.5\ 13.6\ 14.0\ 14.1\ 14.2\ 14.3\ 14.4\ 14.5\ 14.6\ 14.7\ 15.0\ 15.1\ 15.2\ 15.3\ 15.4\ 15.5\ 15.6\ 16.0\ 16.1\ 16.2\ 16.3\ 16.4\ 16.5\ 16.6\ 17.0\ 17.1\ 17.2\ 17.3\ 17.4\ 17.5\ 17.6\ 18.0\ 18.1\ 18.2\ 18.3\ 18.4\ 18.5
+2026-11-12T17:05:56.5753670Z     export DERIVED_FILES_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources
+2026-11-12T17:05:56.5757390Z     export DERIVED_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources
+2026-11-12T17:05:56.5760180Z     export DERIVED_SOURCES_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources
+2026-11-12T17:05:56.5761800Z     export DEVELOPER_APPLICATIONS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications
+2026-11-12T17:05:56.5763600Z     export DEVELOPER_BIN_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/usr/bin
+2026-11-12T17:05:56.5764610Z     export DEVELOPER_DIR\=/Applications/Xcode_16.4.app/Contents/Developer
+2026-11-12T17:05:56.5769540Z     export DEVELOPER_FRAMEWORKS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Library/Frameworks
+2026-11-12T17:05:56.5772920Z     export DEVELOPER_FRAMEWORKS_DIR_QUOTED\=/Applications/Xcode_16.4.app/Contents/Developer/Library/Frameworks
+2026-11-12T17:05:56.5774520Z     export DEVELOPER_LIBRARY_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Library
+2026-11-12T17:05:56.5787080Z     export DEVELOPER_SDK_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs
+2026-11-12T17:05:56.5790900Z     export DEVELOPER_TOOLS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Tools
+2026-11-12T17:05:56.5793430Z     export DEVELOPER_USR_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/usr
+2026-11-12T17:05:56.5795220Z     export DEVELOPMENT_LANGUAGE\=zh-Hans
+2026-11-12T17:05:56.5796640Z     export DIAGNOSE_MISSING_TARGET_DEPENDENCIES\=YES
+2026-11-12T17:05:56.5812350Z     export DIFF\=/usr/bin/diff
+2026-11-12T17:05:56.5812920Z     export DOCUMENTATION_FOLDER_PATH\=mGBAx.app/zh-Hans.lproj/Documentation
+2026-11-12T17:05:56.5837710Z     export DONT_GENERATE_INFOPLIST_FILE\=NO
+2026-11-12T17:05:56.5838100Z     export DSTROOT\=/tmp/mGBA.dst
+2026-11-12T17:05:56.5838880Z     export DT_TOOLCHAIN_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain
+2026-11-12T17:05:56.5843140Z     export DWARF_DSYM_FILE_NAME\=mGBAx.app.dSYM
+2026-11-12T17:05:56.5843560Z     export DWARF_DSYM_FILE_SHOULD_ACCOMPANY_PRODUCT\=NO
+2026-11-12T17:05:56.5844550Z     export DWARF_DSYM_FOLDER_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.5845290Z     export DYNAMIC_LIBRARY_EXTENSION\=dylib
+2026-11-12T17:05:56.5845640Z     export EAGER_COMPILATION_ALLOW_SCRIPTS\=NO
+2026-11-12T17:05:56.5846010Z     export EAGER_LINKING\=NO
+2026-11-12T17:05:56.5846310Z     export EFFECTIVE_PLATFORM_NAME\=-iphonesimulator
+2026-11-12T17:05:56.5846650Z     export EMBEDDED_CONTENT_CONTAINS_SWIFT\=NO
+2026-11-12T17:05:56.5846960Z     export EMBED_ASSET_PACKS_IN_PRODUCT_BUNDLE\=NO
+2026-11-12T17:05:56.5847360Z     export ENABLE_APP_SANDBOX\=NO
+2026-11-12T17:05:56.5848050Z     export ENABLE_BITCODE\=NO
+2026-11-12T17:05:56.5848240Z     export ENABLE_CODE_COVERAGE\=YES
+2026-11-12T17:05:56.5848430Z     export ENABLE_DEBUG_DYLIB\=YES
+2026-11-12T17:05:56.5848650Z     export ENABLE_DEFAULT_HEADER_SEARCH_PATHS\=YES
+2026-11-12T17:05:56.5848890Z     export ENABLE_DEFAULT_SEARCH_PATHS\=YES
+2026-11-12T17:05:56.5849120Z     export ENABLE_HARDENED_RUNTIME\=NO
+2026-11-12T17:05:56.5849340Z     export ENABLE_HEADER_DEPENDENCIES\=YES
+2026-11-12T17:05:56.5849570Z     export ENABLE_INCOMING_NETWORK_CONNECTIONS\=NO
+2026-11-12T17:05:56.5849820Z     export ENABLE_ON_DEMAND_RESOURCES\=YES
+2026-11-12T17:05:56.5850040Z     export ENABLE_OUTGOING_NETWORK_CONNECTIONS\=NO
+2026-11-12T17:05:56.5850270Z     export ENABLE_PREVIEWS\=NO
+2026-11-12T17:05:56.5850470Z     export ENABLE_RESOURCE_ACCESS_AUDIO_INPUT\=NO
+2026-11-12T17:05:56.5850710Z     export ENABLE_RESOURCE_ACCESS_BLUETOOTH\=NO
+2026-11-12T17:05:56.5850950Z     export ENABLE_RESOURCE_ACCESS_CALENDARS\=NO
+2026-11-12T17:05:56.5851180Z     export ENABLE_RESOURCE_ACCESS_CAMERA\=NO
+2026-11-12T17:05:56.5851400Z     export ENABLE_RESOURCE_ACCESS_CONTACTS\=NO
+2026-11-12T17:05:56.5851640Z     export ENABLE_RESOURCE_ACCESS_LOCATION\=NO
+2026-11-12T17:05:56.5851870Z     export ENABLE_RESOURCE_ACCESS_PRINTING\=NO
+2026-11-12T17:05:56.5852090Z     export ENABLE_RESOURCE_ACCESS_USB\=NO
+2026-11-12T17:05:56.5852300Z     export ENABLE_SDK_IMPORTS\=NO
+2026-11-12T17:05:56.5852500Z     export ENABLE_TESTABILITY\=NO
+2026-11-12T17:05:56.5852700Z     export ENABLE_TESTING_SEARCH_PATHS\=NO
+2026-11-12T17:05:56.5852920Z     export ENABLE_USER_SCRIPT_SANDBOXING\=NO
+2026-11-12T17:05:56.5853410Z     export ENABLE_XOJIT_PREVIEWS\=YES
+2026-11-12T17:05:56.5853660Z     export ENFORCE_VALID_ARCHS\=YES
+2026-11-12T17:05:56.5853860Z     export ENTITLEMENTS_ALLOWED\=NO
+2026-11-12T17:05:56.5854090Z     export ENTITLEMENTS_DESTINATION\=__entitlements
+2026-11-12T17:05:56.5854340Z     export ENTITLEMENTS_REQUIRED\=NO
+2026-11-12T17:05:56.5854660Z     export EXCLUDED_INSTALLSRC_SUBDIRECTORY_PATTERNS\=.DS_Store\ .svn\ .git\ .hg\ CVS
+2026-11-12T17:05:56.5855560Z     export EXCLUDED_RECURSIVE_SEARCH_PATH_SUBDIRECTORIES\=\*.nib\ \*.lproj\ \*.framework\ \*.gch\ \*.xcode\*\ \*.xcassets\ \(\*\)\ .DS_Store\ CVS\ .svn\ .git\ .hg\ \*.pbproj\ \*.pbxproj
+2026-11-12T17:05:56.5856190Z     export EXECUTABLES_FOLDER_PATH\=mGBAx.app/Executables
+2026-11-12T17:05:56.5856600Z     export EXECUTABLE_BLANK_INJECTION_DYLIB_PATH\=mGBAx.app/__preview.dylib
+2026-11-12T17:05:56.5857000Z     export EXECUTABLE_DEBUG_DYLIB_INSTALL_NAME\=@rpath/mGBAx.debug.dylib
+2026-11-12T17:05:56.5857360Z     export EXECUTABLE_DEBUG_DYLIB_PATH\=mGBAx.app/mGBAx.debug.dylib
+2026-11-12T17:05:56.5857650Z     export EXECUTABLE_FOLDER_PATH\=mGBAx.app
+2026-11-12T17:05:56.5857940Z     export EXECUTABLE_FOLDER_PATH_SHALLOW_BUNDLE_NO\=mGBAx.app/MacOS
+2026-11-12T17:05:56.5858270Z     export EXECUTABLE_FOLDER_PATH_SHALLOW_BUNDLE_YES\=mGBAx.app
+2026-11-12T17:05:56.5858540Z     export EXECUTABLE_NAME\=mGBAx
+2026-11-12T17:05:56.5858750Z     export EXECUTABLE_PATH\=mGBAx.app/mGBAx
+2026-11-12T17:05:56.5859000Z     export EXTENSIONS_FOLDER_PATH\=mGBAx.app/Extensions
+2026-11-12T17:05:56.5860130Z     export FILE_LIST\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects/LinkFileList
+2026-11-12T17:05:56.5861040Z     export FIXED_FILES_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/FixedFiles
+2026-11-12T17:05:56.5862330Z     export FRAMEWORKS_FOLDER_PATH\=mGBAx.app/Frameworks
+2026-11-12T17:05:56.5862600Z     export FRAMEWORK_FLAG_PREFIX\=-framework
+2026-11-12T17:05:56.5863100Z     export FRAMEWORK_SEARCH_PATHS\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator\ 
+2026-11-12T17:05:56.5863530Z     export FRAMEWORK_VERSION\=A
+2026-11-12T17:05:56.5863730Z     export FULL_PRODUCT_NAME\=mGBAx.app
+2026-11-12T17:05:56.5863940Z     export FUSE_BUILD_PHASES\=YES
+2026-11-12T17:05:56.5864130Z     export FUSE_BUILD_SCRIPT_PHASES\=NO
+2026-11-12T17:05:56.5864330Z     export GCC3_VERSION\=3.3
+2026-11-12T17:05:56.5864520Z     export GCC_DYNAMIC_NO_PIC\=NO
+2026-11-12T17:05:56.5864720Z     export GCC_INLINES_ARE_PRIVATE_EXTERN\=YES
+2026-11-12T17:05:56.5864940Z     export GCC_OBJC_LEGACY_DISPATCH\=YES
+2026-11-12T17:05:56.5865220Z     export GCC_PFE_FILE_C_DIALECTS\=c\ objective-c\ c++\ objective-c++
+2026-11-12T17:05:56.5866000Z     export GCC_SYMBOLS_PRIVATE_EXTERN\=YES
+2026-11-12T17:05:56.5866230Z     export GCC_TREAT_WARNINGS_AS_ERRORS\=NO
+2026-11-12T17:05:56.5866500Z     export GCC_VERSION\=com.apple.compilers.llvm.clang.1_0
+2026-11-12T17:05:56.5866820Z     export GCC_VERSION_IDENTIFIER\=com_apple_compilers_llvm_clang_1_0
+2026-11-12T17:05:56.5867120Z     export GCC_WARN_64_TO_32_BIT_CONVERSION\=NO
+2026-11-12T17:05:56.5867630Z     export GENERATED_MODULEMAP_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/GeneratedModuleMaps-iphonesimulator
+2026-11-12T17:05:56.5868350Z     export GENERATE_INFOPLIST_FILE\=NO
+2026-11-12T17:05:56.5868670Z     export GENERATE_INTERMEDIATE_TEXT_BASED_STUBS\=YES
+2026-11-12T17:05:56.5868970Z     export GENERATE_MASTER_OBJECT_FILE\=NO
+2026-11-12T17:05:56.5869260Z     export GENERATE_PKGINFO_FILE\=YES
+2026-11-12T17:05:56.5869460Z     export GENERATE_PROFILING_CODE\=NO
+2026-11-12T17:05:56.5869670Z     export GENERATE_TEXT_BASED_STUBS\=NO
+2026-11-12T17:05:56.5869870Z     export GID\=20
+2026-11-12T17:05:56.5870020Z     export GROUP\=staff
+2026-11-12T17:05:56.5870260Z     export HEADERMAP_INCLUDES_FLAT_ENTRIES_FOR_TARGET_BEING_BUILT\=YES
+2026-11-12T17:05:56.5870640Z     export HEADERMAP_INCLUDES_FRAMEWORK_ENTRIES_FOR_ALL_PRODUCT_TYPES\=YES
+2026-11-12T17:05:56.5871040Z     export HEADERMAP_INCLUDES_FRAMEWORK_ENTRIES_FOR_TARGETS_NOT_BEING_BUILT\=YES
+2026-11-12T17:05:56.5871410Z     export HEADERMAP_INCLUDES_NONPUBLIC_NONPRIVATE_HEADERS\=YES
+2026-11-12T17:05:56.5871700Z     export HEADERMAP_INCLUDES_PROJECT_HEADERS\=YES
+2026-11-12T17:05:56.5871960Z     export HEADERMAP_USES_FRAMEWORK_PREFIX_ENTRIES\=YES
+2026-11-12T17:05:56.5872190Z     export HEADERMAP_USES_VFS\=NO
+2026-11-12T17:05:56.5872790Z     export HEADER_SEARCH_PATHS\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/include\ /Users/runner/work/mgbax-ios/mgbax-ios/ios/../src/platform/mobile
+2026-11-12T17:05:56.5873410Z     export HIDE_BITCODE_SYMBOLS\=YES
+2026-11-12T17:05:56.5873640Z     export HOME\=/Users/runner
+2026-11-12T17:05:56.5873860Z     export HOST_ARCH\=arm64
+2026-11-12T17:05:56.5874060Z     export HOST_PLATFORM\=macosx
+2026-11-12T17:05:56.5874240Z     export ICONV\=/usr/bin/iconv
+2026-11-12T17:05:56.5874440Z     export IMPLICIT_DEPENDENCY_DOMAIN\=default
+2026-11-12T17:05:56.5874700Z     export INFOPLIST_ENABLE_CFBUNDLEICONS_MERGE\=YES
+2026-11-12T17:05:56.5874950Z     export INFOPLIST_EXPAND_BUILD_SETTINGS\=YES
+2026-11-12T17:05:56.5875180Z     export INFOPLIST_FILE\=Info.plist
+2026-11-12T17:05:56.5875390Z     export INFOPLIST_OUTPUT_FORMAT\=binary
+2026-11-12T17:05:56.5875620Z     export INFOPLIST_PATH\=mGBAx.app/Info.plist
+2026-11-12T17:05:56.5875840Z     export INFOPLIST_PREPROCESS\=NO
+2026-11-12T17:05:56.5876120Z     export INFOSTRINGS_PATH\=mGBAx.app/zh-Hans.lproj/InfoPlist.strings
+2026-11-12T17:05:56.5876420Z     export INLINE_PRIVATE_FRAMEWORKS\=NO
+2026-11-12T17:05:56.5876640Z     export INSTALLAPI_IGNORE_SKIP_INSTALL\=YES
+2026-11-12T17:05:56.5877340Z     export INSTALLHDRS_COPY_PHASE\=NO
+2026-11-12T17:05:56.5877550Z     export INSTALLHDRS_SCRIPT_PHASE\=NO
+2026-11-12T17:05:56.5877780Z     export INSTALL_DIR\=/tmp/mGBA.dst/Applications
+2026-11-12T17:05:56.5878020Z     export INSTALL_GROUP\=staff
+2026-11-12T17:05:56.5878220Z     export INSTALL_MODE_FLAG\=u+w,go-w,a+rX
+2026-11-12T17:05:56.5878430Z     export INSTALL_OWNER\=runner
+2026-11-12T17:05:56.5878620Z     export INSTALL_PATH\=/Applications
+2026-11-12T17:05:56.5878820Z     export INSTALL_ROOT\=/tmp/mGBA.dst
+2026-11-12T17:05:56.5879030Z     export IPHONEOS_DEPLOYMENT_TARGET\=15.0
+2026-11-12T17:05:56.5879250Z     export IS_UNOPTIMIZED_BUILD\=YES
+2026-11-12T17:05:56.5879600Z     export JAVAC_DEFAULT_FLAGS\=-J-Xms64m\ -J-XX:NewSize\=4M\ -J-Dfile.encoding\=UTF8
+2026-11-12T17:05:56.5880110Z     export JAVA_APP_STUB\=/System/Library/Frameworks/JavaVM.framework/Resources/MacOS/JavaApplicationStub
+2026-11-12T17:05:56.5880500Z     export JAVA_ARCHIVE_CLASSES\=YES
+2026-11-12T17:05:56.5880710Z     export JAVA_ARCHIVE_TYPE\=JAR
+2026-11-12T17:05:56.5880910Z     export JAVA_COMPILER\=/usr/bin/javac
+2026-11-12T17:05:56.5881120Z     export JAVA_FOLDER_PATH\=mGBAx.app/Java
+2026-11-12T17:05:56.5882020Z     export JAVA_FRAMEWORK_RESOURCES_DIRS\=Resources
+2026-11-12T17:05:56.5882290Z     export JAVA_JAR_FLAGS\=cv
+2026-11-12T17:05:56.5882470Z     export JAVA_SOURCE_SUBDIR\=.
+2026-11-12T17:05:56.5882660Z     export JAVA_USE_DEPENDENCIES\=YES
+2026-11-12T17:05:56.5882860Z     export JAVA_ZIP_FLAGS\=-urg
+2026-11-12T17:05:56.5883050Z     export JIKES_DEFAULT_FLAGS\=+E\ +OLDCSO
+2026-11-12T17:05:56.5883260Z     export KEEP_PRIVATE_EXTERNS\=NO
+2026-11-12T17:05:56.5883920Z     export LD_DEPENDENCY_INFO_FILE\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/undefined_arch/mGBAx_dependency_info.dat
+2026-11-12T17:05:56.5884580Z     export LD_EXPORT_SYMBOLS\=YES
+2026-11-12T17:05:56.5884770Z     export LD_GENERATE_MAP_FILE\=NO
+2026-11-12T17:05:56.5885660Z     export LD_MAP_FILE_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-LinkMap-normal-undefined_arch.txt
+2026-11-12T17:05:56.5886300Z     export LD_NO_PIE\=NO
+2026-11-12T17:05:56.5886520Z     export LD_QUOTE_LINKER_ARGUMENTS_FOR_COMPILER_DRIVER\=YES
+2026-11-12T17:05:56.5886840Z     export LD_RUNPATH_SEARCH_PATHS\=\ @executable_path/Frameworks
+2026-11-12T17:05:56.5887160Z     export LD_RUNPATH_SEARCH_PATHS_YES\=@loader_path/../Frameworks
+2026-11-12T17:05:56.5887440Z     export LD_SHARED_CACHE_ELIGIBLE\=Automatic
+2026-11-12T17:05:56.5887680Z     export LD_WARN_DUPLICATE_LIBRARIES\=NO
+2026-11-12T17:05:56.5887890Z     export LD_WARN_UNUSED_DYLIBS\=NO
+2026-11-12T17:05:56.5888340Z     export LEGACY_DEVELOPER_DIR\=/Applications/Xcode_16.4.app/Contents/PlugIns/Xcode3Core.ideplugin/Contents/SharedSupport/Developer
+2026-11-12T17:05:56.5888800Z     export LEX\=lex
+2026-11-12T17:05:56.5889010Z     export LIBRARY_DEXT_INSTALL_PATH\=/Library/DriverExtensions
+2026-11-12T17:05:56.5889280Z     export LIBRARY_FLAG_NOSPACE\=YES
+2026-11-12T17:05:56.5889480Z     export LIBRARY_FLAG_PREFIX\=-l
+2026-11-12T17:05:56.5889740Z     export LIBRARY_KEXT_INSTALL_PATH\=/Library/Extensions
+2026-11-12T17:05:56.5891220Z     export LIBRARY_SEARCH_PATHS\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator\ 
+2026-11-12T17:05:56.5892520Z     export LINKER_DISPLAYS_MANGLED_NAMES\=NO
+2026-11-12T17:05:56.5896550Z     export LINK_FILE_LIST_normal_arm64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.LinkFileList
+2026-11-12T17:05:56.5899710Z     export LINK_FILE_LIST_normal_x86_64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.LinkFileList
+2026-11-12T17:05:56.5900580Z     export LINK_OBJC_RUNTIME\=YES
+2026-11-12T17:05:56.5901200Z     export LINK_WITH_STANDARD_LIBRARIES\=YES
+2026-11-12T17:05:56.5901660Z     export LLVM_TARGET_TRIPLE_OS_VERSION\=ios15.0
+2026-11-12T17:05:56.5901910Z     export LLVM_TARGET_TRIPLE_SUFFIX\=-simulator
+2026-11-12T17:05:56.5902140Z     export LLVM_TARGET_TRIPLE_VENDOR\=apple
+2026-11-12T17:05:56.5902860Z     export LM_AUX_CONST_METADATA_LIST_PATH_normal_arm64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftConstValuesFileList
+2026-11-12T17:05:56.5904290Z     export LM_AUX_CONST_METADATA_LIST_PATH_normal_x86_64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftConstValuesFileList
+2026-11-12T17:05:56.5905020Z     export LOCALIZATION_EXPORT_SUPPORTED\=YES
+2026-11-12T17:05:56.5905280Z     export LOCALIZATION_PREFERS_STRING_CATALOGS\=NO
+2026-11-12T17:05:56.5905570Z     export LOCALIZED_RESOURCES_FOLDER_PATH\=mGBAx.app/zh-Hans.lproj
+2026-11-12T17:05:56.5905970Z     export LOCALIZED_STRING_MACRO_NAMES\=NSLocalizedString\ CFCopyLocalizedString
+2026-11-12T17:05:56.5906320Z     export LOCALIZED_STRING_SWIFTUI_SUPPORT\=YES
+2026-11-12T17:05:56.5907140Z     export LOCAL_ADMIN_APPS_DIR\=/Applications/Utilities
+2026-11-12T17:05:56.5907390Z     export LOCAL_APPS_DIR\=/Applications
+2026-11-12T17:05:56.5907620Z     export LOCAL_DEVELOPER_DIR\=/Library/Developer
+2026-11-12T17:05:56.5907850Z     export LOCAL_LIBRARY_DIR\=/Library
+2026-11-12T17:05:56.5908120Z     export LOCROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5908510Z     export LOCSYMROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5908780Z     export MACH_O_TYPE\=mh_execute
+2026-11-12T17:05:56.5908990Z     export MAC_OS_X_PRODUCT_BUILD_VERSION\=24H232
+2026-11-12T17:05:56.5909370Z     export MAC_OS_X_VERSION_ACTUAL\=150802
+2026-11-12T17:05:56.5909750Z     export MAC_OS_X_VERSION_MAJOR\=150000
+2026-11-12T17:05:56.5909990Z     export MAC_OS_X_VERSION_MINOR\=150800
+2026-11-12T17:05:56.5910220Z     export MAKE_MERGEABLE\=NO
+2026-11-12T17:05:56.5910410Z     export MARKETING_VERSION\=0.11.0
+2026-11-12T17:05:56.5910610Z     export MERGEABLE_LIBRARY\=NO
+2026-11-12T17:05:56.5910810Z     export MERGED_BINARY_TYPE\=none
+2026-11-12T17:05:56.5911030Z     export MERGE_LINKED_LIBRARIES\=NO
+2026-11-12T17:05:56.5911470Z     export METAL_LIBRARY_FILE_BASE\=default
+2026-11-12T17:05:56.5911960Z     export METAL_LIBRARY_OUTPUT_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app
+2026-11-12T17:05:56.5913950Z     export MODULES_FOLDER_PATH\=mGBAx.app/Modules
+2026-11-12T17:05:56.5914320Z     export MODULE_CACHE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex
+2026-11-12T17:05:56.5914690Z     export MTL_ENABLE_DEBUG_INFO\=INCLUDE_SOURCE
+2026-11-12T17:05:56.5914910Z     export NATIVE_ARCH\=arm64
+2026-11-12T17:05:56.5915090Z     export NATIVE_ARCH_32_BIT\=arm
+2026-11-12T17:05:56.5915300Z     export NATIVE_ARCH_64_BIT\=arm64
+2026-11-12T17:05:56.5915690Z     export NATIVE_ARCH_ACTUAL\=arm64
+2026-11-12T17:05:56.5915910Z     export NO_COMMON\=YES
+2026-11-12T17:05:56.5916090Z     export OBJC_ABI_VERSION\=2
+2026-11-12T17:05:56.5916600Z     export OBJECT_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects
+2026-11-12T17:05:56.5917630Z     export OBJECT_FILE_DIR_normal\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal
+2026-11-12T17:05:56.5918480Z     export OBJROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex
+2026-11-12T17:05:56.5918840Z     export ONLY_ACTIVE_ARCH\=NO
+2026-11-12T17:05:56.5919020Z     export OS\=MACOS
+2026-11-12T17:05:56.5919190Z     export OSAC\=/usr/bin/osacompile
+2026-11-12T17:05:56.5919610Z     export OTHER_LDFLAGS\=@/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mgba_ios.link
+2026-11-12T17:05:56.5920970Z     export PACKAGE_TYPE\=com.apple.package-type.wrapper.application
+2026-11-12T17:05:56.5921260Z     export PASCAL_STRINGS\=YES
+2026-11-12T17:05:56.5926230Z     export PATH\=/Applications/Xcode_16.4.app/Contents/SharedFrameworks/SwiftBuild.framework/Versions/A/PlugIns/SWBBuildService.bundle/Contents/PlugIns/SWBUniversalPlatformPlugin.bundle/Contents/Frameworks/SWBUniversalPlatform.framework/Resources:/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin:/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/bin:/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/libexec:/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/usr/bin:/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/usr/local/bin:/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/bin:/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/local/bin:/Applications/Xcode_16.4.app/Contents/Developer/usr/bin:/Applications/Xcode_16.4.app/Contents/Developer/usr/local/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/lib/ruby/gems/3.3.0/bin:/opt/homebrew/opt/ruby@3.3/bin:/Users/runner/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/runner/.cargo/bin:/usr/local/opt/curl/bin:/usr/local/bin:/usr/local/sbin:/Users/runner/bin:/Users/runner/.yarn/bin:/Users/runner/Library/Android/sdk/tools:/Users/runner/Library/Android/sdk/platform-tools:/Library/Frameworks/Python.framework/Versions/Current/bin:/Library/Frameworks/Mono.framework/Versions/Current/Commands:/usr/bin:/bin:/usr/sbin:/sbin:/Users/runner/.dotnet/tools
+2026-11-12T17:05:56.5932220Z     export PATH_PREFIXES_EXCLUDED_FROM_HEADER_DEPENDENCIES\=/usr/include\ /usr/local/include\ /System/Library/Frameworks\ /System/Library/PrivateFrameworks\ /Applications/Xcode_16.4.app/Contents/Developer/Headers\ /Applications/Xcode_16.4.app/Contents/Developer/SDKs\ /Applications/Xcode_16.4.app/Contents/Developer/Platforms
+2026-11-12T17:05:56.5933960Z     export PBDEVELOPMENTPLIST_PATH\=mGBAx.app/pbdevelopment.plist
+2026-11-12T17:05:56.5934650Z     export PER_ARCH_MODULE_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/undefined_arch
+2026-11-12T17:05:56.5935740Z     export PER_ARCH_OBJECT_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/undefined_arch
+2026-11-12T17:05:56.5938180Z     export PER_VARIANT_OBJECT_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal
+2026-11-12T17:05:56.5940920Z     export PKGINFO_FILE_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/PkgInfo
+2026-11-12T17:05:56.5941620Z     export PKGINFO_PATH\=mGBAx.app/PkgInfo
+2026-11-12T17:05:56.5942180Z     export PLATFORM_DEVELOPER_APPLICATIONS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Applications
+2026-11-12T17:05:56.5942970Z     export PLATFORM_DEVELOPER_BIN_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/bin
+2026-11-12T17:05:56.5943870Z     export PLATFORM_DEVELOPER_LIBRARY_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library
+2026-11-12T17:05:56.5944640Z     export PLATFORM_DEVELOPER_SDK_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs
+2026-11-12T17:05:56.5945530Z     export PLATFORM_DEVELOPER_TOOLS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Tools
+2026-11-12T17:05:56.5946300Z     export PLATFORM_DEVELOPER_USR_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr
+2026-11-12T17:05:56.5947860Z     export PLATFORM_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform
+2026-11-12T17:05:56.5948280Z     export PLATFORM_DISPLAY_NAME\=iOS\ Simulator
+2026-11-12T17:05:56.5949190Z     export PLATFORM_FAMILY_NAME\=iOS
+2026-11-12T17:05:56.5949820Z     export PLATFORM_NAME\=iphonesimulator
+2026-11-12T17:05:56.5950460Z     export PLATFORM_PREFERRED_ARCH\=x86_64
+2026-11-12T17:05:56.5951210Z     export PLATFORM_PRODUCT_BUILD_VERSION\=22F76
+2026-11-12T17:05:56.5951910Z     export PLATFORM_REQUIRES_SWIFT_AUTOLINK_EXTRACT\=NO
+2026-11-12T17:05:56.5952620Z     export PLATFORM_REQUIRES_SWIFT_MODULEWRAP\=NO
+2026-11-12T17:05:56.5953260Z     export PLIST_FILE_OUTPUT_FORMAT\=binary
+2026-11-12T17:05:56.5953890Z     export PLUGINS_FOLDER_PATH\=mGBAx.app/PlugIns
+2026-11-12T17:05:56.5954740Z     export PRECOMPS_INCLUDE_HEADERS_FROM_BUILT_PRODUCTS_DIR\=YES
+2026-11-12T17:05:56.5956440Z     export PRECOMP_DESTINATION_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/PrefixHeaders
+2026-11-12T17:05:56.5957480Z     export PRIVATE_HEADERS_FOLDER_PATH\=mGBAx.app/PrivateHeaders
+2026-11-12T17:05:56.5958440Z     export PROCESSED_INFOPLIST_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/undefined_arch/Processed-Info.plist
+2026-11-12T17:05:56.5959140Z     export PRODUCT_BUNDLE_IDENTIFIER\=io.mgba.ios
+2026-11-12T17:05:56.5959390Z     export PRODUCT_BUNDLE_PACKAGE_TYPE\=APPL
+2026-11-12T17:05:56.5959620Z     export PRODUCT_MODULE_NAME\=mGBAx
+2026-11-12T17:05:56.5959820Z     export PRODUCT_NAME\=mGBAx
+2026-11-12T17:05:56.5960120Z     export PRODUCT_SETTINGS_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/ios/Info.plist
+2026-11-12T17:05:56.5960540Z     export PRODUCT_TYPE\=com.apple.product-type.application
+2026-11-12T17:05:56.5960860Z     export PROFILING_CODE\=NO
+2026-11-12T17:05:56.5961110Z     export PROJECT\=mGBA
+2026-11-12T17:05:56.5961560Z     export PROJECT_DERIVED_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/DerivedSources
+2026-11-12T17:05:56.5962090Z     export PROJECT_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.5962480Z     export PROJECT_FILE_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.5962840Z     export PROJECT_GUID\=9bd4fe25229879865f5b77baac12a0b8
+2026-11-12T17:05:56.5963090Z     export PROJECT_NAME\=mGBA
+2026-11-12T17:05:56.5963700Z     export PROJECT_TEMP_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build
+2026-11-12T17:05:56.5964370Z     export PROJECT_TEMP_ROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex
+2026-11-12T17:05:56.6066280Z     export PROVISIONING_PROFILE_REQUIRED\=NO
+2026-11-12T17:05:56.6066770Z     export PROVISIONING_PROFILE_REQUIRED_YES_YES\=YES
+2026-11-12T17:05:56.6067080Z     export PROVISIONING_PROFILE_SUPPORTED\=YES
+2026-11-12T17:05:56.6067390Z     export PUBLIC_HEADERS_FOLDER_PATH\=mGBAx.app/Headers
+2026-11-12T17:05:56.6067780Z     export RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET\=15.0
+2026-11-12T17:05:56.6068110Z     export RECURSIVE_SEARCH_PATHS_FOLLOW_SYMLINKS\=YES
+2026-11-12T17:05:56.6068350Z     export REMOVE_CVS_FROM_RESOURCES\=YES
+2026-11-12T17:05:56.6068570Z     export REMOVE_GIT_FROM_RESOURCES\=YES
+2026-11-12T17:05:56.6068800Z     export REMOVE_HEADERS_FROM_EMBEDDED_BUNDLES\=YES
+2026-11-12T17:05:56.6069050Z     export REMOVE_HG_FROM_RESOURCES\=YES
+2026-11-12T17:05:56.6069370Z     export REMOVE_STATIC_EXECUTABLES_FROM_EMBEDDED_BUNDLES\=YES
+2026-11-12T17:05:56.6069660Z     export REMOVE_SVN_FROM_RESOURCES\=YES
+2026-11-12T17:05:56.6069900Z     export RESCHEDULE_INDEPENDENT_HEADERS_PHASES\=YES
+2026-11-12T17:05:56.6070530Z     export REZ_COLLECTOR_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/ResourceManagerResources
+2026-11-12T17:05:56.6073130Z     export REZ_OBJECTS_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/ResourceManagerResources/Objects
+2026-11-12T17:05:56.6073960Z     export REZ_SEARCH_PATHS\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator\ 
+2026-11-12T17:05:56.6074420Z     export SCAN_ALL_SOURCE_FILES_FOR_INCLUDES\=NO
+2026-11-12T17:05:56.6074680Z     export SCRIPTS_FOLDER_PATH\=mGBAx.app/Scripts
+2026-11-12T17:05:56.6074910Z     export SCRIPT_INPUT_FILE_COUNT\=0
+2026-11-12T17:05:56.6075140Z     export SCRIPT_INPUT_FILE_LIST_COUNT\=0
+2026-11-12T17:05:56.6075590Z     export SCRIPT_OUTPUT_FILE_0\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/libmgba_ios.a
+2026-11-12T17:05:56.6076290Z     export SCRIPT_OUTPUT_FILE_1\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mgba_ios.link
+2026-11-12T17:05:56.6076750Z     export SCRIPT_OUTPUT_FILE_COUNT\=2
+2026-11-12T17:05:56.6076990Z     export SCRIPT_OUTPUT_FILE_LIST_COUNT\=0
+2026-11-12T17:05:56.6077520Z     export SDKROOT\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk
+2026-11-12T17:05:56.6078340Z     export SDK_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk
+2026-11-12T17:05:56.6079190Z     export SDK_DIR_iphonesimulator\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk
+2026-11-12T17:05:56.6080100Z     export SDK_DIR_iphonesimulator18_5\=/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk
+2026-11-12T17:05:56.6080670Z     export SDK_NAME\=iphonesimulator18.5
+2026-11-12T17:05:56.6080890Z     export SDK_NAMES\=iphonesimulator18.5
+2026-11-12T17:05:56.6081110Z     export SDK_PRODUCT_BUILD_VERSION\=22F76
+2026-11-12T17:05:56.6081420Z     export SDK_STAT_CACHE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build
+2026-11-12T17:05:56.6081720Z     export SDK_STAT_CACHE_ENABLE\=YES
+2026-11-12T17:05:56.6082300Z     export SDK_STAT_CACHE_PATH\=/Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache
+2026-11-12T17:05:56.6082900Z     export SDK_VERSION\=18.5
+2026-11-12T17:05:56.6083080Z     export SDK_VERSION_ACTUAL\=180500
+2026-11-12T17:05:56.6083280Z     export SDK_VERSION_MAJOR\=180000
+2026-11-12T17:05:56.6083490Z     export SDK_VERSION_MINOR\=180500
+2026-11-12T17:05:56.6083690Z     export SED\=/usr/bin/sed
+2026-11-12T17:05:56.6083900Z     export SEPARATE_STRIP\=NO
+2026-11-12T17:05:56.6084090Z     export SEPARATE_SYMBOL_EDIT\=NO
+2026-11-12T17:05:56.6084290Z     export SET_DIR_MODE_OWNER_GROUP\=YES
+2026-11-12T17:05:56.6084510Z     export SET_FILE_MODE_OWNER_GROUP\=NO
+2026-11-12T17:05:56.6084710Z     export SHALLOW_BUNDLE\=YES
+2026-11-12T17:05:56.6084920Z     export SHALLOW_BUNDLE_TRIPLE\=ios-simulator
+2026-11-12T17:05:56.6085170Z     export SHALLOW_BUNDLE_ios_macabi\=NO
+2026-11-12T17:05:56.6085400Z     export SHALLOW_BUNDLE_macos\=NO
+2026-11-12T17:05:56.6085890Z     export SHARED_DERIVED_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/DerivedSources
+2026-11-12T17:05:56.6086470Z     export SHARED_FRAMEWORKS_FOLDER_PATH\=mGBAx.app/SharedFrameworks
+2026-11-12T17:05:56.6087690Z     export SHARED_PRECOMPS_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders
+2026-11-12T17:05:56.6088320Z     export SHARED_SUPPORT_FOLDER_PATH\=mGBAx.app/SharedSupport
+2026-11-12T17:05:56.6088590Z     export SKIP_INSTALL\=NO
+2026-11-12T17:05:56.6088830Z     export SOURCE_ROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.6089160Z     export SRCROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:05:56.6089810Z     export STRINGSDATA_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/undefined_arch
+2026-11-12T17:05:56.6092090Z     export STRINGSDATA_ROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build
+2026-11-12T17:05:56.6092760Z     export STRINGS_FILE_INFOPLIST_RENAME\=YES
+2026-11-12T17:05:56.6093010Z     export STRINGS_FILE_OUTPUT_ENCODING\=binary
+2026-11-12T17:05:56.6093260Z     export STRIP_BITCODE_FROM_COPIED_FILES\=NO
+2026-11-12T17:05:56.6093520Z     export STRIP_INSTALLED_PRODUCT\=YES
+2026-11-12T17:05:56.6093730Z     export STRIP_STYLE\=all
+2026-11-12T17:05:56.6093910Z     export STRIP_SWIFT_SYMBOLS\=YES
+2026-11-12T17:05:56.6094120Z     export SUPPORTED_DEVICE_FAMILIES\=1,2
+2026-11-12T17:05:56.6094380Z     export SUPPORTED_PLATFORMS\=iphoneos\ iphonesimulator
+2026-11-12T17:05:56.6094640Z     export SUPPORTS_MACCATALYST\=NO
+2026-11-12T17:05:56.6094850Z     export SUPPORTS_ON_DEMAND_RESOURCES\=YES
+2026-11-12T17:05:56.6095080Z     export SUPPORTS_TEXT_BASED_API\=NO
+2026-11-12T17:05:56.6095280Z     export SUPPRESS_WARNINGS\=NO
+2026-11-12T17:05:56.6096540Z     export SWIFT_ACTIVE_COMPILATION_CONDITIONS\=DEBUG
+2026-11-12T17:05:56.6096820Z     export SWIFT_EMIT_LOC_STRINGS\=YES
+2026-11-12T17:05:56.6097170Z     export SWIFT_OBJC_BRIDGING_HEADER\=mGBA/mGBA-Bridging-Header.h
+2026-11-12T17:05:56.6097470Z     export SWIFT_OPTIMIZATION_LEVEL\=-Onone
+2026-11-12T17:05:56.6099090Z     export SWIFT_PLATFORM_TARGET_PREFIX\=ios
+2026-11-12T17:05:56.6100900Z     export SWIFT_RESPONSE_FILE_PATH_normal_arm64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftFileList
+2026-11-12T17:05:56.6104250Z     export SWIFT_RESPONSE_FILE_PATH_normal_x86_64\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftFileList
+2026-11-12T17:05:56.6106270Z     export SWIFT_VERSION\=5.0
+2026-11-12T17:05:56.6112730Z     export SYMROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products
+2026-11-12T17:05:56.6113810Z     export SYSTEM_ADMIN_APPS_DIR\=/Applications/Utilities
+2026-11-12T17:05:56.6114570Z     export SYSTEM_APPS_DIR\=/Applications
+2026-11-12T17:05:56.6115360Z     export SYSTEM_CORE_SERVICES_DIR\=/System/Library/CoreServices
+2026-11-12T17:05:56.6116200Z     export SYSTEM_DEMOS_DIR\=/Applications/Extras
+2026-11-12T17:05:56.6117350Z     export SYSTEM_DEVELOPER_APPS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications
+2026-11-12T17:05:56.6119190Z     export SYSTEM_DEVELOPER_BIN_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/usr/bin
+2026-11-12T17:05:56.6120990Z     export SYSTEM_DEVELOPER_DEMOS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications/Utilities/Built\ Examples
+2026-11-12T17:05:56.6124670Z     export SYSTEM_DEVELOPER_DIR\=/Applications/Xcode_16.4.app/Contents/Developer
+2026-11-12T17:05:56.6126230Z     export SYSTEM_DEVELOPER_DOC_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/ADC\ Reference\ Library
+2026-11-12T17:05:56.6127980Z     export SYSTEM_DEVELOPER_GRAPHICS_TOOLS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications/Graphics\ Tools
+2026-11-12T17:05:56.6129810Z     export SYSTEM_DEVELOPER_JAVA_TOOLS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications/Java\ Tools
+2026-11-12T17:05:56.6131660Z     export SYSTEM_DEVELOPER_PERFORMANCE_TOOLS_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications/Performance\ Tools
+2026-11-12T17:05:56.6133630Z     export SYSTEM_DEVELOPER_RELEASENOTES_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/ADC\ Reference\ Library/releasenotes
+2026-11-12T17:05:56.6135520Z     export SYSTEM_DEVELOPER_TOOLS\=/Applications/Xcode_16.4.app/Contents/Developer/Tools
+2026-11-12T17:05:56.6137170Z     export SYSTEM_DEVELOPER_TOOLS_DOC_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/ADC\ Reference\ Library/documentation/DeveloperTools
+2026-11-12T17:05:56.6140450Z     export SYSTEM_DEVELOPER_TOOLS_RELEASENOTES_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/ADC\ Reference\ Library/releasenotes/DeveloperTools
+2026-11-12T17:05:56.6147680Z     export SYSTEM_DEVELOPER_USR_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/usr
+2026-11-12T17:05:56.6148400Z     export SYSTEM_DEVELOPER_UTILITIES_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Applications/Utilities
+2026-11-12T17:05:56.6148890Z     export SYSTEM_DEXT_INSTALL_PATH\=/System/Library/DriverExtensions
+2026-11-12T17:05:56.6149310Z     export SYSTEM_DOCUMENTATION_DIR\=/Library/Documentation
+2026-11-12T17:05:56.6149660Z     export SYSTEM_EXTENSIONS_FOLDER_PATH\=mGBAx.app/SystemExtensions
+2026-11-12T17:05:56.6150080Z     export SYSTEM_EXTENSIONS_FOLDER_PATH_SHALLOW_BUNDLE_NO\=mGBAx.app/Library/SystemExtensions
+2026-11-12T17:05:56.6151640Z     export SYSTEM_EXTENSIONS_FOLDER_PATH_SHALLOW_BUNDLE_YES\=mGBAx.app/SystemExtensions
+2026-11-12T17:05:56.6152770Z     export SYSTEM_KEXT_INSTALL_PATH\=/System/Library/Extensions
+2026-11-12T17:05:56.6153750Z     export SYSTEM_LIBRARY_DIR\=/System/Library
+2026-11-12T17:05:56.6156500Z     export TAPI_DEMANGLE\=YES
+2026-11-12T17:05:56.6157160Z     export TAPI_ENABLE_PROJECT_HEADERS\=NO
+2026-11-12T17:05:56.6157800Z     export TAPI_LANGUAGE\=objective-c
+2026-11-12T17:05:56.6158440Z     export TAPI_LANGUAGE_STANDARD\=compiler-default
+2026-11-12T17:05:56.6159090Z     export TAPI_USE_SRCROOT\=YES
+2026-11-12T17:05:56.6159630Z     export TAPI_VERIFY_MODE\=Pedantic
+2026-11-12T17:05:56.6160200Z     export TARGETED_DEVICE_FAMILY\=1,2
+2026-11-12T17:05:56.6160750Z     export TARGETNAME\=mGBA
+2026-11-12T17:05:56.6161860Z     export TARGET_BUILD_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator
+2026-11-12T17:05:56.6165260Z     export TARGET_NAME\=mGBA
+2026-11-12T17:05:56.6169570Z     export TARGET_TEMP_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build
+2026-11-12T17:05:56.6174110Z     export TEMP_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build
+2026-11-12T17:05:56.6178260Z     export TEMP_FILES_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build
+2026-11-12T17:05:56.6179130Z     export TEMP_FILE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build
+2026-11-12T17:05:56.6179760Z     export TEMP_ROOT\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex
+2026-11-12T17:05:56.6180340Z     export TEMP_SANDBOX_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/TemporaryTaskSandboxes
+2026-11-12T17:05:56.6181540Z     export TEST_FRAMEWORK_SEARCH_PATHS\=\ /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/Library/Frameworks\ /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk/Developer/Library/Frameworks
+2026-11-12T17:05:56.6182990Z     export TEST_LIBRARY_SEARCH_PATHS\=\ /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/usr/lib
+2026-11-12T17:05:56.6183520Z     export TOOLCHAINS\=com.apple.dt.toolchain.XcodeDefault
+2026-11-12T17:05:56.6183970Z     export TOOLCHAIN_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain
+2026-11-12T17:05:56.6184400Z     export TREAT_MISSING_BASELINES_AS_TEST_FAILURES\=NO
+2026-11-12T17:05:56.6184740Z     export TREAT_MISSING_SCRIPT_PHASE_OUTPUTS_AS_ERRORS\=NO
+2026-11-12T17:05:56.6184990Z     export UID\=501
+2026-11-12T17:05:56.6185440Z     export UNINSTALLED_PRODUCTS_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/UninstalledProducts
+2026-11-12T17:05:56.6185930Z     export UNLOCALIZED_RESOURCES_FOLDER_PATH\=mGBAx.app
+2026-11-12T17:05:56.6186280Z     export UNLOCALIZED_RESOURCES_FOLDER_PATH_SHALLOW_BUNDLE_NO\=mGBAx.app/Resources
+2026-11-12T17:05:56.6187370Z     export UNLOCALIZED_RESOURCES_FOLDER_PATH_SHALLOW_BUNDLE_YES\=mGBAx.app
+2026-11-12T17:05:56.6187670Z     export UNSTRIPPED_PRODUCT\=NO
+2026-11-12T17:05:56.6187850Z     export USER\=runner
+2026-11-12T17:05:56.6188050Z     export USER_APPS_DIR\=/Users/runner/Applications
+2026-11-12T17:05:56.6189180Z     export USER_LIBRARY_DIR\=/Users/runner/Library
+2026-11-12T17:05:56.6189890Z     export USE_DYNAMIC_NO_PIC\=YES
+2026-11-12T17:05:56.6190570Z     export USE_HEADERMAP\=YES
+2026-11-12T17:05:56.6191080Z     export USE_HEADER_SYMLINKS\=NO
+2026-11-12T17:05:56.6191690Z     export VALIDATE_DEVELOPMENT_ASSET_PATHS\=YES_ERROR
+2026-11-12T17:05:56.6192370Z     export VALIDATE_PRODUCT\=NO
+2026-11-12T17:05:56.6192920Z     export VALID_ARCHS\=arm64\ arm64e\ x86_64
+2026-11-12T17:05:56.6193550Z     export VERBOSE_PBXCP\=NO
+2026-11-12T17:05:56.6194160Z     export VERSIONPLIST_PATH\=mGBAx.app/version.plist
+2026-11-12T17:05:56.6194830Z     export VERSION_INFO_BUILDER\=runner
+2026-11-12T17:05:56.6195450Z     export VERSION_INFO_FILE\=mGBAx_vers.c
+2026-11-12T17:05:56.6196260Z     export VERSION_INFO_STRING\=\"@\(\#\)PROGRAM:mGBAx\ \ PROJECT:mGBA-1\"
+2026-11-12T17:05:56.6197330Z     export WORKSPACE_DIR\=/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA.xcodeproj
+2026-11-12T17:05:56.6198200Z     export WRAPPER_EXTENSION\=app
+2026-11-12T17:05:56.6198750Z     export WRAPPER_NAME\=mGBAx.app
+2026-11-12T17:05:56.6199330Z     export WRAPPER_SUFFIX\=.app
+2026-11-12T17:05:56.6199950Z     export WRAP_ASSET_PACKS_IN_SEPARATE_DIRECTORIES\=NO
+2026-11-12T17:05:56.6201100Z     export XCODE_APP_SUPPORT_DIR\=/Applications/Xcode_16.4.app/Contents/Developer/Library/Xcode
+2026-11-12T17:05:56.6203430Z     export XCODE_PRODUCT_BUILD_VERSION\=16F6
+2026-11-12T17:05:56.6204070Z     export XCODE_VERSION_ACTUAL\=1640
+2026-11-12T17:05:56.6204630Z     export XCODE_VERSION_MAJOR\=1600
+2026-11-12T17:05:56.6205190Z     export XCODE_VERSION_MINOR\=1640
+2026-11-12T17:05:56.6205860Z     export XPCSERVICES_FOLDER_PATH\=mGBAx.app/XPCServices
+2026-11-12T17:05:56.6206560Z     export YACC\=yacc
+2026-11-12T17:05:56.6207080Z     export _DISCOVER_COMMAND_LINE_LINKER_INPUTS\=YES
+2026-11-12T17:05:56.6207850Z     export _DISCOVER_COMMAND_LINE_LINKER_INPUTS_INCLUDE_WL\=YES
+2026-11-12T17:05:56.6208680Z     export _WRAPPER_CONTENTS_DIR_SHALLOW_BUNDLE_NO\=/Contents
+2026-11-12T17:05:56.6209480Z     export _WRAPPER_PARENT_PATH_SHALLOW_BUNDLE_NO\=/..
+2026-11-12T17:05:56.6210280Z     export _WRAPPER_RESOURCES_DIR_SHALLOW_BUNDLE_NO\=/Resources
+2026-11-12T17:05:56.6211010Z     export __DIAGNOSE_DEPRECATED_ARCHS\=YES
+2026-11-12T17:05:56.6211610Z     export __IS_NOT_MACOS\=YES
+2026-11-12T17:05:56.6212130Z     export __IS_NOT_MACOS_macosx\=NO
+2026-11-12T17:05:56.6212660Z     export __IS_NOT_SIMULATOR\=NO
+2026-11-12T17:05:56.6213200Z     export __IS_NOT_SIMULATOR_simulator\=NO
+2026-11-12T17:05:56.6213780Z     export arch\=undefined_arch
+2026-11-12T17:05:56.6214270Z     export variant\=normal
+2026-11-12T17:05:56.6215710Z     /bin/sh -c /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Script-C10000000000000000000001.sh
+2026-11-12T17:06:02.7176180Z -- The C compiler identification is AppleClang 17.0.0.17000013
+2026-11-12T17:06:02.7290340Z -- The CXX compiler identification is AppleClang 17.0.0.17000013
+2026-11-12T17:06:02.7399300Z -- Detecting C compiler ABI info
+2026-11-12T17:06:02.7524910Z -- Detecting C compiler ABI info - done
+2026-11-12T17:06:02.7636910Z -- Check for working C compiler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc - skipped
+2026-11-12T17:06:02.7747890Z -- Detecting C compile features
+2026-11-12T17:06:02.7849110Z -- Detecting C compile features - done
+2026-11-12T17:06:02.7950150Z -- Detecting CXX compiler ABI info
+2026-11-12T17:06:02.8051300Z -- Detecting CXX compiler ABI info - done
+2026-11-12T17:06:02.8153290Z -- Check for working CXX compiler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ - skipped
+2026-11-12T17:06:02.8269500Z -- Detecting CXX compile features
+2026-11-12T17:06:02.8371690Z -- Detecting CXX compile features - done
+2026-11-12T17:06:02.8473270Z -- Found PkgConfig: /opt/homebrew/bin/pkg-config (found version "3.0.10")
+2026-11-12T17:06:02.8473630Z -- Looking for strdup
+2026-11-12T17:06:02.8473800Z -- Looking for strdup - found
+2026-11-12T17:06:02.8473980Z -- Looking for strlcpy
+2026-11-12T17:06:02.8474140Z -- Looking for strlcpy - found
+2026-11-12T17:06:02.8474310Z -- Looking for strndup
+2026-11-12T17:06:02.8474470Z -- Looking for strndup - found
+2026-11-12T17:06:02.8474640Z -- Looking for vasprintf
+2026-11-12T17:06:02.8474810Z -- Looking for vasprintf - found
+2026-11-12T17:06:02.8475000Z -- Looking for freelocale
+2026-11-12T17:06:02.8475210Z -- Looking for freelocale - found
+2026-11-12T17:06:02.8475440Z -- Looking for newlocale
+2026-11-12T17:06:02.8475610Z -- Looking for newlocale - found
+2026-11-12T17:06:02.8475790Z -- Looking for setlocale
+2026-11-12T17:06:02.8475990Z -- Looking for setlocale - found
+2026-11-12T17:06:02.8476200Z -- Looking for snprintf_l
+2026-11-12T17:06:02.8476410Z -- Looking for snprintf_l - found
+2026-11-12T17:06:02.8476610Z -- Looking for uselocale
+2026-11-12T17:06:02.8476770Z -- Looking for uselocale - found
+2026-11-12T17:06:02.8476960Z -- Looking for popcount32
+2026-11-12T17:06:02.8477140Z -- Looking for popcount32 - not found
+2026-11-12T17:06:02.8477330Z -- Looking for futimens
+2026-11-12T17:06:02.8477500Z -- Looking for futimens - found
+2026-11-12T17:06:02.8477670Z -- Looking for futimes
+2026-11-12T17:06:02.8477830Z -- Looking for futimes - found
+2026-11-12T17:06:02.8478000Z -- Looking for localtime_r
+2026-11-12T17:06:02.8478170Z -- Looking for localtime_r - found
+2026-11-12T17:06:02.8478350Z -- Looking for realpath
+2026-11-12T17:06:02.8478510Z -- Looking for realpath - found
+2026-11-12T17:06:02.8478690Z -- Looking for strtof_l
+2026-11-12T17:06:02.8478840Z -- Looking for strtof_l - found
+2026-11-12T17:06:02.8479030Z -- Looking for include file xlocale.h
+2026-11-12T17:06:02.8479250Z -- Looking for include file xlocale.h - found
+2026-11-12T17:06:02.8479480Z -- Looking for include file pthread.h
+2026-11-12T17:06:02.8479690Z -- Looking for include file pthread.h - found
+2026-11-12T17:06:02.8480130Z -- Performing Test HAVE_PTHREAD
+2026-11-12T17:06:02.8611370Z -- Performing Test HAVE_PTHREAD - Success
+2026-11-12T17:06:02.8712640Z -- Looking for pthread_create
+2026-11-12T17:06:02.8813640Z -- Looking for pthread_create - found
+2026-11-12T17:06:02.8914760Z -- Looking for include file pthread_np.h
+2026-11-12T17:06:02.9015810Z -- Looking for include file pthread_np.h - not found
+2026-11-12T17:06:02.9117240Z -- Looking for pthread_setname_np
+2026-11-12T17:06:02.9218230Z -- Looking for pthread_setname_np - found
+2026-11-12T17:06:02.9348610Z -- Looking for pthread_set_name_np
+2026-11-12T17:06:02.9460650Z -- Looking for pthread_set_name_np - not found
+2026-11-12T17:06:02.9561690Z -- Checking for one of the modules 'PNG'
+2026-11-12T17:06:02.9663600Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T17:06:02.9785370Z   Requested module PNG missing for feature USE_PNG.  Feature disabled.
+2026-11-12T17:06:02.9886730Z Call Stack (most recent call first):
+2026-11-12T17:06:03.0079330Z   CMakeLists.txt:524 (find_feature)
+2026-11-12T17:06:03.0188180Z 
+2026-11-12T17:06:03.0293650Z 
+2026-11-12T17:06:03.0363070Z -- The ASM compiler identification is AppleClang
+2026-11-12T17:06:03.0363820Z -- Found assembler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc
+2026-11-12T17:06:03.0364330Z -- Building for target architecture: arm64
+2026-11-12T17:06:03.0365010Z -- Found ZLIB: /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk/usr/lib/libz.tbd (found version "1.2.12")
+2026-11-12T17:06:03.0365910Z -- Using standard libconf header: /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/libpng/scripts/pnglibconf.h.prebuilt
+2026-11-12T17:06:03.0467480Z -- Build type: Debug
+2026-11-12T17:06:03.0568300Z -- Platforms:
+2026-11-12T17:06:03.0669150Z -- 	Game Boy Advance: ON
+2026-11-12T17:06:03.0810510Z -- 	Game Boy: ON
+2026-11-12T17:06:03.0912420Z -- Features:
+2026-11-12T17:06:03.1013370Z -- 	Debuggers: OFF
+2026-11-12T17:06:03.1114340Z -- 	CLI debugger: OFF
+2026-11-12T17:06:03.1215750Z -- 	GDB stub: OFF
+2026-11-12T17:06:03.1317070Z -- 	GIF/Video recording: OFF
+2026-11-12T17:06:03.1398160Z -- 	Screenshot/advanced savestate support: ON
+2026-11-12T17:06:03.1398640Z -- 	ZIP support: minizip (included)
+2026-11-12T17:06:03.1398930Z -- 	7-Zip support: OFF
+2026-11-12T17:06:03.1400020Z -- 	SQLite3 game database: OFF
+2026-11-12T17:06:03.1400360Z -- 	ELF loading support: OFF
+2026-11-12T17:06:03.1403140Z -- 	Discord Rich Presence support: OFF
+2026-11-12T17:06:03.1404990Z -- 	OpenGL support: OFF
+2026-11-12T17:06:03.1405310Z -- Scripting support: OFF
+2026-11-12T17:06:03.1415570Z -- Frontends:
+2026-11-12T17:06:03.1416390Z -- 	Qt: OFF
+2026-11-12T17:06:03.1417580Z -- 	SDL (): OFF
+2026-11-12T17:06:03.1417830Z -- 	Headless: OFF
+2026-11-12T17:06:03.1418120Z -- 	Python bindings: OFF
+2026-11-12T17:06:03.1418330Z -- 	Examples: OFF
+2026-11-12T17:06:03.1418530Z -- Test tools:
+2026-11-12T17:06:03.1418710Z -- 	Profiling: OFF
+2026-11-12T17:06:03.1418940Z -- 	Test harness: OFF
+2026-11-12T17:06:03.1419160Z -- 	Test suite: OFF
+2026-11-12T17:06:03.1419430Z -- 	Video test suite: OFF
+2026-11-12T17:06:03.1419650Z -- Cores:
+2026-11-12T17:06:03.1419860Z -- 	Libretro core: OFF
+2026-11-12T17:06:03.1420020Z -- Libraries:
+2026-11-12T17:06:03.1420150Z -- 	Static: ON
+2026-11-12T17:06:03.1420280Z -- 	Shared: OFF
+2026-11-12T17:06:03.1421090Z -- Configuring done (5.1s)
+2026-11-12T17:06:03.1421690Z -- Generating done (0.1s)
+2026-11-12T17:06:03.1422400Z -- Build files have been written to: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64
+2026-11-12T17:06:03.1423190Z [1/158] Building C object libpng/CMakeFiles/png_static.dir/pngmem.c.o
+2026-11-12T17:06:03.1423600Z [2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:06:03.1424010Z [3/158] Building C object libpng/CMakeFiles/png_static.dir/pngget.c.o
+2026-11-12T17:06:03.1424410Z [4/158] Building C object libpng/CMakeFiles/png_static.dir/png.c.o
+2026-11-12T17:06:03.1424740Z [5/158] Building C object libpng/CMakeFiles/png_static.dir/pngrio.c.o
+2026-11-12T17:06:03.1425400Z [6/158] Building C object libpng/CMakeFiles/png_static.dir/pngpread.c.o
+2026-11-12T17:06:03.1432020Z [7/158] cd /Users/runner/work/mgbax-ios/mgbax-ios && /opt/homebrew/bin/cmake -DBINARY_NAME=mgba -DCONFIG_FILE=/Users/runner/work/mgbax-ios/mgbax-ios/src/core/version.c.in -DOUT_FILE=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/version.c -P /Users/runner/work/mgbax-ios/mgbax-ios/version.cmake
+2026-11-12T17:06:03.1433670Z [8/158] Building C object libpng/CMakeFiles/png_static.dir/pngtrans.c.o
+2026-11-12T17:06:03.1434070Z [9/158] Building C object libpng/CMakeFiles/png_static.dir/pngwio.c.o
+2026-11-12T17:06:03.1434430Z [10/158] Building C object libpng/CMakeFiles/png_static.dir/pngset.c.o
+2026-11-12T17:06:03.1434780Z [11/158] Building C object libpng/CMakeFiles/png_static.dir/pngread.c.o
+2026-11-12T17:06:03.1435140Z [12/158] Building C object libpng/CMakeFiles/png_static.dir/pngrtran.c.o
+2026-11-12T17:06:03.1435490Z [13/158] Building C object libpng/CMakeFiles/png_static.dir/pngwtran.c.o
+2026-11-12T17:06:03.1435830Z [14/158] Building C object libpng/CMakeFiles/png_static.dir/pngrutil.c.o
+2026-11-12T17:06:03.1436190Z [15/158] Building C object CMakeFiles/mgba.dir/src/core/cache-set.c.o
+2026-11-12T17:06:03.1436530Z [16/158] Building C object CMakeFiles/mgba.dir/src/core/bitmap-cache.c.o
+2026-11-12T17:06:03.1436880Z [17/158] Building C object libpng/CMakeFiles/png_static.dir/pngwrite.c.o
+2026-11-12T17:06:03.1437880Z [18/158] Building C object libpng/CMakeFiles/png_static.dir/pngwutil.c.o
+2026-11-12T17:06:03.1438390Z [19/158] Building C object CMakeFiles/mgba.dir/src/core/cheats.c.o
+2026-11-12T17:06:03.1438730Z [20/158] Building C object CMakeFiles/mgba.dir/src/core/directories.c.o
+2026-11-12T17:06:03.1439080Z [21/158] Building C object CMakeFiles/mgba.dir/src/core/interface.c.o
+2026-11-12T17:06:03.1439440Z [22/158] Building C object CMakeFiles/mgba.dir/src/core/config.c.o
+2026-11-12T17:06:03.1439760Z [23/158] Building C object CMakeFiles/mgba.dir/src/core/core.c.o
+2026-11-12T17:06:03.1440100Z [24/158] Building C object CMakeFiles/mgba.dir/src/core/lockstep.c.o
+2026-11-12T17:06:03.1440450Z [25/158] Building C object CMakeFiles/mgba.dir/src/core/log.c.o
+2026-11-12T17:06:03.1440770Z [26/158] Building C object CMakeFiles/mgba.dir/src/core/input.c.o
+2026-11-12T17:06:03.1441080Z [27/158] Building C object CMakeFiles/mgba.dir/src/core/rewind.c.o
+2026-11-12T17:06:03.1441410Z [28/158] Building C object CMakeFiles/mgba.dir/src/core/map-cache.c.o
+2026-11-12T17:06:03.1441780Z [29/158] Building C object CMakeFiles/mgba.dir/src/core/mem-search.c.o
+2026-11-12T17:06:03.1442140Z [30/158] Building C object CMakeFiles/mgba.dir/src/core/serialize.c.o
+2026-11-12T17:06:03.1442470Z [31/158] Building C object CMakeFiles/mgba.dir/src/core/timing.c.o
+2026-11-12T17:06:03.1442800Z [32/158] Building C object CMakeFiles/mgba.dir/src/core/sync.c.o
+2026-11-12T17:06:03.1443110Z [33/158] Building C object CMakeFiles/mgba.dir/src/core/tile-cache.c.o
+2026-11-12T17:06:03.1443440Z [34/158] Building C object CMakeFiles/mgba.dir/src/core/library.c.o
+2026-11-12T17:06:03.1443770Z [35/158] Building C object CMakeFiles/mgba.dir/src/core/thread.c.o
+2026-11-12T17:06:03.1444080Z [36/158] Building C object CMakeFiles/mgba.dir/src/sm83/sm83.c.o
+2026-11-12T17:06:03.1444390Z [37/158] Building C object CMakeFiles/mgba.dir/src/gb/cheats.c.o
+2026-11-12T17:06:03.1444700Z [38/158] Building C object CMakeFiles/mgba.dir/src/sm83/decoder.c.o
+2026-11-12T17:06:03.1446580Z [39/158] Building C object CMakeFiles/mgba.dir/src/gb/audio.c.o
+2026-11-12T17:06:03.1446930Z [40/158] Building C object CMakeFiles/mgba.dir/src/gb/input.c.o
+2026-11-12T17:06:03.1447250Z [41/158] Building C object CMakeFiles/mgba.dir/src/gb/gb.c.o
+2026-11-12T17:06:03.1447550Z [42/158] Building C object CMakeFiles/mgba.dir/src/gb/core.c.o
+2026-11-12T17:06:03.1447880Z [43/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/huc-3.c.o
+2026-11-12T17:06:03.1448230Z [44/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/licensed.c.o
+2026-11-12T17:06:03.1448560Z [45/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/mbc.c.o
+2026-11-12T17:06:03.1448870Z [46/158] Building C object CMakeFiles/mgba.dir/src/gb/io.c.o
+2026-11-12T17:06:03.1449160Z [47/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc.c.o
+2026-11-12T17:06:03.1449480Z [48/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/unlicensed.c.o
+2026-11-12T17:06:03.1449840Z [49/158] Building C object CMakeFiles/mgba.dir/src/sm83/isa-sm83.c.o
+2026-11-12T17:06:03.1450170Z [50/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/tama5.c.o
+2026-11-12T17:06:03.1450520Z [51/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/pocket-cam.c.o
+2026-11-12T17:06:03.1450860Z [52/158] Building C object CMakeFiles/mgba.dir/src/gb/serialize.c.o
+2026-11-12T17:06:03.1451190Z [53/158] Building C object CMakeFiles/mgba.dir/src/gb/memory.c.o
+2026-11-12T17:06:03.1451540Z [54/158] Building C object CMakeFiles/mgba.dir/src/gb/renderers/cache-set.c.o
+2026-11-12T17:06:03.1451880Z [55/158] Building C object CMakeFiles/mgba.dir/src/gb/sio.c.o
+2026-11-12T17:06:03.1452190Z [56/158] Building C object CMakeFiles/mgba.dir/src/gb/overrides.c.o
+2026-11-12T17:06:03.1452510Z [57/158] Building C object CMakeFiles/mgba.dir/src/arm/arm.c.o
+2026-11-12T17:06:03.1452810Z [58/158] Building C object CMakeFiles/mgba.dir/src/gb/timer.c.o
+2026-11-12T17:06:03.1453120Z [59/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder.c.o
+2026-11-12T17:06:03.1453460Z [60/158] Building C object CMakeFiles/mgba.dir/src/gb/renderers/software.c.o
+2026-11-12T17:06:03.1454180Z [61/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder-thumb.c.o
+2026-11-12T17:06:03.1454520Z [62/158] Building C object CMakeFiles/mgba.dir/src/gb/video.c.o
+2026-11-12T17:06:03.1454840Z [63/158] Building C object CMakeFiles/mgba.dir/src/arm/isa-thumb.c.o
+2026-11-12T17:06:03.1455180Z [64/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/ereader.c.o
+2026-11-12T17:06:03.1455500Z [65/158] Building C object CMakeFiles/mgba.dir/src/gba/bios.c.o
+2026-11-12T17:06:03.1455800Z [66/158] Building C object CMakeFiles/mgba.dir/src/gba/audio.c.o
+2026-11-12T17:06:03.1459060Z [67/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/matrix.c.o
+2026-11-12T17:06:03.1459530Z [68/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/unlicensed.c.o
+2026-11-12T17:06:03.1459900Z [69/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/vfame.c.o
+2026-11-12T17:06:03.1460240Z [70/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/gpio.c.o
+2026-11-12T17:06:03.1460570Z [71/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats.c.o
+2026-11-12T17:06:03.1460940Z [72/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/codebreaker.c.o
+2026-11-12T17:06:03.1461320Z [73/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/parv3.c.o
+2026-11-12T17:06:03.1461680Z [74/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/gameshark.c.o
+2026-11-12T17:06:03.1462020Z [75/158] Building C object CMakeFiles/mgba.dir/src/gba/dma.c.o
+2026-11-12T17:06:03.1462440Z [76/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder-arm.c.o
+2026-11-12T17:06:03.1462780Z [77/158] Building C object CMakeFiles/mgba.dir/src/gba/input.c.o
+2026-11-12T17:06:03.1463110Z [78/158] Building C object CMakeFiles/mgba.dir/src/gba/hle-bios.c.o
+2026-11-12T17:06:03.1463430Z [79/158] Building C object CMakeFiles/mgba.dir/src/gba/gba.c.o
+2026-11-12T17:06:03.1463730Z [80/158] Building C object CMakeFiles/mgba.dir/src/gba/core.c.o
+2026-11-12T17:06:03.1464060Z [81/158] Building C object CMakeFiles/mgba.dir/src/gba/overrides.c.o
+2026-11-12T17:06:03.1464400Z [82/158] Building C object CMakeFiles/mgba.dir/src/arm/isa-arm.c.o
+2026-11-12T17:06:03.1464790Z [83/158] Building C object CMakeFiles/mgba.dir/src/gba/io.c.o
+2026-11-12T17:06:03.1465160Z [84/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/common.c.o
+2026-11-12T17:06:03.1465510Z [85/158] Building C object CMakeFiles/mgba.dir/src/gba/memory.c.o
+2026-11-12T17:06:03.1465840Z [86/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/gl.c.o
+2026-11-12T17:06:10.8832690Z [87/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/cache-set.c.o
+2026-11-12T17:06:10.8935550Z [88/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-obj.c.o
+2026-11-12T17:06:10.9038650Z [89/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-bg.c.o
+2026-11-12T17:06:10.9141310Z [90/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/video-software.c.o
+2026-11-12T17:06:10.9244030Z [91/158] Building C object CMakeFiles/mgba.dir/src/gba/savedata.c.o
+2026-11-12T17:06:10.9345730Z [92/158] Building C object CMakeFiles/mgba.dir/src/gba/sharkport.c.o
+2026-11-12T17:06:10.9447270Z [93/158] Building C object CMakeFiles/mgba.dir/src/gba/sio.c.o
+2026-11-12T17:06:10.9548760Z [94/158] Building C object CMakeFiles/mgba.dir/src/gba/serialize.c.o
+2026-11-12T17:06:10.9650220Z [95/158] Building C object CMakeFiles/mgba.dir/src/util/circle-buffer.c.o
+2026-11-12T17:06:10.9663190Z [96/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-mode0.c.o
+2026-11-12T17:06:10.9703190Z [97/158] Building C object CMakeFiles/mgba.dir/src/util/configuration.c.o
+2026-11-12T17:06:10.9705170Z [98/158] Building C object CMakeFiles/mgba.dir/src/util/crc32.c.o
+2026-11-12T17:06:10.9705790Z [99/158] Building C object CMakeFiles/mgba.dir/src/gba/timer.c.o
+2026-11-12T17:06:10.9709490Z [100/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/gbp.c.o
+2026-11-12T17:06:10.9715230Z [101/158] Building C object CMakeFiles/mgba.dir/src/util/formatting.c.o
+2026-11-12T17:06:10.9735630Z [102/158] Building C object CMakeFiles/mgba.dir/src/util/gbk-table.c.o
+2026-11-12T17:06:10.9740010Z [103/158] Building C object CMakeFiles/mgba.dir/src/util/hash.c.o
+2026-11-12T17:06:10.9742190Z [104/158] Building C object CMakeFiles/mgba.dir/src/util/md5.c.o
+2026-11-12T17:06:10.9745080Z [105/158] Building C object CMakeFiles/mgba.dir/src/gba/video.c.o
+2026-11-12T17:06:10.9745990Z [106/158] Building C object CMakeFiles/mgba.dir/src/util/string.c.o
+2026-11-12T17:06:10.9747120Z [107/158] Building C object CMakeFiles/mgba.dir/src/util/vfs.c.o
+2026-11-12T17:06:10.9749340Z [108/158] Building C object CMakeFiles/mgba.dir/src/util/sha1.c.o
+2026-11-12T17:06:10.9750270Z [109/158] Building C object CMakeFiles/mgba.dir/src/util/audio-buffer.c.o
+2026-11-12T17:06:10.9751550Z [110/158] Building C object CMakeFiles/mgba.dir/src/util/table.c.o
+2026-11-12T17:06:10.9752460Z [111/158] Building C object CMakeFiles/mgba.dir/src/util/elf-read.c.o
+2026-11-12T17:06:10.9755580Z [112/158] Building C object CMakeFiles/mgba.dir/src/util/vector.c.o
+2026-11-12T17:06:10.9757980Z [113/158] Building C object CMakeFiles/mgba.dir/src/util/audio-resampler.c.o
+2026-11-12T17:06:10.9759680Z [114/158] Building C object CMakeFiles/mgba.dir/src/util/convolve.c.o
+2026-11-12T17:06:10.9761360Z [115/158] Building C object CMakeFiles/mgba.dir/src/util/geometry.c.o
+2026-11-12T17:06:10.9763880Z [116/158] Building C object CMakeFiles/mgba.dir/src/util/image/font.c.o
+2026-11-12T17:06:10.9765440Z [117/158] Building C object CMakeFiles/mgba.dir/src/util/image/export.c.o
+2026-11-12T17:06:10.9766720Z [118/158] Building C object CMakeFiles/mgba.dir/src/util/interpolator.c.o
+2026-11-12T17:06:10.9769410Z [119/158] Building C object CMakeFiles/mgba.dir/src/util/patch.c.o
+2026-11-12T17:06:10.9771290Z [120/158] Building C object CMakeFiles/mgba.dir/src/util/image.c.o
+2026-11-12T17:06:10.9775690Z [121/158] Building C object CMakeFiles/mgba.dir/src/util/image/png-io.c.o
+2026-11-12T17:06:10.9776810Z [122/158] Building C object CMakeFiles/mgba.dir/src/util/patch-ips.c.o
+2026-11-12T17:06:10.9778040Z [123/158] Building C object CMakeFiles/mgba.dir/src/util/ring-fifo.c.o
+2026-11-12T17:06:10.9779150Z [124/158] Building C object CMakeFiles/mgba.dir/version.c.o
+2026-11-12T17:06:10.9779960Z [125/158] Building C object CMakeFiles/mgba.dir/src/util/patch-fast.c.o
+2026-11-12T17:06:10.9783260Z [126/158] Building C object CMakeFiles/mgba.dir/src/util/sfo.c.o
+2026-11-12T17:06:10.9785590Z [127/158] Building C object CMakeFiles/mgba.dir/src/util/patch-ups.c.o
+2026-11-12T17:06:10.9786540Z [128/158] Building C object CMakeFiles/mgba.dir/src/platform/posix/memory.c.o
+2026-11-12T17:06:10.9788010Z [129/158] Building C object CMakeFiles/mgba.dir/src/util/text-codec.c.o
+2026-11-12T17:06:10.9788500Z [130/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fd.c.o
+2026-11-12T17:06:10.9789370Z [131/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-mem.c.o
+2026-11-12T17:06:10.9790420Z [132/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fifo.c.o
+2026-11-12T17:06:10.9792300Z [133/158] Building C object CMakeFiles/mgba.dir/src/third-party/inih/ini.c.o
+2026-11-12T17:06:10.9794230Z [134/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-zip.c.o
+2026-11-12T17:06:10.9795530Z [135/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-dirent.c.o
+2026-11-12T17:06:10.9798050Z [136/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/ioapi.c.o
+2026-11-12T17:06:10.9801740Z /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/zlib/contrib/minizip/ioapi.c:234:6: warning: a function definition without a prototype is deprecated in all versions of C and is not supported in C23 [-Wdeprecated-non-prototype]
+2026-11-12T17:06:10.9805680Z   234 | void fill_fopen_filefunc (pzlib_filefunc_def)
+2026-11-12T17:06:10.9806010Z       |      ^
+2026-11-12T17:06:10.9806290Z 1 warning generated.
+2026-11-12T17:06:10.9807150Z [137/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/zip.c.o
+2026-11-12T17:06:10.9809580Z /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable]
+2026-11-12T17:06:10.9814720Z  1476 |                 int bBreak = 0;
+2026-11-12T17:06:10.9815890Z       |                     ^
+2026-11-12T17:06:10.9817110Z 1 warning generated.
+2026-11-12T17:06:10.9817550Z [138/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/unzip.c.o
+2026-11-12T17:06:10.9818360Z [139/158] Building C object CMakeFiles/mgba.dir/src/gb/sio/lockstep.c.o
+2026-11-12T17:06:10.9819120Z [140/158] Building C object CMakeFiles/mgba.dir/src/gb/sio/printer.c.o
+2026-11-12T17:06:10.9820620Z [141/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/dolphin.c.o
+2026-11-12T17:06:10.9822450Z [142/158] Building C object CMakeFiles/mgba.dir/src/gba/extra/battlechip.c.o
+2026-11-12T17:06:10.9822900Z [143/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/lockstep.c.o
+2026-11-12T17:06:10.9823370Z [144/158] Building C object CMakeFiles/mgba.dir/src/feature/commandline.c.o
+2026-11-12T17:06:10.9824960Z [145/158] Building C object CMakeFiles/mgba.dir/src/feature/proxy-backend.c.o
+2026-11-12T17:06:10.9825510Z [146/158] Building C object CMakeFiles/mgba.dir/src/gba/extra/proxy.c.o
+2026-11-12T17:06:10.9825970Z [147/158] Building C object CMakeFiles/mgba.dir/src/gb/extra/proxy.c.o
+2026-11-12T17:06:10.9826470Z [148/158] Building C object CMakeFiles/mgba.dir/src/feature/video-backend.c.o
+2026-11-12T17:06:10.9826900Z [149/158] Linking C static library libpng/libpng16d.a
+2026-11-12T17:06:10.9827350Z [150/158] Building C object CMakeFiles/mgba.dir/src/feature/updater.c.o
+2026-11-12T17:06:10.9828520Z [151/158] Building C object CMakeFiles/mgba.dir/src/feature/video-logger.c.o
+2026-11-12T17:06:10.9829110Z [152/158] Building C object CMakeFiles/mgba.dir/src/feature/thread-proxy.c.o
+2026-11-12T17:06:10.9829600Z [153/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/remote_link.c.o
+2026-11-12T17:06:10.9832300Z [154/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_lockstep.c.o
+2026-11-12T17:06:10.9836420Z [155/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_net.c.o
+2026-11-12T17:06:10.9836900Z [156/158] Linking C static library libmgba.a
+2026-11-12T17:06:10.9837330Z [157/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o
+2026-11-12T17:06:10.9838080Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2031:15: warning: unused variable 'gba' [-Wunused-variable]
+2026-11-12T17:06:10.9838800Z  2031 |                 struct GBA* gba = (struct GBA*) emu->core->board;
+2026-11-12T17:06:10.9839110Z       |                             ^~~
+2026-11-12T17:06:10.9839720Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2084:6: warning: variable 'taken' set but not used [-Wunused-but-set-variable]
+2026-11-12T17:06:10.9840310Z  2084 |         int taken = 0;
+2026-11-12T17:06:10.9840610Z       |             ^
+2026-11-12T17:06:10.9841160Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2785:42: warning: unused parameter 'timing' [-Wunused-parameter]
+2026-11-12T17:06:10.9841920Z  2785 | static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+2026-11-12T17:06:10.9842430Z       |                                          ^
+2026-11-12T17:06:10.9843000Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:3062:8: warning: unused variable 'wasBusy' [-Wunused-variable]
+2026-11-12T17:06:10.9843720Z  3062 |                 bool wasBusy = (driver->p->siocnt & 0x0080) != 0;
+2026-11-12T17:06:10.9844050Z       |                      ^~~~~~~
+2026-11-12T17:06:10.9844360Z 4 warnings generated.
+2026-11-12T17:06:10.9844610Z [158/158] Linking C static library libmgba_mobile.a
+2026-11-12T17:06:10.9846050Z libtool: warning duplicate member name 'audio.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(audio.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(audio.c.o)'
+2026-11-12T17:06:10.9849110Z libtool: warning duplicate member name 'cache-set.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cache-set.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cache-set.c.o)'
+2026-11-12T17:06:10.9851600Z libtool: warning duplicate member name 'cache-set.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cache-set.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cache-set.c.o)'
+2026-11-12T17:06:10.9854890Z libtool: warning duplicate member name 'cheats.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cheats.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cheats.c.o)'
+2026-11-12T17:06:10.9858120Z libtool: warning duplicate member name 'cheats.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cheats.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(cheats.c.o)'
+2026-11-12T17:06:10.9860610Z libtool: warning duplicate member name 'core.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(core.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(core.c.o)'
+2026-11-12T17:06:10.9863590Z libtool: warning duplicate member name 'core.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(core.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(core.c.o)'
+2026-11-12T17:06:10.9884760Z libtool: warning duplicate member name 'decoder.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(decoder.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(decoder.c.o)'
+2026-11-12T17:06:10.9887530Z libtool: warning duplicate member name 'input.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(input.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(input.c.o)'
+2026-11-12T17:06:10.9890350Z libtool: warning duplicate member name 'input.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(input.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(input.c.o)'
+2026-11-12T17:06:10.9898070Z libtool: warning duplicate member name 'io.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(io.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(io.c.o)'
+2026-11-12T17:06:10.9904040Z libtool: warning duplicate member name 'lockstep.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(lockstep.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(lockstep.c.o)'
+2026-11-12T17:06:10.9906710Z libtool: warning duplicate member name 'lockstep.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(lockstep.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(lockstep.c.o)'
+2026-11-12T17:06:10.9909270Z libtool: warning duplicate member name 'mbc.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(mbc.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(mbc.c.o)'
+2026-11-12T17:06:10.9911880Z libtool: warning duplicate member name 'memory.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(memory.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(memory.c.o)'
+2026-11-12T17:06:10.9914750Z libtool: warning duplicate member name 'memory.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(memory.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(memory.c.o)'
+2026-11-12T17:06:10.9917470Z libtool: warning duplicate member name 'overrides.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(overrides.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(overrides.c.o)'
+2026-11-12T17:06:10.9920590Z libtool: warning duplicate member name 'proxy.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(proxy.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(proxy.c.o)'
+2026-11-12T17:06:10.9926660Z libtool: warning duplicate member name 'serialize.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(serialize.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(serialize.c.o)'
+2026-11-12T17:06:15.6530400Z libtool: warning duplicate member name 'serialize.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(serialize.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(serialize.c.o)'
+2026-11-12T17:06:15.6641510Z libtool: warning duplicate member name 'sio.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(sio.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(sio.c.o)'
+2026-11-12T17:06:15.6731740Z libtool: warning duplicate member name 'timer.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(timer.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(timer.c.o)'
+2026-11-12T17:06:15.6734540Z libtool: warning duplicate member name 'unlicensed.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(unlicensed.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(unlicensed.c.o)'
+2026-11-12T17:06:15.6737120Z libtool: warning duplicate member name 'video.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(video.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libmgba.a(video.c.o)'
+2026-11-12T17:06:15.6832810Z -- The C compiler identification is AppleClang 17.0.0.17000013
+2026-11-12T17:06:15.6934200Z -- The CXX compiler identification is AppleClang 17.0.0.17000013
+2026-11-12T17:06:15.7035680Z -- Detecting C compiler ABI info
+2026-11-12T17:06:15.7136690Z -- Detecting C compiler ABI info - done
+2026-11-12T17:06:15.7238030Z -- Check for working C compiler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc - skipped
+2026-11-12T17:06:15.7342090Z -- Detecting C compile features
+2026-11-12T17:06:15.7443010Z -- Detecting C compile features - done
+2026-11-12T17:06:15.7543370Z -- Detecting CXX compiler ABI info
+2026-11-12T17:06:15.7644790Z -- Detecting CXX compiler ABI info - done
+2026-11-12T17:06:15.7746440Z -- Check for working CXX compiler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++ - skipped
+2026-11-12T17:06:15.7899950Z -- Detecting CXX compile features
+2026-11-12T17:06:15.8002330Z -- Detecting CXX compile features - done
+2026-11-12T17:06:15.8002880Z -- Found PkgConfig: /opt/homebrew/bin/pkg-config (found version "3.0.10")
+2026-11-12T17:06:15.8106590Z -- Looking for strdup
+2026-11-12T17:06:15.8208300Z -- Looking for strdup - found
+2026-11-12T17:06:15.8309280Z -- Looking for strlcpy
+2026-11-12T17:06:15.8410620Z -- Looking for strlcpy - found
+2026-11-12T17:06:15.8511810Z -- Looking for strndup
+2026-11-12T17:06:15.8612750Z -- Looking for strndup - found
+2026-11-12T17:06:15.8714530Z -- Looking for vasprintf
+2026-11-12T17:06:15.8816130Z -- Looking for vasprintf - found
+2026-11-12T17:06:15.8816530Z -- Looking for freelocale
+2026-11-12T17:06:15.8816850Z -- Looking for freelocale - found
+2026-11-12T17:06:15.8823550Z -- Looking for newlocale
+2026-11-12T17:06:15.8829660Z -- Looking for newlocale - found
+2026-11-12T17:06:15.8832260Z -- Looking for setlocale
+2026-11-12T17:06:15.8832610Z -- Looking for setlocale - found
+2026-11-12T17:06:15.8832850Z -- Looking for snprintf_l
+2026-11-12T17:06:15.8833140Z -- Looking for snprintf_l - found
+2026-11-12T17:06:15.8833460Z -- Looking for uselocale
+2026-11-12T17:06:15.8833690Z -- Looking for uselocale - found
+2026-11-12T17:06:15.8834030Z -- Looking for popcount32
+2026-11-12T17:06:15.8834270Z -- Looking for popcount32 - not found
+2026-11-12T17:06:15.8834570Z -- Looking for futimens
+2026-11-12T17:06:15.8834790Z -- Looking for futimens - found
+2026-11-12T17:06:15.8835070Z -- Looking for futimes
+2026-11-12T17:06:15.8835630Z -- Looking for futimes - found
+2026-11-12T17:06:15.8835990Z -- Looking for localtime_r
+2026-11-12T17:06:15.8836330Z -- Looking for localtime_r - found
+2026-11-12T17:06:15.8836570Z -- Looking for realpath
+2026-11-12T17:06:15.8836880Z -- Looking for realpath - found
+2026-11-12T17:06:15.8837110Z -- Looking for strtof_l
+2026-11-12T17:06:15.8837390Z -- Looking for strtof_l - found
+2026-11-12T17:06:15.8837650Z -- Looking for include file xlocale.h
+2026-11-12T17:06:15.8837970Z -- Looking for include file xlocale.h - found
+2026-11-12T17:06:15.8838240Z -- Looking for include file pthread.h
+2026-11-12T17:06:15.8838590Z -- Looking for include file pthread.h - found
+2026-11-12T17:06:15.8839070Z -- Performing Test HAVE_PTHREAD
+2026-11-12T17:06:15.8839410Z -- Performing Test HAVE_PTHREAD - Success
+2026-11-12T17:06:15.8839720Z -- Looking for pthread_create
+2026-11-12T17:06:15.8839950Z -- Looking for pthread_create - found
+2026-11-12T17:06:15.8840270Z -- Looking for include file pthread_np.h
+2026-11-12T17:06:15.8840610Z -- Looking for include file pthread_np.h - not found
+2026-11-12T17:06:15.8942140Z -- Looking for pthread_setname_np
+2026-11-12T17:06:15.9043770Z -- Looking for pthread_setname_np - found
+2026-11-12T17:06:15.9145000Z -- Looking for pthread_set_name_np
+2026-11-12T17:06:15.9246060Z -- Looking for pthread_set_name_np - not found
+2026-11-12T17:06:15.9347270Z -- Checking for one of the modules 'PNG'
+2026-11-12T17:06:15.9453190Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T17:06:15.9554400Z   Requested module PNG missing for feature USE_PNG.  Feature disabled.
+2026-11-12T17:06:15.9656510Z Call Stack (most recent call first):
+2026-11-12T17:06:15.9758290Z   CMakeLists.txt:524 (find_feature)
+2026-11-12T17:06:15.9869800Z 
+2026-11-12T17:06:15.9970900Z 
+2026-11-12T17:06:16.0072080Z -- The ASM compiler identification is AppleClang
+2026-11-12T17:06:16.0184230Z -- Found assembler: /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc
+2026-11-12T17:06:16.0286520Z -- Building for target architecture: x86_64
+2026-11-12T17:06:16.0388190Z -- Found ZLIB: /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk/usr/lib/libz.tbd (found version "1.2.12")
+2026-11-12T17:06:16.0489940Z -- Using standard libconf header: /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/libpng/scripts/pnglibconf.h.prebuilt
+2026-11-12T17:06:16.0593230Z -- Build type: Debug
+2026-11-12T17:06:16.0694300Z -- Platforms:
+2026-11-12T17:06:16.0795440Z -- 	Game Boy Advance: ON
+2026-11-12T17:06:16.0901510Z -- 	Game Boy: ON
+2026-11-12T17:06:16.0902370Z -- Features:
+2026-11-12T17:06:16.1005850Z -- 	Debuggers: OFF
+2026-11-12T17:06:16.1006200Z -- 	CLI debugger: OFF
+2026-11-12T17:06:16.1107210Z -- 	GDB stub: OFF
+2026-11-12T17:06:16.1207520Z -- 	GIF/Video recording: OFF
+2026-11-12T17:06:16.1308570Z -- 	Screenshot/advanced savestate support: ON
+2026-11-12T17:06:16.1408660Z -- 	ZIP support: minizip (included)
+2026-11-12T17:06:16.1509770Z -- 	7-Zip support: OFF
+2026-11-12T17:06:16.1610340Z -- 	SQLite3 game database: OFF
+2026-11-12T17:06:16.1712480Z -- 	ELF loading support: OFF
+2026-11-12T17:06:16.1814360Z -- 	Discord Rich Presence support: OFF
+2026-11-12T17:06:16.1916350Z -- 	OpenGL support: OFF
+2026-11-12T17:06:16.1941950Z -- Scripting support: OFF
+2026-11-12T17:06:16.1942440Z -- Frontends:
+2026-11-12T17:06:16.1943140Z -- 	Qt: OFF
+2026-11-12T17:06:16.1943680Z -- 	SDL (): OFF
+2026-11-12T17:06:16.1944030Z -- 	Headless: OFF
+2026-11-12T17:06:16.1944310Z -- 	Python bindings: OFF
+2026-11-12T17:06:16.1944700Z -- 	Examples: OFF
+2026-11-12T17:06:16.1944980Z -- Test tools:
+2026-11-12T17:06:16.1945340Z -- 	Profiling: OFF
+2026-11-12T17:06:16.1945610Z -- 	Test harness: OFF
+2026-11-12T17:06:16.1945960Z -- 	Test suite: OFF
+2026-11-12T17:06:16.1946310Z -- 	Video test suite: OFF
+2026-11-12T17:06:16.1946600Z -- Cores:
+2026-11-12T17:06:16.1946980Z -- 	Libretro core: OFF
+2026-11-12T17:06:16.1947380Z -- Libraries:
+2026-11-12T17:06:16.1947740Z -- 	Static: ON
+2026-11-12T17:06:16.1948010Z -- 	Shared: OFF
+2026-11-12T17:06:16.1949010Z -- Configuring done (3.1s)
+2026-11-12T17:06:16.1949770Z -- Generating done (0.1s)
+2026-11-12T17:06:16.1951600Z -- Build files have been written to: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64
+2026-11-12T17:06:16.1953740Z [1/158] Building C object libpng/CMakeFiles/png_static.dir/pngmem.c.o
+2026-11-12T17:06:16.1954800Z [2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-12T17:06:16.1955850Z [3/158] Building C object libpng/CMakeFiles/png_static.dir/pngget.c.o
+2026-11-12T17:06:16.1956960Z [4/158] Building C object libpng/CMakeFiles/png_static.dir/png.c.o
+2026-11-12T17:06:16.1960520Z [5/158] cd /Users/runner/work/mgbax-ios/mgbax-ios && /opt/homebrew/bin/cmake -DBINARY_NAME=mgba -DCONFIG_FILE=/Users/runner/work/mgbax-ios/mgbax-ios/src/core/version.c.in -DOUT_FILE=/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/version.c -P /Users/runner/work/mgbax-ios/mgbax-ios/version.cmake
+2026-11-12T17:06:16.1964150Z [6/158] Building C object libpng/CMakeFiles/png_static.dir/pngrio.c.o
+2026-11-12T17:06:16.1965160Z [7/158] Building C object libpng/CMakeFiles/png_static.dir/pngpread.c.o
+2026-11-12T17:06:16.1966210Z [8/158] Building C object libpng/CMakeFiles/png_static.dir/pngset.c.o
+2026-11-12T17:06:16.1967220Z [9/158] Building C object libpng/CMakeFiles/png_static.dir/pngtrans.c.o
+2026-11-12T17:06:16.1968320Z [10/158] Building C object libpng/CMakeFiles/png_static.dir/pngread.c.o
+2026-11-12T17:06:16.1969280Z [11/158] Building C object libpng/CMakeFiles/png_static.dir/pngwio.c.o
+2026-11-12T17:06:16.1970500Z [12/158] Building C object libpng/CMakeFiles/png_static.dir/pngrtran.c.o
+2026-11-12T17:06:16.1971540Z [13/158] Building C object libpng/CMakeFiles/png_static.dir/pngwtran.c.o
+2026-11-12T17:06:16.1971970Z [14/158] Building C object libpng/CMakeFiles/png_static.dir/pngrutil.c.o
+2026-11-12T17:06:16.1972350Z [15/158] Building C object CMakeFiles/mgba.dir/src/core/bitmap-cache.c.o
+2026-11-12T17:06:16.1973430Z [16/158] Building C object CMakeFiles/mgba.dir/src/core/cache-set.c.o
+2026-11-12T17:06:16.1973810Z [17/158] Building C object libpng/CMakeFiles/png_static.dir/pngwrite.c.o
+2026-11-12T17:06:16.1974180Z [18/158] Building C object CMakeFiles/mgba.dir/src/core/directories.c.o
+2026-11-12T17:06:16.1974740Z [19/158] Building C object CMakeFiles/mgba.dir/src/core/core.c.o
+2026-11-12T17:06:16.1975240Z [20/158] Building C object libpng/CMakeFiles/png_static.dir/pngwutil.c.o
+2026-11-12T17:06:16.1975590Z [21/158] Building C object CMakeFiles/mgba.dir/src/core/config.c.o
+2026-11-12T17:06:16.1975940Z [22/158] Building C object CMakeFiles/mgba.dir/src/core/cheats.c.o
+2026-11-12T17:06:16.1976280Z [23/158] Building C object CMakeFiles/mgba.dir/src/core/lockstep.c.o
+2026-11-12T17:06:16.1976630Z [24/158] Building C object CMakeFiles/mgba.dir/src/core/interface.c.o
+2026-11-12T17:06:16.1977690Z [25/158] Building C object CMakeFiles/mgba.dir/src/core/input.c.o
+2026-11-12T17:06:16.1978160Z [26/158] Building C object CMakeFiles/mgba.dir/src/core/map-cache.c.o
+2026-11-12T17:06:16.1978590Z [27/158] Building C object CMakeFiles/mgba.dir/src/core/rewind.c.o
+2026-11-12T17:06:16.1978900Z [28/158] Building C object CMakeFiles/mgba.dir/src/core/sync.c.o
+2026-11-12T17:06:16.1979230Z [29/158] Building C object CMakeFiles/mgba.dir/src/core/mem-search.c.o
+2026-11-12T17:06:16.1979560Z [30/158] Building C object CMakeFiles/mgba.dir/src/core/log.c.o
+2026-11-12T17:06:16.1979900Z [31/158] Building C object CMakeFiles/mgba.dir/src/core/serialize.c.o
+2026-11-12T17:06:16.1980220Z [32/158] Building C object CMakeFiles/mgba.dir/src/core/timing.c.o
+2026-11-12T17:06:16.1980560Z [33/158] Building C object CMakeFiles/mgba.dir/src/core/tile-cache.c.o
+2026-11-12T17:06:16.1980890Z [34/158] Building C object CMakeFiles/mgba.dir/src/core/thread.c.o
+2026-11-12T17:06:16.1981210Z [35/158] Building C object CMakeFiles/mgba.dir/src/core/library.c.o
+2026-11-12T17:06:16.1981540Z [36/158] Building C object CMakeFiles/mgba.dir/src/sm83/sm83.c.o
+2026-11-12T17:06:16.1981850Z [37/158] Building C object CMakeFiles/mgba.dir/src/gb/cheats.c.o
+2026-11-12T17:06:16.1982170Z [38/158] Building C object CMakeFiles/mgba.dir/src/sm83/decoder.c.o
+2026-11-12T17:06:16.1982480Z [39/158] Building C object CMakeFiles/mgba.dir/src/gb/core.c.o
+2026-11-12T17:06:16.1982790Z [40/158] Building C object CMakeFiles/mgba.dir/src/gb/input.c.o
+2026-11-12T17:06:16.1983160Z [41/158] Building C object CMakeFiles/mgba.dir/src/gb/gb.c.o
+2026-11-12T17:06:16.1983480Z [42/158] Building C object CMakeFiles/mgba.dir/src/gb/audio.c.o
+2026-11-12T17:06:16.1983780Z [43/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc.c.o
+2026-11-12T17:06:16.1984090Z [44/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/huc-3.c.o
+2026-11-12T17:06:16.1984400Z [45/158] Building C object CMakeFiles/mgba.dir/src/gb/io.c.o
+2026-11-12T17:06:16.1984720Z [46/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/licensed.c.o
+2026-11-12T17:06:16.1985070Z [47/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/pocket-cam.c.o
+2026-11-12T17:06:16.1985420Z [48/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/mbc.c.o
+2026-11-12T17:06:16.1985730Z [49/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/tama5.c.o
+2026-11-12T17:06:16.1986560Z [50/158] Building C object CMakeFiles/mgba.dir/src/gb/mbc/unlicensed.c.o
+2026-11-12T17:06:16.1986930Z [51/158] Building C object CMakeFiles/mgba.dir/src/sm83/isa-sm83.c.o
+2026-11-12T17:06:16.1987290Z [52/158] Building C object CMakeFiles/mgba.dir/src/gb/renderers/cache-set.c.o
+2026-11-12T17:06:16.1987640Z [53/158] Building C object CMakeFiles/mgba.dir/src/gb/memory.c.o
+2026-11-12T17:06:16.1987960Z [54/158] Building C object CMakeFiles/mgba.dir/src/gb/serialize.c.o
+2026-11-12T17:06:16.1988280Z [55/158] Building C object CMakeFiles/mgba.dir/src/gb/overrides.c.o
+2026-11-12T17:06:16.1988630Z [56/158] Building C object CMakeFiles/mgba.dir/src/arm/arm.c.o
+2026-11-12T17:06:18.1769690Z [57/158] Building C object CMakeFiles/mgba.dir/src/gb/renderers/software.c.o
+2026-11-12T17:06:18.1775460Z [58/158] Building C object CMakeFiles/mgba.dir/src/gb/sio.c.o
+2026-11-12T17:06:18.1777710Z [59/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder.c.o
+2026-11-12T17:06:18.1778270Z [60/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder-thumb.c.o
+2026-11-12T17:06:18.1778720Z [61/158] Building C object CMakeFiles/mgba.dir/src/gb/timer.c.o
+2026-11-12T17:06:18.1779230Z [62/158] Building C object CMakeFiles/mgba.dir/src/gb/video.c.o
+2026-11-12T17:06:18.1779600Z [63/158] Building C object CMakeFiles/mgba.dir/src/arm/isa-thumb.c.o
+2026-11-12T17:06:18.1780100Z [64/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/ereader.c.o
+2026-11-12T17:06:18.1780560Z [65/158] Building C object CMakeFiles/mgba.dir/src/gba/bios.c.o
+2026-11-12T17:06:18.1780950Z [66/158] Building C object CMakeFiles/mgba.dir/src/gba/audio.c.o
+2026-11-12T17:06:18.1781340Z [67/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/matrix.c.o
+2026-11-12T17:06:18.1782190Z [68/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/unlicensed.c.o
+2026-11-12T17:06:18.1782560Z [69/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/gpio.c.o
+2026-11-12T17:06:18.1783000Z [70/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats.c.o
+2026-11-12T17:06:18.1783330Z [71/158] Building C object CMakeFiles/mgba.dir/src/gba/cart/vfame.c.o
+2026-11-12T17:06:18.1783680Z [72/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/parv3.c.o
+2026-11-12T17:06:18.1784030Z [73/158] Building C object CMakeFiles/mgba.dir/src/arm/decoder-arm.c.o
+2026-11-12T17:06:18.1784500Z [74/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/gameshark.c.o
+2026-11-12T17:06:18.1784880Z [75/158] Building C object CMakeFiles/mgba.dir/src/gba/cheats/codebreaker.c.o
+2026-11-12T17:06:18.1785350Z [76/158] Building C object CMakeFiles/mgba.dir/src/gba/hle-bios.c.o
+2026-11-12T17:06:18.1785670Z [77/158] Building C object CMakeFiles/mgba.dir/src/gba/gba.c.o
+2026-11-12T17:06:18.1785980Z [78/158] Building C object CMakeFiles/mgba.dir/src/gba/dma.c.o
+2026-11-12T17:06:18.1786390Z [79/158] Building C object CMakeFiles/mgba.dir/src/arm/isa-arm.c.o
+2026-11-12T17:06:18.1786710Z [80/158] Building C object CMakeFiles/mgba.dir/src/gba/input.c.o
+2026-11-12T17:06:18.1787030Z [81/158] Building C object CMakeFiles/mgba.dir/src/gba/overrides.c.o
+2026-11-12T17:06:18.1787490Z [82/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/cache-set.c.o
+2026-11-12T17:06:18.1787930Z [83/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/common.c.o
+2026-11-12T17:06:18.1788330Z [84/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/gl.c.o
+2026-11-12T17:06:18.1788660Z [85/158] Building C object CMakeFiles/mgba.dir/src/gba/core.c.o
+2026-11-12T17:06:18.1788960Z [86/158] Building C object CMakeFiles/mgba.dir/src/gba/io.c.o
+2026-11-12T17:06:18.1789410Z [87/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-obj.c.o
+2026-11-12T17:06:18.1789830Z [88/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/video-software.c.o
+2026-11-12T17:06:18.1790360Z [89/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-bg.c.o
+2026-11-12T17:06:18.1790710Z [90/158] Building C object CMakeFiles/mgba.dir/src/gba/memory.c.o
+2026-11-12T17:06:18.1791130Z [91/158] Building C object CMakeFiles/mgba.dir/src/gba/sharkport.c.o
+2026-11-12T17:06:18.1791470Z [92/158] Building C object CMakeFiles/mgba.dir/src/gba/savedata.c.o
+2026-11-12T17:06:18.1791790Z [93/158] Building C object CMakeFiles/mgba.dir/src/gba/serialize.c.o
+2026-11-12T17:06:18.1792170Z [94/158] Building C object CMakeFiles/mgba.dir/src/gba/sio.c.o
+2026-11-12T17:06:18.1792520Z [95/158] Building C object CMakeFiles/mgba.dir/src/gba/timer.c.o
+2026-11-12T17:06:18.1792910Z [96/158] Building C object CMakeFiles/mgba.dir/src/util/circle-buffer.c.o
+2026-11-12T17:06:18.1793340Z [97/158] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-mode0.c.o
+2026-11-12T17:06:18.1793820Z [98/158] Building C object CMakeFiles/mgba.dir/src/util/crc32.c.o
+2026-11-12T17:06:18.1794220Z [99/158] Building C object CMakeFiles/mgba.dir/src/util/configuration.c.o
+2026-11-12T17:06:18.1794640Z [100/158] Building C object CMakeFiles/mgba.dir/src/util/formatting.c.o
+2026-11-12T17:06:18.1796550Z [101/158] Building C object CMakeFiles/mgba.dir/src/util/gbk-table.c.o
+2026-11-12T17:06:18.1798190Z [102/158] Building C object CMakeFiles/mgba.dir/src/util/hash.c.o
+2026-11-12T17:06:18.1798600Z [103/158] Building C object CMakeFiles/mgba.dir/src/util/md5.c.o
+2026-11-12T17:06:18.1798940Z [104/158] Building C object CMakeFiles/mgba.dir/src/util/string.c.o
+2026-11-12T17:06:18.1799280Z [105/158] Building C object CMakeFiles/mgba.dir/src/util/sha1.c.o
+2026-11-12T17:06:18.1799600Z [106/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/gbp.c.o
+2026-11-12T17:06:18.1800290Z [107/158] Building C object CMakeFiles/mgba.dir/src/util/table.c.o
+2026-11-12T17:06:18.1800880Z [108/158] Building C object CMakeFiles/mgba.dir/src/util/audio-buffer.c.o
+2026-11-12T17:06:18.1801910Z [109/158] Building C object CMakeFiles/mgba.dir/src/util/vfs.c.o
+2026-11-12T17:06:18.1811390Z [110/158] Building C object CMakeFiles/mgba.dir/src/util/audio-resampler.c.o
+2026-11-12T17:06:18.1811850Z [111/158] Building C object CMakeFiles/mgba.dir/src/util/vector.c.o
+2026-11-12T17:06:18.1812290Z [112/158] Building C object CMakeFiles/mgba.dir/src/util/convolve.c.o
+2026-11-12T17:06:18.1812640Z [113/158] Building C object CMakeFiles/mgba.dir/src/util/elf-read.c.o
+2026-11-12T17:06:18.1813040Z [114/158] Building C object CMakeFiles/mgba.dir/src/util/geometry.c.o
+2026-11-12T17:06:18.1813390Z [115/158] Building C object CMakeFiles/mgba.dir/src/util/image/font.c.o
+2026-11-12T17:06:18.1813800Z [116/158] Building C object CMakeFiles/mgba.dir/src/util/image/export.c.o
+2026-11-12T17:06:18.1814140Z [117/158] Building C object CMakeFiles/mgba.dir/src/gba/video.c.o
+2026-11-12T17:06:18.1814480Z [118/158] Building C object CMakeFiles/mgba.dir/src/util/interpolator.c.o
+2026-11-12T17:06:18.1814930Z [119/158] Building C object CMakeFiles/mgba.dir/src/util/patch.c.o
+2026-11-12T17:06:18.1815310Z [120/158] Building C object CMakeFiles/mgba.dir/src/util/patch-fast.c.o
+2026-11-12T17:06:18.1815670Z [121/158] Building C object CMakeFiles/mgba.dir/src/util/image.c.o
+2026-11-12T17:06:18.1816030Z [122/158] Building C object CMakeFiles/mgba.dir/src/util/image/png-io.c.o
+2026-11-12T17:06:18.1816380Z [123/158] Building C object CMakeFiles/mgba.dir/src/util/patch-ips.c.o
+2026-11-12T17:06:18.1816740Z [124/158] Building C object CMakeFiles/mgba.dir/src/util/patch-ups.c.o
+2026-11-12T17:06:18.1817060Z [125/158] Building C object CMakeFiles/mgba.dir/version.c.o
+2026-11-12T17:06:18.1817380Z [126/158] Building C object CMakeFiles/mgba.dir/src/util/text-codec.c.o
+2026-11-12T17:06:18.1817720Z [127/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-mem.c.o
+2026-11-12T17:06:18.1820080Z [128/158] Building C object CMakeFiles/mgba.dir/src/util/sfo.c.o
+2026-11-12T17:06:18.1822650Z [129/158] Building C object CMakeFiles/mgba.dir/src/util/ring-fifo.c.o
+2026-11-12T17:06:18.1824130Z [130/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fd.c.o
+2026-11-12T17:06:18.1826250Z [131/158] Building C object CMakeFiles/mgba.dir/src/third-party/inih/ini.c.o
+2026-11-12T17:06:18.1827160Z [132/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fifo.c.o
+2026-11-12T17:06:18.1827640Z [133/158] Building C object CMakeFiles/mgba.dir/src/platform/posix/memory.c.o
+2026-11-12T17:06:18.1828080Z [134/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-dirent.c.o
+2026-11-12T17:06:18.1828710Z [135/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/ioapi.c.o
+2026-11-12T17:06:18.1831510Z /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/zlib/contrib/minizip/ioapi.c:234:6: warning: a function definition without a prototype is deprecated in all versions of C and is not supported in C23 [-Wdeprecated-non-prototype]
+2026-11-12T17:06:18.1832600Z   234 | void fill_fopen_filefunc (pzlib_filefunc_def)
+2026-11-12T17:06:18.1833100Z       |      ^
+2026-11-12T17:06:18.1833280Z 1 warning generated.
+2026-11-12T17:06:18.1833580Z [136/158] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-zip.c.o
+2026-11-12T17:06:18.1834240Z [137/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/unzip.c.o
+2026-11-12T17:06:18.1834930Z [138/158] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/zip.c.o
+2026-11-12T17:06:18.1835610Z /Users/runner/work/mgbax-ios/mgbax-ios/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable]
+2026-11-12T17:06:18.1836250Z  1476 |                 int bBreak = 0;
+2026-11-12T17:06:18.1836480Z       |                     ^
+2026-11-12T17:06:18.1836640Z 1 warning generated.
+2026-11-12T17:06:18.1836890Z [139/158] Building C object CMakeFiles/mgba.dir/src/gb/sio/printer.c.o
+2026-11-12T17:06:18.1837460Z [140/158] Building C object CMakeFiles/mgba.dir/src/gb/sio/lockstep.c.o
+2026-11-12T17:06:18.1838300Z [141/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/dolphin.c.o
+2026-11-12T17:06:18.1840000Z [142/158] Building C object CMakeFiles/mgba.dir/src/gba/extra/battlechip.c.o
+2026-11-12T17:06:18.1840400Z [143/158] Building C object CMakeFiles/mgba.dir/src/gba/extra/proxy.c.o
+2026-11-12T17:06:18.1840740Z [144/158] Building C object CMakeFiles/mgba.dir/src/gb/extra/proxy.c.o
+2026-11-12T17:06:18.1841190Z [145/158] Building C object CMakeFiles/mgba.dir/src/feature/proxy-backend.c.o
+2026-11-12T17:06:18.1841570Z [146/158] Building C object CMakeFiles/mgba.dir/src/feature/commandline.c.o
+2026-11-12T17:06:18.1841940Z [147/158] Building C object CMakeFiles/mgba.dir/src/gba/sio/lockstep.c.o
+2026-11-12T17:06:18.1842370Z [148/158] Building C object CMakeFiles/mgba.dir/src/feature/video-backend.c.o
+2026-11-12T17:06:18.1842700Z [149/158] Linking C static library libpng/libpng16d.a
+2026-11-12T17:06:18.1843010Z [150/158] Building C object CMakeFiles/mgba.dir/src/feature/updater.c.o
+2026-11-12T17:06:18.1843440Z [151/158] Building C object CMakeFiles/mgba.dir/src/feature/video-logger.c.o
+2026-11-12T17:06:18.1843830Z [152/158] Building C object CMakeFiles/mgba.dir/src/feature/thread-proxy.c.o
+2026-11-12T17:06:18.1844260Z [153/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_lockstep.c.o
+2026-11-12T17:06:18.1844830Z [154/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/remote_link.c.o
+2026-11-12T17:06:18.1845270Z [155/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_net.c.o
+2026-11-12T17:06:18.1845680Z [156/158] Linking C static library libmgba.a
+2026-11-12T17:06:18.1846200Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(library.c.o) has no symbols
+2026-11-12T17:06:18.1847050Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(gl.c.o) has no symbols
+2026-11-12T17:06:18.1847880Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(elf-read.c.o) has no symbols
+2026-11-12T17:06:18.1849060Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(font.c.o) has no symbols
+2026-11-12T17:06:18.1850140Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(library.c.o) has no symbols
+2026-11-12T17:06:18.1851070Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(gl.c.o) has no symbols
+2026-11-12T17:06:18.1851850Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(elf-read.c.o) has no symbols
+2026-11-12T17:06:18.1852680Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib: file: libmgba.a(font.c.o) has no symbols
+2026-11-12T17:06:18.1853350Z [157/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o
+2026-11-12T17:06:18.1853970Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2031:15: warning: unused variable 'gba' [-Wunused-variable]
+2026-11-12T17:06:18.1854550Z  2031 |                 struct GBA* gba = (struct GBA*) emu->core->board;
+2026-11-12T17:06:18.1854810Z       |                             ^~~
+2026-11-12T17:06:18.1855370Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2084:6: warning: variable 'taken' set but not used [-Wunused-but-set-variable]
+2026-11-12T17:06:18.1855860Z  2084 |         int taken = 0;
+2026-11-12T17:06:18.1856030Z       |             ^
+2026-11-12T17:06:18.1856510Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:2785:42: warning: unused parameter 'timing' [-Wunused-parameter]
+2026-11-12T17:06:18.1857160Z  2785 | static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+2026-11-12T17:06:18.1860380Z       |                                          ^
+2026-11-12T17:06:18.1860960Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/mgba_mobile.c:3062:8: warning: unused variable 'wasBusy' [-Wunused-variable]
+2026-11-12T17:06:18.1861480Z  3062 |                 bool wasBusy = (driver->p->siocnt & 0x0080) != 0;
+2026-11-12T17:06:18.1861740Z       |                      ^~~~~~~
+2026-11-12T17:06:18.1861920Z 4 warnings generated.
+2026-11-12T17:06:18.1862110Z [158/158] Linking C static library libmgba_mobile.a
+2026-11-12T17:06:18.1863500Z libtool: warning duplicate member name 'audio.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(audio.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(audio.c.o)'
+2026-11-12T17:06:18.1866620Z libtool: warning duplicate member name 'cache-set.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cache-set.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cache-set.c.o)'
+2026-11-12T17:06:18.1872750Z libtool: warning duplicate member name 'cache-set.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cache-set.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cache-set.c.o)'
+2026-11-12T17:06:18.1880500Z libtool: warning duplicate member name 'cheats.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cheats.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cheats.c.o)'
+2026-11-12T17:06:18.1887950Z libtool: warning duplicate member name 'cheats.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cheats.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(cheats.c.o)'
+2026-11-12T17:06:18.1895300Z libtool: warning duplicate member name 'core.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(core.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(core.c.o)'
+2026-11-12T17:06:18.1902660Z libtool: warning duplicate member name 'core.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(core.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(core.c.o)'
+2026-11-12T17:06:18.1910080Z libtool: warning duplicate member name 'decoder.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(decoder.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(decoder.c.o)'
+2026-11-12T17:06:18.1920560Z libtool: warning duplicate member name 'input.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(input.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(input.c.o)'
+2026-11-12T17:06:18.1923620Z libtool: warning duplicate member name 'input.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(input.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(input.c.o)'
+2026-11-12T17:06:18.1926720Z libtool: warning duplicate member name 'io.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(io.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(io.c.o)'
+2026-11-12T17:06:18.1929810Z libtool: warning duplicate member name 'lockstep.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(lockstep.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(lockstep.c.o)'
+2026-11-12T17:06:18.1932230Z libtool: warning duplicate member name 'lockstep.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(lockstep.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(lockstep.c.o)'
+2026-11-12T17:06:18.1934670Z libtool: warning duplicate member name 'mbc.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(mbc.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(mbc.c.o)'
+2026-11-12T17:06:18.1937040Z libtool: warning duplicate member name 'memory.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(memory.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(memory.c.o)'
+2026-11-12T17:06:18.1939670Z libtool: warning duplicate member name 'memory.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(memory.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(memory.c.o)'
+2026-11-12T17:06:18.1942150Z libtool: warning duplicate member name 'overrides.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(overrides.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(overrides.c.o)'
+2026-11-12T17:06:18.1945450Z libtool: warning duplicate member name 'proxy.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(proxy.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(proxy.c.o)'
+2026-11-12T17:06:18.1947910Z libtool: warning duplicate member name 'serialize.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(serialize.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(serialize.c.o)'
+2026-11-12T17:06:18.3250090Z libtool: warning duplicate member name 'serialize.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(serialize.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(serialize.c.o)'
+2026-11-12T17:06:18.3252650Z libtool: warning duplicate member name 'sio.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(sio.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(sio.c.o)'
+2026-11-12T17:06:18.3255110Z libtool: warning duplicate member name 'timer.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(timer.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(timer.c.o)'
+2026-11-12T17:06:18.3257540Z libtool: warning duplicate member name 'unlicensed.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(unlicensed.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(unlicensed.c.o)'
+2026-11-12T17:06:18.3259900Z libtool: warning duplicate member name 'video.c.o' from '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(video.c.o)' and '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(video.c.o)'
+2026-11-12T17:06:18.3261670Z libtool: file: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(library.c.o) has no symbols
+2026-11-12T17:06:18.3262880Z libtool: file: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(gl.c.o) has no symbols
+2026-11-12T17:06:18.3264060Z libtool: file: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(elf-read.c.o) has no symbols
+2026-11-12T17:06:18.3265230Z libtool: file: /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-x86_64/libmgba.a(font.c.o) has no symbols
+2026-11-12T17:06:18.3266220Z 
+2026-11-12T17:06:18.3267610Z Ld /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/Binary/__preview.dylib normal x86_64 (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3268340Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3271140Z     /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -Xlinker -reproducible -target x86_64-apple-ios15.0-simulator -dynamiclib -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -Os -L/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -F/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -install_name @rpath/mGBAx.debug.dylib -dead_strip -Xlinker -objc_abi_version -Xlinker 2 -Xlinker -dependency_info -Xlinker /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx_dependency_info.dat -o /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/Binary/__preview.dylib
+2026-11-12T17:06:18.3561330Z 
+2026-11-12T17:06:18.3562220Z Ld /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/Binary/__preview.dylib normal arm64 (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3562980Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3566460Z     /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang -Xlinker -reproducible -target arm64-apple-ios15.0-simulator -dynamiclib -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -Os -L/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -F/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -install_name @rpath/mGBAx.debug.dylib -dead_strip -Xlinker -objc_abi_version -Xlinker 2 -Xlinker -dependency_info -Xlinker /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx_dependency_info.dat -o /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/Binary/__preview.dylib
+2026-11-12T17:06:18.3690650Z 
+2026-11-12T17:06:18.3691690Z MkDir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_output/unthinned (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3703350Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3704080Z     /bin/mkdir -p /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_output/unthinned
+2026-11-12T17:06:18.3704660Z 
+2026-11-12T17:06:18.3705890Z MkDir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_output/thinned (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3706810Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3707550Z     /bin/mkdir -p /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_output/thinned
+2026-11-12T17:06:18.3708530Z 
+2026-11-12T17:06:18.3708930Z GenerateAssetSymbols /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Assets.xcassets (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3709610Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3715860Z     /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/actool /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Assets.xcassets --compile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app --output-format human-readable-text --notices --warnings --export-dependency-info /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_dependencies --output-partial-info-plist /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_generated_info.plist --app-icon AppIcon --compress-pngs --enable-on-demand-resources YES --development-region zh-Hans --target-device iphone --target-device ipad --minimum-deployment-target 15.0 --platform iphonesimulator --bundle-identifier io.mgba.ios --generate-swift-asset-symbols /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.swift --generate-objc-asset-symbols /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.h --generate-asset-symbol-index /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols-Index.plist
+2026-11-12T17:06:18.3721410Z /* com.apple.actool.compilation-results */
+2026-11-12T17:06:18.3722170Z /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols-Index.plist
+2026-11-12T17:06:18.3723160Z /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.h
+2026-11-12T17:06:18.3724800Z /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/GeneratedAssetSymbols.swift
+2026-11-12T17:06:18.3725890Z 
+2026-11-12T17:06:18.3726010Z 
+2026-11-12T17:06:18.3726410Z CompileMetalFile /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Shaders.metal (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:18.3727000Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:18.3731560Z     /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal -c -target air64-apple-ios15.0-simulator -gline-tables-only -frecord-sources -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/include -F/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -fmetal-math-mode\=fast -fmetal-math-fp32-functions\=fast -serialize-diagnostics /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Metal/Shaders.dia -o /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Metal/Shaders.air -index-store-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Index.noindex/DataStore -MMD -MT dependencies -MF /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Metal/Shaders.dat /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Shaders.metal
+2026-11-12T17:06:19.7034760Z /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Shaders.metal:192:12: warning: unused variable 'd' [-Wunused-variable]
+2026-11-12T17:06:19.7052960Z     float3 d = fetchTex(uTex, s, in.texCoord, float2(-1.0, 0.0), u.texSize);
+2026-11-12T17:06:19.7053770Z            ^
+2026-11-12T17:06:19.7093820Z /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Shaders.metal:210:12: warning: unused variable 'd' [-Wunused-variable]
+2026-11-12T17:06:19.7103150Z     float3 d = fetchTex(uTex, s, in.texCoord, float2(-1.0, 0.0), u.texSize);
+2026-11-12T17:06:19.7108860Z            ^
+2026-11-12T17:06:19.7109000Z 2 warnings generated.
+2026-11-12T17:06:19.7109100Z 
+2026-11-12T17:06:19.7109730Z CompileAssetCatalogVariant thinned /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Assets.xcassets (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7110510Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:19.7113440Z     /Applications/Xcode_16.4.app/Contents/Developer/usr/bin/actool /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/Assets.xcassets --compile /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_output/thinned --output-format human-readable-text --notices --warnings --export-dependency-info /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_dependencies_thinned --output-partial-info-plist /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/assetcatalog_generated_info.plist_thinned --app-icon AppIcon --compress-pngs --enable-on-demand-resources YES --development-region zh-Hans --target-device iphone --target-device ipad --minimum-deployment-target 15.0 --platform iphonesimulator
+2026-11-12T17:06:19.7116110Z 
+2026-11-12T17:06:19.7116370Z SwiftDriver mGBA normal x86_64 com.apple.xcode.tools.swift.compiler (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7116790Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:19.7136820Z     builtin-SwiftDriver -- /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name mGBAx -Onone -enforce-exclusivity\=checked @/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.SwiftFileList -DDEBUG -enable-bare-slash-regex -enable-experimental-feature DebugDescriptionMacro -sdk /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -target x86_64-apple-ios15.0-simulator -g -module-cache-path /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex -Xfrontend -serialize-debugging-options -index-store-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Index.noindex/DataStore -swift-version 5 -I /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -F /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -emit-localized-strings -emit-localized-strings-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64 -c -j3 -enable-batch-mode -incremental -Xcc -ivfsstatcache -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache -output-file-map /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA-OutputFileMap.json -use-frontend-parseable-output -save-temps -no-color-diagnostics -serialize-diagnostics -emit-dependencies -emit-module -emit-module-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx.swiftmodule -validate-clang-modules-once -clang-build-session-file /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex/Session.modulevalidation -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/swift-overrides.hmap -emit-const-values -Xfrontend -const-gather-protocols-file -Xfrontend /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA_const_extract_protocols.json -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-generated-files.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-own-target-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-project-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/include -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources-normal/x86_64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/x86_64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources -emit-objc-header -emit-objc-header-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBAx-Swift.h -import-objc-header /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h -pch-output-dir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders -working-directory /Users/runner/work/mgbax-ios/mgbax-ios/ios -experimental-emit-module-separately -disable-cmo
+2026-11-12T17:06:19.7152840Z 
+2026-11-12T17:06:19.7153580Z SwiftDriver mGBA normal arm64 com.apple.xcode.tools.swift.compiler (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7154140Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:19.7178070Z     builtin-SwiftDriver -- /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc -module-name mGBAx -Onone -enforce-exclusivity\=checked @/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.SwiftFileList -DDEBUG -enable-bare-slash-regex -enable-experimental-feature DebugDescriptionMacro -sdk /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -target arm64-apple-ios15.0-simulator -g -module-cache-path /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex -Xfrontend -serialize-debugging-options -index-store-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Index.noindex/DataStore -swift-version 5 -I /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -F /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -emit-localized-strings -emit-localized-strings-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64 -c -j3 -enable-batch-mode -incremental -Xcc -ivfsstatcache -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache -output-file-map /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA-OutputFileMap.json -use-frontend-parseable-output -save-temps -no-color-diagnostics -serialize-diagnostics -emit-dependencies -emit-module -emit-module-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx.swiftmodule -validate-clang-modules-once -clang-build-session-file /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex/Session.modulevalidation -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/swift-overrides.hmap -emit-const-values -Xfrontend -const-gather-protocols-file -Xfrontend /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBA_const_extract_protocols.json -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-generated-files.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-own-target-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-project-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/include -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources-normal/arm64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/arm64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources -emit-objc-header -emit-objc-header-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/arm64/mGBAx-Swift.h -import-objc-header /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h -pch-output-dir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders -working-directory /Users/runner/work/mgbax-ios/mgbax-ios/ios -experimental-emit-module-separately -disable-cmo
+2026-11-12T17:06:19.7195210Z 
+2026-11-12T17:06:19.7195470Z SwiftGeneratePch normal x86_64 Compiling\ bridging\ header (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7195850Z 1 error generated.
+2026-11-12T17:06:19.7196050Z 2 errors generated.
+2026-11-12T17:06:19.7196250Z Failed frontend command:
+2026-11-12T17:06:19.7228960Z /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend -frontend -target x86_64-apple-ios15.0-simulator -enable-objc-interop -sdk /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -I /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -F /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator -no-color-diagnostics -g -debug-info-format\=dwarf -dwarf-version\=4 -module-cache-path /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex -swift-version 5 -enforce-exclusivity\=checked -Onone -D DEBUG -serialize-debugging-options -const-gather-protocols-file /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Objects-normal/x86_64/mGBA_const_extract_protocols.json -enable-experimental-feature DebugDescriptionMacro -enable-bare-slash-regex -empty-abi-descriptor -validate-clang-modules-once -clang-build-session-file /Users/runner/work/mgbax-ios/mgbax-ios/build/ModuleCache.noindex/Session.modulevalidation -Xcc -working-directory -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/ios -resource-dir /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift -enable-anonymous-context-mangled-names -file-compilation-dir /Users/runner/work/mgbax-ios/mgbax-ios/ios -Xcc -ivfsstatcache -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/SDKStatCaches.noindex/iphonesimulator18.5-22F76-96ae0914227b19deccb34b33ba7b5dea.sdkstatcache -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/swift-overrides.hmap -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-generated-files.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-own-target-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-all-target-headers.hmap -Xcc -iquote -Xcc /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/mGBAx-project-headers.hmap -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/include -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources-normal/x86_64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/x86_64 -Xcc -I/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources -import-objc-header /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h -module-name mGBAx -frontend-parseable-output -disable-clang-spi -target-sdk-version 18.5 -target-sdk-name iphonesimulator18.5 -external-plugin-path /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/lib/swift/host/plugins\#/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -external-plugin-path /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/local/lib/swift/host/plugins\#/Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/usr/bin/swift-plugin-server -in-process-plugin-server-path /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/libSwiftInProcPluginServer.dylib -plugin-path /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins -plugin-path /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/local/lib/swift/host/plugins -index-store-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Index.noindex/DataStore -emit-pch -serialize-diagnostics-path /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders/mGBA-Bridging-Header-36bcczvtb9r6m.dia -pch-output-dir /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h
+2026-11-12T17:06:19.7259120Z 
+2026-11-12T17:06:19.7259860Z PrecompileSwiftBridgingHeader normal x86_64 (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7261210Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:19.7262060Z     
+2026-11-12T17:06:19.7263700Z /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:9: note: in file included from /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:
+2026-11-12T17:06:19.7265410Z #import "link_lockstep.h"
+2026-11-12T17:06:19.7265860Z         ^
+2026-11-12T17:06:19.7266870Z /Users/runner/work/mgbax-ios/mgbax-ios/src/platform/mobile/link_lockstep.h:9:10: error: 'mgba/core/core.h' file not found
+2026-11-12T17:06:19.7268170Z #include <mgba/core/core.h>
+2026-11-12T17:06:19.7268680Z          ^
+2026-11-12T17:06:19.7271210Z <unknown>:0: error: failed to emit precompiled header '/Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/PrecompiledHeaders/mGBA-Bridging-Header-swift_2NVWVOH57GQGH-clang_1XY1N72FQ625N.pch' for bridging header '/Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h'
+2026-11-12T17:06:19.7275020Z /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:9: note: in file included from /Users/runner/work/mgbax-ios/mgbax-ios/ios/mGBA/mGBA-Bridging-Header.h:4:
+2026-11-12T17:06:19.7277770Z #import "link_lockstep.h"
+2026-11-12T17:06:19.7278240Z         ^
+2026-11-12T17:06:19.7278490Z 
+2026-11-12T17:06:19.7279110Z SwiftGeneratePch normal arm64 Compiling\ bridging\ header (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7279990Z 
+2026-11-12T17:06:19.7281200Z MetalLink /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app/default.metallib (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7282820Z     cd /Users/runner/work/mgbax-ios/mgbax-ios/ios
+2026-11-12T17:06:19.7286380Z     /Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/metal -target air64-apple-ios15.0-simulator -frecord-sources -o /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Products/Debug-iphonesimulator/mGBAx.app/default.metallib /Users/runner/work/mgbax-ios/mgbax-ios/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Metal/Shaders.air
+2026-11-12T17:06:19.7288290Z 
+2026-11-12T17:06:19.7342440Z note: Run script build phase 'Build mGBA core' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7350180Z ** BUILD FAILED **
+2026-11-12T17:06:19.7350550Z 
+2026-11-12T17:06:19.7350680Z 
+2026-11-12T17:06:19.7350870Z The following build commands failed:
+2026-11-12T17:06:19.7351430Z 	SwiftGeneratePch normal x86_64 Compiling\ bridging\ header (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7352120Z 	PrecompileSwiftBridgingHeader normal x86_64 (in target 'mGBA' from project 'mGBA')
+2026-11-12T17:06:19.7352730Z 	Building project mGBA with scheme mGBA and configuration Debug
+2026-11-12T17:06:19.7353140Z (3 failures)
+2026-11-12T17:06:19.7719550Z ##[error]Process completed with exit code 65.

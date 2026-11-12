@@ -1,0 +1,34 @@
+﻿2026-11-12T17:32:54.8552866Z Current runner version: '2.338.2'
+2026-11-12T17:32:54.8602673Z ##[group]Runner Image Provisioner
+2026-11-12T17:32:54.8603514Z Hosted Compute Agent
+2026-11-12T17:32:54.8604008Z Version: 20261103.629
+2026-11-12T17:32:54.8604562Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-12T17:32:54.8605834Z Build Date: 2026-11-03T17:26:59Z
+2026-11-12T17:32:54.8606446Z Worker ID: {d3a9793c-ff62-4668-9735-92769d90469d}
+2026-11-12T17:32:54.8607116Z Region: westus3
+2026-11-12T17:32:54.8607634Z Cloud: Azure
+2026-11-12T17:32:54.8608133Z ##[endgroup]
+2026-11-12T17:32:54.8609701Z ##[group]Operating System
+2026-11-12T17:32:54.8610272Z Microsoft Windows Server 2025
+2026-11-12T17:32:54.8610807Z 10.0.26100
+2026-11-12T17:32:54.8611277Z Datacenter
+2026-11-12T17:32:54.8611703Z ##[endgroup]
+2026-11-12T17:32:54.8612181Z ##[group]Runner Image
+2026-11-12T17:32:54.8612716Z Image: windows-2025-vs2026
+2026-11-12T17:32:54.8613242Z Version: 20261103.298.1
+2026-11-12T17:32:54.8614261Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261103.298/images/windows/Windows2025-VS2026-Readme.md
+2026-11-12T17:32:54.8616080Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261103.298
+2026-11-12T17:32:54.8616980Z ##[endgroup]
+2026-11-12T17:32:54.8618018Z ##[group]GITHUB_TOKEN Permissions
+2026-11-12T17:32:54.8619884Z Contents: read
+2026-11-12T17:32:54.8620408Z Metadata: read
+2026-11-12T17:32:54.8620872Z Packages: read
+2026-11-12T17:32:54.8621304Z ##[endgroup]
+2026-11-12T17:32:54.8624172Z Secret source: Actions
+2026-11-12T17:32:54.8625030Z Cache mode: write
+2026-11-12T17:32:54.8625664Z Prepare workflow directory
+2026-11-12T17:32:54.8949549Z Prepare all required actions
+2026-11-12T17:32:54.8998863Z Getting action download info
+2026-11-12T17:32:55.1934721Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-12T17:32:55.3690702Z Download action repository 'msys2/setup-msys2@v2' (SHA:ec48f7c5447b3140e2b088413ae3a55687bccb6e)
+2026-11-12T17:32:55.9812467Z Complete job name: pc

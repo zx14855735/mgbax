@@ -1,0 +1,295 @@
+﻿2026-11-12T18:07:58.3991322Z ##[group]Run cmake --build build-pc --target mgba-qt mgba-sdl
+2026-11-12T18:07:58.3991855Z [36;1mcmake --build build-pc --target mgba-qt mgba-sdl[0m
+2026-11-12T18:07:58.3993798Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2026-11-12T18:07:58.3994070Z env:
+2026-11-12T18:07:58.3994240Z   MSYSTEM: MINGW64
+2026-11-12T18:07:58.3994432Z ##[endgroup]
+2026-11-12T18:08:01.2859990Z [1/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/connection_win.cpp.obj
+2026-11-12T18:08:01.2949794Z [2/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/rpc_connection.cpp.obj
+2026-11-12T18:08:01.3197483Z [3/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/discord_register_win.cpp.obj
+2026-11-12T18:08:02.7355278Z [4/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/serialization.cpp.obj
+2026-11-12T18:08:02.9066472Z [5/451] C:\Windows\system32\cmd.exe /C "cd /D D:\a\mgbax\mgbax && D:\a\_temp\msys64\mingw64\bin\cmake.exe -DBINARY_NAME=mgba -DCONFIG_FILE=D:/a/mgbax/mgbax/src/core/version.c.in -DOUT_FILE=D:/a/mgbax/mgbax/build-pc/version.c -P D:/a/mgbax/mgbax/version.cmake"
+2026-11-12T18:08:03.0821444Z [6/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-fifo.c.obj
+2026-11-12T18:08:03.2767060Z [7/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-fd.c.obj
+2026-11-12T18:08:03.3104076Z [8/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-mem.c.obj
+2026-11-12T18:08:04.6581688Z [9/451] Building C object CMakeFiles/updater-stub.dir/src/platform/windows/vfs-w32.c.obj
+2026-11-12T18:08:04.7746611Z [10/451] Building C object CMakeFiles/mgba.dir/src/core/bitmap-cache.c.obj
+2026-11-12T18:08:05.0995435Z [11/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/discord_rpc.cpp.obj
+2026-11-12T18:08:05.1162422Z In file included from D:/a/mgbax/mgbax/src/third-party/discord-rpc/include/mingw-std-threads/mutex:49,
+2026-11-12T18:08:05.1213088Z                  from D:/a/mgbax/mgbax/src/third-party/discord-rpc/src/discord_rpc.cpp:11:
+2026-11-12T18:08:05.1458647Z D:/a/mgbax/mgbax/src/third-party/discord-rpc/include/mingw-std-threads/thread:389:17: note: '#pragma message: This version of MinGW seems to include a win32 port of pthreads, and probably already has C++11 std threading classes implemented, based on pthreads. These classes, found in namespace std, are not overridden by the mingw-std-thread library. If you would still like to use this implementation (as it is more lightweight), use the classes provided in namespace mingw_stdthread.'
+2026-11-12T18:08:05.1566774Z   389 | #pragma message "This version of MinGW seems to include a win32 port of\
+2026-11-12T18:08:05.1788171Z       |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.1849260Z   390 |  pthreads, and probably already has C++11 std threading classes implemented,\
+2026-11-12T18:08:05.2139864Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.2206218Z   391 |  based on pthreads. These classes, found in namespace std, are not overridden\
+2026-11-12T18:08:05.2523302Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.2829124Z   392 |  by the mingw-std-thread library. If you would still like to use this\
+2026-11-12T18:08:05.3153558Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.3453203Z   393 |  implementation (as it is more lightweight), use the classes provided in\
+2026-11-12T18:08:05.3499846Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.3804380Z   394 |  namespace mingw_stdthread."
+2026-11-12T18:08:05.4130369Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.4449942Z [12/451] Building C object CMakeFiles/mgba.dir/src/core/cache-set.c.obj
+2026-11-12T18:08:05.9158598Z [13/451] Building C object CMakeFiles/mgba.dir/src/core/cheats.c.obj
+2026-11-12T18:08:06.0618765Z [14/451] Building C object CMakeFiles/mgba.dir/src/core/config.c.obj
+2026-11-12T18:08:06.4695862Z [15/451] Building C object CMakeFiles/mgba.dir/src/core/directories.c.obj
+2026-11-12T18:08:06.5102716Z [16/451] Building C object CMakeFiles/mgba.dir/src/core/core.c.obj
+2026-11-12T18:08:06.9471888Z [17/451] Building C object CMakeFiles/mgba.dir/src/core/interface.c.obj
+2026-11-12T18:08:07.4165499Z [18/451] Building C object CMakeFiles/mgba.dir/src/core/input.c.obj
+2026-11-12T18:08:07.5029209Z [19/451] Building C object CMakeFiles/mgba.dir/src/core/lockstep.c.obj
+2026-11-12T18:08:08.2563836Z [20/451] Building C object CMakeFiles/mgba.dir/src/core/log.c.obj
+2026-11-12T18:08:08.5057756Z [21/451] Building C object CMakeFiles/mgba.dir/src/core/map-cache.c.obj
+2026-11-12T18:08:08.7084855Z [22/451] Building C object CMakeFiles/mgba.dir/src/core/mem-search.c.obj
+2026-11-12T18:08:08.7893431Z [23/451] Building C object CMakeFiles/mgba.dir/src/core/rewind.c.obj
+2026-11-12T18:08:09.2483976Z [24/451] Building C object CMakeFiles/mgba.dir/src/core/sync.c.obj
+2026-11-12T18:08:09.4689991Z [25/451] Building C object CMakeFiles/mgba.dir/src/core/serialize.c.obj
+2026-11-12T18:08:10.3933595Z [26/451] Building C object CMakeFiles/mgba.dir/src/core/timing.c.obj
+2026-11-12T18:08:10.4002323Z [27/451] Building C object CMakeFiles/mgba.dir/src/core/tile-cache.c.obj
+2026-11-12T18:08:10.5060379Z [28/451] Building C object CMakeFiles/mgba.dir/src/core/thread.c.obj
+2026-11-12T18:08:10.7492239Z [29/451] Building C object CMakeFiles/mgba.dir/src/core/library.c.obj
+2026-11-12T18:08:12.1028476Z [30/451] Building C object CMakeFiles/mgba.dir/src/sm83/sm83.c.obj
+2026-11-12T18:08:12.2548628Z [31/451] Building C object CMakeFiles/mgba.dir/src/sm83/decoder.c.obj
+2026-11-12T18:08:12.3593644Z [32/451] Building C object CMakeFiles/mgba.dir/src/gb/cheats.c.obj
+2026-11-12T18:08:13.3574209Z [33/451] Building C object CMakeFiles/mgba.dir/src/gb/core.c.obj
+2026-11-12T18:08:13.7291824Z [34/451] Building C object CMakeFiles/mgba.dir/src/gb/audio.c.obj
+2026-11-12T18:08:13.7387068Z [35/451] Building C object CMakeFiles/mgba.dir/src/gb/input.c.obj
+2026-11-12T18:08:13.7515015Z [36/451] Building C object CMakeFiles/mgba.dir/src/sm83/isa-sm83.c.obj
+2026-11-12T18:08:14.6101230Z [37/451] Building C object CMakeFiles/mgba.dir/src/gb/gb.c.obj
+2026-11-12T18:08:14.6746377Z [38/451] Building C object CMakeFiles/mgba.dir/src/gb/io.c.obj
+2026-11-12T18:08:15.4096352Z [39/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc.c.obj
+2026-11-12T18:08:15.4237645Z [40/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/licensed.c.obj
+2026-11-12T18:08:15.6409075Z [41/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/huc-3.c.obj
+2026-11-12T18:08:15.7914632Z [42/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/mbc.c.obj
+2026-11-12T18:08:16.3982618Z [43/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/pocket-cam.c.obj
+2026-11-12T18:08:16.7972420Z [44/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/tama5.c.obj
+2026-11-12T18:08:17.8744536Z [45/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/unlicensed.c.obj
+2026-11-12T18:08:17.9542215Z [46/451] Building C object CMakeFiles/mgba.dir/src/gb/overrides.c.obj
+2026-11-12T18:08:18.0355785Z [47/451] Building C object CMakeFiles/mgba.dir/src/gb/serialize.c.obj
+2026-11-12T18:08:18.0417433Z [48/451] Building C object CMakeFiles/mgba.dir/src/gb/memory.c.obj
+2026-11-12T18:08:18.4815275Z [49/451] Building C object CMakeFiles/mgba.dir/src/gb/renderers/cache-set.c.obj
+2026-11-12T18:08:20.1612383Z [50/451] Building C object CMakeFiles/mgba.dir/src/gb/sio.c.obj
+2026-11-12T18:08:20.3208386Z [51/451] Building C object CMakeFiles/mgba.dir/src/gb/timer.c.obj
+2026-11-12T18:08:20.9679453Z [52/451] Building C object CMakeFiles/mgba.dir/src/arm/arm.c.obj
+2026-11-12T18:08:21.1913022Z [53/451] Building C object CMakeFiles/mgba.dir/src/gb/video.c.obj
+2026-11-12T18:08:22.3741688Z [54/451] Building C object CMakeFiles/mgba.dir/src/gb/renderers/software.c.obj
+2026-11-12T18:08:23.1040862Z [55/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder.c.obj
+2026-11-12T18:08:23.3358559Z [56/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder-thumb.c.obj
+2026-11-12T18:08:24.5783609Z [57/451] Building C object CMakeFiles/mgba.dir/src/arm/isa-thumb.c.obj
+2026-11-12T18:08:24.8924178Z [58/451] Building C object CMakeFiles/mgba.dir/src/gba/audio.c.obj
+2026-11-12T18:08:26.0174148Z [59/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/ereader.c.obj
+2026-11-12T18:08:26.1034076Z [60/451] Building C object CMakeFiles/mgba.dir/src/gba/bios.c.obj
+2026-11-12T18:08:26.5574423Z [61/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder-arm.c.obj
+2026-11-12T18:08:26.6747857Z [62/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/gpio.c.obj
+2026-11-12T18:08:26.9476411Z [63/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/matrix.c.obj
+2026-11-12T18:08:27.8845361Z [64/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/unlicensed.c.obj
+2026-11-12T18:08:27.9065613Z [65/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/vfame.c.obj
+2026-11-12T18:08:28.4887542Z [66/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats.c.obj
+2026-11-12T18:08:28.5461500Z [67/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/codebreaker.c.obj
+2026-11-12T18:08:29.1192220Z [68/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/gameshark.c.obj
+2026-11-12T18:08:29.7448629Z [69/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/parv3.c.obj
+2026-11-12T18:08:30.5547105Z [70/451] Building C object CMakeFiles/mgba.dir/src/gba/core.c.obj
+2026-11-12T18:08:30.6306668Z [71/451] Building C object CMakeFiles/mgba.dir/src/gba/dma.c.obj
+2026-11-12T18:08:30.6907524Z [72/451] Building C object CMakeFiles/mgba.dir/src/gba/hle-bios.c.obj
+2026-11-12T18:08:30.7312482Z [73/451] Building C object CMakeFiles/mgba.dir/src/gba/gba.c.obj
+2026-11-12T18:08:31.5184547Z [74/451] Building C object CMakeFiles/mgba.dir/src/gba/input.c.obj
+2026-11-12T18:08:32.5524328Z [75/451] Building C object CMakeFiles/mgba.dir/src/gba/overrides.c.obj
+2026-11-12T18:08:32.6195232Z [76/451] Building C object CMakeFiles/mgba.dir/src/gba/io.c.obj
+2026-11-12T18:08:32.6377613Z [77/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/cache-set.c.obj
+2026-11-12T18:08:33.1845626Z [78/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/common.c.obj
+2026-11-12T18:08:34.9841025Z [79/451] Building C object CMakeFiles/mgba.dir/src/arm/isa-arm.c.obj
+2026-11-12T18:08:35.5223628Z [80/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-bg.c.obj
+2026-11-12T18:08:35.6599530Z [81/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/gl.c.obj
+2026-11-12T18:08:35.8850064Z [82/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-obj.c.obj
+2026-11-12T18:08:37.6856135Z [83/451] Building C object CMakeFiles/mgba.dir/src/gba/serialize.c.obj
+2026-11-12T18:08:37.7555612Z [84/451] Building C object CMakeFiles/mgba.dir/src/gba/sharkport.c.obj
+2026-11-12T18:08:37.7671290Z [85/451] Building C object CMakeFiles/mgba.dir/src/gba/savedata.c.obj
+2026-11-12T18:08:37.8537725Z [86/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/video-software.c.obj
+2026-11-12T18:08:39.4791574Z [87/451] Building C object CMakeFiles/mgba.dir/src/gba/timer.c.obj
+2026-11-12T18:08:39.4846674Z [88/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/gbp.c.obj
+2026-11-12T18:08:39.6576767Z [89/451] Building C object CMakeFiles/mgba.dir/src/gba/sio.c.obj
+2026-11-12T18:08:39.9306360Z [90/451] Building C object CMakeFiles/mgba.dir/src/gba/video.c.obj
+2026-11-12T18:08:39.9367750Z [91/451] Building C object CMakeFiles/mgba.dir/src/gba/memory.c.obj
+2026-11-12T18:08:40.4536695Z [92/451] Building C object CMakeFiles/mgba.dir/src/util/gbk-table.c.obj
+2026-11-12T18:08:40.9930886Z [93/451] Building C object CMakeFiles/mgba.dir/src/util/configuration.c.obj
+2026-11-12T18:08:41.0212508Z [94/451] Building C object CMakeFiles/mgba.dir/src/util/circle-buffer.c.obj
+2026-11-12T18:08:41.0642679Z [95/451] Building C object CMakeFiles/mgba.dir/src/util/crc32.c.obj
+2026-11-12T18:08:41.5169406Z [96/451] Building C object CMakeFiles/mgba.dir/src/util/formatting.c.obj
+2026-11-12T18:08:41.9727167Z [97/451] Building C object CMakeFiles/mgba.dir/src/util/hash.c.obj
+2026-11-12T18:08:42.0136695Z [98/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-mode0.c.obj
+2026-11-12T18:08:42.6409212Z [99/451] Building C object CMakeFiles/mgba.dir/src/util/md5.c.obj
+2026-11-12T18:08:43.1531056Z [100/451] Building C object CMakeFiles/mgba.dir/src/util/sha1.c.obj
+2026-11-12T18:08:43.2088972Z [101/451] Building C object CMakeFiles/mgba.dir/src/util/string.c.obj
+2026-11-12T18:08:43.9690444Z [102/451] Building C object CMakeFiles/mgba.dir/src/util/table.c.obj
+2026-11-12T18:08:44.0379365Z [103/451] Building C object CMakeFiles/mgba.dir/src/util/vfs.c.obj
+2026-11-12T18:08:44.1855271Z [104/451] Building C object CMakeFiles/mgba.dir/src/util/audio-buffer.c.obj
+2026-11-12T18:08:44.4193623Z [105/451] Building C object CMakeFiles/mgba.dir/src/util/vector.c.obj
+2026-11-12T18:08:44.7084854Z [106/451] Building C object CMakeFiles/mgba.dir/src/util/audio-resampler.c.obj
+2026-11-12T18:08:44.8885290Z [107/451] Building C object CMakeFiles/mgba.dir/src/util/convolve.c.obj
+2026-11-12T18:08:45.3565208Z [108/451] Building C object CMakeFiles/mgba.dir/src/util/elf-read.c.obj
+2026-11-12T18:08:45.3970597Z [109/451] Building C object CMakeFiles/mgba.dir/src/util/geometry.c.obj
+2026-11-12T18:08:45.9278075Z [110/451] Building C object CMakeFiles/mgba.dir/src/util/image/export.c.obj
+2026-11-12T18:08:46.4703344Z [111/451] Building C object CMakeFiles/mgba.dir/src/util/image/font.c.obj
+2026-11-12T18:08:46.7787749Z [112/451] Building C object CMakeFiles/mgba.dir/src/util/interpolator.c.obj
+2026-11-12T18:08:46.7848986Z [113/451] Building C object CMakeFiles/mgba.dir/src/util/image.c.obj
+2026-11-12T18:08:46.8136104Z [114/451] Building C object CMakeFiles/mgba.dir/src/util/patch.c.obj
+2026-11-12T18:08:46.9009802Z [115/451] Building C object CMakeFiles/mgba.dir/src/util/image/png-io.c.obj
+2026-11-12T18:08:47.6928449Z [116/451] Building C object CMakeFiles/mgba.dir/src/util/patch-fast.c.obj
+2026-11-12T18:08:47.9846200Z [117/451] Building C object CMakeFiles/mgba.dir/src/util/patch-ips.c.obj
+2026-11-12T18:08:48.0168102Z [118/451] Building C object CMakeFiles/mgba.dir/version.c.obj
+2026-11-12T18:08:48.2011668Z [119/451] Building C object CMakeFiles/mgba.dir/src/util/ring-fifo.c.obj
+2026-11-12T18:08:48.2066290Z [120/451] Building C object CMakeFiles/mgba.dir/src/util/sfo.c.obj
+2026-11-12T18:08:48.2707443Z [121/451] Building C object CMakeFiles/mgba.dir/src/util/patch-ups.c.obj
+2026-11-12T18:08:48.5620054Z [122/451] Building C object CMakeFiles/mgba.dir/src/util/text-codec.c.obj
+2026-11-12T18:08:49.1661411Z [123/451] Building C object CMakeFiles/mgba.dir/src/third-party/inih/ini.c.obj
+2026-11-12T18:08:49.2999125Z [124/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fifo.c.obj
+2026-11-12T18:08:49.5226090Z [125/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-mem.c.obj
+2026-11-12T18:08:49.5510746Z [126/451] Building C object CMakeFiles/mgba.dir/src/platform/windows/memory.c.obj
+2026-11-12T18:08:49.6201145Z [127/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/ioapi.c.obj
+2026-11-12T18:08:49.7084024Z [128/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fd.c.obj
+2026-11-12T18:08:49.7424552Z [129/451] Building C object CMakeFiles/mgba.dir/src/platform/windows/vfs-w32.c.obj
+2026-11-12T18:08:50.0609845Z [130/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zAlloc.c.obj
+2026-11-12T18:08:50.3820116Z [131/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zBuf.c.obj
+2026-11-12T18:08:50.4832241Z [132/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/unzip.c.obj
+2026-11-12T18:08:50.6533116Z [133/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-zip.c.obj
+2026-11-12T18:08:50.6594965Z [134/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zBuf2.c.obj
+2026-11-12T18:08:50.7114469Z [135/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zCrc.c.obj
+2026-11-12T18:08:50.7217894Z [136/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/zip.c.obj
+2026-11-12T18:08:50.7313596Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c: In function 'zipWriteInFileInZip':
+2026-11-12T18:08:50.7505745Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable=]
+2026-11-12T18:08:50.7649825Z  1476 |                 int bBreak = 0;
+2026-11-12T18:08:50.7702229Z       |                     ^~~~~~
+2026-11-12T18:08:50.9173439Z [137/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zCrcOpt.c.obj
+2026-11-12T18:08:50.9497419Z [138/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/CpuArch.c.obj
+2026-11-12T18:08:50.9966562Z [139/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Delta.c.obj
+2026-11-12T18:08:51.1191241Z [140/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-lzma.c.obj
+2026-11-12T18:08:51.1274842Z [141/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zDec.c.obj
+2026-11-12T18:08:51.2809300Z [142/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bra.c.obj
+2026-11-12T18:08:51.3401974Z [143/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bra86.c.obj
+2026-11-12T18:08:51.3523203Z [144/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/BraIA64.c.obj
+2026-11-12T18:08:51.3881207Z [145/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zArcIn.c.obj
+2026-11-12T18:08:51.5431142Z [146/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bcj2.c.obj
+2026-11-12T18:08:51.5809822Z [147/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Lzma2Dec.c.obj
+2026-11-12T18:08:51.7184004Z [148/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Ppmd7Dec.c.obj
+2026-11-12T18:08:51.8935631Z [149/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zStream.c.obj
+2026-11-12T18:08:52.2577085Z [150/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/LzmaDec.c.obj
+2026-11-12T18:08:52.4670910Z [151/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Ppmd7.c.obj
+2026-11-12T18:08:53.1891888Z [152/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zFile.c.obj
+2026-11-12T18:08:53.2978526Z [153/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/dolphin.c.obj
+2026-11-12T18:08:53.6892193Z [154/451] Building C object CMakeFiles/mgba.dir/src/gb/sio/lockstep.c.obj
+2026-11-12T18:08:53.8634330Z [155/451] Building C object CMakeFiles/mgba.dir/src/gb/sio/printer.c.obj
+2026-11-12T18:08:53.9786435Z [156/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/lockstep.c.obj
+2026-11-12T18:08:54.2224910Z [157/451] Building C object CMakeFiles/mgba.dir/src/platform/opengl/gl.c.obj
+2026-11-12T18:08:55.1201902Z [158/451] Building C object CMakeFiles/mgba.dir/src/feature/sqlite3/no-intro.c.obj
+2026-11-12T18:08:55.5852914Z [159/451] Building C object CMakeFiles/mgba.dir/src/debugger/access-logger.c.obj
+2026-11-12T18:08:55.5916046Z [160/451] Building C object CMakeFiles/mgba.dir/src/platform/opengl/gles2.c.obj
+2026-11-12T18:08:56.0985361Z [161/451] Building C object CMakeFiles/mgba.dir/src/debugger/debugger.c.obj
+2026-11-12T18:08:56.1976721Z [162/451] Building C object CMakeFiles/mgba.dir/src/debugger/parser.c.obj
+2026-11-12T18:08:56.2569878Z [163/451] Building C object CMakeFiles/mgba.dir/src/debugger/cli-debugger.c.obj
+2026-11-12T18:08:56.2648013Z D:/a/mgbax/mgbax/src/debugger/cli-debugger.c: In function 'CLIDebuggerTabComplete':
+2026-11-12T18:08:56.2651175Z D:/a/mgbax/mgbax/src/debugger/cli-debugger.c:1338:83: warning: unused parameter 'initial' [-Wunused-parameter]
+2026-11-12T18:08:56.2936367Z  1338 | bool CLIDebuggerTabComplete(struct CLIDebugger* debugger, const char* token, bool initial, size_t tokenLen) {
+2026-11-12T18:08:56.2975504Z       |                                                                                   ^
+2026-11-12T18:08:56.6846327Z [164/451] Building C object CMakeFiles/mgba.dir/src/debugger/symbols.c.obj
+2026-11-12T18:08:57.1994520Z [165/451] Building C object CMakeFiles/mgba.dir/src/debugger/cli-debugger-scripting.c.obj
+2026-11-12T18:08:57.2348721Z [166/451] Building C object CMakeFiles/mgba.dir/src/debugger/stack-trace.c.obj
+2026-11-12T18:08:57.7731882Z [167/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/cli-debugger.c.obj
+2026-11-12T18:08:57.8404071Z [168/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/debugger.c.obj
+2026-11-12T18:08:58.4642665Z [169/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/memory-debugger.c.obj
+2026-11-12T18:08:58.4740368Z [170/451] Building C object CMakeFiles/mgba.dir/src/debugger/gdb-stub.c.obj
+2026-11-12T18:08:58.6723153Z [171/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/cli.c.obj
+2026-11-12T18:08:58.8434797Z [172/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/debugger.c.obj
+2026-11-12T18:08:59.4171949Z [173/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/symbols.c.obj
+2026-11-12T18:08:59.5382735Z [174/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/cli-debugger.c.obj
+2026-11-12T18:09:00.2953960Z [175/451] Building C object CMakeFiles/mgba.dir/src/gba/debugger/cli.c.obj
+2026-11-12T18:09:00.3895789Z [176/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/memory-debugger.c.obj
+2026-11-12T18:09:00.5528027Z [177/451] Building C object CMakeFiles/mgba.dir/src/script/canvas.c.obj
+2026-11-12T18:09:00.5731167Z [178/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/debugger.c.obj
+2026-11-12T18:09:01.2831448Z [179/451] Building C object CMakeFiles/mgba.dir/src/script/console.c.obj
+2026-11-12T18:09:01.3276634Z [180/451] Building C object CMakeFiles/mgba.dir/src/script/context.c.obj
+2026-11-12T18:09:02.2870323Z [181/451] Building C object CMakeFiles/mgba.dir/src/script/input.c.obj
+2026-11-12T18:09:02.3447415Z [182/451] Building C object CMakeFiles/mgba.dir/src/script/stdlib.c.obj
+2026-11-12T18:09:02.4411571Z [183/451] Building C object CMakeFiles/mgba.dir/src/script/socket.c.obj
+2026-11-12T18:09:02.6930126Z [184/451] Building C object CMakeFiles/mgba.dir/src/script/image.c.obj
+2026-11-12T18:09:02.9603545Z [185/451] Building C object CMakeFiles/mgba.dir/src/gba/extra/battlechip.c.obj
+2026-11-12T18:09:04.1270564Z [186/451] Building C object CMakeFiles/mgba.dir/src/gba/extra/proxy.c.obj
+2026-11-12T18:09:04.1293441Z [187/451] Building C object CMakeFiles/mgba.dir/src/script/types.c.obj
+2026-11-12T18:09:04.1332559Z [188/451] Building C object CMakeFiles/mgba.dir/src/gb/extra/proxy.c.obj
+2026-11-12T18:09:04.2042778Z [189/451] Building C object CMakeFiles/mgba.dir/src/feature/commandline.c.obj
+2026-11-12T18:09:04.5012301Z [190/451] Building C object CMakeFiles/mgba.dir/src/feature/proxy-backend.c.obj
+2026-11-12T18:09:04.6635001Z [191/451] Building C object CMakeFiles/mgba.dir/src/feature/thread-proxy.c.obj
+2026-11-12T18:09:05.1415646Z [192/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/ioapi.c.obj
+2026-11-12T18:09:05.4660764Z [193/451] Building C object CMakeFiles/mgba.dir/src/feature/video-backend.c.obj
+2026-11-12T18:09:05.5363974Z [194/451] Building C object CMakeFiles/mgba.dir/src/feature/updater.c.obj
+2026-11-12T18:09:06.1198441Z [195/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-zip.c.obj
+2026-11-12T18:09:06.1262224Z [196/451] Building C object CMakeFiles/mgba.dir/src/feature/video-logger.c.obj
+2026-11-12T18:09:06.2257483Z [197/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/unzip.c.obj
+2026-11-12T18:09:06.3288141Z [198/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zAlloc.c.obj
+2026-11-12T18:09:06.5257398Z [199/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zBuf.c.obj
+2026-11-12T18:09:06.6184025Z [200/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zBuf2.c.obj
+2026-11-12T18:09:06.7255764Z [201/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/zip.c.obj
+2026-11-12T18:09:06.7301694Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c: In function 'zipWriteInFileInZip':
+2026-11-12T18:09:06.7348200Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable=]
+2026-11-12T18:09:06.7527875Z  1476 |                 int bBreak = 0;
+2026-11-12T18:09:06.7686023Z       |                     ^~~~~~
+2026-11-12T18:09:06.8021302Z [202/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zCrc.c.obj
+2026-11-12T18:09:06.9909612Z [203/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zCrcOpt.c.obj
+2026-11-12T18:09:07.1264263Z [204/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-lzma.c.obj
+2026-11-12T18:09:07.1322502Z [205/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/CpuArch.c.obj
+2026-11-12T18:09:07.1672687Z [206/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zDec.c.obj
+2026-11-12T18:09:07.2907633Z [207/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Delta.c.obj
+2026-11-12T18:09:07.4400758Z [208/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bra.c.obj
+2026-11-12T18:09:07.5266241Z [209/451] Building C object CMakeFiles/mgba.dir/src/core/scripting.c.obj
+2026-11-12T18:09:07.5322041Z [210/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bra86.c.obj
+2026-11-12T18:09:07.6510119Z [211/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zArcIn.c.obj
+2026-11-12T18:09:07.7079819Z [212/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/BraIA64.c.obj
+2026-11-12T18:09:07.7276322Z [213/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Lzma2Dec.c.obj
+2026-11-12T18:09:07.7687104Z [214/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bcj2.c.obj
+2026-11-12T18:09:08.0901317Z [215/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Ppmd7Dec.c.obj
+2026-11-12T18:09:08.2418838Z [216/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zStream.c.obj
+2026-11-12T18:09:08.3829176Z [217/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/LzmaDec.c.obj
+2026-11-12T18:09:08.9383344Z [218/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Ppmd7.c.obj
+2026-11-12T18:09:09.1633070Z [219/451] Linking C shared library libmgba.dll
+2026-11-12T18:09:09.5000779Z [220/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zFile.c.obj
+2026-11-12T18:09:09.5149546Z [221/451] Building C object CMakeFiles/updater-stub.dir/src/platform/windows/memory.c.obj
+2026-11-12T18:09:09.8007914Z [222/451] Building C object CMakeFiles/updater-stub.dir/src/util/gbk-table.c.obj
+2026-11-12T18:09:09.8132087Z [223/451] Building C object CMakeFiles/updater-stub.dir/src/util/circle-buffer.c.obj
+2026-11-12T18:09:09.8920400Z [224/451] Building C object CMakeFiles/updater-stub.dir/src/util/configuration.c.obj
+2026-11-12T18:09:10.4068771Z [225/451] Building C object CMakeFiles/updater-stub.dir/src/util/crc32.c.obj
+2026-11-12T18:09:10.7021737Z [226/451] Building C object CMakeFiles/updater-stub.dir/src/util/formatting.c.obj
+2026-11-12T18:09:10.8638946Z [227/451] Building C object CMakeFiles/updater-stub.dir/src/util/hash.c.obj
+2026-11-12T18:09:11.4458702Z [228/451] Building C object CMakeFiles/updater-stub.dir/src/util/md5.c.obj
+2026-11-12T18:09:11.5831718Z [229/451] Building C object CMakeFiles/updater-stub.dir/src/util/sha1.c.obj
+2026-11-12T18:09:11.6940384Z [230/451] Building C object CMakeFiles/updater-stub.dir/version.c.obj
+2026-11-12T18:09:11.9250664Z [231/451] Building C object CMakeFiles/updater-stub.dir/src/util/string.c.obj
+2026-11-12T18:09:11.9523131Z [232/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/inih/ini.c.obj
+2026-11-12T18:09:12.6373818Z [233/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs.c.obj
+2026-11-12T18:09:12.6544177Z [234/451] Building C object CMakeFiles/updater-stub.dir/src/util/table.c.obj
+2026-11-12T18:09:12.9180006Z [235/451] Building C object CMakeFiles/updater-stub.dir/src/util/vector.c.obj
+2026-11-12T18:09:13.0083465Z [236/451] Linking CXX static library discord-rpc\src\libdiscord-rpc.a
+2026-11-12T18:09:13.3986896Z [237/451] Building C object CMakeFiles/updater-stub.dir/src/feature/updater.c.obj
+2026-11-12T18:09:13.4939493Z [238/451] Building C object CMakeFiles/updater-stub.dir/src/tools/updater-main.c.obj
+2026-11-12T18:09:14.3525684Z [239/451] Building C object CMakeFiles/updater-stub.dir/src/core/config.c.obj
+2026-11-12T18:09:14.4605722Z [240/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj
+2026-11-12T18:09:14.8261095Z [241/451] Linking C executable updater-stub.exe
+2026-11-12T18:09:14.9112207Z [242/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sdl-events.c.obj
+2026-11-12T18:09:15.5309073Z [243/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gl-common.c.obj
+2026-11-12T18:09:15.5990936Z [244/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/main.c.obj
+2026-11-12T18:09:16.2014461Z [245/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gl-sdl.c.obj
+2026-11-12T18:09:16.4006255Z [246/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gles2-sdl.c.obj
+2026-11-12T18:09:16.4915765Z [247/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sw-sdl2.c.obj
+2026-11-12T18:09:16.6599737Z [248/451] Linking C executable mgba-sdl.exe
+2026-11-12T18:09:16.6600326Z FAILED: [code=1] mgba-sdl.exe 
+2026-11-12T18:09:16.6608636Z C:\Windows\system32\cmd.exe /C "cd . && D:\a\_temp\msys64\mingw64\bin\cc.exe -Wall -Wextra -Wno-missing-field-initializers -Wno-format -Werror=implicit-function-declaration -Werror=implicit-int -fwrapv -Werror=incompatible-pointer-types -O3 -DNDEBUG -mwindows sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj sdl/CMakeFiles/mgba-sdl.dir/sdl-events.c.obj sdl/CMakeFiles/mgba-sdl.dir/gl-common.c.obj sdl/CMakeFiles/mgba-sdl.dir/main.c.obj sdl/CMakeFiles/mgba-sdl.dir/gl-sdl.c.obj sdl/CMakeFiles/mgba-sdl.dir/gles2-sdl.c.obj sdl/CMakeFiles/mgba-sdl.dir/sw-sdl2.c.obj -o mgba-sdl.exe -Wl,--out-implib,sdl\libmgba-sdl.dll.a -Wl,--major-image-version,0,--minor-image-version,0  libmgba.dll.a  -lmingw32  D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a  -limm32  -lsetupapi  -lversion  -lwinmm  D:/a/_temp/msys64/mingw64/lib/libSDL2main.a  -lmingw32  D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a  -limm32  -lsetupapi  -lversion  -lwinmm  -lopengl32  -lglu32  D:/a/_temp/msys64/mingw64/lib/libepoxy.dll.a  D:/a/_temp/msys64/mingw64/lib/libfreetype.dll.a  D:/a/_temp/msys64/mingw64/lib/libz.dll.a  D:/a/_temp/msys64/mingw64/lib/libpng.dll.a  D:/a/_temp/msys64/mingw64/lib/libsqlite3.dll.a  -lws2_32  -lshlwapi  -lm  D:/a/_temp/msys64/mingw64/lib/libz.dll.a  D:/a/_temp/msys64/mingw64/lib/libpng.dll.a  D:/a/_temp/msys64/mingw64/lib/libsqlite3.dll.a  -lws2_32  -lshlwapi  -lm  D:/a/_temp/msys64/mingw64/lib/libSDL2main.a  -lopengl32  -lglu32  D:/a/_temp/msys64/mingw64/lib/libepoxy.dll.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 && cd ."
+2026-11-12T18:09:16.6614824Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x240): undefined reference to `audioStretchDropped'
+2026-11-12T18:09:16.6616562Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x2d0): undefined reference to `audioStretchSetMode'
+2026-11-12T18:09:16.6617883Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x303): undefined reference to `audioStretchProcess'
+2026-11-12T18:09:16.6619356Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x625): undefined reference to `audioStretchProcess'
+2026-11-12T18:09:16.6620892Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x850): undefined reference to `audioStretchInit'
+2026-11-12T18:09:16.6622183Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x95d): undefined reference to `audioStretchDeinit'
+2026-11-12T18:09:16.6622971Z collect2.exe: error: ld returned 1 exit status
+2026-11-12T18:09:44.8978424Z [249/451] Automatic MOC for target mgba-qt
+2026-11-12T18:09:44.8979424Z AutoMoc: D:/a/mgbax/mgbax/src/platform/qt/GIFView.h: note: No relevant classes found. No output generated.
+2026-11-12T18:09:44.8980707Z AutoMoc: D:/a/mgbax/mgbax/src/platform/qt/VideoView.h: note: No relevant classes found. No output generated.
+2026-11-12T18:09:44.9019601Z ninja: build stopped: subcommand failed.
+2026-11-12T18:09:44.9164243Z ##[error]Process completed with exit code 1.

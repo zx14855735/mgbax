@@ -1,0 +1,1224 @@
+﻿2026-11-12T18:05:33.9518353Z Current runner version: '2.338.2'
+2026-11-12T18:05:33.9791723Z ##[group]Runner Image Provisioner
+2026-11-12T18:05:33.9793233Z Hosted Compute Agent
+2026-11-12T18:05:33.9794258Z Version: 20261103.629
+2026-11-12T18:05:33.9795161Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-12T18:05:33.9796743Z Build Date: 2026-11-03T17:26:59Z
+2026-11-12T18:05:33.9797767Z Worker ID: {2b7b23dd-0aff-43f9-b7ca-b624072a4905}
+2026-11-12T18:05:33.9798893Z Region: westus
+2026-11-12T18:05:33.9799803Z Cloud: Azure
+2026-11-12T18:05:33.9800609Z ##[endgroup]
+2026-11-12T18:05:33.9802530Z ##[group]Operating System
+2026-11-12T18:05:33.9803426Z Microsoft Windows Server 2025
+2026-11-12T18:05:33.9804266Z 10.0.26100
+2026-11-12T18:05:33.9805058Z Datacenter
+2026-11-12T18:05:33.9805820Z ##[endgroup]
+2026-11-12T18:05:33.9806574Z ##[group]Runner Image
+2026-11-12T18:05:33.9807388Z Image: windows-2025-vs2026
+2026-11-12T18:05:33.9808285Z Version: 20261103.298.1
+2026-11-12T18:05:33.9810711Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261103.298/images/windows/Windows2025-VS2026-Readme.md
+2026-11-12T18:05:33.9813823Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261103.298
+2026-11-12T18:05:33.9815416Z ##[endgroup]
+2026-11-12T18:05:33.9817145Z ##[group]GITHUB_TOKEN Permissions
+2026-11-12T18:05:33.9820169Z Contents: read
+2026-11-12T18:05:33.9820988Z Metadata: read
+2026-11-12T18:05:33.9821855Z Packages: read
+2026-11-12T18:05:33.9822606Z ##[endgroup]
+2026-11-12T18:05:33.9825786Z Secret source: Actions
+2026-11-12T18:05:33.9827073Z Cache mode: write
+2026-11-12T18:05:33.9828006Z Prepare workflow directory
+2026-11-12T18:05:34.1130039Z Prepare all required actions
+2026-11-12T18:05:34.1178990Z Getting action download info
+2026-11-12T18:05:34.4807298Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-12T18:05:34.6747132Z Download action repository 'msys2/setup-msys2@v2' (SHA:ec48f7c5447b3140e2b088413ae3a55687bccb6e)
+2026-11-12T18:05:35.3194148Z Complete job name: pc
+2026-11-12T18:05:36.0499943Z ##[group]Run actions/checkout@v4
+2026-11-12T18:05:36.0501352Z with:
+2026-11-12T18:05:36.0501755Z   repository: zx14855735/mgbax
+2026-11-12T18:05:36.0505942Z   token: ***
+2026-11-12T18:05:36.0506326Z   ssh-strict: true
+2026-11-12T18:05:36.0506719Z   ssh-user: git
+2026-11-12T18:05:36.0507120Z   persist-credentials: true
+2026-11-12T18:05:36.0507570Z   clean: true
+2026-11-12T18:05:36.0507974Z   sparse-checkout-cone-mode: true
+2026-11-12T18:05:36.0508451Z   fetch-depth: 1
+2026-11-12T18:05:36.0508837Z   fetch-tags: false
+2026-11-12T18:05:36.0509232Z   show-progress: true
+2026-11-12T18:05:36.0509629Z   lfs: false
+2026-11-12T18:05:36.0509990Z   submodules: false
+2026-11-12T18:05:36.0510397Z   set-safe-directory: true
+2026-11-12T18:05:36.0510855Z   allow-unsafe-pr-checkout: false
+2026-11-12T18:05:36.0511521Z ##[endgroup]
+2026-11-12T18:05:36.2476496Z Syncing repository: zx14855735/mgbax
+2026-11-12T18:05:36.2478376Z ##[group]Getting Git version info
+2026-11-12T18:05:36.2478994Z Working directory is 'D:\a\mgbax\mgbax'
+2026-11-12T18:05:36.3369087Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-11-12T18:05:36.7060779Z git version 2.56.0.windows.4
+2026-11-12T18:05:36.7116786Z ##[endgroup]
+2026-11-12T18:05:36.7157379Z Temporarily overriding HOME='D:\a\_temp\97f26058-ed8d-411e-b793-6e02b7375a6d' before making global git config changes
+2026-11-12T18:05:36.7159551Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-12T18:05:36.7161415Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\mgbax\mgbax
+2026-11-12T18:05:36.7839054Z Deleting the contents of 'D:\a\mgbax\mgbax'
+2026-11-12T18:05:36.7847662Z ##[group]Initializing the repository
+2026-11-12T18:05:36.7856598Z [command]"C:\Program Files\Git\bin\git.exe" init D:\a\mgbax\mgbax
+2026-11-12T18:05:36.8711091Z Initialized empty Git repository in D:/a/mgbax/mgbax/.git/
+2026-11-12T18:05:36.8796392Z [command]"C:\Program Files\Git\bin\git.exe" remote add origin https://github.com/zx14855735/mgbax
+2026-11-12T18:05:36.9497734Z ##[endgroup]
+2026-11-12T18:05:36.9498959Z ##[group]Disabling automatic garbage collection
+2026-11-12T18:05:36.9507309Z [command]"C:\Program Files\Git\bin\git.exe" config --local gc.auto 0
+2026-11-12T18:05:36.9879606Z ##[endgroup]
+2026-11-12T18:05:36.9880690Z ##[group]Setting up auth
+2026-11-12T18:05:36.9892239Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-12T18:05:37.0264496Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-12T18:05:38.5863776Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-12T18:05:38.6244688Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-12T18:05:39.1512789Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-12T18:05:39.1886023Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-11-12T18:05:39.7256664Z [command]"C:\Program Files\Git\bin\git.exe" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic ***"
+2026-11-12T18:05:39.7664010Z ##[endgroup]
+2026-11-12T18:05:39.7664469Z ##[group]Fetching the repository
+2026-11-12T18:05:39.7677695Z [command]"C:\Program Files\Git\bin\git.exe" -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +d57c9b82e941f98d38a78d0f10b5d6104b67633c:refs/remotes/origin/main
+2026-11-12T18:05:41.9849588Z From https://github.com/zx14855735/mgbax
+2026-11-12T18:05:41.9850547Z  * [new ref]         d57c9b82e941f98d38a78d0f10b5d6104b67633c -> origin/main
+2026-11-12T18:05:41.9891955Z ##[endgroup]
+2026-11-12T18:05:41.9892618Z ##[group]Determining the checkout info
+2026-11-12T18:05:41.9894628Z ##[endgroup]
+2026-11-12T18:05:41.9903756Z [command]"C:\Program Files\Git\bin\git.exe" sparse-checkout disable
+2026-11-12T18:05:42.0563534Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all extensions.worktreeConfig
+2026-11-12T18:05:42.0937646Z ##[group]Checking out the ref
+2026-11-12T18:05:42.0938292Z [command]"C:\Program Files\Git\bin\git.exe" checkout --progress --force -B main refs/remotes/origin/main
+2026-11-12T18:05:42.8981233Z Switched to a new branch 'main'
+2026-11-12T18:05:42.9102389Z branch 'main' set up to track 'origin/main'.
+2026-11-12T18:05:42.9166582Z ##[endgroup]
+2026-11-12T18:05:42.9652745Z [command]"C:\Program Files\Git\bin\git.exe" log -1 --format=%H
+2026-11-12T18:05:42.9983664Z d57c9b82e941f98d38a78d0f10b5d6104b67633c
+2026-11-12T18:05:43.0423083Z ##[group]Run msys2/setup-msys2@v2
+2026-11-12T18:05:43.0423428Z with:
+2026-11-12T18:05:43.0423617Z   msystem: MINGW64
+2026-11-12T18:05:43.0423816Z   update: false
+2026-11-12T18:05:43.0424320Z   install: git
+2026-11-12T18:05:43.0424651Z   pacboy: toolchain:p cmake:p ninja:p make:p pkgconf:p
+2026-11-12T18:05:43.0424976Z   path-type: minimal
+2026-11-12T18:05:43.0425190Z   release: true
+2026-11-12T18:05:43.0425393Z   platform-check-severity: fatal
+2026-11-12T18:05:43.0425626Z   cache: true
+2026-11-12T18:05:43.0425803Z ##[endgroup]
+2026-11-12T18:05:43.1857699Z ##[warning][msystem-mingw64] MINGW64 is deprecated. Migrate to UCRT64 or CLANG64. To acknowledge and suppress this warning, add 'msystem-mingw64' to 'suppress-deprecation-warnings'.
+2026-11-12T18:05:43.1866776Z ##[group]Downloading MSYS2...
+2026-11-12T18:05:43.7823099Z ##[endgroup]
+2026-11-12T18:05:43.7823547Z ##[group]Extracting MSYS2...
+2026-11-12T18:05:43.7839966Z [command]C:\hostedtoolcache\windows\msys2-installer\0.0.20260927\x64\base.exe -y
+2026-11-12T18:05:44.0859549Z 
+2026-11-12T18:05:44.0860767Z 7-Zip SFX 26.02 ZS v1.5.7 R1 (x64) : Copyright (c) 1999- Igor Pavlov, 2016- Tino Reichardt, 2022- Sergey G. Brester : 2026-06-27
+2026-11-12T18:05:44.0862398Z 
+2026-11-12T18:05:44.0862803Z Extracting archive: C:\hostedtoolcache\windows\msys2-installer\0.0.20260927\x64\base.exe
+2026-11-12T18:05:44.0863564Z --
+2026-11-12T18:05:44.0864263Z Path = C:\hostedtoolcache\windows\msys2-installer\0.0.20260927\x64\base.exe
+2026-11-12T18:05:44.0865025Z Type = 7z
+2026-11-12T18:05:44.0865213Z 
+2026-11-12T18:05:44.2812413Z   0%
+2026-11-12T18:05:44.2812912Z     
+2026-11-12T18:05:44.4836561Z   0% 845 - msys64\usr\lib\libmagic.dll.a
+2026-11-12T18:05:44.4837354Z                                         
+2026-11-12T18:05:44.6868026Z   1% 1491 - msys64\usr\lib\terminfo\64\d412+w
+2026-11-12T18:05:44.6868630Z                                              
+2026-11-12T18:05:44.8906929Z   1% 2172 - msys64\usr\lib\terminfo\6d\masscomp1
+2026-11-12T18:05:44.8907436Z                                                 
+2026-11-12T18:05:45.0934396Z   1% 2858 - msys64\usr\lib\terminfo\73\superbeeic
+2026-11-12T18:05:45.0935007Z                                                  
+2026-11-12T18:05:45.2969328Z   2% 3518 - msys64\usr\lib\terminfo\77\wyse520-wvb
+2026-11-12T18:05:45.2969897Z                                                   
+2026-11-12T18:05:45.5134144Z   2% 4195 - msys64\usr\share\bash-completion\completions-core\ldapsearch.bash
+2026-11-12T18:05:45.5139183Z                                                                              
+2026-11-12T18:05:45.7030464Z   3% 4636 - msys64\usr\share\bash-comple . fallback\ansible-console.bash
+2026-11-12T18:05:45.7031104Z                                                                         
+2026-11-12T18:05:45.9068691Z   6% 5194 - msys64\usr\share\doc\xz\api\structlzma__allocator.html
+2026-11-12T18:05:45.9069415Z                                                                   
+2026-11-12T18:05:46.1108390Z  15% 5685 - msys64\usr\share\locale\fi\LC_MESSAGES\libidn2.mo
+2026-11-12T18:05:46.1109009Z                                                              
+2026-11-12T18:05:46.3121850Z  27% 6105 - msys64\usr\share\locale\ru\LC_MESSAGES\wget.mo
+2026-11-12T18:05:46.3122443Z                                                           
+2026-11-12T18:05:46.5155872Z  36% 6608 - msys64\usr\share\man\man1\elif.1.gz
+2026-11-12T18:05:46.5156417Z                                                
+2026-11-12T18:05:46.7191835Z  36% 7276 - msys64\usr\share\man\man3\CURLOPT_EGDSOCKET.3.gz
+2026-11-12T18:05:46.7192454Z                                                             
+2026-11-12T18:05:46.9263757Z  37% 7942 - msys64\usr\share\man\man3\is_cbreak_sp.3x.gz
+2026-11-12T18:05:46.9264336Z                                                         
+2026-11-12T18:05:47.1262874Z  37% 8233 - msys64\usr\share\man\man3\menu_init.3x.gz
+2026-11-12T18:05:47.1265826Z                                                      
+2026-11-12T18:05:47.3281405Z  38% 8858 - msys64\usr\share\man\pt_BR\man1\xz.1.gz
+2026-11-12T18:05:47.3281980Z                                                    
+2026-11-12T18:05:47.5323395Z  44% 9471 - msys64\usr\share\terminfo\62\bct510a
+2026-11-12T18:05:47.5323931Z                                                 
+2026-11-12T18:05:47.7344620Z  44% 10166 - msys64\usr\share\terminfo\68\hp300h
+2026-11-12T18:05:47.7345143Z                                                 
+2026-11-12T18:05:47.9385964Z  45% 10852 - msys64\usr\share\terminfo\70\putty+fnkeys+vt400
+2026-11-12T18:05:47.9386577Z                                                             
+2026-11-12T18:05:48.1400516Z  45% 11548 - msys64\usr\share\terminfo\77\wy160-vb
+2026-11-12T18:05:48.1401059Z                                                   
+2026-11-12T18:05:48.3446213Z  46% 12234 - msys64\usr\share\zoneinfo\Asia\Harbin
+2026-11-12T18:05:48.3446801Z                                                   
+2026-11-12T18:05:48.5465721Z  46% 12920 - msys64\usr\share\zoneinfo\posix\Canada\Eastern
+2026-11-12T18:05:48.5466338Z                                                            
+2026-11-12T18:05:48.7503522Z  46% 13044 - msys64\usr\share\zoneinfo\posix\HST
+2026-11-12T18:05:48.7504058Z                                                 
+2026-11-12T18:05:48.9543281Z  46% 13643 - msys64\usr\share\zoneinfo\right\Greenwich
+2026-11-12T18:05:48.9544043Z                                                       
+2026-11-12T18:05:49.1567935Z  49% 14114 - msys64\usr\bin\basenc.exe
+2026-11-12T18:05:49.1568428Z                                       
+2026-11-12T18:05:49.3849366Z  63% 14309 - msys64\usr\bin\msys-ksba-8.dll
+2026-11-12T18:05:49.3850255Z                                            
+2026-11-12T18:05:49.4535426Z  91% 14438 - msys64\usr\bin\tic.exe
+2026-11-12T18:05:49.4536899Z                                    
+2026-11-12T18:05:49.4537290Z Everything is Ok
+2026-11-12T18:05:49.4562827Z ##[endgroup]
+2026-11-12T18:05:49.4563463Z ##[group]Disable Key Refresh...
+2026-11-12T18:05:49.4582524Z ##[endgroup]
+2026-11-12T18:05:49.4599796Z ##[group]Restoring package cache...
+2026-11-12T18:05:49.8326782Z Cache hit for restore-key: msys2-pkgs-upd:false-conf:f14414e4-files:1a554ce36fe29b1f6db7765f9afd950cd2808a8bd511daf499be30cb7fc87c30
+2026-11-12T18:05:51.1130995Z Received 33554432 of 177940217 (18.9%), 32.0 MBs/sec
+2026-11-12T18:05:52.1282329Z Received 159383552 of 177940217 (89.6%), 75.9 MBs/sec
+2026-11-12T18:05:52.1956934Z Received 177940217 of 177940217 (100.0%), 81.5 MBs/sec
+2026-11-12T18:05:52.1961340Z Cache Size: ~170 MB (177940217 B)
+2026-11-12T18:05:52.2000095Z [command]"C:\Program Files\Git\usr\bin\tar.exe" -xf D:/a/_temp/434a4b11-2e86-4f7d-9e66-946fd3d3cf80/cache.tzst -P -C D:/a/mgbax/mgbax --force-local --use-compress-program "zstd -d"
+2026-11-12T18:05:52.6519560Z Cache restored successfully
+2026-11-12T18:05:52.6617107Z Cache restore for msys2-pkgs-upd:false-conf:f14414e4, got msys2-pkgs-upd:false-conf:f14414e4-files:1a554ce36fe29b1f6db7765f9afd950cd2808a8bd511daf499be30cb7fc87c30
+2026-11-12T18:05:52.6619349Z Cache restore for msys2-pkgs-upd:false-conf:f14414e4, got msys2-pkgs-upd:false-conf:f14414e4-files:1a554ce36fe29b1f6db7765f9afd950cd2808a8bd511daf499be30cb7fc87c30
+2026-11-12T18:05:52.6621133Z ##[endgroup]
+2026-11-12T18:05:52.6621768Z ##[group]Starting MSYS2 for the first time...
+2026-11-12T18:05:52.7600854Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'uname' '-a'"
+2026-11-12T18:05:52.8243120Z [1;32mMSYS2 is starting for the first time. Executing the initial setup.[1;0m
+2026-11-12T18:05:52.9241884Z Copying skeleton files.
+2026-11-12T18:05:52.9242437Z These files are for the users to personalise their msys2 experience.
+2026-11-12T18:05:52.9243510Z 
+2026-11-12T18:05:52.9243754Z They will never be overwritten nor automatically updated.
+2026-11-12T18:05:52.9244028Z 
+2026-11-12T18:05:52.9800295Z './.bashrc' -> '/home/runneradmin/.bashrc'
+2026-11-12T18:05:52.9972134Z './.bash_profile' -> '/home/runneradmin/.bash_profile'
+2026-11-12T18:05:53.0139907Z './.profile' -> '/home/runneradmin/.profile'
+2026-11-12T18:05:53.0770582Z 'C:\Windows\system32\drivers\etc\hosts' -> '/etc/hosts'
+2026-11-12T18:05:53.1290650Z 'C:\Windows\system32\drivers\etc\protocol' -> '/etc/protocols'
+2026-11-12T18:05:53.1832827Z 'C:\Windows\system32\drivers\etc\services' -> '/etc/services'
+2026-11-12T18:05:53.2386637Z 'C:\Windows\system32\drivers\etc\networks' -> '/etc/networks'
+2026-11-12T18:05:53.4259079Z gpg: /etc/pacman.d/gnupg/trustdb.gpg: trustdb created
+2026-11-12T18:05:53.4341754Z gpg: no ultimately trusted keys found
+2026-11-12T18:05:53.7346742Z gpg: starting migration from earlier GnuPG versions
+2026-11-12T18:05:53.7935341Z gpg: porting secret keys from '/etc/pacman.d/gnupg/secring.gpg' to gpg-agent
+2026-11-12T18:05:53.7939439Z gpg: migration succeeded
+2026-11-12T18:05:53.8165941Z ==> Generating pacman master key. This may take some time.
+2026-11-12T18:05:53.8359472Z gpg: Generating pacman keyring master key...
+2026-11-12T18:05:55.1731525Z gpg: directory '/etc/pacman.d/gnupg/openpgp-revocs.d' created
+2026-11-12T18:05:55.2008890Z gpg: revocation certificate stored as '/etc/pacman.d/gnupg/openpgp-revocs.d/5FAEA4DB68F4B08C35CC33BBDEDF93FABC9F2369.rev'
+2026-11-12T18:05:55.2009827Z gpg: Done
+2026-11-12T18:05:55.2209410Z ==> Updating trust database...
+2026-11-12T18:05:55.2620856Z gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+2026-11-12T18:05:55.2621392Z gpg: depth: 0  valid:   1  signed:   0  trust: 0-, 0q, 0n, 0m, 0f, 1u
+2026-11-12T18:05:55.3943587Z ==> Appending keys from msys2.gpg...
+2026-11-12T18:05:55.9971774Z ==> Locally signing trusted keys in keyring...
+2026-11-12T18:05:56.5590308Z   -> Locally signed 5 keys.
+2026-11-12T18:05:56.5749075Z ==> Importing owner trust values...
+2026-11-12T18:05:56.5953964Z gpg: setting ownertrust to 4
+2026-11-12T18:05:56.5954368Z gpg: setting ownertrust to 4
+2026-11-12T18:05:56.5954693Z gpg: setting ownertrust to 4
+2026-11-12T18:05:56.5954958Z gpg: setting ownertrust to 4
+2026-11-12T18:05:56.5955192Z gpg: setting ownertrust to 4
+2026-11-12T18:05:56.6243658Z ==> Disabling revoked keys in keyring...
+2026-11-12T18:05:56.8884636Z   -> Disabled 4 keys.
+2026-11-12T18:05:56.9044819Z ==> Updating trust database...
+2026-11-12T18:05:56.9452147Z gpg: marginals needed: 3  completes needed: 1  trust model: pgp
+2026-11-12T18:05:56.9479283Z gpg: depth: 0  valid:   1  signed:   5  trust: 0-, 0q, 0n, 0m, 0f, 1u
+2026-11-12T18:05:56.9515150Z gpg: depth: 1  valid:   5  signed:   7  trust: 0-, 0q, 0n, 5m, 0f, 0u
+2026-11-12T18:05:56.9529077Z gpg: depth: 2  valid:   4  signed:   2  trust: 4-, 0q, 0n, 0m, 0f, 0u
+2026-11-12T18:05:56.9532047Z gpg: next trustdb check due at 2027-02-10
+2026-11-12T18:05:56.9939995Z pacman-key (pacman) 6.1.0
+2026-11-12T18:05:56.9940760Z Copyright (c) 2010-2024 Pacman Development Team <pacman-dev@lists.archlinux.org>.
+2026-11-12T18:05:56.9941254Z 
+2026-11-12T18:05:57.0105444Z This is free software; see the source for copying conditions.
+2026-11-12T18:05:57.0106146Z There is NO WARRANTY, to the extent permitted by law.
+2026-11-12T18:05:57.2458691Z [1;32mInitial setup complete. MSYS2 is now ready to use.[1;0m
+2026-11-12T18:05:57.2639231Z MINGW64_NT-10.0-26100 runnervmm7ud1 3.6.10-c770e1b9.x86_64 2026-09-26 06:38 UTC x86_64 Msys
+2026-11-12T18:05:57.2695183Z ##[endgroup]
+2026-11-12T18:05:57.2695825Z ##[group]Disable CheckSpace...
+2026-11-12T18:05:57.3255513Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'sed' '-i' 's/^CheckSpace/#CheckSpace/g' '/etc/pacman.conf'"
+2026-11-12T18:05:57.5440122Z ##[endgroup]
+2026-11-12T18:05:57.5440620Z ##[group]Installing additional packages through pacman...
+2026-11-12T18:05:57.6075485Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-S' '--needed' '--overwrite' '*' 'git' 'pactoys'"
+2026-11-12T18:05:58.5442301Z resolving dependencies...
+2026-11-12T18:05:58.5534762Z looking for conflicting packages...
+2026-11-12T18:05:58.5582152Z 
+2026-11-12T18:05:58.5587405Z Packages (42) db-6.2.32-6  gdbm-1.26-1  heimdal-7.8.0-5  heimdal-libs-7.8.0-5  libcbor-0.14.0-2  libdb-6.2.32-6  libedit-20240808_3.1-1  libfido2-1.17.0-1  libgdbm-1.26-1  openssh-10.5p1-2  perl-5.42.3-2  perl-authen-sasl-2.2100-2  perl-clone-0.50-3  perl-convert-binhex-1.125-3  perl-encode-locale-1.05-3  perl-error-0.17030-3  perl-file-listing-6.16-2  perl-html-parser-3.86-2  perl-html-tagset-3.24-2  perl-http-cookiejar-0.014-2  perl-http-cookies-6.12-2  perl-http-daemon-6.17-2  perl-http-date-6.08-2  perl-http-message-7.04-2  perl-http-negotiate-6.01-4  perl-io-html-1.004-3  perl-io-socket-ssl-2.099-2  perl-io-stringy-2.113-4  perl-libwww-6.83-3  perl-lwp-mediatypes-6.05-2  perl-mailtools-2.22-2  perl-mime-tools-5.518-2  perl-net-http-6.24-2  perl-net-smtp-ssl-1.04-3  perl-net-ssleay-1.96-2  perl-termreadkey-2.38-9  perl-timedate-2.35-2  perl-try-tiny-0.32-2  perl-uri-5.37-2  perl-www-robotrules-6.03-2  git-2.55.0-2  pactoys-r65.b5fcc0f-1
+2026-11-12T18:05:58.5594336Z 
+2026-11-12T18:05:58.5594514Z Total Installed Size:  105.51 MiB
+2026-11-12T18:05:58.5594792Z 
+2026-11-12T18:05:58.5648908Z :: Proceed with installation? [Y/n] 
+2026-11-12T18:05:58.5649219Z checking keyring...
+2026-11-12T18:05:58.6123012Z checking package integrity...
+2026-11-12T18:06:03.5315559Z loading package files...
+2026-11-12T18:06:03.6023625Z checking for file conflicts...
+2026-11-12T18:06:03.8269327Z :: Processing package changes...
+2026-11-12T18:06:03.8269673Z installing libdb...
+2026-11-12T18:06:03.8376493Z installing libedit...
+2026-11-12T18:06:03.8711929Z installing heimdal-libs...
+2026-11-12T18:06:03.8895659Z installing heimdal...
+2026-11-12T18:06:04.5408359Z installing libcbor...
+2026-11-12T18:06:04.5437923Z installing libfido2...
+2026-11-12T18:06:04.5477475Z installing openssh...
+2026-11-12T18:06:04.5908273Z installing db...
+2026-11-12T18:06:04.6009832Z installing libgdbm...
+2026-11-12T18:06:04.6045333Z installing gdbm...
+2026-11-12T18:06:04.6250813Z installing perl...
+2026-11-12T18:06:06.3680653Z installing perl-error...
+2026-11-12T18:06:06.3763577Z installing perl-authen-sasl...
+2026-11-12T18:06:06.3992191Z installing perl-encode-locale...
+2026-11-12T18:06:06.4057980Z installing perl-http-date...
+2026-11-12T18:06:06.4117268Z installing perl-file-listing...
+2026-11-12T18:06:06.4177784Z installing perl-html-tagset...
+2026-11-12T18:06:06.4242286Z installing perl-clone...
+2026-11-12T18:06:06.4297463Z installing perl-io-html...
+2026-11-12T18:06:06.4361173Z installing perl-lwp-mediatypes...
+2026-11-12T18:06:06.4432193Z installing perl-uri...
+2026-11-12T18:06:06.5090286Z installing perl-http-message...
+2026-11-12T18:06:06.5284128Z installing perl-html-parser...
+2026-11-12T18:06:06.5433899Z installing perl-http-cookies...
+2026-11-12T18:06:06.5516591Z installing perl-http-daemon...
+2026-11-12T18:06:06.5563487Z installing perl-http-cookiejar...
+2026-11-12T18:06:06.5631919Z installing perl-http-negotiate...
+2026-11-12T18:06:06.5683658Z installing perl-net-http...
+2026-11-12T18:06:06.5794817Z installing perl-www-robotrules...
+2026-11-12T18:06:06.5894202Z installing perl-try-tiny...
+2026-11-12T18:06:06.5965569Z installing perl-libwww...
+2026-11-12T18:06:06.6311478Z Optional dependencies for perl-libwww
+2026-11-12T18:06:06.6312094Z     perl-lwp-protocol-https: for https:// url schemes
+2026-11-12T18:06:06.6312639Z installing perl-convert-binhex...
+2026-11-12T18:06:06.7697575Z module test... pass.
+2026-11-12T18:06:06.7709736Z installing perl-io-stringy...
+2026-11-12T18:06:06.7853066Z installing perl-timedate...
+2026-11-12T18:06:06.8513434Z installing perl-mailtools...
+2026-11-12T18:06:06.8802415Z installing perl-mime-tools...
+2026-11-12T18:06:06.9209899Z installing perl-net-ssleay...
+2026-11-12T18:06:07.0023238Z installing perl-io-socket-ssl...
+2026-11-12T18:06:07.0160544Z installing perl-net-smtp-ssl...
+2026-11-12T18:06:07.0209440Z installing perl-termreadkey...
+2026-11-12T18:06:07.0290298Z installing git...
+2026-11-12T18:06:07.5740975Z Optional dependencies for git
+2026-11-12T18:06:07.5741509Z     python: various helper scripts
+2026-11-12T18:06:07.5741911Z     subversion: git svn
+2026-11-12T18:06:07.5742273Z     aspell: spell checking in git gui
+2026-11-12T18:06:07.5742677Z installing pactoys...
+2026-11-12T18:06:07.5951407Z :: Running post-transaction hooks...
+2026-11-12T18:06:07.5952055Z (1/1) Updating the info directory file...
+2026-11-12T18:06:07.8124283Z ##[endgroup]
+2026-11-12T18:06:07.8124755Z ##[group]Installing additional packages through pacboy...
+2026-11-12T18:06:07.8777381Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacboy' '--noconfirm' '-S' '--needed' 'toolchain:p' 'cmake:p' 'ninja:p' 'make:p' 'pkgconf:p'"
+2026-11-12T18:06:08.9518985Z :: There are 15 members in group mingw-w64-x86_64-toolchain:
+2026-11-12T18:06:08.9519600Z :: Repository mingw64
+2026-11-12T18:06:08.9522448Z    1) mingw-w64-x86_64-binutils  2) mingw-w64-x86_64-crt  3) mingw-w64-x86_64-gcc  4) mingw-w64-x86_64-gdb  5) mingw-w64-x86_64-gdb-multiarch  6) mingw-w64-x86_64-headers  7) mingw-w64-x86_64-libgomp  8) mingw-w64-x86_64-libmangle  9) mingw-w64-x86_64-libstdc++  10) mingw-w64-x86_64-libwinpthread  11) mingw-w64-x86_64-make  12) mingw-w64-x86_64-pkgconf  13) mingw-w64-x86_64-tools  14) mingw-w64-x86_64-winpthreads  15) mingw-w64-x86_64-winstorecompat
+2026-11-12T18:06:08.9525384Z 
+2026-11-12T18:06:08.9525541Z Enter a selection (default=all): 
+2026-11-12T18:06:08.9525924Z resolving dependencies...
+2026-11-12T18:06:08.9714484Z looking for conflicting packages...
+2026-11-12T18:06:08.9804163Z 
+2026-11-12T18:06:08.9820586Z Packages (72) mingw-w64-x86_64-brotli-1.2.0-1  mingw-w64-x86_64-bzip2-1.0.8-4  mingw-w64-x86_64-c-ares-1.34.8-1  mingw-w64-x86_64-ca-certificates-20260816-1  mingw-w64-x86_64-cc-libs-16.2.0-4  mingw-w64-x86_64-cppdap-1.65.r11.g6464cd7-1  mingw-w64-x86_64-curl-8.22.0-1  mingw-w64-x86_64-expat-2.8.5-1  mingw-w64-x86_64-gcc-libs-16.2.0-4  mingw-w64-x86_64-gettext-runtime-1.0-1  mingw-w64-x86_64-gmp-6.3.0-2  mingw-w64-x86_64-gnutls-3.8.13-3  mingw-w64-x86_64-isl-0.28-1  mingw-w64-x86_64-jsoncpp-1.9.8-1  mingw-w64-x86_64-libarchive-3.8.9-6  mingw-w64-x86_64-libatomic-16.2.0-4  mingw-w64-x86_64-libb2-0.98.1-3  mingw-w64-x86_64-libffi-3.8.0-1  mingw-w64-x86_64-libgcc-16.2.0-4  mingw-w64-x86_64-libiconv-1.19-1  mingw-w64-x86_64-libidn2-2.3.8-4  mingw-w64-x86_64-libpsl-0.21.5-3  mingw-w64-x86_64-libquadmath-16.2.0-4  mingw-w64-x86_64-libssh2-1.11.1-2  mingw-w64-x86_64-libsystre-1.0.2-3  mingw-w64-x86_64-libtasn1-4.21.0-1  mingw-w64-x86_64-libtre-0.9.0-2  mingw-w64-x86_64-libunistring-1.4.2-1  mingw-w64-x86_64-libuv-1.53.0-1  mingw-w64-x86_64-lz4-1.10.0-1  mingw-w64-x86_64-mpc-1.4.1-1  mingw-w64-x86_64-mpdecimal-4.0.1-3  mingw-w64-x86_64-mpfr-4.2.2-3  mingw-w64-x86_64-ncurses-6.6-4  mingw-w64-x86_64-nettle-4.0-1  mingw-w64-x86_64-nghttp2-1.70.0-1  mingw-w64-x86_64-nghttp3-1.18.0-1  mingw-w64-x86_64-ngtcp2-1.25.0-1  mingw-w64-x86_64-openssl-3.6.4-1  mingw-w64-x86_64-p11-kit-0.26.5-1  mingw-w64-x86_64-pcre2-10.48-3  mingw-w64-x86_64-python-3.14.7-1  mingw-w64-x86_64-readline-8.3.003-1  mingw-w64-x86_64-rhash-1.4.6-1  mingw-w64-x86_64-sqlite3-3.53.4-1  mingw-w64-x86_64-tcl-8.6.18-1  mingw-w64-x86_64-termcap-1.3.1-7  mingw-w64-x86_64-tk-8.6.18-1  mingw-w64-x86_64-tzdata-2026d-1  mingw-w64-x86_64-windows-default-manifest-20260815-1  mingw-w64-x86_64-wineditline-2.208-1  mingw-w64-x86_64-xxhash-0.8.4-1  mingw-w64-x86_64-xz-5.8.4-1  mingw-w64-x86_64-zlib-1.3.2-2  mingw-w64-x86_64-zstd-1.5.7-2  mingw-w64-x86_64-binutils-2.47-3  mingw-w64-x86_64-cmake-4.4.3-3  mingw-w64-x86_64-crt-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-gcc-16.2.0-4  mingw-w64-x86_64-gdb-18.1-3  mingw-w64-x86_64-gdb-multiarch-18.1-3  mingw-w64-x86_64-headers-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-libgomp-16.2.0-4  mingw-w64-x86_64-libmangle-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-libstdc++-16.2.0-4  mingw-w64-x86_64-libwinpthread-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-make-4.4.1-5  mingw-w64-x86_64-ninja-1.13.2-1  mingw-w64-x86_64-pkgconf-1~3.0.7-1  mingw-w64-x86_64-tools-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-winpthreads-14.0.0.r426.g4564ee4b5-1  mingw-w64-x86_64-winstorecompat-14.0.0.r426.g4564ee4b5-1
+2026-11-12T18:06:08.9832845Z 
+2026-11-12T18:06:08.9832995Z Total Installed Size:  983.37 MiB
+2026-11-12T18:06:08.9833229Z 
+2026-11-12T18:06:08.9934658Z :: Proceed with installation? [Y/n] 
+2026-11-12T18:06:08.9935100Z checking keyring...
+2026-11-12T18:06:09.0777309Z checking package integrity...
+2026-11-12T18:06:19.6282067Z loading package files...
+2026-11-12T18:06:19.9449339Z checking for file conflicts...
+2026-11-12T18:06:21.6175423Z :: Processing package changes...
+2026-11-12T18:06:21.6175818Z installing mingw-w64-x86_64-libwinpthread...
+2026-11-12T18:06:21.6225713Z installing mingw-w64-x86_64-libatomic...
+2026-11-12T18:06:21.6274873Z installing mingw-w64-x86_64-libgcc...
+2026-11-12T18:06:21.6329787Z installing mingw-w64-x86_64-tzdata...
+2026-11-12T18:06:23.2569474Z installing mingw-w64-x86_64-libstdc++...
+2026-11-12T18:06:23.2679680Z installing mingw-w64-x86_64-libquadmath...
+2026-11-12T18:06:23.2732626Z installing mingw-w64-x86_64-cc-libs...
+2026-11-12T18:06:23.2755981Z installing mingw-w64-x86_64-libiconv...
+2026-11-12T18:06:23.3007035Z installing mingw-w64-x86_64-gettext-runtime...
+2026-11-12T18:06:23.4281184Z installing mingw-w64-x86_64-zlib...
+2026-11-12T18:06:23.4364852Z installing mingw-w64-x86_64-zstd...
+2026-11-12T18:06:23.4581495Z installing mingw-w64-x86_64-binutils...
+2026-11-12T18:06:23.6854009Z installing mingw-w64-x86_64-headers...
+2026-11-12T18:06:24.9733123Z installing mingw-w64-x86_64-crt...
+2026-11-12T18:06:25.6162874Z installing mingw-w64-x86_64-gmp...
+2026-11-12T18:06:25.6312385Z installing mingw-w64-x86_64-isl...
+2026-11-12T18:06:25.6983206Z installing mingw-w64-x86_64-mpfr...
+2026-11-12T18:06:25.7207089Z installing mingw-w64-x86_64-mpc...
+2026-11-12T18:06:25.7276394Z installing mingw-w64-x86_64-windows-default-manifest...
+2026-11-12T18:06:25.7305684Z installing mingw-w64-x86_64-winpthreads...
+2026-11-12T18:06:25.7407237Z installing mingw-w64-x86_64-gcc...
+2026-11-12T18:06:26.9993089Z Optional dependencies for mingw-w64-x86_64-gcc
+2026-11-12T18:06:26.9993667Z     mingw-w64-x86_64-libatomic [installed]
+2026-11-12T18:06:26.9994138Z     mingw-w64-x86_64-libgomp: OpenMP [pending]
+2026-11-12T18:06:26.9994679Z     mingw-w64-x86_64-libquadmath: Quad Math [installed]
+2026-11-12T18:06:26.9995162Z installing mingw-w64-x86_64-expat...
+2026-11-12T18:06:27.0149908Z installing mingw-w64-x86_64-bzip2...
+2026-11-12T18:06:27.0332157Z installing mingw-w64-x86_64-wineditline...
+2026-11-12T18:06:27.0415725Z installing mingw-w64-x86_64-pcre2...
+2026-11-12T18:06:27.2169513Z installing mingw-w64-x86_64-libtre...
+2026-11-12T18:06:27.2289053Z installing mingw-w64-x86_64-libsystre...
+2026-11-12T18:06:27.2377809Z installing mingw-w64-x86_64-ncurses...
+2026-11-12T18:06:31.7451236Z installing mingw-w64-x86_64-libffi...
+2026-11-12T18:06:31.7554668Z installing mingw-w64-x86_64-mpdecimal...
+2026-11-12T18:06:31.7703616Z installing mingw-w64-x86_64-openssl...
+2026-11-12T18:06:37.1930348Z Optional dependencies for mingw-w64-x86_64-openssl
+2026-11-12T18:06:37.1930948Z     mingw-w64-x86_64-ca-certificates [pending]
+2026-11-12T18:06:37.1931444Z installing mingw-w64-x86_64-tcl...
+2026-11-12T18:06:38.6594015Z installing mingw-w64-x86_64-sqlite3...
+2026-11-12T18:06:38.7786032Z installing mingw-w64-x86_64-tk...
+2026-11-12T18:06:39.3114567Z installing mingw-w64-x86_64-libb2...
+2026-11-12T18:06:39.3179538Z installing mingw-w64-x86_64-xz...
+2026-11-12T18:06:39.4353412Z installing mingw-w64-x86_64-python...
+2026-11-12T18:06:46.3986017Z installing mingw-w64-x86_64-libgomp...
+2026-11-12T18:06:46.4081124Z installing mingw-w64-x86_64-gcc-libs...
+2026-11-12T18:06:46.4103771Z installing mingw-w64-x86_64-termcap...
+2026-11-12T18:06:46.4160728Z installing mingw-w64-x86_64-readline...
+2026-11-12T18:06:46.4526153Z installing mingw-w64-x86_64-xxhash...
+2026-11-12T18:06:46.4657610Z installing mingw-w64-x86_64-gdb...
+2026-11-12T18:06:46.6062123Z Optional dependencies for mingw-w64-x86_64-gdb
+2026-11-12T18:06:46.6062615Z     mingw-w64-x86_64-python-pygments: for syntax highlighting
+2026-11-12T18:06:46.6062981Z installing mingw-w64-x86_64-gdb-multiarch...
+2026-11-12T18:06:46.6719656Z Optional dependencies for mingw-w64-x86_64-gdb-multiarch
+2026-11-12T18:06:46.6720113Z     mingw-w64-x86_64-python-pygments: for syntax highlighting
+2026-11-12T18:06:46.6720488Z installing mingw-w64-x86_64-libmangle...
+2026-11-12T18:06:46.6769106Z installing mingw-w64-x86_64-make...
+2026-11-12T18:06:46.6832088Z installing mingw-w64-x86_64-pkgconf...
+2026-11-12T18:06:46.7046597Z installing mingw-w64-x86_64-tools...
+2026-11-12T18:06:46.7146430Z installing mingw-w64-x86_64-winstorecompat...
+2026-11-12T18:06:46.7184145Z installing mingw-w64-x86_64-cppdap...
+2026-11-12T18:06:46.7422611Z installing mingw-w64-x86_64-c-ares...
+2026-11-12T18:06:46.8582527Z installing mingw-w64-x86_64-brotli...
+2026-11-12T18:06:46.8798259Z installing mingw-w64-x86_64-libunistring...
+2026-11-12T18:06:46.9264222Z installing mingw-w64-x86_64-libidn2...
+2026-11-12T18:06:46.9558007Z installing mingw-w64-x86_64-libpsl...
+2026-11-12T18:06:46.9650927Z installing mingw-w64-x86_64-libtasn1...
+2026-11-12T18:06:47.0056359Z installing mingw-w64-x86_64-p11-kit...
+2026-11-12T18:06:47.1544218Z installing mingw-w64-x86_64-ca-certificates...
+2026-11-12T18:06:47.8210024Z installing mingw-w64-x86_64-libssh2...
+2026-11-12T18:06:47.9511911Z installing mingw-w64-x86_64-nghttp2...
+2026-11-12T18:06:47.9712131Z installing mingw-w64-x86_64-nettle...
+2026-11-12T18:06:48.0259333Z installing mingw-w64-x86_64-gnutls...
+2026-11-12T18:06:48.9697241Z installing mingw-w64-x86_64-ngtcp2...
+2026-11-12T18:06:48.9909586Z installing mingw-w64-x86_64-nghttp3...
+2026-11-12T18:06:49.0043996Z installing mingw-w64-x86_64-curl...
+2026-11-12T18:06:49.4064186Z installing mingw-w64-x86_64-jsoncpp...
+2026-11-12T18:06:49.4249840Z installing mingw-w64-x86_64-lz4...
+2026-11-12T18:06:49.4391433Z installing mingw-w64-x86_64-libarchive...
+2026-11-12T18:06:49.5176661Z installing mingw-w64-x86_64-libuv...
+2026-11-12T18:06:49.7257409Z installing mingw-w64-x86_64-ninja...
+2026-11-12T18:06:49.7309779Z installing mingw-w64-x86_64-rhash...
+2026-11-12T18:06:49.7667114Z installing mingw-w64-x86_64-cmake...
+2026-11-12T18:06:53.1946894Z ##[endgroup]
+2026-11-12T18:06:53.1947523Z ##[group]Saving package cache...
+2026-11-12T18:06:53.2504506Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'paccache' '-r' '-f' '-u' '-k0'"
+2026-11-12T18:06:54.1974040Z ==> no candidate packages found for pruning
+2026-11-12T18:06:54.2585713Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'paccache' '-r' '-f' '-k1'"
+2026-11-12T18:06:54.5641989Z ==> no candidate packages found for pruning
+2026-11-12T18:06:55.0563205Z Cache unchanged, skipping save for msys2-pkgs-upd:false-conf:f14414e4-files:1a554ce36fe29b1f6db7765f9afd950cd2808a8bd511daf499be30cb7fc87c30
+2026-11-12T18:06:55.1138611Z [command]C:\Windows\system32\cmd.exe /D /S /C D:\a\_temp\setup-msys2\msys2.cmd -c "'pacman' '--noconfirm' '-Scc'"
+2026-11-12T18:06:55.8657663Z 
+2026-11-12T18:06:55.8658246Z Cache directory: /var/cache/pacman/pkg/
+2026-11-12T18:06:55.8950266Z :: Do you want to remove ALL files from cache? [Y/n] 
+2026-11-12T18:06:55.8950803Z removing all files from cache...
+2026-11-12T18:06:55.8951072Z 
+2026-11-12T18:06:55.8951226Z Database directory: /var/lib/pacman/
+2026-11-12T18:06:55.8969269Z :: Do you want to remove unused repositories? [Y/n] 
+2026-11-12T18:06:55.8970001Z removing unused sync repositories...
+2026-11-12T18:06:55.9026105Z ##[endgroup]
+2026-11-12T18:06:55.9327357Z ##[group]Run for i in 1 2 3; do
+2026-11-12T18:06:55.9327723Z [36;1mfor i in 1 2 3; do[0m
+2026-11-12T18:06:55.9327989Z [36;1m  echo "== attempt $i =="[0m
+2026-11-12T18:06:55.9328298Z [36;1m  pacman -S --needed --noconfirm \[0m
+2026-11-12T18:06:55.9328620Z [36;1m    mingw-w64-x86_64-qt6-base \[0m
+2026-11-12T18:06:55.9328899Z [36;1m    mingw-w64-x86_64-qt6-multimedia \[0m
+2026-11-12T18:06:55.9329191Z [36;1m    mingw-w64-x86_64-qt6-websockets \[0m
+2026-11-12T18:06:55.9329450Z [36;1m    mingw-w64-x86_64-qt6-tools \[0m
+2026-11-12T18:06:55.9329711Z [36;1m    mingw-w64-x86_64-SDL2 \[0m
+2026-11-12T18:06:55.9329954Z [36;1m    mingw-w64-x86_64-libepoxy \[0m
+2026-11-12T18:06:55.9330211Z [36;1m    mingw-w64-x86_64-libpng \[0m
+2026-11-12T18:06:55.9330452Z [36;1m    mingw-w64-x86_64-zlib \[0m
+2026-11-12T18:06:55.9330687Z [36;1m    mingw-w64-x86_64-freetype \[0m
+2026-11-12T18:06:55.9330933Z [36;1m    mingw-w64-x86_64-sqlite3 \[0m
+2026-11-12T18:06:55.9331219Z [36;1m    mingw-w64-x86_64-xz \[0m
+2026-11-12T18:06:55.9331465Z [36;1m    mingw-w64-x86_64-wineditline \[0m
+2026-11-12T18:06:55.9331715Z [36;1m    && break[0m
+2026-11-12T18:06:55.9331929Z [36;1m  sleep 20[0m
+2026-11-12T18:06:55.9332127Z [36;1mdone[0m
+2026-11-12T18:06:55.9333132Z [36;1mpacman -Q | grep -E 'qt6-base|libepoxy|SDL2' || exit 1[0m
+2026-11-12T18:06:55.9339117Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2026-11-12T18:06:55.9339404Z env:
+2026-11-12T18:06:55.9339586Z   MSYSTEM: MINGW64
+2026-11-12T18:06:55.9339795Z ##[endgroup]
+2026-11-12T18:06:56.1375789Z == attempt 1 ==
+2026-11-12T18:06:56.7969870Z warning: mingw-w64-x86_64-zlib-1.3.2-2 is up to date -- skipping
+2026-11-12T18:06:56.7970653Z warning: mingw-w64-x86_64-sqlite3-3.53.4-1 is up to date -- skipping
+2026-11-12T18:06:56.7971318Z warning: mingw-w64-x86_64-xz-5.8.4-1 is up to date -- skipping
+2026-11-12T18:06:56.7971978Z warning: mingw-w64-x86_64-wineditline-2.208-1 is up to date -- skipping
+2026-11-12T18:06:56.7972608Z resolving dependencies...
+2026-11-12T18:06:56.9289508Z looking for conflicting packages...
+2026-11-12T18:06:56.9421331Z warning: dependency cycle detected:
+2026-11-12T18:06:56.9422100Z warning: mingw-w64-x86_64-harfbuzz will be installed before its mingw-w64-x86_64-freetype dependency
+2026-11-12T18:06:56.9422867Z warning: dependency cycle detected:
+2026-11-12T18:06:56.9423606Z warning: mingw-w64-x86_64-qt6-multimedia-ffmpeg will be installed before its mingw-w64-x86_64-qt6-multimedia dependency
+2026-11-12T18:06:56.9424334Z warning: dependency cycle detected:
+2026-11-12T18:06:56.9424950Z warning: mingw-w64-x86_64-libwebp will be installed before its mingw-w64-x86_64-libtiff dependency
+2026-11-12T18:06:56.9429789Z 
+2026-11-12T18:06:56.9451475Z Packages (97) mingw-w64-x86_64-aom-3.15.1-1  mingw-w64-x86_64-cairo-1.18.6-2  mingw-w64-x86_64-dav1d-1.5.4-1  mingw-w64-x86_64-dbus-1.16.2-4  mingw-w64-x86_64-double-conversion-3.4.0-1  mingw-w64-x86_64-egl-headers-1.5.r284.3ae2b7c-1  mingw-w64-x86_64-ffmpeg-9.0.2-1  mingw-w64-x86_64-fontconfig-2.18.3-1  mingw-w64-x86_64-frei0r-plugins-3.5.0-1  mingw-w64-x86_64-fribidi-1.0.17-1  mingw-w64-x86_64-gdk-pixbuf2-2.44.7-1  mingw-w64-x86_64-ggml-0.25.3-1  mingw-w64-x86_64-giflib-6.1.3-1  mingw-w64-x86_64-gles-headers-3.2.r1065.7fc154c-1  mingw-w64-x86_64-glib2-2.90.0-1  mingw-w64-x86_64-glslang-16.3.0-1  mingw-w64-x86_64-graphite2-1.3.15-1  mingw-w64-x86_64-gsm-1.0.24-1  mingw-w64-x86_64-harfbuzz-14.5.0-1  mingw-w64-x86_64-highway-1.4.0-3  mingw-w64-x86_64-icu-78.3-4  mingw-w64-x86_64-imath-3.2.3-3  mingw-w64-x86_64-jbigkit-2.1-6  mingw-w64-x86_64-lame-3.100-3  mingw-w64-x86_64-lcms2-2.19.1-1  mingw-w64-x86_64-lerc-4.1.1-1  mingw-w64-x86_64-libass-0.17.5-1  mingw-w64-x86_64-libbluray-1.5.0-1  mingw-w64-x86_64-libcaca-0.99.beta20-8  mingw-w64-x86_64-libdatrie-0.2.14-1  mingw-w64-x86_64-libdeflate-1.26-1  mingw-w64-x86_64-libdovi-3.4.0-1  mingw-w64-x86_64-libexif-0.6.26-1  mingw-w64-x86_64-libgfortran-16.2.0-4  mingw-w64-x86_64-libgme-0.6.5-2  mingw-w64-x86_64-libjpeg-turbo-3.2.0-1  mingw-w64-x86_64-libjxl-0.12.0-1  mingw-w64-x86_64-liblc3-1.1.3-1  mingw-w64-x86_64-libmodplug-0.8.9.0-5  mingw-w64-x86_64-libmysofa-1.3.5-1  mingw-w64-x86_64-libogg-1.3.6-1  mingw-w64-x86_64-libplacebo-7.360.1-2  mingw-w64-x86_64-librsvg-2.63.2-1  mingw-w64-x86_64-libsoxr-0.1.3-5  mingw-w64-x86_64-libssh-0.12.2-1  mingw-w64-x86_64-libthai-0.1.30-1  mingw-w64-x86_64-libtheora-1.2.0-1  mingw-w64-x86_64-libtiff-4.7.2-1  mingw-w64-x86_64-libunibreak-7.0-1  mingw-w64-x86_64-libva-2.24.1-1  mingw-w64-x86_64-libvorbis-1.3.7-3  mingw-w64-x86_64-libvpl-2.17.0-1  mingw-w64-x86_64-libvpx-1.17.0-1  mingw-w64-x86_64-libwebp-1.6.0-1  mingw-w64-x86_64-libx264-0.165.r3222.b35605a-3  mingw-w64-x86_64-libxml2-2.15.4-1  mingw-w64-x86_64-llama.cpp-1~0.5.0-1  mingw-w64-x86_64-lzo2-2.10-3  mingw-w64-x86_64-md4c-0.6.0-1  mingw-w64-x86_64-openal-1.25.2-1  mingw-w64-x86_64-openblas-0.3.34-1  mingw-w64-x86_64-opencl-icd-2026.05.29-1  mingw-w64-x86_64-opencore-amr-0.1.6-1  mingw-w64-x86_64-openexr-3.4.15-2  mingw-w64-x86_64-openjpeg2-2.5.4-2  mingw-w64-x86_64-openjph-0.32.0-1  mingw-w64-x86_64-opus-1.6.1-1  mingw-w64-x86_64-pango-1.58.2-1  mingw-w64-x86_64-pixman-0.46.4-3  mingw-w64-x86_64-python-packaging-26.3-1  mingw-w64-x86_64-qt6-multimedia-ffmpeg-6.11.2-1  mingw-w64-x86_64-qt6-shadertools-6.11.2-1  mingw-w64-x86_64-rav1e-0.8.1-1  mingw-w64-x86_64-rtmpdump-2.6-2  mingw-w64-x86_64-shaderc-2026.3-1  mingw-w64-x86_64-speex-1.2.1-1  mingw-w64-x86_64-speexdsp-1.2.1-1  mingw-w64-x86_64-spirv-cross-1~1.4.357.0-1  mingw-w64-x86_64-spirv-tools-3~1.4.357.0-1  mingw-w64-x86_64-srt-1.5.7-1  mingw-w64-x86_64-svt-av1-4.2.0-1  mingw-w64-x86_64-vid.stab-1.1.2-1  mingw-w64-x86_64-vulkan-headers-1~1.4.357.0-1  mingw-w64-x86_64-vulkan-loader-1~1.4.357.0-1  mingw-w64-x86_64-whisper.cpp-1~1.9.4.r181.gd09f61a70-1  mingw-w64-x86_64-x265-4.3-1  mingw-w64-x86_64-xvidcore-1.3.7-5  mingw-w64-x86_64-zimg-3.0.6-3  mingw-w64-x86_64-zvbi-0.2.45-1  mingw-w64-x86_64-SDL2-2.32.10-1  mingw-w64-x86_64-freetype-2.14.3-1  mingw-w64-x86_64-libepoxy-1.5.10-7  mingw-w64-x86_64-libpng-1.6.58-1  mingw-w64-x86_64-qt6-base-6.11.2-2  mingw-w64-x86_64-qt6-multimedia-6.11.2-1  mingw-w64-x86_64-qt6-tools-6.11.2-1  mingw-w64-x86_64-qt6-websockets-6.11.2-1
+2026-11-12T18:06:56.9465199Z 
+2026-11-12T18:06:56.9465346Z Total Download Size:    197.83 MiB
+2026-11-12T18:06:56.9465769Z Total Installed Size:  1374.63 MiB
+2026-11-12T18:06:56.9466046Z 
+2026-11-12T18:06:56.9466242Z :: Proceed with installation? [Y/n] 
+2026-11-12T18:06:56.9466681Z :: Retrieving packages...
+2026-11-12T18:07:17.2271645Z error: failed retrieving file 'mingw-w64-x86_64-frei0r-plugins-3.5.0-1-any.pkg.tar.zst' from mirror.msys2.org : Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds
+2026-11-12T18:07:17.2273079Z  mingw-w64-x86_64-ffmpeg-9.0.2-1-any downloading...
+2026-11-12T18:07:17.2273595Z  mingw-w64-x86_64-icu-78.3-4-any downloading...
+2026-11-12T18:07:17.2274102Z  mingw-w64-x86_64-librsvg-2.63.2-1-any downloading...
+2026-11-12T18:07:17.2274671Z  mingw-w64-x86_64-qt6-base-6.11.2-2-any downloading...
+2026-11-12T18:07:17.2275193Z  mingw-w64-x86_64-openblas-0.3.34-1-any downloading...
+2026-11-12T18:07:17.2275706Z  mingw-w64-x86_64-ggml-0.25.3-1-any downloading...
+2026-11-12T18:07:17.2276220Z  mingw-w64-x86_64-llama.cpp-1~0.5.0-1-any downloading...
+2026-11-12T18:07:17.2276746Z  mingw-w64-x86_64-qt6-tools-6.11.2-1-any downloading...
+2026-11-12T18:07:17.2277246Z  mingw-w64-x86_64-glib2-2.90.0-1-any downloading...
+2026-11-12T18:07:17.2277718Z  mingw-w64-x86_64-imath-3.2.3-3-any downloading...
+2026-11-12T18:07:17.2278205Z  mingw-w64-x86_64-aom-3.15.1-1-any downloading...
+2026-11-12T18:07:17.2278776Z  mingw-w64-x86_64-shaderc-2026.3-1-any downloading...
+2026-11-12T18:07:17.2279307Z  mingw-w64-x86_64-x265-4.3-1-any downloading...
+2026-11-12T18:07:17.2279864Z  mingw-w64-x86_64-spirv-tools-3~1.4.357.0-1-any downloading...
+2026-11-12T18:07:17.2280325Z  mingw-w64-x86_64-svt-av1-4.2.0-1-any downloading...
+2026-11-12T18:07:17.2281577Z  mingw-w64-x86_64-libjxl-0.12.0-1-any downloading...
+2026-11-12T18:07:17.2281899Z  mingw-w64-x86_64-rav1e-0.8.1-1-any downloading...
+2026-11-12T18:07:17.2282225Z  mingw-w64-x86_64-harfbuzz-14.5.0-1-any downloading...
+2026-11-12T18:07:17.2282563Z  mingw-w64-x86_64-glslang-16.3.0-1-any downloading...
+2026-11-12T18:07:17.2282923Z  mingw-w64-x86_64-spirv-cross-1~1.4.357.0-1-any downloading...
+2026-11-12T18:07:17.2283279Z  mingw-w64-x86_64-libdovi-3.4.0-1-any downloading...
+2026-11-12T18:07:17.2283633Z  mingw-w64-x86_64-qt6-shadertools-6.11.2-1-any downloading...
+2026-11-12T18:07:17.2283986Z  mingw-w64-x86_64-openal-1.25.2-1-any downloading...
+2026-11-12T18:07:17.2284337Z  mingw-w64-x86_64-vulkan-headers-1~1.4.357.0-1-any downloading...
+2026-11-12T18:07:17.2284681Z  mingw-w64-x86_64-libvpx-1.17.0-1-any downloading...
+2026-11-12T18:07:17.2284979Z  mingw-w64-x86_64-highway-1.4.0-3-any downloading...
+2026-11-12T18:07:17.2285289Z  mingw-w64-x86_64-SDL2-2.32.10-1-any downloading...
+2026-11-12T18:07:17.2285639Z  mingw-w64-x86_64-qt6-multimedia-6.11.2-1-any downloading...
+2026-11-12T18:07:17.2285999Z  mingw-w64-x86_64-libgfortran-16.2.0-4-any downloading...
+2026-11-12T18:07:17.2286358Z  mingw-w64-x86_64-libmysofa-1.3.5-1-any downloading...
+2026-11-12T18:07:17.2286758Z  mingw-w64-x86_64-whisper.cpp-1~1.9.4.r181.gd09f61a70-1-any downloading...
+2026-11-12T18:07:17.2287347Z  mingw-w64-x86_64-openexr-3.4.15-2-any downloading...
+2026-11-12T18:07:17.2287769Z  mingw-w64-x86_64-libxml2-2.15.4-1-any downloading...
+2026-11-12T18:07:17.2288142Z  mingw-w64-x86_64-dav1d-1.5.4-1-any downloading...
+2026-11-12T18:07:17.2288452Z  mingw-w64-x86_64-cairo-1.18.6-2-any downloading...
+2026-11-12T18:07:17.2288763Z  mingw-w64-x86_64-libepoxy-1.5.10-7-any downloading...
+2026-11-12T18:07:17.2289127Z  mingw-w64-x86_64-gdk-pixbuf2-2.44.7-1-any downloading...
+2026-11-12T18:07:17.2289525Z  mingw-w64-x86_64-libx264-0.165.r3222.b35605a-3-any downloading...
+2026-11-12T18:07:17.2290231Z  mingw-w64-x86_64-srt-1.5.7-1-any downloading...
+2026-11-12T18:07:17.2290726Z  mingw-w64-x86_64-frei0r-plugins-3.5.0-1-any downloading...
+2026-11-12T18:07:17.2291105Z  mingw-w64-x86_64-libjpeg-turbo-3.2.0-1-any downloading...
+2026-11-12T18:07:17.2291455Z  mingw-w64-x86_64-libplacebo-7.360.1-2-any downloading...
+2026-11-12T18:07:17.2291842Z  mingw-w64-x86_64-qt6-multimedia-ffmpeg-6.11.2-1-any downloading...
+2026-11-12T18:07:17.2292222Z  mingw-w64-x86_64-libtiff-4.7.2-1-any downloading...
+2026-11-12T18:07:17.2292552Z  mingw-w64-x86_64-pango-1.58.2-1-any downloading...
+2026-11-12T18:07:17.2292862Z  mingw-w64-x86_64-dbus-1.16.2-4-any downloading...
+2026-11-12T18:07:17.2293184Z  mingw-w64-x86_64-freetype-2.14.3-1-any downloading...
+2026-11-12T18:07:17.2293560Z  mingw-w64-x86_64-libwebp-1.6.0-1-any downloading...
+2026-11-12T18:07:17.2293885Z  mingw-w64-x86_64-libexif-0.6.26-1-any downloading...
+2026-11-12T18:07:17.2294192Z  mingw-w64-x86_64-speex-1.2.1-1-any downloading...
+2026-11-12T18:07:17.2294496Z  mingw-w64-x86_64-speexdsp-1.2.1-1-any downloading...
+2026-11-12T18:07:17.2294861Z  mingw-w64-x86_64-openjpeg2-2.5.4-2-any downloading...
+2026-11-12T18:07:17.2295187Z  mingw-w64-x86_64-libtheora-1.2.0-1-any downloading...
+2026-11-12T18:07:17.2295492Z  mingw-w64-x86_64-libssh-0.12.2-1-any downloading...
+2026-11-12T18:07:17.2295793Z  mingw-w64-x86_64-libpng-1.6.58-1-any downloading...
+2026-11-12T18:07:17.2296093Z  mingw-w64-x86_64-lcms2-2.19.1-1-any downloading...
+2026-11-12T18:07:17.2296401Z  mingw-w64-x86_64-libvpl-2.17.0-1-any downloading...
+2026-11-12T18:07:17.2296724Z  mingw-w64-x86_64-libcaca-0.99.beta20-8-any downloading...
+2026-11-12T18:07:17.2297052Z  mingw-w64-x86_64-openjph-0.32.0-1-any downloading...
+2026-11-12T18:07:17.2297361Z  mingw-w64-x86_64-libvorbis-1.3.7-3-any downloading...
+2026-11-12T18:07:17.2297674Z  mingw-w64-x86_64-zimg-3.0.6-3-any downloading...
+2026-11-12T18:07:17.2297973Z  mingw-w64-x86_64-pixman-0.46.4-3-any downloading...
+2026-11-12T18:07:17.2298266Z  mingw-w64-x86_64-lame-3.100-3-any downloading...
+2026-11-12T18:07:17.2298697Z  mingw-w64-x86_64-opus-1.6.1-1-any downloading...
+2026-11-12T18:07:17.2299005Z  mingw-w64-x86_64-libbluray-1.5.0-1-any downloading...
+2026-11-12T18:07:17.2299517Z  mingw-w64-x86_64-xvidcore-1.3.7-5-any downloading...
+2026-11-12T18:07:17.2299965Z  mingw-w64-x86_64-zvbi-0.2.45-1-any downloading...
+2026-11-12T18:07:17.2300418Z  mingw-w64-x86_64-lerc-4.1.1-1-any downloading...
+2026-11-12T18:07:17.2300936Z  mingw-w64-x86_64-fontconfig-2.18.3-1-any downloading...
+2026-11-12T18:07:17.2301504Z  mingw-w64-x86_64-python-packaging-26.3-1-any downloading...
+2026-11-12T18:07:17.2302060Z  mingw-w64-x86_64-libmodplug-0.8.9.0-5-any downloading...
+2026-11-12T18:07:17.2302559Z  mingw-w64-x86_64-libgme-0.6.5-2-any downloading...
+2026-11-12T18:07:17.2303031Z  mingw-w64-x86_64-libva-2.24.1-1-any downloading...
+2026-11-12T18:07:17.2303479Z  mingw-w64-x86_64-libogg-1.3.6-1-any downloading...
+2026-11-12T18:07:17.2303898Z  mingw-w64-x86_64-libass-0.17.5-1-any downloading...
+2026-11-12T18:07:17.2304359Z  mingw-w64-x86_64-libthai-0.1.30-1-any downloading...
+2026-11-12T18:07:17.2304912Z  mingw-w64-x86_64-vulkan-loader-1~1.4.357.0-1-any downloading...
+2026-11-12T18:07:17.2305487Z  mingw-w64-x86_64-opencore-amr-0.1.6-1-any downloading...
+2026-11-12T18:07:17.2305997Z  mingw-w64-x86_64-libsoxr-0.1.3-5-any downloading...
+2026-11-12T18:07:17.2306679Z  mingw-w64-x86_64-rtmpdump-2.6-2-any downloading...
+2026-11-12T18:07:17.2307178Z  mingw-w64-x86_64-graphite2-1.3.15-1-any downloading...
+2026-11-12T18:07:17.2307741Z  mingw-w64-x86_64-qt6-websockets-6.11.2-1-any downloading...
+2026-11-12T18:07:17.2308271Z  mingw-w64-x86_64-giflib-6.1.3-1-any downloading...
+2026-11-12T18:07:17.2308753Z  mingw-w64-x86_64-liblc3-1.1.3-1-any downloading...
+2026-11-12T18:07:17.2309242Z  mingw-w64-x86_64-md4c-0.6.0-1-any downloading...
+2026-11-12T18:07:17.2309737Z  mingw-w64-x86_64-jbigkit-2.1-6-any downloading...
+2026-11-12T18:07:17.2310755Z  mingw-w64-x86_64-vid.stab-1.1.2-1-any downloading...
+2026-11-12T18:07:17.2311247Z  mingw-w64-x86_64-lzo2-2.10-3-any downloading...
+2026-11-12T18:07:17.2311769Z  mingw-w64-x86_64-libdeflate-1.26-1-any downloading...
+2026-11-12T18:07:17.2312276Z  mingw-w64-x86_64-fribidi-1.0.17-1-any downloading...
+2026-11-12T18:07:17.2312838Z  mingw-w64-x86_64-opencl-icd-2026.05.29-1-any downloading...
+2026-11-12T18:07:17.2313424Z  mingw-w64-x86_64-libdatrie-0.2.14-1-any downloading...
+2026-11-12T18:07:17.2314045Z  mingw-w64-x86_64-double-conversion-3.4.0-1-any downloading...
+2026-11-12T18:07:17.2314593Z  mingw-w64-x86_64-gsm-1.0.24-1-any downloading...
+2026-11-12T18:07:17.2315143Z  mingw-w64-x86_64-gles-headers-3.2.r1065.7fc154c-1-any downloading...
+2026-11-12T18:07:17.2315757Z  mingw-w64-x86_64-libunibreak-7.0-1-any downloading...
+2026-11-12T18:07:17.2316159Z  mingw-w64-x86_64-egl-headers-1.5.r284.3ae2b7c-1-any downloading...
+2026-11-12T18:07:17.2316494Z checking keyring...
+2026-11-12T18:07:17.3088133Z checking package integrity...
+2026-11-12T18:07:32.5733248Z loading package files...
+2026-11-12T18:07:32.7647724Z checking for file conflicts...
+2026-11-12T18:07:33.2650715Z :: Processing package changes...
+2026-11-12T18:07:33.2651199Z installing mingw-w64-x86_64-double-conversion...
+2026-11-12T18:07:33.2840022Z installing mingw-w64-x86_64-dbus...
+2026-11-12T18:07:33.3214888Z Optional dependencies for mingw-w64-x86_64-dbus
+2026-11-12T18:07:33.3215334Z     mingw-w64-x86_64-dbus-doc: html documentation
+2026-11-12T18:07:33.3215683Z installing mingw-w64-x86_64-libpng...
+2026-11-12T18:07:33.3431961Z installing mingw-w64-x86_64-python-packaging...
+2026-11-12T18:07:33.4125778Z installing mingw-w64-x86_64-glib2...
+2026-11-12T18:07:33.8955551Z installing mingw-w64-x86_64-graphite2...
+2026-11-12T18:07:33.9084894Z installing mingw-w64-x86_64-harfbuzz...
+2026-11-12T18:07:33.9835620Z installing mingw-w64-x86_64-freetype...
+2026-11-12T18:07:34.0357587Z installing mingw-w64-x86_64-icu...
+2026-11-12T18:07:34.4063917Z installing mingw-w64-x86_64-libjpeg-turbo...
+2026-11-12T18:07:34.4487343Z installing mingw-w64-x86_64-md4c...
+2026-11-12T18:07:34.4618757Z installing mingw-w64-x86_64-vulkan-loader...
+2026-11-12T18:07:34.4713770Z installing mingw-w64-x86_64-vulkan-headers...
+2026-11-12T18:07:34.5643135Z installing mingw-w64-x86_64-qt6-base...
+2026-11-12T18:07:37.8179529Z Optional dependencies for mingw-w64-x86_64-qt6-base
+2026-11-12T18:07:37.8180029Z     mingw-w64-x86_64-libmariadbclient: MySQL/MariaDB driver
+2026-11-12T18:07:37.8180418Z     mingw-w64-x86_64-postgresql: PostgreSQL driver
+2026-11-12T18:07:37.8180744Z     mingw-w64-x86_64-firebird: Firebird/iBase driver
+2026-11-12T18:07:37.8181061Z installing mingw-w64-x86_64-qt6-shadertools...
+2026-11-12T18:07:37.8835742Z installing mingw-w64-x86_64-aom...
+2026-11-12T18:07:37.9418392Z installing mingw-w64-x86_64-dav1d...
+2026-11-12T18:07:37.9636619Z installing mingw-w64-x86_64-fontconfig...
+2026-11-12T18:07:44.6104202Z updating font cache... done.
+2026-11-12T18:07:44.6114649Z installing mingw-w64-x86_64-frei0r-plugins...
+2026-11-12T18:07:44.7365669Z Optional dependencies for mingw-w64-x86_64-frei0r-plugins
+2026-11-12T18:07:44.7366445Z     mingw-w64-x86_64-cairo: cairoaffineblend, cairoblend, cairogradient and cairoimagegrid plugins [pending]
+2026-11-12T18:07:44.7367376Z     mingw-w64-x86_64-gavl: rgbparade, scale0tilt and vectorscope plugins
+2026-11-12T18:07:44.7367939Z     mingw-w64-x86_64-opencv: facebl0r and facedetect plugins
+2026-11-12T18:07:44.7369092Z installing mingw-w64-x86_64-fribidi...
+2026-11-12T18:07:44.7588082Z installing mingw-w64-x86_64-gsm...
+2026-11-12T18:07:44.7707278Z installing mingw-w64-x86_64-lame...
+2026-11-12T18:07:44.7930194Z installing mingw-w64-x86_64-libunibreak...
+2026-11-12T18:07:44.8033302Z installing mingw-w64-x86_64-libass...
+2026-11-12T18:07:44.8118159Z installing mingw-w64-x86_64-libxml2...
+2026-11-12T18:07:44.9929125Z Optional dependencies for mingw-w64-x86_64-libxml2
+2026-11-12T18:07:44.9929787Z     mingw-w64-x86_64-python: Python bindings [installed]
+2026-11-12T18:07:44.9930349Z installing mingw-w64-x86_64-libbluray...
+2026-11-12T18:07:45.0101310Z installing mingw-w64-x86_64-libcaca...
+2026-11-12T18:07:45.0499130Z installing mingw-w64-x86_64-libexif...
+2026-11-12T18:07:45.1050493Z installing mingw-w64-x86_64-libgme...
+2026-11-12T18:07:45.1151243Z installing mingw-w64-x86_64-giflib...
+2026-11-12T18:07:45.1278029Z installing mingw-w64-x86_64-highway...
+2026-11-12T18:07:45.2221226Z installing mingw-w64-x86_64-jbigkit...
+2026-11-12T18:07:45.2386002Z installing mingw-w64-x86_64-lerc...
+2026-11-12T18:07:45.2524112Z installing mingw-w64-x86_64-libdeflate...
+2026-11-12T18:07:45.2653391Z installing mingw-w64-x86_64-libwebp...
+2026-11-12T18:07:45.3048798Z installing mingw-w64-x86_64-libtiff...
+2026-11-12T18:07:45.3898532Z installing mingw-w64-x86_64-lcms2...
+2026-11-12T18:07:45.4105543Z installing mingw-w64-x86_64-imath...
+2026-11-12T18:07:45.5762472Z Optional dependencies for mingw-w64-x86_64-imath
+2026-11-12T18:07:45.5762921Z     mingw-w64-x86_64-python: python bindings [installed]
+2026-11-12T18:07:45.5763269Z     mingw-w64-x86_64-boost: python bindings
+2026-11-12T18:07:45.5763602Z installing mingw-w64-x86_64-openjph...
+2026-11-12T18:07:45.5975210Z installing mingw-w64-x86_64-openexr...
+2026-11-12T18:07:45.7204456Z installing mingw-w64-x86_64-libjxl...
+2026-11-12T18:07:45.7853955Z Optional dependencies for mingw-w64-x86_64-libjxl
+2026-11-12T18:07:45.7854672Z     mingw-w64-x86_64-gdk-pixbuf2: for gdk-pixbuf loader [pending]
+2026-11-12T18:07:45.7855197Z installing mingw-w64-x86_64-libmodplug...
+2026-11-12T18:07:45.7989560Z installing mingw-w64-x86_64-libssh...
+2026-11-12T18:07:45.8177523Z installing mingw-w64-x86_64-libdovi...
+2026-11-12T18:07:45.8419258Z installing mingw-w64-x86_64-spirv-tools...
+2026-11-12T18:07:45.9340990Z installing mingw-w64-x86_64-glslang...
+2026-11-12T18:07:45.9881062Z installing mingw-w64-x86_64-shaderc...
+2026-11-12T18:07:46.0359376Z installing mingw-w64-x86_64-spirv-cross...
+2026-11-12T18:07:46.1084967Z installing mingw-w64-x86_64-libplacebo...
+2026-11-12T18:07:46.1454669Z installing mingw-w64-x86_64-lzo2...
+2026-11-12T18:07:46.1662372Z installing mingw-w64-x86_64-pixman...
+2026-11-12T18:07:46.1774412Z installing mingw-w64-x86_64-cairo...
+2026-11-12T18:07:46.2132470Z installing mingw-w64-x86_64-gdk-pixbuf2...
+2026-11-12T18:07:46.3740581Z Optional dependencies for mingw-w64-x86_64-gdk-pixbuf2
+2026-11-12T18:07:46.3741049Z     mingw-w64-x86_64-libwmf: Load .wmf and .apm
+2026-11-12T18:07:46.3741380Z     mingw-w64-x86_64-libavif: Load .avif
+2026-11-12T18:07:46.3741709Z     mingw-w64-x86_64-libheif: Load .heif, .heic, and .avif
+2026-11-12T18:07:46.3742049Z     mingw-w64-x86_64-libjxl: Load .jxl [installed]
+2026-11-12T18:07:46.3742417Z     mingw-w64-x86_64-librsvg: Load .svg, .svgz, and .svg.gz [pending]
+2026-11-12T18:07:46.3742819Z     mingw-w64-x86_64-webp-pixbuf-loader: Load .webp
+2026-11-12T18:07:46.3743147Z installing mingw-w64-x86_64-libdatrie...
+2026-11-12T18:07:46.3861037Z Optional dependencies for mingw-w64-x86_64-libdatrie
+2026-11-12T18:07:46.3861559Z     mingw-w64-x86_64-libdatrie-docs: Documentation
+2026-11-12T18:07:46.3861900Z installing mingw-w64-x86_64-libthai...
+2026-11-12T18:07:46.4063019Z Optional dependencies for mingw-w64-x86_64-libthai
+2026-11-12T18:07:46.4063488Z     mingw-w64-x86_64-libthai-docs: Documentation
+2026-11-12T18:07:46.4063793Z installing mingw-w64-x86_64-pango...
+2026-11-12T18:07:46.4670197Z installing mingw-w64-x86_64-librsvg...
+2026-11-12T18:07:46.7308671Z Optional dependencies for mingw-w64-x86_64-librsvg
+2026-11-12T18:07:46.7309094Z     mingw-w64-x86_64-gtk3: for rsvg-view-3
+2026-11-12T18:07:46.7309393Z installing mingw-w64-x86_64-libsoxr...
+2026-11-12T18:07:46.7455216Z installing mingw-w64-x86_64-libogg...
+2026-11-12T18:07:46.8250254Z installing mingw-w64-x86_64-libvorbis...
+2026-11-12T18:07:46.9445026Z installing mingw-w64-x86_64-libtheora...
+2026-11-12T18:07:47.0497618Z installing mingw-w64-x86_64-libva...
+2026-11-12T18:07:47.0770538Z installing mingw-w64-x86_64-libvpx...
+2026-11-12T18:07:47.1066348Z installing mingw-w64-x86_64-libvpl...
+2026-11-12T18:07:47.1385363Z installing mingw-w64-x86_64-libmysofa...
+2026-11-12T18:07:47.1526662Z installing mingw-w64-x86_64-openal...
+2026-11-12T18:07:47.1955554Z installing mingw-w64-x86_64-opencore-amr...
+2026-11-12T18:07:47.2069764Z installing mingw-w64-x86_64-openjpeg2...
+2026-11-12T18:07:47.2272834Z installing mingw-w64-x86_64-opus...
+2026-11-12T18:07:47.2404710Z installing mingw-w64-x86_64-rav1e...
+2026-11-12T18:07:47.2756072Z installing mingw-w64-x86_64-rtmpdump...
+2026-11-12T18:07:47.2888887Z installing mingw-w64-x86_64-SDL2...
+2026-11-12T18:07:47.3700412Z installing mingw-w64-x86_64-speexdsp...
+2026-11-12T18:07:47.3824150Z installing mingw-w64-x86_64-speex...
+2026-11-12T18:07:47.3980292Z installing mingw-w64-x86_64-srt...
+2026-11-12T18:07:47.4199251Z installing mingw-w64-x86_64-svt-av1...
+2026-11-12T18:07:47.4726629Z installing mingw-w64-x86_64-liblc3...
+2026-11-12T18:07:47.4827589Z installing mingw-w64-x86_64-vid.stab...
+2026-11-12T18:07:47.4993950Z installing mingw-w64-x86_64-libgfortran...
+2026-11-12T18:07:47.5206948Z installing mingw-w64-x86_64-openblas...
+2026-11-12T18:07:47.6815652Z installing mingw-w64-x86_64-opencl-icd...
+2026-11-12T18:07:47.6914185Z installing mingw-w64-x86_64-ggml...
+2026-11-12T18:07:47.8258829Z installing mingw-w64-x86_64-llama.cpp...
+2026-11-12T18:07:47.9206670Z installing mingw-w64-x86_64-whisper.cpp...
+2026-11-12T18:07:47.9513556Z installing mingw-w64-x86_64-libx264...
+2026-11-12T18:07:47.9671832Z installing mingw-w64-x86_64-x265...
+2026-11-12T18:07:48.0511866Z installing mingw-w64-x86_64-xvidcore...
+2026-11-12T18:07:48.0593003Z installing mingw-w64-x86_64-zimg...
+2026-11-12T18:07:48.0829073Z installing mingw-w64-x86_64-zvbi...
+2026-11-12T18:07:48.1027439Z installing mingw-w64-x86_64-ffmpeg...
+2026-11-12T18:07:48.4360636Z installing mingw-w64-x86_64-qt6-multimedia-ffmpeg...
+2026-11-12T18:07:48.5460353Z installing mingw-w64-x86_64-qt6-multimedia...
+2026-11-12T18:07:48.9206273Z Optional dependencies for mingw-w64-x86_64-qt6-multimedia
+2026-11-12T18:07:48.9207006Z     mingw-w64-x86_64-qt6-declarative
+2026-11-12T18:07:48.9207287Z     mingw-w64-x86_64-qt6-quick3d
+2026-11-12T18:07:48.9207552Z     mingw-w64-x86_64-qt6-multimedia-wmf
+2026-11-12T18:07:48.9207858Z installing mingw-w64-x86_64-qt6-websockets...
+2026-11-12T18:07:48.9804760Z Optional dependencies for mingw-w64-x86_64-qt6-websockets
+2026-11-12T18:07:48.9805192Z     mingw-w64-x86_64-qt6-declarative
+2026-11-12T18:07:48.9805493Z installing mingw-w64-x86_64-qt6-tools...
+2026-11-12T18:07:49.5377267Z Optional dependencies for mingw-w64-x86_64-qt6-tools
+2026-11-12T18:07:49.5377864Z     mingw-w64-x86_64-qt6-declarative: for linguist, lupdate, qdoc and qdistancefieldgenerator
+2026-11-12T18:07:49.5378326Z     mingw-w64-x86_64-qt6-activeqt
+2026-11-12T18:07:49.5378592Z     mingw-w64-x86_64-clang-libs: for qdoc
+2026-11-12T18:07:49.5378903Z installing mingw-w64-x86_64-egl-headers...
+2026-11-12T18:07:49.5423542Z installing mingw-w64-x86_64-gles-headers...
+2026-11-12T18:07:49.5543850Z installing mingw-w64-x86_64-libepoxy...
+2026-11-12T18:07:49.6586137Z :: Running post-transaction hooks...
+2026-11-12T18:07:49.6586691Z (1/2) Updating fontconfig cache...
+2026-11-12T18:07:49.7669226Z (2/2) Probing GDK-Pixbuf loader modules...
+2026-11-12T18:07:50.5220477Z mingw-w64-x86_64-SDL2 2.32.10-1
+2026-11-12T18:07:50.5221473Z mingw-w64-x86_64-libepoxy 1.5.10-7
+2026-11-12T18:07:50.5222572Z mingw-w64-x86_64-qt6-base 6.11.2-2
+2026-11-12T18:07:50.5430704Z ##[group]Run cmake -G Ninja -S . -B build-pc \
+2026-11-12T18:07:50.5431132Z [36;1mcmake -G Ninja -S . -B build-pc \[0m
+2026-11-12T18:07:50.5431431Z [36;1m  -DCMAKE_BUILD_TYPE=Release \[0m
+2026-11-12T18:07:50.5431710Z [36;1m  -DBUILD_LTO=OFF \[0m
+2026-11-12T18:07:50.5431999Z [36;1m  -DBUILD_QT=ON -DBUILD_SDL=ON -DBUILD_SHARED=ON \[0m
+2026-11-12T18:07:50.5432382Z [36;1m  -DBUILD_STATIC=OFF -DBUILD_SUITE=OFF -DBUILD_TEST=OFF \[0m
+2026-11-12T18:07:50.5432709Z [36;1m  -DUSE_FFMPEG=OFF[0m
+2026-11-12T18:07:50.5434540Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2026-11-12T18:07:50.5434804Z env:
+2026-11-12T18:07:50.5434995Z   MSYSTEM: MINGW64
+2026-11-12T18:07:50.5435185Z ##[endgroup]
+2026-11-12T18:07:50.9528503Z -- The C compiler identification is GNU 16.2.0
+2026-11-12T18:07:51.1268365Z -- The CXX compiler identification is GNU 16.2.0
+2026-11-12T18:07:51.1763196Z -- Detecting C compiler ABI info
+2026-11-12T18:07:51.5330143Z -- Detecting C compiler ABI info - done
+2026-11-12T18:07:51.5668011Z -- Check for working C compiler: D:/a/_temp/msys64/mingw64/bin/cc.exe - skipped
+2026-11-12T18:07:51.5672678Z -- Detecting C compile features
+2026-11-12T18:07:51.5678166Z -- Detecting C compile features - done
+2026-11-12T18:07:51.6099015Z -- Detecting CXX compiler ABI info
+2026-11-12T18:07:51.9961286Z -- Detecting CXX compiler ABI info - done
+2026-11-12T18:07:52.0299980Z -- Check for working CXX compiler: D:/a/_temp/msys64/mingw64/bin/c++.exe - skipped
+2026-11-12T18:07:52.0305015Z -- Detecting CXX compile features
+2026-11-12T18:07:52.0315143Z -- Detecting CXX compile features - done
+2026-11-12T18:07:52.0626740Z -- Found PkgConfig: D:/a/_temp/msys64/mingw64/bin/pkg-config.exe (found version "3.0.7")
+2026-11-12T18:07:53.0408761Z -- Looking for strdup
+2026-11-12T18:07:53.2323167Z -- Looking for strdup - found
+2026-11-12T18:07:53.2323726Z -- Looking for strlcpy
+2026-11-12T18:07:53.4217109Z -- Looking for strlcpy - not found
+2026-11-12T18:07:53.4217621Z -- Looking for strndup
+2026-11-12T18:07:53.6268163Z -- Looking for strndup - found
+2026-11-12T18:07:53.6268616Z -- Looking for vasprintf
+2026-11-12T18:07:53.8185840Z -- Looking for vasprintf - found
+2026-11-12T18:07:53.8186416Z -- Looking for freelocale
+2026-11-12T18:07:54.0072254Z -- Looking for freelocale - not found
+2026-11-12T18:07:54.0072921Z -- Looking for newlocale
+2026-11-12T18:07:54.2049784Z -- Looking for newlocale - not found
+2026-11-12T18:07:54.2050417Z -- Looking for setlocale
+2026-11-12T18:07:54.3965731Z -- Looking for setlocale - found
+2026-11-12T18:07:54.3966194Z -- Looking for snprintf_l
+2026-11-12T18:07:54.5897088Z -- Looking for snprintf_l - not found
+2026-11-12T18:07:54.5897652Z -- Looking for uselocale
+2026-11-12T18:07:54.7819535Z -- Looking for uselocale - not found
+2026-11-12T18:07:54.7820056Z -- Looking for popcount32
+2026-11-12T18:07:54.9727652Z -- Looking for popcount32 - not found
+2026-11-12T18:07:54.9728188Z -- Looking for futimens
+2026-11-12T18:07:55.1628156Z -- Looking for futimens - not found
+2026-11-12T18:07:55.1629022Z -- Looking for futimes
+2026-11-12T18:07:55.3516778Z -- Looking for futimes - not found
+2026-11-12T18:07:55.3517293Z -- Looking for localtime_r
+2026-11-12T18:07:55.5405634Z -- Looking for localtime_r - not found
+2026-11-12T18:07:55.5406101Z -- Looking for realpath
+2026-11-12T18:07:55.7305281Z -- Looking for realpath - not found
+2026-11-12T18:07:55.7306251Z -- Looking for strtof_l
+2026-11-12T18:07:55.9196311Z -- Looking for strtof_l - not found
+2026-11-12T18:07:55.9198868Z -- Looking for include file xlocale.h
+2026-11-12T18:07:56.0171459Z -- Looking for include file xlocale.h - not found
+2026-11-12T18:07:56.1763588Z -- Checking for one of the modules 'minizip'
+2026-11-12T18:07:56.2029399Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.2029898Z   Requested module minizip missing for feature USE_MINIZIP.  Feature
+2026-11-12T18:07:56.2030570Z   disabled.
+2026-11-12T18:07:56.2033192Z Call Stack (most recent call first):
+2026-11-12T18:07:56.2033539Z   CMakeLists.txt:523 (find_feature)
+2026-11-12T18:07:56.3680402Z 
+2026-11-12T18:07:56.3680421Z 
+2026-11-12T18:07:56.3680838Z -- Checking for one of the modules 'libzip'
+2026-11-12T18:07:56.3948540Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.3949071Z   Requested module libzip missing for feature USE_LIBZIP.  Feature disabled.
+2026-11-12T18:07:56.3949470Z Call Stack (most recent call first):
+2026-11-12T18:07:56.3949727Z   CMakeLists.txt:525 (find_feature)
+2026-11-12T18:07:56.8389799Z 
+2026-11-12T18:07:56.8389818Z 
+2026-11-12T18:07:56.8390448Z -- Checking for one of the modules 'libelf'
+2026-11-12T18:07:56.9019656Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.9020710Z   Requested module libelf missing for feature USE_ELF.  Feature disabled.
+2026-11-12T18:07:56.9021550Z Call Stack (most recent call first):
+2026-11-12T18:07:56.9022603Z   CMakeLists.txt:529 (find_feature)
+2026-11-12T18:07:56.9023081Z 
+2026-11-12T18:07:56.9023268Z 
+2026-11-12T18:07:57.0366846Z -- Checking for one of the modules 'json-c'
+2026-11-12T18:07:57.0775745Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:57.0776709Z   Requested module json-c missing for feature USE_JSON_C.  Feature disabled.
+2026-11-12T18:07:57.0777881Z Call Stack (most recent call first):
+2026-11-12T18:07:57.0778494Z   CMakeLists.txt:799 (find_feature)
+2026-11-12T18:07:57.0778954Z 
+2026-11-12T18:07:57.0779090Z 
+2026-11-12T18:07:57.1122752Z -- Checking for one of the modules 'Lua'
+2026-11-12T18:07:57.1471549Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:57.1472331Z   Requested module Lua missing for feature USE_LUA.  Feature disabled.
+2026-11-12T18:07:57.1472895Z Call Stack (most recent call first):
+2026-11-12T18:07:57.1473274Z   CMakeLists.txt:805 (find_feature)
+2026-11-12T18:07:57.1473576Z 
+2026-11-12T18:07:57.1473582Z 
+2026-11-12T18:07:57.2751487Z CMake Warning at src/platform/sdl/CMakeLists.txt:4 (find_package):
+2026-11-12T18:07:57.2752262Z   By not providing "FindSDL3.cmake" in CMAKE_MODULE_PATH this project has
+2026-11-12T18:07:57.2752763Z   asked CMake to find a package configuration file provided by "SDL3", but
+2026-11-12T18:07:57.2753140Z   CMake did not find one.
+2026-11-12T18:07:57.2753292Z 
+2026-11-12T18:07:57.2753486Z   Could not find a package configuration file provided by "SDL3" with any of
+2026-11-12T18:07:57.2753855Z   the following names:
+2026-11-12T18:07:57.2754952Z 
+2026-11-12T18:07:57.2755078Z     SDL3.cps
+2026-11-12T18:07:57.2755308Z     sdl3.cps
+2026-11-12T18:07:57.2755545Z     SDL3Config.cmake
+2026-11-12T18:07:57.2755818Z     sdl3-config.cmake
+2026-11-12T18:07:57.2755987Z 
+2026-11-12T18:07:57.2756207Z   Add the installation prefix of "SDL3" to CMAKE_PREFIX_PATH or set
+2026-11-12T18:07:57.2756798Z   "SDL3_DIR" to a directory containing one of the above files.  If "SDL3"
+2026-11-12T18:07:57.2757424Z   provides a separate development package or SDK, be sure it has been
+2026-11-12T18:07:57.2757863Z   installed.
+2026-11-12T18:07:57.2758007Z 
+2026-11-12T18:07:57.2758012Z 
+2026-11-12T18:07:57.2864389Z -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+2026-11-12T18:07:57.5160183Z -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+2026-11-12T18:07:57.5173297Z -- Found Threads: TRUE
+2026-11-12T18:07:57.5187849Z -- Found SDL2: mingw32;D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a
+2026-11-12T18:07:57.5628780Z -- Performing Test HAVE_STDATOMIC
+2026-11-12T18:07:57.8281749Z -- Performing Test HAVE_STDATOMIC - Success
+2026-11-12T18:07:57.8295592Z -- Found WrapAtomic: TRUE
+2026-11-12T18:07:57.9247307Z -- Found WrapVulkanHeaders: D:/a/_temp/msys64/mingw64/include
+2026-11-12T18:07:58.0531839Z CMake Warning (policy) at CMakeLists.txt:1126 (install):
+2026-11-12T18:07:58.0532549Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0534760Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0535196Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0535646Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0536009Z suppress it.
+2026-11-12T18:07:58.0536127Z 
+2026-11-12T18:07:58.0536267Z CMake Warning (policy) at CMakeLists.txt:1127 (install):
+2026-11-12T18:07:58.0536680Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0537149Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0537542Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0538074Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0538590Z suppress it.
+2026-11-12T18:07:58.0538699Z 
+2026-11-12T18:07:58.0538855Z CMake Warning (policy) at CMakeLists.txt:1129 (install):
+2026-11-12T18:07:58.0539253Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0539681Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0540054Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0540424Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0540753Z suppress it.
+2026-11-12T18:07:58.0540860Z 
+2026-11-12T18:07:58.0540979Z CMake Warning (policy) at CMakeLists.txt:1130 (install):
+2026-11-12T18:07:58.0541374Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0542136Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0542572Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0542949Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0543300Z suppress it.
+2026-11-12T18:07:58.0543412Z 
+2026-11-12T18:07:58.0543548Z CMake Warning (policy) at CMakeLists.txt:1132 (install):
+2026-11-12T18:07:58.0543937Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0544369Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0544748Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0545116Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0545445Z suppress it.
+2026-11-12T18:07:58.0545546Z 
+2026-11-12T18:07:58.0696449Z -- Build type: Release
+2026-11-12T18:07:58.0696808Z -- Platforms:
+2026-11-12T18:07:58.0697289Z -- 	Game Boy Advance: ON
+2026-11-12T18:07:58.0697735Z -- 	Game Boy: ON
+2026-11-12T18:07:58.0698018Z -- Features:
+2026-11-12T18:07:58.0698300Z -- 	Debuggers: ON
+2026-11-12T18:07:58.0698602Z -- 	GDB stub: ON
+2026-11-12T18:07:58.0698891Z -- 	GIF/Video recording: OFF
+2026-11-12T18:07:58.0699516Z -- 	Screenshot/advanced savestate support: ON
+2026-11-12T18:07:58.0699924Z -- 	ZIP support: minizip (included)
+2026-11-12T18:07:58.0700308Z -- 	7-Zip support: ON
+2026-11-12T18:07:58.0700618Z -- 	SQLite3 game database: ON
+2026-11-12T18:07:58.0701194Z -- 	ELF loading support: OFF
+2026-11-12T18:07:58.0701545Z -- 	Discord Rich Presence support: ON
+2026-11-12T18:07:58.0701917Z -- 	OpenGL support: libepoxy
+2026-11-12T18:07:58.0702237Z -- Scripting support: ON
+2026-11-12T18:07:58.0702552Z -- 	Lua: OFF
+2026-11-12T18:07:58.0702818Z -- 	storage API: OFF
+2026-11-12T18:07:58.0703019Z -- 	Font rendering: ON
+2026-11-12T18:07:58.0703212Z -- Frontends:
+2026-11-12T18:07:58.0703382Z -- 	Qt: ON
+2026-11-12T18:07:58.0703545Z -- 	SDL (2): ON
+2026-11-12T18:07:58.0703729Z -- 	Headless: OFF
+2026-11-12T18:07:58.0703932Z -- 	Python bindings: OFF
+2026-11-12T18:07:58.0704157Z -- 	Examples: OFF
+2026-11-12T18:07:58.0704337Z -- Test tools:
+2026-11-12T18:07:58.0704512Z -- 	Profiling: OFF
+2026-11-12T18:07:58.0704717Z -- 	Test harness: OFF
+2026-11-12T18:07:58.0705437Z -- 	Test suite: OFF
+2026-11-12T18:07:58.0705825Z -- 	Video test suite: OFF
+2026-11-12T18:07:58.0706086Z -- Cores:
+2026-11-12T18:07:58.0706314Z -- 	Libretro core: OFF
+2026-11-12T18:07:58.0706584Z -- Libraries:
+2026-11-12T18:07:58.0706819Z -- 	Static: OFF
+2026-11-12T18:07:58.0707058Z -- 	Shared: ON
+2026-11-12T18:07:58.0730184Z -- Configuring done (7.3s)
+2026-11-12T18:07:58.3551445Z -- Generating done (0.3s)
+2026-11-12T18:07:58.3571222Z -- Build files have been written to: D:/a/mgbax/mgbax/build-pc
+2026-11-12T18:07:58.3991346Z ##[group]Run cmake --build build-pc --target mgba-qt mgba-sdl
+2026-11-12T18:07:58.3991858Z [36;1mcmake --build build-pc --target mgba-qt mgba-sdl[0m
+2026-11-12T18:07:58.3993803Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2026-11-12T18:07:58.3994072Z env:
+2026-11-12T18:07:58.3994242Z   MSYSTEM: MINGW64
+2026-11-12T18:07:58.3994434Z ##[endgroup]
+2026-11-12T18:08:01.2860045Z [1/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/connection_win.cpp.obj
+2026-11-12T18:08:01.2949830Z [2/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/rpc_connection.cpp.obj
+2026-11-12T18:08:01.3197530Z [3/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/discord_register_win.cpp.obj
+2026-11-12T18:08:02.7355335Z [4/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/serialization.cpp.obj
+2026-11-12T18:08:02.9066799Z [5/451] C:\Windows\system32\cmd.exe /C "cd /D D:\a\mgbax\mgbax && D:\a\_temp\msys64\mingw64\bin\cmake.exe -DBINARY_NAME=mgba -DCONFIG_FILE=D:/a/mgbax/mgbax/src/core/version.c.in -DOUT_FILE=D:/a/mgbax/mgbax/build-pc/version.c -P D:/a/mgbax/mgbax/version.cmake"
+2026-11-12T18:08:03.0821497Z [6/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-fifo.c.obj
+2026-11-12T18:08:03.2767120Z [7/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-fd.c.obj
+2026-11-12T18:08:03.3104134Z [8/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-mem.c.obj
+2026-11-12T18:08:04.6581745Z [9/451] Building C object CMakeFiles/updater-stub.dir/src/platform/windows/vfs-w32.c.obj
+2026-11-12T18:08:04.7746674Z [10/451] Building C object CMakeFiles/mgba.dir/src/core/bitmap-cache.c.obj
+2026-11-12T18:08:05.0995495Z [11/451] Building CXX object discord-rpc/src/CMakeFiles/discord-rpc.dir/discord_rpc.cpp.obj
+2026-11-12T18:08:05.1162467Z In file included from D:/a/mgbax/mgbax/src/third-party/discord-rpc/include/mingw-std-threads/mutex:49,
+2026-11-12T18:08:05.1213146Z                  from D:/a/mgbax/mgbax/src/third-party/discord-rpc/src/discord_rpc.cpp:11:
+2026-11-12T18:08:05.1458686Z D:/a/mgbax/mgbax/src/third-party/discord-rpc/include/mingw-std-threads/thread:389:17: note: '#pragma message: This version of MinGW seems to include a win32 port of pthreads, and probably already has C++11 std threading classes implemented, based on pthreads. These classes, found in namespace std, are not overridden by the mingw-std-thread library. If you would still like to use this implementation (as it is more lightweight), use the classes provided in namespace mingw_stdthread.'
+2026-11-12T18:08:05.1566805Z   389 | #pragma message "This version of MinGW seems to include a win32 port of\
+2026-11-12T18:08:05.1788207Z       |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.1849289Z   390 |  pthreads, and probably already has C++11 std threading classes implemented,\
+2026-11-12T18:08:05.2139945Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.2206269Z   391 |  based on pthreads. These classes, found in namespace std, are not overridden\
+2026-11-12T18:08:05.2523343Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.2829173Z   392 |  by the mingw-std-thread library. If you would still like to use this\
+2026-11-12T18:08:05.3153614Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.3453275Z   393 |  implementation (as it is more lightweight), use the classes provided in\
+2026-11-12T18:08:05.3499871Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.3804432Z   394 |  namespace mingw_stdthread."
+2026-11-12T18:08:05.4130427Z       |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-11-12T18:08:05.4450006Z [12/451] Building C object CMakeFiles/mgba.dir/src/core/cache-set.c.obj
+2026-11-12T18:08:05.9158658Z [13/451] Building C object CMakeFiles/mgba.dir/src/core/cheats.c.obj
+2026-11-12T18:08:06.0622150Z [14/451] Building C object CMakeFiles/mgba.dir/src/core/config.c.obj
+2026-11-12T18:08:06.4695923Z [15/451] Building C object CMakeFiles/mgba.dir/src/core/directories.c.obj
+2026-11-12T18:08:06.5102775Z [16/451] Building C object CMakeFiles/mgba.dir/src/core/core.c.obj
+2026-11-12T18:08:06.9471948Z [17/451] Building C object CMakeFiles/mgba.dir/src/core/interface.c.obj
+2026-11-12T18:08:07.4165569Z [18/451] Building C object CMakeFiles/mgba.dir/src/core/input.c.obj
+2026-11-12T18:08:07.5029271Z [19/451] Building C object CMakeFiles/mgba.dir/src/core/lockstep.c.obj
+2026-11-12T18:08:08.2563912Z [20/451] Building C object CMakeFiles/mgba.dir/src/core/log.c.obj
+2026-11-12T18:08:08.5057809Z [21/451] Building C object CMakeFiles/mgba.dir/src/core/map-cache.c.obj
+2026-11-12T18:08:08.7084897Z [22/451] Building C object CMakeFiles/mgba.dir/src/core/mem-search.c.obj
+2026-11-12T18:08:08.7893492Z [23/451] Building C object CMakeFiles/mgba.dir/src/core/rewind.c.obj
+2026-11-12T18:08:09.2484073Z [24/451] Building C object CMakeFiles/mgba.dir/src/core/sync.c.obj
+2026-11-12T18:08:09.4690052Z [25/451] Building C object CMakeFiles/mgba.dir/src/core/serialize.c.obj
+2026-11-12T18:08:10.3933654Z [26/451] Building C object CMakeFiles/mgba.dir/src/core/timing.c.obj
+2026-11-12T18:08:10.4002368Z [27/451] Building C object CMakeFiles/mgba.dir/src/core/tile-cache.c.obj
+2026-11-12T18:08:10.5060440Z [28/451] Building C object CMakeFiles/mgba.dir/src/core/thread.c.obj
+2026-11-12T18:08:10.7492298Z [29/451] Building C object CMakeFiles/mgba.dir/src/core/library.c.obj
+2026-11-12T18:08:12.1028532Z [30/451] Building C object CMakeFiles/mgba.dir/src/sm83/sm83.c.obj
+2026-11-12T18:08:12.2548702Z [31/451] Building C object CMakeFiles/mgba.dir/src/sm83/decoder.c.obj
+2026-11-12T18:08:12.3593702Z [32/451] Building C object CMakeFiles/mgba.dir/src/gb/cheats.c.obj
+2026-11-12T18:08:13.3574264Z [33/451] Building C object CMakeFiles/mgba.dir/src/gb/core.c.obj
+2026-11-12T18:08:13.7291924Z [34/451] Building C object CMakeFiles/mgba.dir/src/gb/audio.c.obj
+2026-11-12T18:08:13.7387123Z [35/451] Building C object CMakeFiles/mgba.dir/src/gb/input.c.obj
+2026-11-12T18:08:13.7515076Z [36/451] Building C object CMakeFiles/mgba.dir/src/sm83/isa-sm83.c.obj
+2026-11-12T18:08:14.6101290Z [37/451] Building C object CMakeFiles/mgba.dir/src/gb/gb.c.obj
+2026-11-12T18:08:14.6746448Z [38/451] Building C object CMakeFiles/mgba.dir/src/gb/io.c.obj
+2026-11-12T18:08:15.4096410Z [39/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc.c.obj
+2026-11-12T18:08:15.4237690Z [40/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/licensed.c.obj
+2026-11-12T18:08:15.6409138Z [41/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/huc-3.c.obj
+2026-11-12T18:08:15.7914693Z [42/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/mbc.c.obj
+2026-11-12T18:08:16.3982677Z [43/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/pocket-cam.c.obj
+2026-11-12T18:08:16.7972494Z [44/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/tama5.c.obj
+2026-11-12T18:08:17.8744638Z [45/451] Building C object CMakeFiles/mgba.dir/src/gb/mbc/unlicensed.c.obj
+2026-11-12T18:08:17.9542273Z [46/451] Building C object CMakeFiles/mgba.dir/src/gb/overrides.c.obj
+2026-11-12T18:08:18.0355842Z [47/451] Building C object CMakeFiles/mgba.dir/src/gb/serialize.c.obj
+2026-11-12T18:08:18.0417464Z [48/451] Building C object CMakeFiles/mgba.dir/src/gb/memory.c.obj
+2026-11-12T18:08:18.4815328Z [49/451] Building C object CMakeFiles/mgba.dir/src/gb/renderers/cache-set.c.obj
+2026-11-12T18:08:20.1612443Z [50/451] Building C object CMakeFiles/mgba.dir/src/gb/sio.c.obj
+2026-11-12T18:08:20.3208447Z [51/451] Building C object CMakeFiles/mgba.dir/src/gb/timer.c.obj
+2026-11-12T18:08:20.9679520Z [52/451] Building C object CMakeFiles/mgba.dir/src/arm/arm.c.obj
+2026-11-12T18:08:21.1913085Z [53/451] Building C object CMakeFiles/mgba.dir/src/gb/video.c.obj
+2026-11-12T18:08:22.3741753Z [54/451] Building C object CMakeFiles/mgba.dir/src/gb/renderers/software.c.obj
+2026-11-12T18:08:23.1042304Z [55/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder.c.obj
+2026-11-12T18:08:23.3358624Z [56/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder-thumb.c.obj
+2026-11-12T18:08:24.5783676Z [57/451] Building C object CMakeFiles/mgba.dir/src/arm/isa-thumb.c.obj
+2026-11-12T18:08:24.8924238Z [58/451] Building C object CMakeFiles/mgba.dir/src/gba/audio.c.obj
+2026-11-12T18:08:26.0174204Z [59/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/ereader.c.obj
+2026-11-12T18:08:26.1034136Z [60/451] Building C object CMakeFiles/mgba.dir/src/gba/bios.c.obj
+2026-11-12T18:08:26.5574484Z [61/451] Building C object CMakeFiles/mgba.dir/src/arm/decoder-arm.c.obj
+2026-11-12T18:08:26.6747914Z [62/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/gpio.c.obj
+2026-11-12T18:08:26.9476476Z [63/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/matrix.c.obj
+2026-11-12T18:08:27.8845425Z [64/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/unlicensed.c.obj
+2026-11-12T18:08:27.9065712Z [65/451] Building C object CMakeFiles/mgba.dir/src/gba/cart/vfame.c.obj
+2026-11-12T18:08:28.4887601Z [66/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats.c.obj
+2026-11-12T18:08:28.5461558Z [67/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/codebreaker.c.obj
+2026-11-12T18:08:29.1192277Z [68/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/gameshark.c.obj
+2026-11-12T18:08:29.7448689Z [69/451] Building C object CMakeFiles/mgba.dir/src/gba/cheats/parv3.c.obj
+2026-11-12T18:08:30.5547162Z [70/451] Building C object CMakeFiles/mgba.dir/src/gba/core.c.obj
+2026-11-12T18:08:30.6306727Z [71/451] Building C object CMakeFiles/mgba.dir/src/gba/dma.c.obj
+2026-11-12T18:08:30.6907589Z [72/451] Building C object CMakeFiles/mgba.dir/src/gba/hle-bios.c.obj
+2026-11-12T18:08:30.7312536Z [73/451] Building C object CMakeFiles/mgba.dir/src/gba/gba.c.obj
+2026-11-12T18:08:31.5184609Z [74/451] Building C object CMakeFiles/mgba.dir/src/gba/input.c.obj
+2026-11-12T18:08:32.5524425Z [75/451] Building C object CMakeFiles/mgba.dir/src/gba/overrides.c.obj
+2026-11-12T18:08:32.6195289Z [76/451] Building C object CMakeFiles/mgba.dir/src/gba/io.c.obj
+2026-11-12T18:08:32.6377656Z [77/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/cache-set.c.obj
+2026-11-12T18:08:33.1845692Z [78/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/common.c.obj
+2026-11-12T18:08:34.9841082Z [79/451] Building C object CMakeFiles/mgba.dir/src/arm/isa-arm.c.obj
+2026-11-12T18:08:35.5223689Z [80/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-bg.c.obj
+2026-11-12T18:08:35.6599588Z [81/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/gl.c.obj
+2026-11-12T18:08:35.8850119Z [82/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-obj.c.obj
+2026-11-12T18:08:37.6856194Z [83/451] Building C object CMakeFiles/mgba.dir/src/gba/serialize.c.obj
+2026-11-12T18:08:37.7555665Z [84/451] Building C object CMakeFiles/mgba.dir/src/gba/sharkport.c.obj
+2026-11-12T18:08:37.7671377Z [85/451] Building C object CMakeFiles/mgba.dir/src/gba/savedata.c.obj
+2026-11-12T18:08:37.8537779Z [86/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/video-software.c.obj
+2026-11-12T18:08:39.4791643Z [87/451] Building C object CMakeFiles/mgba.dir/src/gba/timer.c.obj
+2026-11-12T18:08:39.4846702Z [88/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/gbp.c.obj
+2026-11-12T18:08:39.6576828Z [89/451] Building C object CMakeFiles/mgba.dir/src/gba/sio.c.obj
+2026-11-12T18:08:39.9306430Z [90/451] Building C object CMakeFiles/mgba.dir/src/gba/video.c.obj
+2026-11-12T18:08:39.9367776Z [91/451] Building C object CMakeFiles/mgba.dir/src/gba/memory.c.obj
+2026-11-12T18:08:40.4536757Z [92/451] Building C object CMakeFiles/mgba.dir/src/util/gbk-table.c.obj
+2026-11-12T18:08:40.9930937Z [93/451] Building C object CMakeFiles/mgba.dir/src/util/configuration.c.obj
+2026-11-12T18:08:41.0212566Z [94/451] Building C object CMakeFiles/mgba.dir/src/util/circle-buffer.c.obj
+2026-11-12T18:08:41.0643113Z [95/451] Building C object CMakeFiles/mgba.dir/src/util/crc32.c.obj
+2026-11-12T18:08:41.5169459Z [96/451] Building C object CMakeFiles/mgba.dir/src/util/formatting.c.obj
+2026-11-12T18:08:41.9727221Z [97/451] Building C object CMakeFiles/mgba.dir/src/util/hash.c.obj
+2026-11-12T18:08:42.0136751Z [98/451] Building C object CMakeFiles/mgba.dir/src/gba/renderers/software-mode0.c.obj
+2026-11-12T18:08:42.6409269Z [99/451] Building C object CMakeFiles/mgba.dir/src/util/md5.c.obj
+2026-11-12T18:08:43.1531117Z [100/451] Building C object CMakeFiles/mgba.dir/src/util/sha1.c.obj
+2026-11-12T18:08:43.2089032Z [101/451] Building C object CMakeFiles/mgba.dir/src/util/string.c.obj
+2026-11-12T18:08:43.9690509Z [102/451] Building C object CMakeFiles/mgba.dir/src/util/table.c.obj
+2026-11-12T18:08:44.0379420Z [103/451] Building C object CMakeFiles/mgba.dir/src/util/vfs.c.obj
+2026-11-12T18:08:44.1855327Z [104/451] Building C object CMakeFiles/mgba.dir/src/util/audio-buffer.c.obj
+2026-11-12T18:08:44.4193721Z [105/451] Building C object CMakeFiles/mgba.dir/src/util/vector.c.obj
+2026-11-12T18:08:44.7084917Z [106/451] Building C object CMakeFiles/mgba.dir/src/util/audio-resampler.c.obj
+2026-11-12T18:08:44.8885350Z [107/451] Building C object CMakeFiles/mgba.dir/src/util/convolve.c.obj
+2026-11-12T18:08:45.3565265Z [108/451] Building C object CMakeFiles/mgba.dir/src/util/elf-read.c.obj
+2026-11-12T18:08:45.3970643Z [109/451] Building C object CMakeFiles/mgba.dir/src/util/geometry.c.obj
+2026-11-12T18:08:45.9278134Z [110/451] Building C object CMakeFiles/mgba.dir/src/util/image/export.c.obj
+2026-11-12T18:08:46.4703401Z [111/451] Building C object CMakeFiles/mgba.dir/src/util/image/font.c.obj
+2026-11-12T18:08:46.7787803Z [112/451] Building C object CMakeFiles/mgba.dir/src/util/interpolator.c.obj
+2026-11-12T18:08:46.7849006Z [113/451] Building C object CMakeFiles/mgba.dir/src/util/image.c.obj
+2026-11-12T18:08:46.8136146Z [114/451] Building C object CMakeFiles/mgba.dir/src/util/patch.c.obj
+2026-11-12T18:08:46.9009906Z [115/451] Building C object CMakeFiles/mgba.dir/src/util/image/png-io.c.obj
+2026-11-12T18:08:47.6928502Z [116/451] Building C object CMakeFiles/mgba.dir/src/util/patch-fast.c.obj
+2026-11-12T18:08:47.9846254Z [117/451] Building C object CMakeFiles/mgba.dir/src/util/patch-ips.c.obj
+2026-11-12T18:08:48.0168156Z [118/451] Building C object CMakeFiles/mgba.dir/version.c.obj
+2026-11-12T18:08:48.2011729Z [119/451] Building C object CMakeFiles/mgba.dir/src/util/ring-fifo.c.obj
+2026-11-12T18:08:48.2066462Z [120/451] Building C object CMakeFiles/mgba.dir/src/util/sfo.c.obj
+2026-11-12T18:08:48.2707496Z [121/451] Building C object CMakeFiles/mgba.dir/src/util/patch-ups.c.obj
+2026-11-12T18:08:48.5620112Z [122/451] Building C object CMakeFiles/mgba.dir/src/util/text-codec.c.obj
+2026-11-12T18:08:49.1661474Z [123/451] Building C object CMakeFiles/mgba.dir/src/third-party/inih/ini.c.obj
+2026-11-12T18:08:49.2999181Z [124/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fifo.c.obj
+2026-11-12T18:08:49.5226194Z [125/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-mem.c.obj
+2026-11-12T18:08:49.5510801Z [126/451] Building C object CMakeFiles/mgba.dir/src/platform/windows/memory.c.obj
+2026-11-12T18:08:49.6201200Z [127/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/ioapi.c.obj
+2026-11-12T18:08:49.7084075Z [128/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-fd.c.obj
+2026-11-12T18:08:49.7424600Z [129/451] Building C object CMakeFiles/mgba.dir/src/platform/windows/vfs-w32.c.obj
+2026-11-12T18:08:50.0609913Z [130/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zAlloc.c.obj
+2026-11-12T18:08:50.3820178Z [131/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zBuf.c.obj
+2026-11-12T18:08:50.4832306Z [132/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/unzip.c.obj
+2026-11-12T18:08:50.6533170Z [133/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-zip.c.obj
+2026-11-12T18:08:50.6595321Z [134/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zBuf2.c.obj
+2026-11-12T18:08:50.7114492Z [135/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zCrc.c.obj
+2026-11-12T18:08:50.7217926Z [136/451] Building C object CMakeFiles/mgba.dir/src/third-party/zlib/contrib/minizip/zip.c.obj
+2026-11-12T18:08:50.7313630Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c: In function 'zipWriteInFileInZip':
+2026-11-12T18:08:50.7505784Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable=]
+2026-11-12T18:08:50.7649859Z  1476 |                 int bBreak = 0;
+2026-11-12T18:08:50.7702252Z       |                     ^~~~~~
+2026-11-12T18:08:50.9173493Z [137/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zCrcOpt.c.obj
+2026-11-12T18:08:50.9497462Z [138/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/CpuArch.c.obj
+2026-11-12T18:08:50.9966675Z [139/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Delta.c.obj
+2026-11-12T18:08:51.1191301Z [140/451] Building C object CMakeFiles/mgba.dir/src/util/vfs/vfs-lzma.c.obj
+2026-11-12T18:08:51.1274872Z [141/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zDec.c.obj
+2026-11-12T18:08:51.2809352Z [142/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bra.c.obj
+2026-11-12T18:08:51.3402030Z [143/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bra86.c.obj
+2026-11-12T18:08:51.3523234Z [144/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/BraIA64.c.obj
+2026-11-12T18:08:51.3881253Z [145/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zArcIn.c.obj
+2026-11-12T18:08:51.5431195Z [146/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Bcj2.c.obj
+2026-11-12T18:08:51.5809879Z [147/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Lzma2Dec.c.obj
+2026-11-12T18:08:51.7184111Z [148/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Ppmd7Dec.c.obj
+2026-11-12T18:08:51.8935712Z [149/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zStream.c.obj
+2026-11-12T18:08:52.2577154Z [150/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/LzmaDec.c.obj
+2026-11-12T18:08:52.4670964Z [151/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/Ppmd7.c.obj
+2026-11-12T18:08:53.1891943Z [152/451] Building C object CMakeFiles/mgba.dir/src/third-party/lzma/7zFile.c.obj
+2026-11-12T18:08:53.2978587Z [153/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/dolphin.c.obj
+2026-11-12T18:08:53.6892254Z [154/451] Building C object CMakeFiles/mgba.dir/src/gb/sio/lockstep.c.obj
+2026-11-12T18:08:53.8634369Z [155/451] Building C object CMakeFiles/mgba.dir/src/gb/sio/printer.c.obj
+2026-11-12T18:08:53.9786491Z [156/451] Building C object CMakeFiles/mgba.dir/src/gba/sio/lockstep.c.obj
+2026-11-12T18:08:54.2224969Z [157/451] Building C object CMakeFiles/mgba.dir/src/platform/opengl/gl.c.obj
+2026-11-12T18:08:55.1201996Z [158/451] Building C object CMakeFiles/mgba.dir/src/feature/sqlite3/no-intro.c.obj
+2026-11-12T18:08:55.5852968Z [159/451] Building C object CMakeFiles/mgba.dir/src/debugger/access-logger.c.obj
+2026-11-12T18:08:55.5916066Z [160/451] Building C object CMakeFiles/mgba.dir/src/platform/opengl/gles2.c.obj
+2026-11-12T18:08:56.0985414Z [161/451] Building C object CMakeFiles/mgba.dir/src/debugger/debugger.c.obj
+2026-11-12T18:08:56.1976775Z [162/451] Building C object CMakeFiles/mgba.dir/src/debugger/parser.c.obj
+2026-11-12T18:08:56.2569943Z [163/451] Building C object CMakeFiles/mgba.dir/src/debugger/cli-debugger.c.obj
+2026-11-12T18:08:56.2648047Z D:/a/mgbax/mgbax/src/debugger/cli-debugger.c: In function 'CLIDebuggerTabComplete':
+2026-11-12T18:08:56.2651191Z D:/a/mgbax/mgbax/src/debugger/cli-debugger.c:1338:83: warning: unused parameter 'initial' [-Wunused-parameter]
+2026-11-12T18:08:56.2936432Z  1338 | bool CLIDebuggerTabComplete(struct CLIDebugger* debugger, const char* token, bool initial, size_t tokenLen) {
+2026-11-12T18:08:56.3069568Z       |                                                                                   ^
+2026-11-12T18:08:56.6846381Z [164/451] Building C object CMakeFiles/mgba.dir/src/debugger/symbols.c.obj
+2026-11-12T18:08:57.1994581Z [165/451] Building C object CMakeFiles/mgba.dir/src/debugger/cli-debugger-scripting.c.obj
+2026-11-12T18:08:57.2348774Z [166/451] Building C object CMakeFiles/mgba.dir/src/debugger/stack-trace.c.obj
+2026-11-12T18:08:57.7731950Z [167/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/cli-debugger.c.obj
+2026-11-12T18:08:57.8404133Z [168/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/debugger.c.obj
+2026-11-12T18:08:58.4642727Z [169/451] Building C object CMakeFiles/mgba.dir/src/sm83/debugger/memory-debugger.c.obj
+2026-11-12T18:08:58.4740399Z [170/451] Building C object CMakeFiles/mgba.dir/src/debugger/gdb-stub.c.obj
+2026-11-12T18:08:58.6723211Z [171/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/cli.c.obj
+2026-11-12T18:08:58.8434909Z [172/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/debugger.c.obj
+2026-11-12T18:08:59.4172021Z [173/451] Building C object CMakeFiles/mgba.dir/src/gb/debugger/symbols.c.obj
+2026-11-12T18:08:59.5382863Z [174/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/cli-debugger.c.obj
+2026-11-12T18:09:00.2954013Z [175/451] Building C object CMakeFiles/mgba.dir/src/gba/debugger/cli.c.obj
+2026-11-12T18:09:00.3895840Z [176/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/memory-debugger.c.obj
+2026-11-12T18:09:00.5528088Z [177/451] Building C object CMakeFiles/mgba.dir/src/script/canvas.c.obj
+2026-11-12T18:09:00.5731217Z [178/451] Building C object CMakeFiles/mgba.dir/src/arm/debugger/debugger.c.obj
+2026-11-12T18:09:01.2831508Z [179/451] Building C object CMakeFiles/mgba.dir/src/script/console.c.obj
+2026-11-12T18:09:01.3276684Z [180/451] Building C object CMakeFiles/mgba.dir/src/script/context.c.obj
+2026-11-12T18:09:02.2870424Z [181/451] Building C object CMakeFiles/mgba.dir/src/script/input.c.obj
+2026-11-12T18:09:02.3447465Z [182/451] Building C object CMakeFiles/mgba.dir/src/script/stdlib.c.obj
+2026-11-12T18:09:02.4411630Z [183/451] Building C object CMakeFiles/mgba.dir/src/script/socket.c.obj
+2026-11-12T18:09:02.6930189Z [184/451] Building C object CMakeFiles/mgba.dir/src/script/image.c.obj
+2026-11-12T18:09:02.9603607Z [185/451] Building C object CMakeFiles/mgba.dir/src/gba/extra/battlechip.c.obj
+2026-11-12T18:09:04.1270624Z [186/451] Building C object CMakeFiles/mgba.dir/src/gba/extra/proxy.c.obj
+2026-11-12T18:09:04.1293466Z [187/451] Building C object CMakeFiles/mgba.dir/src/script/types.c.obj
+2026-11-12T18:09:04.1332613Z [188/451] Building C object CMakeFiles/mgba.dir/src/gb/extra/proxy.c.obj
+2026-11-12T18:09:04.2042839Z [189/451] Building C object CMakeFiles/mgba.dir/src/feature/commandline.c.obj
+2026-11-12T18:09:04.5012352Z [190/451] Building C object CMakeFiles/mgba.dir/src/feature/proxy-backend.c.obj
+2026-11-12T18:09:04.6635100Z [191/451] Building C object CMakeFiles/mgba.dir/src/feature/thread-proxy.c.obj
+2026-11-12T18:09:05.1415700Z [192/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/ioapi.c.obj
+2026-11-12T18:09:05.4660819Z [193/451] Building C object CMakeFiles/mgba.dir/src/feature/video-backend.c.obj
+2026-11-12T18:09:05.5364032Z [194/451] Building C object CMakeFiles/mgba.dir/src/feature/updater.c.obj
+2026-11-12T18:09:06.1198496Z [195/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-zip.c.obj
+2026-11-12T18:09:06.1262247Z [196/451] Building C object CMakeFiles/mgba.dir/src/feature/video-logger.c.obj
+2026-11-12T18:09:06.2257510Z [197/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/unzip.c.obj
+2026-11-12T18:09:06.3288199Z [198/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zAlloc.c.obj
+2026-11-12T18:09:06.5257459Z [199/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zBuf.c.obj
+2026-11-12T18:09:06.6184487Z [200/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zBuf2.c.obj
+2026-11-12T18:09:06.7255825Z [201/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/zlib/contrib/minizip/zip.c.obj
+2026-11-12T18:09:06.7301722Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c: In function 'zipWriteInFileInZip':
+2026-11-12T18:09:06.7348220Z D:/a/mgbax/mgbax/src/third-party/zlib/contrib/minizip/zip.c:1476:21: warning: variable 'bBreak' set but not used [-Wunused-but-set-variable=]
+2026-11-12T18:09:06.7528252Z  1476 |                 int bBreak = 0;
+2026-11-12T18:09:06.7686066Z       |                     ^~~~~~
+2026-11-12T18:09:06.8021361Z [202/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zCrc.c.obj
+2026-11-12T18:09:06.9909669Z [203/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zCrcOpt.c.obj
+2026-11-12T18:09:07.1264317Z [204/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs/vfs-lzma.c.obj
+2026-11-12T18:09:07.1322565Z [205/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/CpuArch.c.obj
+2026-11-12T18:09:07.1672748Z [206/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zDec.c.obj
+2026-11-12T18:09:07.2907673Z [207/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Delta.c.obj
+2026-11-12T18:09:07.4400813Z [208/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bra.c.obj
+2026-11-12T18:09:07.5266296Z [209/451] Building C object CMakeFiles/mgba.dir/src/core/scripting.c.obj
+2026-11-12T18:09:07.5322066Z [210/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bra86.c.obj
+2026-11-12T18:09:07.6510525Z [211/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zArcIn.c.obj
+2026-11-12T18:09:07.7080016Z [212/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/BraIA64.c.obj
+2026-11-12T18:09:07.7276403Z [213/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Lzma2Dec.c.obj
+2026-11-12T18:09:07.7687151Z [214/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Bcj2.c.obj
+2026-11-12T18:09:08.0901395Z [215/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Ppmd7Dec.c.obj
+2026-11-12T18:09:08.2418899Z [216/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zStream.c.obj
+2026-11-12T18:09:08.3829236Z [217/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/LzmaDec.c.obj
+2026-11-12T18:09:08.9383399Z [218/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/Ppmd7.c.obj
+2026-11-12T18:09:09.1633125Z [219/451] Linking C shared library libmgba.dll
+2026-11-12T18:09:09.5000835Z [220/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/lzma/7zFile.c.obj
+2026-11-12T18:09:09.5149599Z [221/451] Building C object CMakeFiles/updater-stub.dir/src/platform/windows/memory.c.obj
+2026-11-12T18:09:09.8008016Z [222/451] Building C object CMakeFiles/updater-stub.dir/src/util/gbk-table.c.obj
+2026-11-12T18:09:09.8132126Z [223/451] Building C object CMakeFiles/updater-stub.dir/src/util/circle-buffer.c.obj
+2026-11-12T18:09:09.8920464Z [224/451] Building C object CMakeFiles/updater-stub.dir/src/util/configuration.c.obj
+2026-11-12T18:09:10.4068827Z [225/451] Building C object CMakeFiles/updater-stub.dir/src/util/crc32.c.obj
+2026-11-12T18:09:10.7021793Z [226/451] Building C object CMakeFiles/updater-stub.dir/src/util/formatting.c.obj
+2026-11-12T18:09:10.8639012Z [227/451] Building C object CMakeFiles/updater-stub.dir/src/util/hash.c.obj
+2026-11-12T18:09:11.4458756Z [228/451] Building C object CMakeFiles/updater-stub.dir/src/util/md5.c.obj
+2026-11-12T18:09:11.5831778Z [229/451] Building C object CMakeFiles/updater-stub.dir/src/util/sha1.c.obj
+2026-11-12T18:09:11.6940438Z [230/451] Building C object CMakeFiles/updater-stub.dir/version.c.obj
+2026-11-12T18:09:11.9250726Z [231/451] Building C object CMakeFiles/updater-stub.dir/src/util/string.c.obj
+2026-11-12T18:09:11.9523645Z [232/451] Building C object CMakeFiles/updater-stub.dir/src/third-party/inih/ini.c.obj
+2026-11-12T18:09:12.6373877Z [233/451] Building C object CMakeFiles/updater-stub.dir/src/util/vfs.c.obj
+2026-11-12T18:09:12.6544238Z [234/451] Building C object CMakeFiles/updater-stub.dir/src/util/table.c.obj
+2026-11-12T18:09:12.9180066Z [235/451] Building C object CMakeFiles/updater-stub.dir/src/util/vector.c.obj
+2026-11-12T18:09:13.0083523Z [236/451] Linking CXX static library discord-rpc\src\libdiscord-rpc.a
+2026-11-12T18:09:13.3986949Z [237/451] Building C object CMakeFiles/updater-stub.dir/src/feature/updater.c.obj
+2026-11-12T18:09:13.4939551Z [238/451] Building C object CMakeFiles/updater-stub.dir/src/tools/updater-main.c.obj
+2026-11-12T18:09:14.3525749Z [239/451] Building C object CMakeFiles/updater-stub.dir/src/core/config.c.obj
+2026-11-12T18:09:14.4605782Z [240/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj
+2026-11-12T18:09:14.8261197Z [241/451] Linking C executable updater-stub.exe
+2026-11-12T18:09:14.9112260Z [242/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sdl-events.c.obj
+2026-11-12T18:09:15.5309131Z [243/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gl-common.c.obj
+2026-11-12T18:09:15.5990991Z [244/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/main.c.obj
+2026-11-12T18:09:16.2014520Z [245/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gl-sdl.c.obj
+2026-11-12T18:09:16.4006310Z [246/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/gles2-sdl.c.obj
+2026-11-12T18:09:16.4915825Z [247/451] Building C object sdl/CMakeFiles/mgba-sdl.dir/sw-sdl2.c.obj
+2026-11-12T18:09:16.6599791Z [248/451] Linking C executable mgba-sdl.exe
+2026-11-12T18:09:16.6600331Z FAILED: [code=1] mgba-sdl.exe 
+2026-11-12T18:09:16.6608698Z C:\Windows\system32\cmd.exe /C "cd . && D:\a\_temp\msys64\mingw64\bin\cc.exe -Wall -Wextra -Wno-missing-field-initializers -Wno-format -Werror=implicit-function-declaration -Werror=implicit-int -fwrapv -Werror=incompatible-pointer-types -O3 -DNDEBUG -mwindows sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj sdl/CMakeFiles/mgba-sdl.dir/sdl-events.c.obj sdl/CMakeFiles/mgba-sdl.dir/gl-common.c.obj sdl/CMakeFiles/mgba-sdl.dir/main.c.obj sdl/CMakeFiles/mgba-sdl.dir/gl-sdl.c.obj sdl/CMakeFiles/mgba-sdl.dir/gles2-sdl.c.obj sdl/CMakeFiles/mgba-sdl.dir/sw-sdl2.c.obj -o mgba-sdl.exe -Wl,--out-implib,sdl\libmgba-sdl.dll.a -Wl,--major-image-version,0,--minor-image-version,0  libmgba.dll.a  -lmingw32  D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a  -limm32  -lsetupapi  -lversion  -lwinmm  D:/a/_temp/msys64/mingw64/lib/libSDL2main.a  -lmingw32  D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a  -limm32  -lsetupapi  -lversion  -lwinmm  -lopengl32  -lglu32  D:/a/_temp/msys64/mingw64/lib/libepoxy.dll.a  D:/a/_temp/msys64/mingw64/lib/libfreetype.dll.a  D:/a/_temp/msys64/mingw64/lib/libz.dll.a  D:/a/_temp/msys64/mingw64/lib/libpng.dll.a  D:/a/_temp/msys64/mingw64/lib/libsqlite3.dll.a  -lws2_32  -lshlwapi  -lm  D:/a/_temp/msys64/mingw64/lib/libz.dll.a  D:/a/_temp/msys64/mingw64/lib/libpng.dll.a  D:/a/_temp/msys64/mingw64/lib/libsqlite3.dll.a  -lws2_32  -lshlwapi  -lm  D:/a/_temp/msys64/mingw64/lib/libSDL2main.a  -lopengl32  -lglu32  D:/a/_temp/msys64/mingw64/lib/libepoxy.dll.a  -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 && cd ."
+2026-11-12T18:09:16.6614828Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x240): undefined reference to `audioStretchDropped'
+2026-11-12T18:09:16.6616566Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x2d0): undefined reference to `audioStretchSetMode'
+2026-11-12T18:09:16.6618049Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x303): undefined reference to `audioStretchProcess'
+2026-11-12T18:09:16.6619359Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x625): undefined reference to `audioStretchProcess'
+2026-11-12T18:09:16.6620900Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x850): undefined reference to `audioStretchInit'
+2026-11-12T18:09:16.6622186Z D:/a/_temp/msys64/mingw64/bin/../lib/gcc/x86_64-w64-mingw32/16.2.0/../../../../x86_64-w64-mingw32/bin/ld.exe: sdl/CMakeFiles/mgba-sdl.dir/sdl-audio.c.obj:sdl-audio.c:(.text+0x95d): undefined reference to `audioStretchDeinit'
+2026-11-12T18:09:16.6622974Z collect2.exe: error: ld returned 1 exit status
+2026-11-12T18:09:44.8978472Z [249/451] Automatic MOC for target mgba-qt
+2026-11-12T18:09:44.8979470Z AutoMoc: D:/a/mgbax/mgbax/src/platform/qt/GIFView.h: note: No relevant classes found. No output generated.
+2026-11-12T18:09:44.8980711Z AutoMoc: D:/a/mgbax/mgbax/src/platform/qt/VideoView.h: note: No relevant classes found. No output generated.
+2026-11-12T18:09:44.9019607Z ninja: build stopped: subcommand failed.
+2026-11-12T18:09:44.9164267Z ##[error]Process completed with exit code 1.
+2026-11-12T18:09:44.9414322Z Post job cleanup.
+2026-11-12T18:09:45.1070309Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-11-12T18:09:45.1475952Z git version 2.56.0.windows.4
+2026-11-12T18:09:45.1557877Z Temporarily overriding HOME='D:\a\_temp\fb540950-9ff4-4550-a79d-4af310ca4a0e' before making global git config changes
+2026-11-12T18:09:45.1559258Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-12T18:09:45.1570581Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\mgbax\mgbax
+2026-11-12T18:09:45.1987131Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-11-12T18:09:45.2378830Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-11-12T18:09:45.8087200Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-12T18:09:45.8424175Z http.https://github.com/.extraheader
+2026-11-12T18:09:45.8472857Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset-all http.https://github.com/.extraheader
+2026-11-12T18:09:45.8848384Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-11-12T18:09:46.4428846Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-12T18:09:46.4802523Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-11-12T18:09:47.0434645Z Cleaning up orphan processes
+2026-11-12T18:09:47.1184027Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

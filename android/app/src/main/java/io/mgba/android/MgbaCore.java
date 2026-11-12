@@ -70,6 +70,24 @@ public final class MgbaCore {
         }
     }
 
+    /** busgame 调试脚本（PC 判据脚本的设备端移植）：idx 为脚本序号（0=主机）。 */
+    public void busGameStart(int idx, int menuAt, int modeDowns) {
+        if (handle != 0) {
+            nativeBusGameStart(handle, idx, menuAt, modeDowns);
+        }
+    }
+
+    public void busGameStop() {
+        if (handle != 0) {
+            nativeBusGameStop(handle);
+        }
+    }
+
+    /** 镜像线程逐帧调用：推进脚本一帧，返回本帧按键掩码。idx<0 时返回 0。 */
+    public int busGameTick() {
+        return handle != 0 ? nativeBusGameTick(handle) : 0;
+    }
+
     /** Rewinds by about the given number of seconds; false when history is empty. */
     public boolean rewind(int seconds) {
         return handle != 0 && nativeRewind(handle, seconds);
@@ -461,6 +479,9 @@ public final class MgbaCore {
     private static native void nativeSetTurbo(long handle, int mask);
 
     private static native void nativeSetRewind(long handle, boolean enabled);
+    private static native void nativeBusGameStart(long handle, int idx, int menuAt, int modeDowns);
+    private static native void nativeBusGameStop(long handle);
+    private static native int nativeBusGameTick(long handle);
 
     private static native boolean nativeRewind(long handle, int seconds);
 

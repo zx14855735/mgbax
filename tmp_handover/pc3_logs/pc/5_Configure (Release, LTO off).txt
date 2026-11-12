@@ -1,0 +1,192 @@
+﻿2026-11-12T18:07:50.5430687Z ##[group]Run cmake -G Ninja -S . -B build-pc \
+2026-11-12T18:07:50.5431129Z [36;1mcmake -G Ninja -S . -B build-pc \[0m
+2026-11-12T18:07:50.5431428Z [36;1m  -DCMAKE_BUILD_TYPE=Release \[0m
+2026-11-12T18:07:50.5431697Z [36;1m  -DBUILD_LTO=OFF \[0m
+2026-11-12T18:07:50.5431996Z [36;1m  -DBUILD_QT=ON -DBUILD_SDL=ON -DBUILD_SHARED=ON \[0m
+2026-11-12T18:07:50.5432380Z [36;1m  -DBUILD_STATIC=OFF -DBUILD_SUITE=OFF -DBUILD_TEST=OFF \[0m
+2026-11-12T18:07:50.5432707Z [36;1m  -DUSE_FFMPEG=OFF[0m
+2026-11-12T18:07:50.5434536Z shell: D:\a\_temp\setup-msys2\msys2.CMD {0}
+2026-11-12T18:07:50.5434802Z env:
+2026-11-12T18:07:50.5434992Z   MSYSTEM: MINGW64
+2026-11-12T18:07:50.5435183Z ##[endgroup]
+2026-11-12T18:07:50.9528447Z -- The C compiler identification is GNU 16.2.0
+2026-11-12T18:07:51.1268318Z -- The CXX compiler identification is GNU 16.2.0
+2026-11-12T18:07:51.1763163Z -- Detecting C compiler ABI info
+2026-11-12T18:07:51.5330029Z -- Detecting C compiler ABI info - done
+2026-11-12T18:07:51.5667981Z -- Check for working C compiler: D:/a/_temp/msys64/mingw64/bin/cc.exe - skipped
+2026-11-12T18:07:51.5672673Z -- Detecting C compile features
+2026-11-12T18:07:51.5678161Z -- Detecting C compile features - done
+2026-11-12T18:07:51.6098985Z -- Detecting CXX compiler ABI info
+2026-11-12T18:07:51.9961238Z -- Detecting CXX compiler ABI info - done
+2026-11-12T18:07:52.0299924Z -- Check for working CXX compiler: D:/a/_temp/msys64/mingw64/bin/c++.exe - skipped
+2026-11-12T18:07:52.0305008Z -- Detecting CXX compile features
+2026-11-12T18:07:52.0315126Z -- Detecting CXX compile features - done
+2026-11-12T18:07:52.0626701Z -- Found PkgConfig: D:/a/_temp/msys64/mingw64/bin/pkg-config.exe (found version "3.0.7")
+2026-11-12T18:07:53.0408713Z -- Looking for strdup
+2026-11-12T18:07:53.2323116Z -- Looking for strdup - found
+2026-11-12T18:07:53.2323721Z -- Looking for strlcpy
+2026-11-12T18:07:53.4217057Z -- Looking for strlcpy - not found
+2026-11-12T18:07:53.4217577Z -- Looking for strndup
+2026-11-12T18:07:53.6268115Z -- Looking for strndup - found
+2026-11-12T18:07:53.6268613Z -- Looking for vasprintf
+2026-11-12T18:07:53.8185790Z -- Looking for vasprintf - found
+2026-11-12T18:07:53.8186413Z -- Looking for freelocale
+2026-11-12T18:07:54.0072197Z -- Looking for freelocale - not found
+2026-11-12T18:07:54.0072917Z -- Looking for newlocale
+2026-11-12T18:07:54.2049737Z -- Looking for newlocale - not found
+2026-11-12T18:07:54.2050406Z -- Looking for setlocale
+2026-11-12T18:07:54.3965673Z -- Looking for setlocale - found
+2026-11-12T18:07:54.3966190Z -- Looking for snprintf_l
+2026-11-12T18:07:54.5897041Z -- Looking for snprintf_l - not found
+2026-11-12T18:07:54.5897648Z -- Looking for uselocale
+2026-11-12T18:07:54.7819487Z -- Looking for uselocale - not found
+2026-11-12T18:07:54.7820049Z -- Looking for popcount32
+2026-11-12T18:07:54.9727578Z -- Looking for popcount32 - not found
+2026-11-12T18:07:54.9728184Z -- Looking for futimens
+2026-11-12T18:07:55.1628075Z -- Looking for futimens - not found
+2026-11-12T18:07:55.1629003Z -- Looking for futimes
+2026-11-12T18:07:55.3516729Z -- Looking for futimes - not found
+2026-11-12T18:07:55.3517290Z -- Looking for localtime_r
+2026-11-12T18:07:55.5405586Z -- Looking for localtime_r - not found
+2026-11-12T18:07:55.5406097Z -- Looking for realpath
+2026-11-12T18:07:55.7305235Z -- Looking for realpath - not found
+2026-11-12T18:07:55.7306246Z -- Looking for strtof_l
+2026-11-12T18:07:55.9196265Z -- Looking for strtof_l - not found
+2026-11-12T18:07:55.9198864Z -- Looking for include file xlocale.h
+2026-11-12T18:07:56.0171413Z -- Looking for include file xlocale.h - not found
+2026-11-12T18:07:56.1763541Z -- Checking for one of the modules 'minizip'
+2026-11-12T18:07:56.2029366Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.2029896Z   Requested module minizip missing for feature USE_MINIZIP.  Feature
+2026-11-12T18:07:56.2030566Z   disabled.
+2026-11-12T18:07:56.2030767Z Call Stack (most recent call first):
+2026-11-12T18:07:56.2033526Z   CMakeLists.txt:523 (find_feature)
+2026-11-12T18:07:56.3680341Z 
+2026-11-12T18:07:56.3680416Z 
+2026-11-12T18:07:56.3680835Z -- Checking for one of the modules 'libzip'
+2026-11-12T18:07:56.3948498Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.3949069Z   Requested module libzip missing for feature USE_LIBZIP.  Feature disabled.
+2026-11-12T18:07:56.3949468Z Call Stack (most recent call first):
+2026-11-12T18:07:56.3949725Z   CMakeLists.txt:525 (find_feature)
+2026-11-12T18:07:56.8389735Z 
+2026-11-12T18:07:56.8389813Z 
+2026-11-12T18:07:56.8390441Z -- Checking for one of the modules 'libelf'
+2026-11-12T18:07:56.9019605Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:56.9020699Z   Requested module libelf missing for feature USE_ELF.  Feature disabled.
+2026-11-12T18:07:56.9021544Z Call Stack (most recent call first):
+2026-11-12T18:07:56.9022592Z   CMakeLists.txt:529 (find_feature)
+2026-11-12T18:07:56.9023048Z 
+2026-11-12T18:07:56.9023265Z 
+2026-11-12T18:07:57.0366790Z -- Checking for one of the modules 'json-c'
+2026-11-12T18:07:57.0775715Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:57.0776703Z   Requested module json-c missing for feature USE_JSON_C.  Feature disabled.
+2026-11-12T18:07:57.0777871Z Call Stack (most recent call first):
+2026-11-12T18:07:57.0778491Z   CMakeLists.txt:799 (find_feature)
+2026-11-12T18:07:57.0778950Z 
+2026-11-12T18:07:57.0779088Z 
+2026-11-12T18:07:57.1122711Z -- Checking for one of the modules 'Lua'
+2026-11-12T18:07:57.1471506Z CMake Warning at src/platform/cmake/FindFeature.cmake:83 (message):
+2026-11-12T18:07:57.1472325Z   Requested module Lua missing for feature USE_LUA.  Feature disabled.
+2026-11-12T18:07:57.1472891Z Call Stack (most recent call first):
+2026-11-12T18:07:57.1473271Z   CMakeLists.txt:805 (find_feature)
+2026-11-12T18:07:57.1473570Z 
+2026-11-12T18:07:57.1473579Z 
+2026-11-12T18:07:57.2751380Z CMake Warning at src/platform/sdl/CMakeLists.txt:4 (find_package):
+2026-11-12T18:07:57.2752259Z   By not providing "FindSDL3.cmake" in CMAKE_MODULE_PATH this project has
+2026-11-12T18:07:57.2752761Z   asked CMake to find a package configuration file provided by "SDL3", but
+2026-11-12T18:07:57.2753138Z   CMake did not find one.
+2026-11-12T18:07:57.2753285Z 
+2026-11-12T18:07:57.2753483Z   Could not find a package configuration file provided by "SDL3" with any of
+2026-11-12T18:07:57.2753853Z   the following names:
+2026-11-12T18:07:57.2754946Z 
+2026-11-12T18:07:57.2755074Z     SDL3.cps
+2026-11-12T18:07:57.2755306Z     sdl3.cps
+2026-11-12T18:07:57.2755542Z     SDL3Config.cmake
+2026-11-12T18:07:57.2755816Z     sdl3-config.cmake
+2026-11-12T18:07:57.2755984Z 
+2026-11-12T18:07:57.2756204Z   Add the installation prefix of "SDL3" to CMAKE_PREFIX_PATH or set
+2026-11-12T18:07:57.2756795Z   "SDL3_DIR" to a directory containing one of the above files.  If "SDL3"
+2026-11-12T18:07:57.2757410Z   provides a separate development package or SDK, be sure it has been
+2026-11-12T18:07:57.2757859Z   installed.
+2026-11-12T18:07:57.2758004Z 
+2026-11-12T18:07:57.2758010Z 
+2026-11-12T18:07:57.2864369Z -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+2026-11-12T18:07:57.5160134Z -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+2026-11-12T18:07:57.5173291Z -- Found Threads: TRUE
+2026-11-12T18:07:57.5187834Z -- Found SDL2: mingw32;D:/a/_temp/msys64/mingw64/lib/libSDL2.dll.a
+2026-11-12T18:07:57.5628750Z -- Performing Test HAVE_STDATOMIC
+2026-11-12T18:07:57.8281700Z -- Performing Test HAVE_STDATOMIC - Success
+2026-11-12T18:07:57.8295584Z -- Found WrapAtomic: TRUE
+2026-11-12T18:07:57.9247254Z -- Found WrapVulkanHeaders: D:/a/_temp/msys64/mingw64/include
+2026-11-12T18:07:58.0531791Z CMake Warning (policy) at CMakeLists.txt:1126 (install):
+2026-11-12T18:07:58.0532543Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0534275Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0535193Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0535643Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0536006Z suppress it.
+2026-11-12T18:07:58.0536115Z 
+2026-11-12T18:07:58.0536264Z CMake Warning (policy) at CMakeLists.txt:1127 (install):
+2026-11-12T18:07:58.0536677Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0537147Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0537540Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0538071Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0538587Z suppress it.
+2026-11-12T18:07:58.0538697Z 
+2026-11-12T18:07:58.0538853Z CMake Warning (policy) at CMakeLists.txt:1129 (install):
+2026-11-12T18:07:58.0539248Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0539679Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0540052Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0540422Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0540751Z suppress it.
+2026-11-12T18:07:58.0540858Z 
+2026-11-12T18:07:58.0540977Z CMake Warning (policy) at CMakeLists.txt:1130 (install):
+2026-11-12T18:07:58.0541372Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0542129Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0542570Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0542947Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0543298Z suppress it.
+2026-11-12T18:07:58.0543410Z 
+2026-11-12T18:07:58.0543543Z CMake Warning (policy) at CMakeLists.txt:1132 (install):
+2026-11-12T18:07:58.0543935Z   Policy CMP0177 is not set: install() DESTINATION paths are normalized.  Run
+2026-11-12T18:07:58.0544367Z   "cmake --help-policy CMP0177" for policy details.  Use the cmake_policy
+2026-11-12T18:07:58.0544739Z   command to set the policy and suppress this warning.
+2026-11-12T18:07:58.0545114Z This warning is for project developers.  Use -Wno-author or -Wno-policy to
+2026-11-12T18:07:58.0545443Z suppress it.
+2026-11-12T18:07:58.0545545Z 
+2026-11-12T18:07:58.0696429Z -- Build type: Release
+2026-11-12T18:07:58.0696804Z -- Platforms:
+2026-11-12T18:07:58.0697280Z -- 	Game Boy Advance: ON
+2026-11-12T18:07:58.0697731Z -- 	Game Boy: ON
+2026-11-12T18:07:58.0698015Z -- Features:
+2026-11-12T18:07:58.0698297Z -- 	Debuggers: ON
+2026-11-12T18:07:58.0698598Z -- 	GDB stub: ON
+2026-11-12T18:07:58.0698888Z -- 	GIF/Video recording: OFF
+2026-11-12T18:07:58.0699512Z -- 	Screenshot/advanced savestate support: ON
+2026-11-12T18:07:58.0699910Z -- 	ZIP support: minizip (included)
+2026-11-12T18:07:58.0700304Z -- 	7-Zip support: ON
+2026-11-12T18:07:58.0700615Z -- 	SQLite3 game database: ON
+2026-11-12T18:07:58.0701190Z -- 	ELF loading support: OFF
+2026-11-12T18:07:58.0701541Z -- 	Discord Rich Presence support: ON
+2026-11-12T18:07:58.0701914Z -- 	OpenGL support: libepoxy
+2026-11-12T18:07:58.0702234Z -- Scripting support: ON
+2026-11-12T18:07:58.0702549Z -- 	Lua: OFF
+2026-11-12T18:07:58.0702815Z -- 	storage API: OFF
+2026-11-12T18:07:58.0703017Z -- 	Font rendering: ON
+2026-11-12T18:07:58.0703210Z -- Frontends:
+2026-11-12T18:07:58.0703380Z -- 	Qt: ON
+2026-11-12T18:07:58.0703544Z -- 	SDL (2): ON
+2026-11-12T18:07:58.0703727Z -- 	Headless: OFF
+2026-11-12T18:07:58.0703930Z -- 	Python bindings: OFF
+2026-11-12T18:07:58.0704155Z -- 	Examples: OFF
+2026-11-12T18:07:58.0704335Z -- Test tools:
+2026-11-12T18:07:58.0704511Z -- 	Profiling: OFF
+2026-11-12T18:07:58.0704715Z -- 	Test harness: OFF
+2026-11-12T18:07:58.0705432Z -- 	Test suite: OFF
+2026-11-12T18:07:58.0705675Z -- 	Video test suite: OFF
+2026-11-12T18:07:58.0706083Z -- Cores:
+2026-11-12T18:07:58.0706310Z -- 	Libretro core: OFF
+2026-11-12T18:07:58.0706581Z -- Libraries:
+2026-11-12T18:07:58.0706816Z -- 	Static: OFF
+2026-11-12T18:07:58.0707054Z -- 	Shared: ON
+2026-11-12T18:07:58.0730169Z -- Configuring done (7.3s)
+2026-11-12T18:07:58.3551386Z -- Generating done (0.3s)
+2026-11-12T18:07:58.3571205Z -- Build files have been written to: D:/a/mgbax/mgbax/build-pc
