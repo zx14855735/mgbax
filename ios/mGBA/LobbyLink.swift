@@ -55,6 +55,10 @@ final class LobbyLink {
     var onRemoteState: (Data) -> Void = { _ in }
     /// Key mask received from the peer; called from the reader thread.
     var onRemoteKeys: (Int32) -> Void = { _ in }
+    /// Key mask plus the 1-based global console slot that produced it.
+    /// N-core lockstep uses this to feed the right mirror core instead of
+    /// dumping every peer's keys into one fixed slot.
+    var onRemoteKeysForSlot: (Int, Int32) -> Void = { _, _ in }
     /// Slot owned by this device's visible console (1...4). Devices in a
     /// 3/4-player session must use distinct slots so key frames reach the
     /// right mirror console; slot 1 keeps the two-player TYPE_KEYS behaviour.
@@ -683,16 +687,27 @@ final class LobbyLink {
         }
     }
 
+    /// Frame type identifies the sender's 1-based global slot, mirroring
+    /// `keyFrameType()`: TYPE_KEYS=1, TYPE_INPUT2=2, TYPE_READY=3,
+    /// TYPE_INPUT4=4. Keep the legacy single-callback path intact.
+    private func deliverKeys(_ slot: Int, _ body: Data) {
+        let keys = LobbyFrames.intValue(of: body)
+        onRemoteKeys(keys)
+        onRemoteKeysForSlot(slot, keys)
+    }
+
     private func handle(_ body: Data) {
         switch LobbyFrames.type(of: body) {
         case LobbyFrames.typeKeys, LobbyFrames.typeKeysLocal:
-            onRemoteKeys(LobbyFrames.intValue(of: body))
-        case LobbyFrames.typeInput2, LobbyFrames.typeInput4:
-            onRemoteKeys(LobbyFrames.intValue(of: body))
+            deliverKeys(1, body)
+        case LobbyFrames.typeInput2:
+            deliverKeys(2, body)
+        case LobbyFrames.typeInput4:
+            deliverKeys(4, body)
         case LobbyFrames.typeReady:
             // Bare type 3 is the handshake; with an int it is slot 3's keys.
             if LobbyFrames.payload(of: body).count >= 4 {
-                onRemoteKeys(LobbyFrames.intValue(of: body))
+                deliverKeys(3, body)
             }
         case LobbyFrames.typeReset:
             onRemoteReset()

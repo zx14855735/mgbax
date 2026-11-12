@@ -60,6 +60,9 @@ signals:
 	void cameraChanged(const QByteArray&);
 	void videoRendererChanged();
 	void pathsChanged();
+	/** 音量滑块/静音勾选即时生效（无需点 OK/Apply）。 */
+	void volumeChanged(int volume);
+	void muteChanged(bool mute);
 	void languageChanged();
 	void libraryCleared();
 	void saveSettingsRequested();

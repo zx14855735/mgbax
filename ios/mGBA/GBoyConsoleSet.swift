@@ -13,8 +13,8 @@ import Foundation
  * 本类只在显式开启 3/4 人锁步时创建。
  *
  * 已知限制：本机只能做 Swift 语法解析校验；Xcode 类型检查、真机 60fps 与
- * 进对战验证尚未完成。N 台设备的按键槽位路由也仍是待办（本类只提供
- * setRemoteKeys(slot:mask:) 入口，调用方负责把远端帧映射到全局槽位）。
+ * 进对战验证尚未完成。远端按键由 LobbyLink/GBoyLink 的 onRemoteKeysForSlot
+ * 按帧类型解析成全局槽位后调用 setRemoteKeys(slot:mask:)。
  */
 final class GBoyConsoleSet {
     private let romPath: String

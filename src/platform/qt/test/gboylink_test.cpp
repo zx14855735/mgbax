@@ -47,6 +47,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstring>
 #include <mutex>
 #include <thread>
@@ -1921,7 +1922,21 @@ static void lsDumpPPM(int idx) {
 	fclose(fp);
 }
 
-void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns) {
+/* 产品 MgbaMobile 在 core init 时就绑定了默认 logger，创建之后再改
+ * logLevel 已来不及；这里装一个只放行 WARN 以上的默认 logger，压掉每轮
+ * SIO/BIOS 的 DEBUG 刷屏（4 核并发时足以把帧循环拖慢数倍）。 */
+static void lsSilentLog(struct mLogger* logger, int category, enum mLogLevel level,
+                        const char* format, va_list args) {
+	(void) logger;
+	(void) category;
+	if (level & (mLOG_FATAL | mLOG_ERROR | mLOG_WARN | mLOG_GAME_ERROR)) {
+		vfprintf(stderr, format, args);
+		fputc('\n', stderr);
+	}
+}
+static struct mLogger s_lsSilentLogger = { lsSilentLog, NULL };
+
+uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns) {
 	struct GBA* g = (struct GBA*) core->board;
 	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手（f≈1365）就会出现，
 	 * 远早于菜单导航（menuAt=1500）。一旦那时停手，导航到 multi-battle 的
@@ -2108,6 +2123,9 @@ void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns)
 			}
 		}
 	}
+	/* 产品路径需要把同一份按键掩码交给 mgbaMobileSetKeys（产品帧循环会用
+	 * beginFrameKeys 重设 core 按键），原路径忽略返回值即可。 */
+	return keys;
 }
 
 static void lsUserSleep(struct mLockstepUser* u) {
@@ -2153,6 +2171,11 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	 * _enqueueEvent 里根治（池满复用最老事件），故无需再推迟。
 	 * 可用 BUSGAME_ATTACH_AT 覆盖做 A/B。 */
 	const int attachThreshold = envInt("BUSGAME_ATTACH_AT", 10);
+	/* BUSGAME_PRODUCT=1（或 busgame-product 入口）：4 核改用产品侧 MgbaMobile
+	 * + mgbaMobileLinkHostLockstep/JoinLockstep + mgbaMobileRunFrames，其余
+	 * 按键/内存判据脚本完全复用。默认 0，保持已验证的底层协调器路径不变。 */
+	const bool productMode = envInt("BUSGAME_PRODUCT", 0) != 0;
+	struct MgbaMobile* emus[4] = {};
 
 	const QByteArray romUtf8 = QFileInfo(rom).absoluteFilePath().toUtf8();
 	QString savCopy[4];
@@ -2165,35 +2188,79 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	static mColor video[4][240 * 160];
 	g_lsVideo = video;
 	struct mCore* cores[4] = {};
-	for (int i = 0; i < players; ++i) {
-		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
-		if (!romVf) {
-			romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+	if (productMode) {
+		mLogSetDefaultLogger(&s_lsSilentLogger);
+		/* 每核独立存档目录：MgbaMobile 按 <rom>.sav 自动加载电池存档。 */
+		QString savName = QFileInfo(rom).completeBaseName() + QStringLiteral(".sav");
+		QString root = QFileInfo(sav).absolutePath();
+		for (int i = 0; i < players; ++i) {
+			QString dir = root + QStringLiteral("/product_ls_%1").arg(i);
+			QDir().mkpath(dir);
+			QString dst = dir + QStringLiteral("/") + savName;
+			QFile::remove(dst);
+			QFile::copy(savCopy[i], dst);
+			QByteArray dirUtf8 = dir.toUtf8();
+			emus[i] = mgbaMobileCreate(dirUtf8.constData(), dirUtf8.constData(), "pcproductgame");
+			if (!emus[i] || !mgbaMobileLoad(emus[i], romUtf8.constData())) {
+				fprintf(stderr, "LS: FAIL (product core %d load)\n", i);
+				return 1;
+			}
+			cores[i] = mgbaMobileDebugCore(emus[i]);
+			if (!cores[i]) {
+				fprintf(stderr, "LS: FAIL (product core %d debug core)\n", i);
+				return 1;
+			}
+			cores[i]->setVideoBuffer(cores[i], video[i], 240);
+			mCoreConfigSetIntValue(&cores[i]->config, "logLevel",
+			                       envInt("BUSGAME_LOGLEVEL", mLOG_WARN));
+			/* BIOS 阶段先不挂驱动，跑满 attachThreshold 帧再接房间。 */
+			for (int f = 0; f < attachThreshold; ++f) {
+				mgbaMobileRunFrames(emus[i], 1);
+			}
 		}
-		if (!romVf) {
-			fprintf(stderr, "LS: FAIL (cannot open rom)\n");
+		if (!mgbaMobileLinkHostLockstep(emus[0], 0x4C53, players, 0)) {
+			fprintf(stderr, "LS: FAIL (product lockstep host)\n");
 			return 1;
 		}
-		cores[i] = mCoreFindVF(romVf);
-		if (!cores[i]) {
-			fprintf(stderr, "LS: FAIL (cannot find core)\n");
-			return 1;
+		for (int i = 1; i < players; ++i) {
+			if (!mgbaMobileLinkJoinLockstep(emus[i], 0x4C53, i)) {
+				fprintf(stderr, "LS: FAIL (product lockstep join %d)\n", i);
+				return 1;
+			}
 		}
-		cores[i]->init(cores[i]);
-		mCoreConfigInit(&cores[i]->config, NULL);
-		int lvl = envInt("BUSGAME_LOGLEVEL", mLOG_WARN);
-		mCoreConfigSetIntValue(&cores[i]->config, "logLevel", lvl);
-		if (!cores[i]->loadROM(cores[i], romVf)) {
-			fprintf(stderr, "LS: FAIL (cannot load rom)\n");
-			return 1;
+		fprintf(stderr, "LS: product lockstep attached %d cores after %d boot frames\n",
+		        players, attachThreshold);
+	} else {
+		for (int i = 0; i < players; ++i) {
+			VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
+			if (!romVf) {
+				romVf = VFileOpenFD(romUtf8.constData(), O_RDONLY);
+			}
+			if (!romVf) {
+				fprintf(stderr, "LS: FAIL (cannot open rom)\n");
+				return 1;
+			}
+			cores[i] = mCoreFindVF(romVf);
+			if (!cores[i]) {
+				fprintf(stderr, "LS: FAIL (cannot find core)\n");
+				return 1;
+			}
+			cores[i]->init(cores[i]);
+			mCoreConfigInit(&cores[i]->config, NULL);
+			int lvl = envInt("BUSGAME_LOGLEVEL", mLOG_WARN);
+			mCoreConfigSetIntValue(&cores[i]->config, "logLevel", lvl);
+			if (!cores[i]->loadROM(cores[i], romVf)) {
+				fprintf(stderr, "LS: FAIL (cannot load rom)\n");
+				return 1;
+			}
+			const QByteArray savUtf8 = savCopy[i].toUtf8();
+			VFile* sv = VFileOpen(savUtf8.constData(), O_RDWR);
+			if (sv && !cores[i]->loadSave(cores[i], sv)) {
+				fprintf(stderr, "LS: WARN (core %d loadSave failed)\n", i);
+			}
+			cores[i]->reset(cores[i]);
+			cores[i]->setVideoBuffer(cores[i], video[i], 240);
 		}
-		const QByteArray savUtf8 = savCopy[i].toUtf8();
-		VFile* sv = VFileOpen(savUtf8.constData(), O_RDWR);
-		if (sv && !cores[i]->loadSave(cores[i], sv)) {
-			fprintf(stderr, "LS: WARN (core %d loadSave failed)\n", i);
-		}
-		cores[i]->reset(cores[i]);
-		cores[i]->setVideoBuffer(cores[i], video[i], 240);
 	}
 
 	struct GBASIOLockstepCoordinator coord;
@@ -2290,7 +2357,31 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	 *   无内核调度、无分时竞争 —— 推进顺序 100% 确定。协调器内不做任何
 	 *   阻塞等待（源码确认），故此模型语义等价且更确定。
 	 */
-	if (serialDriver) {
+	if (productMode) {
+		/* 产品帧循环：整帧调用 mgbaMobileRunFrames（内部走 mgbaLockstepRunFrame
+		 * 的小步 runLoop + 自我 park）。按键必须先交给 mgbaMobileSetKeys，
+		 * 否则产品循环的 beginFrameKeys 会把脚本按键覆盖成 0。 */
+		for (int i = 0; i < players; ++i) {
+			threads[i] = std::thread([&, i]() {
+				int f = attachThreshold;
+				while (!stop.load()) {
+					if (hold[i].load()) {
+						held[i].store(true);
+						while (hold[i].load() && !stop.load()) {
+							std::this_thread::yield();
+						}
+						held[i].store(false);
+						continue;
+					}
+					frames[i].store(++f);
+					uint32_t keys = lsInjectKeys(cores[i], i, f,
+					                             pctx[i].menuAt, pctx[i].modeDowns);
+					mgbaMobileSetKeys(emus[i], keys);
+					mgbaMobileRunFrames(emus[i], 1);
+				}
+			});
+		}
+	} else if (serialDriver) {
 		threads[0] = std::thread([&]() {
 			bool serAttached = false;
 			int f = 0;
@@ -2415,7 +2506,12 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	}
 	/* serial 路径已在自己的调度线程内、且无 runLoop 在跑时完成 attach，
 	 * 主线程不得重复挂驱动（会破坏协调器 player 表）。 */
-	if (attached && serialDriver) {
+	if (productMode) {
+		/* 产品路径在创建阶段已 attach 完毕，这里绝不能再挂底层 driver，
+		 * 否则会覆盖产品 MgbaMobile 的 SIO 外设。 */
+		fprintf(stderr, attached ? "LS: product attach already done at startup\n"
+		                         : "LS: FAIL (product cores never started)\n");
+	} else if (attached && serialDriver) {
 		fprintf(stderr, "LS: serial attach handled inside driver thread\n");
 	} else if (attached) {
 		for (int i = 0; i < players; ++i) {
@@ -3896,6 +3992,14 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("busgame-lockstep")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/gen8/rom.gba");
 		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/gen8/rom.sav");
+		int players = args.size() > 4 ? args[4].toInt() : 4;
+		return busGameLockstepTest(rom, sav, players);
+	}
+	if (mode == QStringLiteral("busgame-product")) {
+		/* 同一套 gen8 按键/内存判据，但 4 核走 MgbaMobile 产品 lockstep API。 */
+		qputenv("BUSGAME_PRODUCT", "1");
+		QString rom = args.size() > 2 ? args[2] : QStringLiteral("D:/mgba-android-version/rom.gba");
+		QString sav = args.size() > 3 ? args[3] : QStringLiteral("D:/mgba-android-version/tmp_bus/rom.sav");
 		int players = args.size() > 4 ? args[4].toInt() : 4;
 		return busGameLockstepTest(rom, sav, players);
 	}

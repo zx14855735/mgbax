@@ -329,6 +329,10 @@ void CoreController::loadConfig(ConfigController* config) {
 	m_autofireThreshold = config->getOption("autofireThreshold", m_autofireThreshold).toInt();
 	m_fastForwardVolume = config->getOption("fastForwardVolume", -1).toInt();
 	m_fastForwardMute = config->getOption("fastForwardMute", false).toInt();
+	/* 用户上次保存的静音选择要在焦点重载后保持；音量保持 -1（跟随
+	 * config），否则会永久盖掉「倍速音量」这个独立设置。 */
+	m_userVolume = -1;
+	m_userMute = config->getOption("mute", false).toInt();
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "volume");
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "mute");
 	m_preload = config->getOption("preload", true).toInt();
@@ -1024,7 +1028,9 @@ void CoreController::overrideMute(bool override) {
 
 	Interrupter interrupter(this);
 	mCore* core = m_threadContext.core;
-	if (m_mute) {
+	/* 用户在设置/菜单里主动静音后，焦点恢复触发的 overrideMute(false)
+	 * 不能把静音解除掉。 */
+	if (m_mute || m_userMute) {
 		core->opts.mute = true;
 	} else {
 		if (m_fastForward || m_fastForwardForced) {
@@ -1033,6 +1039,23 @@ void CoreController::overrideMute(bool override) {
 			mCoreConfigGetBoolValue(&core->config, "mute", &core->opts.mute);
 		}
 	}
+	core->reloadConfigOption(core, NULL, NULL);
+}
+
+void CoreController::setVolume(int volume) {
+	m_userVolume = volume;
+	Interrupter interrupter(this);
+	mCore* core = m_threadContext.core;
+	core->opts.volume = volume;
+	core->reloadConfigOption(core, NULL, NULL);
+}
+
+void CoreController::setMute(bool mute) {
+	m_userMute = mute;
+	Interrupter interrupter(this);
+	mCore* core = m_threadContext.core;
+	/* 焦点丢失/最小化带来的临时静音仍然优先，解除用户静音不会盖过它。 */
+	core->opts.mute = mute || m_mute;
 	core->reloadConfigOption(core, NULL, NULL);
 }
 
@@ -1704,10 +1727,14 @@ void CoreController::updateFastForward() {
 	// If we have "Fast forward" checked in the menu (m_fastForwardForced)
 	// or are holding the fast forward button (m_fastForward):
 	if (m_fastForward || m_fastForwardForced) {
-		if (m_fastForwardVolume >= 0) {
+		/* 用户显式设定的总音量优先；未显式设定时才用倍速专用音量，
+		 * 这样两个设置不会互相覆盖。 */
+		if (m_userVolume >= 0) {
+			m_threadContext.core->opts.volume = m_userVolume;
+		} else if (m_fastForwardVolume >= 0) {
 			m_threadContext.core->opts.volume = m_fastForwardVolume;
 		}
-		m_threadContext.core->opts.mute = m_fastForwardMute || m_mute;
+		m_threadContext.core->opts.mute = m_fastForwardMute || m_mute || m_userMute;
 		setSync(false);
 
 		// 倍速声音不变：把快进改成「固定倍率、由音频时钟驱动」的受控快进。
@@ -1739,7 +1766,13 @@ void CoreController::updateFastForward() {
 		if (!mCoreConfigGetIntValue(&m_threadContext.core->config, "volume", &m_threadContext.core->opts.volume)) {
 			m_threadContext.core->opts.volume = 0x100;
 		}
+		if (m_userVolume >= 0) {
+			m_threadContext.core->opts.volume = m_userVolume;
+		}
 		mCoreConfigGetBoolValue(&m_threadContext.core->config, "mute", &m_threadContext.core->opts.mute);
+		if (m_userMute) {
+			m_threadContext.core->opts.mute = true;
+		}
 		m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
 		setSync(true);
 	}

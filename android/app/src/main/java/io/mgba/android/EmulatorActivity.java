@@ -222,6 +222,13 @@ public class EmulatorActivity extends AppCompatActivity {
             // 网络只传按键，避开跨设备每轮 1.5 RTT 的锁步。默认 false，
             // 保持已验证的单核跨设备总线路径不变。
             boolean ncore = intent.getBooleanExtra("ncore", false);
+            // --ez use_lockstep true：N 核路径改用进程内锁步 SIO 房间。
+            useLockstep = intent.getBooleanExtra("use_lockstep", false);
+            // 锁步只在本机 N 核路径有意义，自动把 ncore 打开，避免只传
+            // use_lockstep 时仍落到单核跨设备总线、开关看似无效。
+            if (useLockstep) {
+                ncore = true;
+            }
             boolean ok;
             if (players > 2 && !ncore) {
                 // 3/4 人：每台设备只跑自己的核，走 native 星型总线（主机汇聚
@@ -233,7 +240,8 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             Log.i(TAG, "local link host=" + asHost + " tcp=" + tcpPort
                     + " sio=" + sioPort + " players=" + players + " slot=" + slot
-                    + " ncore=" + ncore + " started=" + ok + " err=" + gboyLinkFailure());
+                    + " ncore=" + ncore + " lockstep=" + useLockstep
+                    + " started=" + ok + " err=" + gboyLinkFailure());
         }
     };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.CLOUD --es user U
@@ -482,6 +490,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private File defaultStateDir;
     /** Hidden mirror core; null until the ported GBoy link is started. */
     private volatile GBoyConsoleSet consoleSet;
+    /** 3/4 人本机多核时改用进程内锁步 SIO（默认关，走共享内存总线）。 */
+    private boolean useLockstep = false;
     /** Official local TCP link, used when no cloud room is involved. */
     private volatile GBoySocketLink localLink;
     /** 3/4 人总线会话：每台设备只跑自己的核，互连由 native 链路汇聚。 */
@@ -1902,8 +1912,10 @@ public class EmulatorActivity extends AppCompatActivity {
      * used by the two local consoles. The official handshake (type 1 / int 6)
      * runs on the TCP link while key masks feed the hidden mirror console.
      */
-    /** 联机对话框里「开房 / 加入（3/4 人）」的入口：校验输入后直接开总线会话。 */
-    private void busStart(boolean asHost, EditText peerBox, EditText playersBox, TextView status) {
+    /** 联机对话框里「开房 / 加入（3/4 人）」的入口：校验输入后开会话。
+     * 勾选「本机多核锁步」时改走 N 核 + 进程内锁步路径，否则保持单核星型总线。 */
+    private void busStart(boolean asHost, EditText peerBox, EditText playersBox,
+                          CheckBox lockstepBox, TextView status) {
         int players;
         try {
             players = Integer.parseInt(playersBox.getText().toString().trim());
@@ -1919,15 +1931,36 @@ public class EmulatorActivity extends AppCompatActivity {
             status.setText("加入时请填房主 IP");
             return;
         }
+        boolean lockstep = lockstepBox != null && lockstepBox.isChecked();
         // 记住输入，免得每次重连都要重打。
         getPreferences(MODE_PRIVATE).edit()
                 .putInt("bus_players", players)
                 .putString("bus_peer", peer)
+                .putBoolean("bus_lockstep", lockstep)
                 .apply();
-        boolean ok = startBusLink(players, BUS_TCP_PORT, peer, asHost);
+        useLockstep = lockstep;   // startGBoyLocalLink 的 7 参 GBoyConsoleSet 会读它
+        boolean ok;
+        if (lockstep) {
+            String romPath = currentRomPath != null ? currentRomPath
+                    : getPreferences(MODE_PRIVATE).getString("lastRom", null);
+            if (romPath == null || romPath.isEmpty()) {
+                status.setText("启动失败：请先加载 ROM");
+                return;
+            }
+            File save = defaultSaveDir != null ? defaultSaveDir : getFilesDir();
+            File stateDir = defaultStateDir != null ? defaultStateDir
+                    : new File(getFilesDir(), "state");
+            ok = startGBoyLocalLink(new File(romPath), save, stateDir, 18781,
+                    BUS_TCP_PORT, peer, asHost, players, 1);
+        } else {
+            ok = startBusLink(players, BUS_TCP_PORT, peer, asHost);
+        }
         status.setText(ok
-                ? (asHost ? "已开房（" + players + " 人，端口 " + BUS_TCP_PORT + "），等待其他玩家加入"
-                          : "已加入房间（" + players + " 人）")
+                ? (lockstep
+                    ? (asHost ? "已开房（" + players + " 人，本机多核锁步）"
+                              : "已加入房间（本机多核锁步）")
+                    : (asHost ? "已开房（" + players + " 人，端口 " + BUS_TCP_PORT + "），等待其他玩家加入"
+                              : "已加入房间（" + players + " 人）"))
                 : "启动失败：请确认 ROM 已加载、端口未被占用");
     }
 
@@ -2064,9 +2097,12 @@ public class EmulatorActivity extends AppCompatActivity {
             gboyRemoteKeysEnabled = false;
             gboyRemoteKeys = 0;
             GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort,
-                    consoleCount, slot);
+                    consoleCount, slot, useLockstep);
             boolean ok = set.start(core, link.session());
             consoleSet = set;
+            Log.i(TAG, "local link ncore=" + consoleCount + " slot=" + slot
+                    + " useLockstep=" + useLockstep + " started=" + ok
+                    + " err=" + gboyLinkFailure());
             return ok;
         } catch (java.io.IOException e) {
             GBoySocketLink link = localLink;
@@ -4430,7 +4466,8 @@ public class EmulatorActivity extends AppCompatActivity {
         // ---- 局域网 3/4 人：每台设备只跑自己的核，互连走 native 星型总线 ----
         TextView busHelp = new TextView(this);
         busHelp.setText("局域网多人（3/4 人）：每台设备只跑自己的核，四台设备由总线互连。"
-                + "开房的一方填人数，其他人填房主的 IP；两边人数必须一致。");
+                + "开房的一方填人数，其他人填房主的 IP；两边人数必须一致。"
+                + "勾选「本机多核锁步」后改为本机跑全套核、SIO 走进程内锁步，网络只传按键。");
         busHelp.setTextColor(0xFF222222);
         busHelp.setPadding(0, pad, 0, 0);
         box.addView(busHelp);
@@ -4445,9 +4482,13 @@ public class EmulatorActivity extends AppCompatActivity {
         busPlayers.setInputType(InputType.TYPE_CLASS_NUMBER);
         busPlayers.setText(String.valueOf(getPreferences(MODE_PRIVATE).getInt("bus_players", 4)));
         box.addView(busPlayers);
+        final CheckBox busLockstep = new CheckBox(this);
+        busLockstep.setText("本机多核锁步（3/4 人，实验性）：本机跑全套核，SIO 不跨网络");
+        busLockstep.setChecked(getPreferences(MODE_PRIVATE).getBoolean("bus_lockstep", false));
+        box.addView(busLockstep);
         box.addView(buttonRow(
-                linkButton("开房（3/4 人）", v -> busStart(true, busPeer, busPlayers, status)),
-                linkButton("加入（3/4 人）", v -> busStart(false, busPeer, busPlayers, status))));
+                linkButton("开房（3/4 人）", v -> busStart(true, busPeer, busPlayers, busLockstep, status)),
+                linkButton("加入（3/4 人）", v -> busStart(false, busPeer, busPlayers, busLockstep, status))));
         box.addView(status);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(box);

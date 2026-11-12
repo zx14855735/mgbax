@@ -595,6 +595,19 @@ void Window::openSettingsWindow(SettingsView::Page page) {
 	connect(settingsWindow, &SettingsView::videoRendererChanged, this, &Window::changeRenderer);
 	connect(settingsWindow, &SettingsView::languageChanged, this, &Window::mustRestart);
 	connect(settingsWindow, &SettingsView::pathsChanged, this, &Window::reloadConfig);
+	/* 音量/静音即时通道：直接写核心 opts，同时落 config（点 OK 时写盘）。 */
+	connect(settingsWindow, &SettingsView::volumeChanged, this, [this](int volume) {
+		m_config->setOption("volume", volume);
+		if (m_controller) {
+			m_controller->setVolume(volume);
+		}
+	});
+	connect(settingsWindow, &SettingsView::muteChanged, this, [this](bool mute) {
+		m_config->setOption("mute", mute);
+		if (m_controller) {
+			m_controller->setMute(mute);
+		}
+	});
 #ifdef USE_SQLITE3
 	connect(settingsWindow, &SettingsView::libraryCleared, m_libraryView, &LibraryController::clear);
 #endif
@@ -1630,6 +1643,22 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addMenu(tr("Audio/&Video"), "av");
+
+	/* 音量/静音快捷入口：主菜单即可调节，不必打开设置窗口。
+	 * 精细调节仍用 Tools → Settings → Audio/Video 的滑块（拖动即时生效）。 */
+	m_actions.addMenu(tr("&Volume"), "volume", "av");
+	for (int v : {0, 64, 128, 192, 256, 384}) {
+		auto volumeAction = m_actions.addAction(tr("%1%").arg(v * 100 / 256),
+		    QString("volume.%1").arg(v), [this, v]() {
+			m_config->setOption("volume", v);
+			if (m_controller) {
+				m_controller->setVolume(v);
+			}
+		}, "volume");
+		volumeAction->setExclusive(true);
+	}
+	/* 静音沿用下面已有的 ConfigOption("mute") 菜单动作，不重复造一个。 */
+
 	m_actions.addMenu(tr("Frame size"), "frame", "av");
 	for (int i = 1; i <= 8; ++i) {
 		auto setSize = m_actions.addAction(tr("%1×").arg(QString::number(i)), QString("frame.%1x").arg(QString::number(i)), [this, i]() {
@@ -1739,7 +1768,12 @@ void Window::setupMenu(QMenuBar* menubar) {
 	auto muteAction = mute->addBoolean(tr("Mute"), &m_actions, "av");
 	muteAction->setActive(m_config->getOption("mute").toInt());
 	mute->connect([this](const QVariant& value) {
-		m_config->setOption("fastForwardMute", static_cast<bool>(value.toInt()));
+		/* 旧实现误把静音值写到 fastForwardMute，用户勾静音只改了倍速静音，
+		 * 正常播放下 core->opts.mute 没变，所以「静音无效」。这里改为直接
+		 * 作用于运行中的核心（addOption 已负责把 mute 写回 config）。 */
+		if (m_controller) {
+			m_controller->setMute(value.toBool());
+		}
 		reloadConfig();
 	}, this);
 

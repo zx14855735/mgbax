@@ -5732,10 +5732,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gboyRemoteKeys = Int(keys)
-                // 回调目前不带槽位，先按 2P 语义把远端按键喂给槽位 1；
-                // 完整的 N 设备按键槽位路由仍是全项目待办。
-                self.consoleSet?.setRemoteKeys(slot: 1, mask: UInt32(truncatingIfNeeded: keys))
                 self.publishKeys()
+            }
+        }
+        link.onRemoteKeysForSlot = { [weak self] slot, keys in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // 帧里的槽位是 1-based 全局槽位；锁步房间用 0-based slotId。
+                self.consoleSet?.setRemoteKeys(slot: slot - 1,
+                                               mask: UInt32(truncatingIfNeeded: keys))
             }
         }
         link.onStatus = { [weak self] text in
@@ -5768,10 +5773,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.gboyRemoteKeys = Int(keys)
-                // 回调目前不带槽位，先按 2P 语义把远端按键喂给槽位 1；
-                // 完整的 N 设备按键槽位路由仍是全项目待办。
-                self.consoleSet?.setRemoteKeys(slot: 1, mask: UInt32(truncatingIfNeeded: keys))
                 self.publishKeys()
+            }
+        }
+        link.onRemoteKeysForSlot = { [weak self] slot, keys in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // 帧里的槽位是 1-based 全局槽位；锁步房间用 0-based slotId。
+                self.consoleSet?.setRemoteKeys(slot: slot - 1,
+                                               mask: UInt32(truncatingIfNeeded: keys))
             }
         }
         link.onStatus = { [weak self] text in

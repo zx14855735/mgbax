@@ -164,6 +164,11 @@ public slots:
 
 	void overrideMute(bool);
 
+	/** 用户显式音量/静音：立即作用于运行中的核心，不依赖 Settings 的
+	 * Apply → reloadConfig 间接链路；并在倍速/焦点重载时保持优先级。 */
+	void setVolume(int volume);   // 0..256 = 0..100%，允许到 384 = 150%
+	void setMute(bool mute);
+
 	void loadState(int slot = 0);
 	void loadState(const QString& path, int flags = -1);
 	void loadState(QIODevice* iodev, int flags = -1);
@@ -395,7 +400,9 @@ private:
 	float m_fastForwardHeldRatio = -1.f;
 	float m_fpsTarget;
 
-	bool m_mute;
+	bool m_mute = false;
+	int m_userVolume = -1;      // -1 = 跟随配置；否则为用户显式设定
+	bool m_userMute = false;
 
 	InputController* m_inputController = nullptr;
 	LogController* m_log = nullptr;

@@ -84,6 +84,13 @@ SettingsView::SettingsView(ConfigController* controller, InputController* inputC
 		}
 	});
 
+	/* 即时生效：拖音量滑块 / 勾静音立刻传给运行中的核心，不必等 OK/Apply。
+	 * 放在 reloadConfig() 之后连接，避免打开设置窗口时把当前值误当成
+	 * 「用户显式设定」而盖掉倍速音量。 */
+	connect(m_ui.volume, static_cast<void (QSlider::*)(int)>(&QSlider::valueChanged),
+	        this, &SettingsView::volumeChanged);
+	connect(m_ui.mute, &QAbstractButton::toggled, this, &SettingsView::muteChanged);
+
 	connect(m_ui.nativeGB, &QAbstractButton::pressed, [this]() {
 		m_ui.fpsTarget->setValue(double(GBA_ARM7TDMI_FREQUENCY) / double(VIDEO_TOTAL_LENGTH));
 	});
