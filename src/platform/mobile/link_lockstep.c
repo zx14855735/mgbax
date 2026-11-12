@@ -10,6 +10,7 @@
 #include <mgba/internal/gba/sio/lockstep.h>
 #include <mgba/internal/gba/video.h>
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
