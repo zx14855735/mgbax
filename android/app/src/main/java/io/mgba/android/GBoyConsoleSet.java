@@ -70,6 +70,14 @@ public final class GBoyConsoleSet {
     private long targetFrame = -1L;
     private long frameTimeouts;
     private int linkPort;
+    /* start() 里实际生效的锁步模式：beginFrame/endFrame 的 Java 帧栅栏只服务
+     * 共享内存总线（它就是那种模式下的同步手段）；native 锁步自己会在 SIO
+     * 轮次会合，帧栅栏会把镜像门成每帧一停、可见核每帧吃满超时。 */
+    private boolean lockstepActive;
+    /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
+     * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
+     * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
+    private long frameEpoch = -1L;
 
     /** Two-player session (original behaviour, unchanged). */
     public GBoyConsoleSet(File rom, File saveDir, File stateDir, int basePort) {
@@ -158,11 +166,12 @@ public final class GBoyConsoleSet {
             mirrors[i] = core;
         }
 
-        /* 3/4 人改走进程内共享内存总线：核间 SIO 不再经 127.0.0.1 TCP，
-         * 会合靠 cond 广播（µs 级），也没有每轮 2ms 超时地板。两人路径一字
-         * 不动，仍是已经验证过的环回直连。 */
+        /* 锁步对任意人数都有意义（协调器就是 N 人的）；旧判断把两人静默
+         * 降级回环回 TCP 总线，use_lockstep 开关看似无效。localBus 仍只描述
+         * 「非锁步时 3/4 人走共享内存总线、两人走环回直连」这一既有分工。 */
         final boolean localBus = players > 2;
-        final boolean lockstepMode = useLockstep && localBus;
+        final boolean lockstepMode = useLockstep;
+        lockstepActive = lockstepMode;
         final int busKey = basePort;
         /* localSlot > 1 时可见核必须占它自己的链路槽位，而 host 恒占槽位 0，
          * 所以让第一个镜像核当 host（代表全局槽位 1），可见核 join 到
@@ -273,6 +282,7 @@ public final class GBoyConsoleSet {
 
         synchronized (lock) {
             targetFrame = -1L;
+            frameEpoch = -1L;
             for (int i = 0; i < count; ++i) {
                 mirrorFrames[i] = -1L;
             }
@@ -289,14 +299,17 @@ public final class GBoyConsoleSet {
         return true;
     }
 
-    /** Publishes a frame to every mirror core. Call before the visible core runs it. */
+    /** Publishes a frame to every mirror core. Call before the visible core runs it.
+     *  锁步模式下是空操作：native 协调器已经在 SIO 轮次上把各核会合，镜像线程
+     *  自由推进即可，这里再按帧放行反而把镜像门成每帧一停。 */
     public void beginFrame(long frame) {
-        if (state != State.READY) {
+        if (state != State.READY || lockstepActive) {
             return;
         }
         synchronized (lock) {
-            if (frame > targetFrame) {
-                targetFrame = frame;
+            long rel = relativeFrame(frame);
+            if (rel > targetFrame) {
+                targetFrame = rel;
                 lock.notifyAll();
             }
         }
@@ -307,12 +320,13 @@ public final class GBoyConsoleSet {
      * recorded but never freezes the visible loop.
      */
     public void endFrame(long frame) {
-        if (state != State.READY || mirrorFrames == null) {
+        if (state != State.READY || lockstepActive || mirrorFrames == null) {
             return;
         }
+        long rel = relativeFrame(frame);
         synchronized (lock) {
             long deadline = System.currentTimeMillis() + FRAME_WAIT_MS;
-            while (slowestMirror() < frame && state == State.READY
+            while (slowestMirror() < rel && state == State.READY
                     && System.currentTimeMillis() < deadline) {
                 long left = deadline - System.currentTimeMillis();
                 if (left <= 0) {
@@ -325,10 +339,19 @@ public final class GBoyConsoleSet {
                     break;
                 }
             }
-            if (slowestMirror() < frame) {
+            if (slowestMirror() < rel) {
                 ++frameTimeouts;
             }
         }
+    }
+
+    /** 把全局帧号折算成本会话内的相对帧号；第一次调用定纪元。 */
+    private long relativeFrame(long frame) {
+        if (frameEpoch < 0) {
+            frameEpoch = frame;
+        }
+        long rel = frame - frameEpoch;
+        return rel < 0 ? 0 : rel;
     }
 
     /** Closes the loopback link, stops every mirror thread and destroys the cores. */
@@ -440,6 +463,24 @@ public final class GBoyConsoleSet {
     }
 
     private void mirrorLoop(int index) {
+        if (lockstepActive) {
+            /* native 锁步：协调器在 SIO 轮次上会合各核，镜像线程自由推进即可
+             * （跑太快会在下一个 SIO 轮被 park 住等可见核，正是锁步语义）。
+             * 走 beginFrame/endFrame 的逐帧放行会让可见核的 native 帧永远
+             * 等不到已入睡的镜像到场，每帧退化成一次超时。 */
+            while (state == State.READY) {
+                MgbaCore core = mirrors == null ? null : mirrors[index];
+                if (core == null) {
+                    return;
+                }
+                GBoyLinkSession net = session;
+                int keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
+                core.setKeys(keys);
+                core.pumpLink();
+                core.runFrames(keys, 1);
+            }
+            return;
+        }
         while (state == State.READY) {
             long frame;
             synchronized (lock) {
