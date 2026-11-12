@@ -1,0 +1,464 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">mGBAx</string>
+    <string name="menu">☰ 菜单</string>
+    <string name="open_rom">打开</string>
+    <string name="pause">暂停</string>
+    <string name="resume">继续</string>
+    <string name="fast_forward">快进</string>
+    <string name="speed_normal">常速</string>
+    <string name="speed_1">1倍</string>
+    <string name="speed_4">4倍</string>
+    <string name="speed_8">8倍</string>
+    <string name="speed_16">16倍</string>
+    <string name="speed_value">%1$s倍</string>
+    <string name="speed_pick">倍速</string>
+    <string name="speed_sound">倍速声音</string>
+    <string name="speed_sound_const">音乐原速</string>
+    <string name="reset">复位</string>
+    <string name="slot_initial">槽位 1</string>
+    <string name="slot">槽位 %1$d</string>
+    <string name="slot_filled">槽位 %1$d ●</string>
+    <string name="slot_empty">空</string>
+    <string name="slot_entry">槽位 %1$d　%2$s</string>
+    <string name="state_pick_save">保存到哪个槽位</string>
+    <string name="state_pick_load">读取哪个槽位</string>
+    <string name="save_state">存档</string>
+    <string name="load_state">读档</string>
+    <string name="bios">BIOS</string>
+    <string name="video">画质</string>
+    <string name="video_filter">画面滤镜</string>
+    <string name="video_filter_value">滤镜：%1$s</string>
+    <string name="filter_none">关闭</string>
+    <string name="filter_gba_color">GBA 色彩</string>
+    <string name="filter_grayscale">灰度</string>
+    <string name="filter_motion_blur">残影</string>
+    <string name="filter_dot">点阵</string>
+    <string name="filter_scanlines">扫描线（平滑）</string>
+    <string name="filter_quilez">锐利插值</string>
+    <string name="link">联机</string>
+    <string name="layout">键位</string>
+    <string name="settings">设置</string>
+    <string name="orientation_title">屏幕方向</string>
+    <string name="orientation_landscape">横屏</string>
+    <string name="orientation_landscape_rev">横屏（反向）</string>
+    <string name="orientation_portrait">竖屏</string>
+    <string name="orientation_portrait_rev">竖屏（反向）</string>
+    <string name="layout_hint">单指拖动移动按键，双指捏合缩放按键，也可用下方滑杆微调，松手即保存</string>
+    <string name="layout_reset">重置</string>
+    <string name="layout_done">完成</string>
+    <string name="layout_reset_done">已恢复默认键位</string>
+    <string name="layout_selected">选中 %1$s %2$d%%</string>
+    <string name="layout_selected_none">点一下按键选中，再捏合或拖滑杆缩放</string>
+    <string name="layout_tap_first">先点一下要缩放的按键</string>
+    <string name="hint">点击「打开」选择 .gba、.gbc、.gb 游戏；长按「打开」可扫描下载目录和模拟器共享目录。打开后上方会显示 ROM 存档位置。</string>
+    <string name="save_location">ROM 存档位置：%1$s</string>
+    <string name="save_location_copied">已复制 ROM 存档位置</string>
+    <string name="save_access_title">允许访问手机存储</string>
+    <string name="save_access_message">游戏存档会写到%1$s。请允许「所有文件访问」，在文件管理里按这个路径打开。</string>
+    <string name="save_access_message_legacy">游戏存档会写到%1$s。请允许存储权限，在文件管理里按这个路径打开。</string>
+    <string name="save_access_allow">去允许</string>
+    <string name="save_access_later">以后再说</string>
+    <string name="video_title">画质</string>
+    <string name="video_blend">帧间混合</string>
+    <string name="video_bilinear">双线性过滤</string>
+    <string name="video_aspect">锁定宽高比</string>
+    <string name="video_integer">整数缩放</string>
+    <string name="video_scan">扫描线</string>
+    <string name="video_skip">跳帧 %1$d</string>
+    <string name="video_skip_auto">自动跳帧（跟不上时自动跳帧保速度）</string>
+    <string name="video_bright">亮度 %1$d%%</string>
+    <string name="state_now">当前画面（存档前）</string>
+    <string name="state_no_preview">无画面</string>
+    <string name="link_title">联机</string>
+    <string name="link_close">断开</string>
+    <string name="link_cloud_reconnect">重新连接中继</string>
+    <string name="link_cloud_reconnect_need_room">还没有房间，请先点「云端创建」或「云端加入」</string>
+    <string name="link_lobby_no_rom">请先打开一个游戏再联机</string>
+    <string name="link_cloud_help">云端房间（联机大厅）：已注册账号 → 邮箱框填邮箱、密码框填原密码，直接点「云端创建」（拿房间号）或「云端加入」（填对方房号），全程不会收到任何邮件。只有全新账号才需要点「获取验证码」注册。首次注册后账号密码会自动记住，之后免验证码直接登录。创建方是 1P。两边要打开同一个游戏、保持 1 倍速。不同网络（流量/异地）也能联：直连中继不通时会自动改走服务器隧道，无需任何设置。</string>
+    <string name="link_cloud_email_hint">邮箱（联机大厅账号）</string>
+    <string name="link_cloud_code_hint">验证码</string>
+    <string name="link_cloud_get_code">获取验证码</string>
+    <string name="link_cloud_sending">发送中…</string>
+    <string name="link_cloud_sent">验证码已发送，请到邮箱查收（同一邮箱 5 分钟只能发一次）</string>
+    <string name="link_cloud_mail_note">该验证码邮件由官方联机服务发出，标题含其自有品牌字样，应用内无法改写。已注册账号请直接在密码框填原密码登录，不会收到任何邮件。</string>
+    <string name="link_cloud_resend_in">重新发送(%1$d)</string>
+    <string name="link_cloud_pass_hint">密码（已注册账号填原密码，新账号留空）</string>
+    <string name="link_cloud_room_hint">房间号，加入时填，创建时留空</string>
+    <string name="link_cloud_create">云端创建</string>
+    <string name="link_cloud_join">云端加入</string>
+    <string name="link_cloud_need_email">请填写有效的邮箱地址</string>
+    <string name="link_cloud_need_code">已注册账号请直接在密码框填原密码；只有新账号才需要先获取验证码</string>
+    <string name="link_cloud_auth">正在登录联机大厅…</string>
+    <string name="link_cloud_need_room">加入时请填写房间号</string>
+    <string name="link_self_test">联机自检</string>
+    <string name="link_self_test_fill">请先填写邮箱与密码（密码留空则需先获取验证码）</string>
+    <string name="loading">正在读取游戏…</string>
+    <string name="load_failed">无法加载这个游戏</string>
+    <string name="no_rom">请先打开一个游戏</string>
+    <string name="state_saved">已保存即时存档 %1$d</string>
+    <string name="state_loaded">已读取即时存档 %1$d</string>
+    <string name="state_missing">没有即时存档 %1$d</string>
+    <string name="state_failed">即时存档失败</string>
+    <string name="reset_done">已复位</string>
+    <string name="bios_imported">已导入 %1$s，重新打开游戏后生效</string>
+    <string name="bios_failed">BIOS 导入失败</string>
+    <string name="scan_button">扫描 ROM</string>
+    <string name="scan_scanning">正在扫描…</string>
+    <string name="scan_title">找到的 ROM</string>
+    <string name="scan_empty">没找到 ROM 文件。\n把 .gba/.gb/.gbc 放进 Download 目录，或在「设置 - ROM 文件夹」里添加自己的游戏文件夹（游戏和存档放一起即可自动识别），也可以在文件管理器里用「打开方式」选择本应用。</string>
+    <string name="scan_entry">%1$s\n%2$s  %3$s</string>
+
+    <!-- Settings hub -->
+    <string name="settings_sound">声音</string>
+    <string name="settings_input">输入</string>
+    <string name="settings_save">存档</string>
+    <string name="settings_advanced">高级</string>
+    <string name="settings_help">帮助</string>
+    <string name="settings_help_text">游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存），最大支持 64MB 扩容 ROM。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），「外部渲染器」可安装第三方 .glsl，「画面场景」可自由移动/缩放游戏画面；配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n调试：菜单「调试」里有内存查看器（搜索/编辑内存做金手指）、图层/贴图/调色板查看器。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n存档同步：设置-存档里可配置坚果云 WebDAV，多台设备间自动同步电池存档。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」，文件在 Pictures/mGBAx。\n\n游戏文件夹：设置 -「ROM 文件夹」里添加自己的目录（可从系统选择或手动输入路径）。把游戏和 .sav/.srm/.ss1 存档放在同一个文件夹就会自动识别并使用，扫描列表和游戏库会标注「同目录有存档」；设置 -「存档」里还可让新游戏的存档也直接写到 ROM 同目录。\n\n一键倒带：虚拟按键里新增「倒带2s」快捷键，点一次回退 2 秒（设置 -「输入」里可改成 1~10 秒，按键编辑器里可拖动或关闭）。菜单「倒带」和掌机皮肤顶部 ⏪ 保持原样：点开秒数条选 1 分钟到 3 秒，或按住「持续倒带」。</string>
+    <string name="settings_immersive">沉浸模式（隐藏状态栏/导航栏）</string>
+
+    <!-- Sound -->
+    <string name="sound_volume">音量 %1$d%%</string>
+    <string name="sound_low_latency">低延迟音频（支持的设备上减少声音延迟）</string>
+
+    <!-- Input -->
+    <string name="input_vibe_title">触屏振动</string>
+    <string name="input_vibe">触屏振动：%1$s</string>
+    <string name="vibe_off">关</string>
+    <string name="vibe_light">轻</string>
+    <string name="vibe_medium">中</string>
+    <string name="vibe_strong">强</string>
+    <string name="input_turbo_mode_title">连击方式</string>
+    <string name="input_turbo_mode">连击方式：%1$s</string>
+    <string name="turbo_hold_b">长按 B 键自动连击</string>
+    <string name="turbo_keys">仅用连发键</string>
+    <string name="turbo_off">关闭</string>
+    <string name="input_turbo_rate">连击速度 %1$d 次/秒</string>
+    <string name="input_no_diagonal">禁用方向键对角（一次只按一个方向）</string>
+    <string name="input_opacity">虚拟按键不透明度 %1$d%%</string>
+    <string name="input_extras">虚拟按键开关（连发/快存/快读/倍速/截图）</string>
+
+    <!-- Save settings -->
+    <string name="save_type">存档类型：%1$s</string>
+    <string name="save_type_title">游戏保存类型</string>
+    <string name="save_auto_load">进入游戏时自动读档（上次退出的进度）</string>
+    <string name="save_auto_write">退出时自动存档</string>
+    <string name="save_confirm">关闭/重置时确认</string>
+    <string name="save_patches">自动使用 IPS/UPS/BPS 补丁（与 ROM 同名放同一文件夹）</string>
+    <string name="save_delete_battery">删除电池存档（.sav）</string>
+    <string name="delete_battery_message">将删除 %1$s（会备份为 .bak），并重新载入游戏。继续吗？</string>
+    <string name="battery_missing">没有电池存档</string>
+    <string name="battery_deleted">已删除电池存档，正在重新载入</string>
+    <string name="battery_delete_failed">删除失败</string>
+    <string name="save_import_myboy">导入 My Boy 存档（选择其 save 文件夹）</string>
+    <string name="myboy_scanning">正在读取存档…</string>
+    <string name="myboy_done">导入完成：成功 %1$d，失败 %2$d</string>
+
+    <!-- Advanced -->
+    <string name="adv_use_bios">使用 BIOS（需先在菜单导入）</string>
+    <string name="adv_skip_bios">跳过 BIOS 启动画面</string>
+    <string name="adv_clock">游戏时钟：%1$s</string>
+    <string name="adv_clock_title">游戏时钟（RTC 卡带）</string>
+    <string name="clock_real">实时时钟（跟随手机时间）</string>
+    <string name="clock_fixed">固定时间（口袋妖怪时间事件用）</string>
+    <string name="clock_offset">偏移时间（手机时间加偏移分钟）</string>
+    <string name="adv_rumble">卡带振动（轰隆声，需游戏支持）</string>
+    <string name="adv_solar">太阳能仿真（我们的太阳 Boktai）</string>
+    <string name="adv_solar_level">阳光强度 %1$d</string>
+    <string name="adv_solar_keys">用音量键调节阳光强度</string>
+    <string name="adv_fast_hold">快进速度 %1$d倍</string>
+    <string name="adv_palette">GB 调色板：%1$s</string>
+    <string name="adv_palette_title">GB 调色板（单色 GB 游戏的配色）</string>
+    <string name="gbpal_default">默认</string>
+    <string name="gbpal_original">原版</string>
+    <string name="gbpal_gray">灰度</string>
+    <string name="gbpal_brown">棕色</string>
+    <string name="gbpal_dark_brown">深棕</string>
+    <string name="gbpal_red">红色</string>
+    <string name="gbpal_green">绿色</string>
+    <string name="gbpal_dark_green">深绿</string>
+    <string name="gbpal_blue">蓝色</string>
+    <string name="gbpal_dark_blue">深蓝</string>
+    <string name="gbpal_orange">橙色</string>
+    <string name="gbpal_yellow">黄色</string>
+    <string name="gbpal_pastel">粉彩</string>
+    <string name="gbpal_inverted">反转</string>
+    <string name="adv_sgb_border">SGB 边框（Super Game Boy 专用边框画面）</string>
+    <string name="adv_tilt">倾斜传感器卡带（扭转世界/科比摇摆，用手机姿态模拟）</string>
+    <string name="confirm_reset_message">确定要重置这个游戏吗？未保存的进度会丢失。</string>
+    <string name="confirm_exit_message">游戏还在运行。电池存档会自动保存。确定要退出吗？</string>
+
+    <!-- Screenshots -->
+    <string name="screenshot_saved">已保存截图 %1$s</string>
+    <string name="screenshot_failed">截图失败</string>
+
+    <!-- Cheats -->
+    <string name="cheats_title">金手指</string>
+    <string name="cheats_short">金手指</string>
+    <string name="screenshot_short">截图</string>
+    <string name="cheats_empty">还没有作弊码。\n点「新增」添加，格式选「自动识别」，每行一个代码。</string>
+    <string name="cheat_add">新增</string>
+    <string name="cheat_name_hint">名称（比如：无限金钱）</string>
+    <string name="cheat_format">格式：%1$s</string>
+    <string name="cheat_format_title">作弊码格式</string>
+    <string name="cheat_codes_hint">代码，每行一个\n例如 82025838 104E</string>
+    <string name="cheat_bad_code">作弊码无效，请检查格式</string>
+    <string name="cheat_added">已添加：%1$s</string>
+    <string name="cheat_default_name">作弊码</string>
+    <string name="cheat_delete">删除作弊码</string>
+    <string name="cheat_delete_message">删除「%1$s」？</string>
+
+    <!-- Speed -->
+    <string name="speed_custom">自定义</string>
+    <string name="speed_custom_hint">0.1 ~ 16 之间，支持慢动作</string>
+    <string name="speed_bad_value">倍速范围仅限 0.05~16</string>
+
+    <!-- GIF recording -->
+    <string name="gif_record">GIF</string>
+    <string name="gif_stop">停止GIF</string>
+    <string name="gif_started">开始GIF录制，再点一次菜单里的 GIF 停止</string>
+    <string name="gif_saved">已保存GIF %1$s</string>
+    <string name="gif_failed">GIF录制失败</string>
+
+    <!-- Key layout profiles -->
+    <string name="layout_profiles">配置</string>
+    <string name="profiles_title">按键映射配置</string>
+    <string name="profiles_hint">点名称切换配置；下方按钮新建空配置或复制当前配置</string>
+    <string name="profile_new">新配置</string>
+    <string name="profile_copy">复制当前</string>
+    <string name="profile_delete">删除</string>
+    <string name="profile_name_hint">配置名称</string>
+    <string name="profile_exists">配置名称已存在</string>
+    <string name="profile_switched">已切换到 %1$s</string>
+    <string name="profile_deleted">已删除 %1$s</string>
+    <string name="profile_delete_confirm">删除配置「%1$s」？</string>
+    <string name="profile_last">至少保留一个配置</string>
+
+    <!-- Custom ROM folders -->
+    <string name="rom_dirs_title">自定义 ROM 文件夹</string>
+    <string name="rom_dirs_menu">ROM 文件夹</string>
+    <string name="rom_dirs_hint">把游戏（.gba/.gb/.gbc）和存档（.sav/.srm/.ss1）放进同一个文件夹，在这里添加该文件夹后即可扫描并自动读取同目录存档。\n\n同目录已有存档时优先使用它；否则仍用公共存档目录。若系统提示，请授予「所有文件访问权限」。\n\n注意：同目录存档不纳入备份与云同步，只有公共存档目录里的存档会同步。</string>
+    <string name="rom_dirs_pick">从系统选择文件夹…</string>
+    <string name="rom_dirs_manual">手动输入路径</string>
+    <string name="rom_dirs_manual_title">输入文件夹绝对路径</string>
+    <string name="rom_dirs_manual_hint">例如 /sdcard/ROMs</string>
+    <string name="rom_dirs_remove">移除</string>
+    <string name="rom_dirs_empty">还没有添加文件夹</string>
+    <string name="rom_dirs_added">已添加 %1$s</string>
+    <string name="rom_dirs_exists">这个文件夹已经添加过了</string>
+    <string name="rom_dirs_bad">目录不存在或不可读：%1$s</string>
+    <string name="rom_dirs_tree_bad">系统无法给出该文件夹的真实路径，请用「手动输入路径」添加</string>
+    <string name="rom_dirs_removed">已移除 %1$s</string>
+    <string name="scan_has_save">　[同目录有存档]</string>
+    <string name="save_beside_rom">新游戏的存档也放 ROM 同目录</string>
+    <string name="rewind_tap">倒带快捷键：%1$d 秒 / 点一次</string>
+    <string name="rewind_tap_title">倒带快捷键秒数</string>
+    <string name="rewind_key">倒带（点一次）</string>
+
+    <!-- ROM library -->
+    <string name="library">游戏库</string>
+    <string name="library_title">游戏库</string>
+    <string name="library_empty">没有找到 ROM。点「扫描」查找常见目录，点「文件夹」添加自己的游戏文件夹，或用「打开」选择文件。</string>
+    <string name="library_scan">扫描</string>
+    <string name="library_open">打开…</string>
+    <string name="library_last">上次游戏</string>
+    <string name="library_fav_on">已加入收藏</string>
+    <string name="library_fav_off">已取消收藏</string>
+    <string name="library_favorites">收藏</string>
+
+    <!-- Rewind -->
+    <string name="rewind">倒带</string>
+    <string name="rewind_pick">倒回</string>
+    <string name="rewind_seconds">%1$d 秒</string>
+    <string name="rewind_minute">1 分钟</string>
+    <string name="rewind_hold">持续倒带(按住)</string>
+    <string name="rewind_empty">还没有倒带记录</string>
+    <string name="rewind_disabled_hardcore">硬核模式下倒带不可用</string>
+
+    <!-- Skin -->
+    <string name="skin">皮肤</string>
+    <string name="skin_title">按钮皮肤</string>
+    <string name="skin_style">皮肤样式</string>
+    <string name="skin_style_classic">经典(半透明线条)</string>
+    <string name="skin_style_handheld">掌机(竖屏 Pizza Boy 风 / 横屏 GBA 风)</string>
+    <string name="skin_color">机身颜色</string>
+    <string name="skin_done">皮肤已应用:%1$s</string>
+
+    <!-- Per-ROM settings -->
+    <string name="per_rom">每游戏设置</string>
+    <string name="per_rom_title">每游戏设置</string>
+    <string name="per_rom_filter">滤镜</string>
+    <string name="per_rom_speed">倍速</string>
+    <string name="per_rom_save_type">存档类型</string>
+    <string name="per_rom_palette">GB 调色板</string>
+    <string name="per_rom_reset">恢复全局默认</string>
+    <string name="per_rom_saved">已保存本游戏设置</string>
+    <string name="per_rom_none">全局默认</string>
+    <string name="per_rom_applied">本游戏设置:%1$s</string>
+
+    <!-- Backup -->
+    <string name="backup">备份</string>
+    <string name="backup_title">备份与恢复</string>
+    <string name="backup_export">备份到文件(设置+存档+状态)</string>
+    <string name="backup_import">从备份文件恢复</string>
+    <string name="backup_done">备份完成:%1$s</string>
+    <string name="backup_restored">恢复完成:%1$s</string>
+    <string name="backup_failed">操作失败:%1$s</string>
+    <string name="backup_pick">选择 %1$s</string>
+
+    <!-- Extras ported from Pizza Boy -->
+    <string name="c_button">C 键(组合宏)</string>
+    <string name="c2_button">C2 键(组合宏)</string>
+    <string name="macro_hint">选择按住该键时模拟按下的按键组合</string>
+    <string name="timed_save">定时存档</string>
+    <string name="timed_save_off">关闭</string>
+    <string name="timed_save_min">每 %1$d 分钟</string>
+    <string name="quick_rotate">快存自动轮转槽位(1-9)</string>
+    <string name="confirm_quick">快速存/读档前确认</string>
+    <string name="double_click_shot">双击屏幕截图</string>
+    <string name="shot_format">截图格式</string>
+    <string name="contrast">对比度</string>
+    <string name="muted_on">已静音</string>
+    <string name="muted_off">已取消静音</string>
+    <string name="ff_on">快进开:%1$s×</string>
+    <string name="ff_off">快进关</string>
+
+    <!-- Stickers -->
+    <string name="sticker_add">添加贴纸</string>
+    <string name="sticker_edit">贴纸编辑模式(拖动/双指缩放)</string>
+    <string name="sticker_clear">清除全部贴纸</string>
+    <string name="sticker_cleared">贴纸已清空</string>
+    <string name="sticker_added">贴纸已添加,进入贴纸编辑模式可调整</string>
+    <string name="sticker_full">贴纸已达上限 10 张</string>
+    <string name="sticker_load_failed">贴纸图片读取失败</string>
+
+    <!-- Full skin (PNG pack) -->
+    <string name="full_skin">整包皮肤(PNG)</string>
+    <string name="full_skin_none">无(默认绘制)</string>
+    <string name="full_skin_import">导入皮肤包(zip)</string>
+    <string name="full_skin_delete">删除选中皮肤</string>
+    <string name="full_skin_help">zip 内放 PNG:dpad / a / b / l / r / select / start,可加 _p 后缀为按下贴图,加 bg_portrait.png、bg_landscape.png 为背景。</string>
+    <string name="full_skin_imported">皮肤包已导入:%1$s</string>
+    <string name="full_skin_bad">皮肤包无效:未找到任何按键 PNG</string>
+    <string name="full_skin_deleted">皮肤包已删除</string>
+
+    <!-- AI translate -->
+    <string name="translate">翻译</string>
+    <string name="ai_key">Gemini API Key</string>
+    <string name="ai_key_hint">粘贴 Gemini API Key(免费档可用)</string>
+    <string name="ai_lang">目标语言</string>
+    <string name="ai_ok">已翻译 %1$d 个文本块,点击画面关闭</string>
+    <string name="ai_no_text">画面上没有识别到文字</string>
+    <string name="ai_failed">翻译失败:%1$s</string>
+    <string name="ai_need_key">请先在设置里填写 Gemini API Key</string>
+    <string name="ai_working">正在翻译…</string>
+
+    <!-- Channel volume -->
+    <string name="channel_volume">通道音量</string>
+    <string name="channel_1">通道 1(方波)</string>
+    <string name="channel_2">通道 2(方波)</string>
+    <string name="channel_3">通道 3(波形)</string>
+    <string name="channel_4">通道 4(噪声)</string>
+    <string name="channel_a">DMA A(音乐采样)</string>
+    <string name="channel_b">DMA B(音效采样)</string>
+
+    <!-- Picker-free fallbacks -->
+    <string name="picker_missing">系统没有可用的文件选择器,请用目录方式导入</string>
+    <string name="sticker_from_folder">从贴纸目录选择(mGBAx/stickers)</string>
+    <string name="sticker_folder_empty">贴纸目录为空:把图片放进 Pictures 旁的 mGBAx/stickers 再试</string>
+    <string name="full_skin_scan">从 mGBAx/skins 目录导入</string>
+    <string name="full_skin_scan_done">已从目录导入 %1$d 个皮肤包</string>
+    <string name="full_skin_scan_empty">mGBAx/skins 目录没有新的皮肤包</string>
+
+    <!-- Debug toolkit (ported from 悠GBA模拟器) -->
+    <string name="debug_tools">调试工具</string>
+    <string name="debug_short">调试</string>
+    <string name="memory_view">内存查看器</string>
+    <string name="bg_view">图层查看器</string>
+    <string name="oam_view">贴图查看器</string>
+    <string name="palette_view">调色板查看器</string>
+    <string name="debug_gba_only">PPU 查看器仅支持 GBA 游戏</string>
+    <string name="close">关闭</string>
+    <string name="save">保存</string>
+    <string name="export">导出</string>
+    <string name="image_export_">已导出图片 %1$s</string>
+    <string name="input_data_invalid">数据输入有误</string>
+    <string name="search">搜索</string>
+    <string name="search_width">位宽</string>
+    <string name="search_value_hint">数值(十进制或 0x 十六进制)</string>
+    <string name="search_hits">搜索结果</string>
+    <string name="search_hits_n">%1$d 个结果</string>
+    <string name="search_reset">重置</string>
+    <string name="search_first_eq">首次搜索请选 = 并输入要找的数值</string>
+    <string name="search_more">还有更多结果未显示</string>
+    <string name="memory_tap_edit">点击十六进制区可编辑该字节(改值建议先暂停游戏)</string>
+    <string name="edit_value_title">修改 %08X</string>
+    <string name="edit_value_hint">%1$d 位值(十进制或 0x 十六进制)</string>
+    <string name="memory_written">已写入内存</string>
+    <string name="bg_palette">背景调色板</string>
+    <string name="obj_palette">贴图调色板</string>
+    <string name="bg_info">大小:%1$s\n优先级:%2$d\n图层地址:0x%3$X\n映射地址:0x%4$X</string>
+    <string name="bg_info_mode3">模式3:240x160 16位位图</string>
+    <string name="bg_info_mode4">模式4:240x160 8位位图(当前帧)</string>
+    <string name="bg_info_mode5">模式5:160x128 16位位图</string>
+    <string name="oam_info">编号:%1$d\n坐标:%2$d,%3$d\n尺寸:%4$s\n图块:%5$d\n调色板:%6$d\n翻转:%7$s\n优先级:%8$d</string>
+    <string name="oam_n">贴图 %1$d</string>
+    <string name="oam_empty">画面上没有可见贴图</string>
+    <string name="palette_info">编号:%1$d\n红:%2$d 绿:%3$d 蓝:%4$d\n内存地址:0x%5$s</string>
+
+    <!-- External shaders -->
+    <string name="shader_external">外部渲染器</string>
+    <string name="shader_external_value">外部渲染器:%1$s</string>
+    <string name="shader_external_none">无</string>
+    <string name="shader_install">安装渲染器(.glsl)</string>
+    <string name="shader_pick">选择已安装的渲染器</string>
+    <string name="shader_installed">已安装渲染器:%1$s</string>
+    <string name="shader_removed">已清除外部渲染器</string>
+    <string name="shader_bad">渲染器无效或编译失败</string>
+    <string name="shader_help">支持单通道 GLSL ES 片段着色器。可用变量:uTex(游戏画面)、vTexCoord(坐标)、uTexSize、uOutSize、uBrightness;常见 RetroArch 命名(TEXTURE/TextureSize/OutputSize/vTexCoord/COMPAT_TEXTURE)会自动适配。</string>
+
+    <!-- Video scene editor -->
+    <string name="video_scene">画面场景(移动/缩放)</string>
+    <string name="scene_x">水平位置 %1$d%%</string>
+    <string name="scene_y">垂直位置 %1$d%%</string>
+    <string name="scene_scale">缩放 %1$d%%</string>
+    <string name="scene_reset">恢复居中</string>
+    <string name="scene_applied">画面场景已应用</string>
+
+    <!-- WebDAV save sync -->
+    <string name="sync_title">存档同步(WebDAV)</string>
+    <string name="sync_enable">开启存档同步</string>
+    <string name="sync_url">服务器地址</string>
+    <string name="sync_url_hint">https://dav.jianguoyun.com/dav/</string>
+    <string name="sync_account">账号</string>
+    <string name="sync_password">应用密码(坚果云为16位应用密码)</string>
+    <string name="sync_dir">远端目录</string>
+    <string name="sync_dir_hint">mGBAx</string>
+    <string name="sync_auto">进出游戏时自动同步</string>
+    <string name="sync_now">立即同步</string>
+    <string name="sync_config_saved">同步配置保存成功</string>
+    <string name="sync_running">正在同步存档…</string>
+    <string name="sync_done">同步完成:上传 %1$d,下载 %2$d</string>
+    <string name="sync_failed">同步失败:%1$s</string>
+    <string name="sync_need_config">请先填写服务器地址和账号</string>
+    <string name="sync_help">用坚果云:注册后到「账户信息→安全选项→添加应用密码」生成16位应用密码,账号填注册邮箱,密码填应用密码。服务器地址保持默认即可。同步规则:两边按修改时间取较新的电池存档(.sav)。</string>
+
+    <!-- Small items -->
+    <string name="solar_source">阳光来源:%1$s</string>
+    <string name="solar_source_keys">音量键</string>
+    <string name="solar_source_sensor">设备感光器</string>
+    <string name="adv_gif_ball">GIF 浮球(录制开关悬浮在画面上)</string>
+    <string name="adv_notice">游戏运行通知(防后台清理)</string>
+    <string name="orientation_auto">自动旋转</string>
+    <string name="orientation_system">系统默认</string>
+    <string name="keypad_hide_ask">检测到实体按键,要隐藏虚拟按键吗?</string>
+    <string name="keypad_hide">隐藏</string>
+    <string name="keypad_keep">保持</string>
+    <string name="keypad_detect">识别到实体按键时提示隐藏虚拟按键</string>
+    <string name="vkeypad_visible">显示虚拟按键</string>
+
+    <!-- Notice service -->
+    <string name="notice_title">游戏运行中</string>
+    <string name="notice_running">%1$s 正在运行</string>
+</resources>

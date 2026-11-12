@@ -1,0 +1,381 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- Landscape: keys float over the game. Portrait: a DS-like split, the
+         game on the upper screen and the keys on the lower one. -->
+    <io.mgba.android.ScreenArea
+        android:id="@+id/screen_area"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <io.mgba.android.GameView
+            android:id="@+id/game"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center" />
+
+        <TextView
+            android:id="@+id/hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:padding="24dp"
+            android:text="@string/hint"
+            android:textColor="#DDDDDD"
+            android:textSize="16sp" />
+
+        <io.mgba.android.ControlsView
+            android:id="@+id/controls"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Always-visible handle that pops the menu open. Added last so it stays
+             above the controls and gets taps first; placed by the activity just
+             right of the on-screen START key. -->
+        <TextView
+            android:id="@+id/btn_menu"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:background="@android:color/transparent"
+            android:gravity="center"
+            android:paddingStart="8dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="2dp"
+            android:text="@string/menu"
+            android:textColor="#8CFFFFFF"
+            android:textSize="16sp" />
+    </io.mgba.android.ScreenArea>
+
+    <LinearLayout
+        android:id="@+id/menu_bar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical">
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#161616"
+            android:fillViewport="true"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="4dp">
+
+                <Button
+                    android:id="@+id/btn_open"
+                    style="@style/MgbaButton"
+                    android:text="@string/open_rom" />
+
+                <Button
+                    android:id="@+id/btn_pause"
+                    style="@style/MgbaButton"
+                    android:text="@string/pause" />
+
+                <Button
+                    android:id="@+id/btn_fast"
+                    style="@style/MgbaButton"
+                    android:text="@string/speed_1" />
+
+                <Button
+                    android:id="@+id/btn_reset"
+                    style="@style/MgbaButton"
+                    android:text="@string/reset" />
+
+                <Button
+                    android:id="@+id/btn_slot"
+                    style="@style/MgbaButton"
+                    android:text="@string/slot_initial" />
+
+                <Button
+                    android:id="@+id/btn_save"
+                    style="@style/MgbaButton"
+                    android:text="@string/save_state" />
+
+                <Button
+                    android:id="@+id/btn_load"
+                    style="@style/MgbaButton"
+                    android:text="@string/load_state" />
+
+                <Button
+                    android:id="@+id/btn_bios"
+                    style="@style/MgbaButton"
+                    android:text="@string/bios" />
+
+                <Button
+                    android:id="@+id/btn_video"
+                    style="@style/MgbaButton"
+                    android:text="@string/video" />
+
+                <Button
+                    android:id="@+id/btn_link"
+                    style="@style/MgbaButton"
+                    android:text="@string/link" />
+
+                <Button
+                    android:id="@+id/btn_layout"
+                    style="@style/MgbaButton"
+                    android:text="@string/layout" />
+
+                <Button
+                    android:id="@+id/btn_cheats"
+                    style="@style/MgbaButton"
+                    android:text="@string/cheats_short" />
+
+                <Button
+                    android:id="@+id/btn_debug"
+                    style="@style/MgbaButton"
+                    android:text="@string/debug_short" />
+
+                <Button
+                    android:id="@+id/btn_library"
+                    style="@style/MgbaButton"
+                    android:text="@string/library" />
+
+                <Button
+                    android:id="@+id/btn_rewind"
+                    style="@style/MgbaButton"
+                    android:text="@string/rewind" />
+
+                <Button
+                    android:id="@+id/btn_skin"
+                    style="@style/MgbaButton"
+                    android:text="@string/skin" />
+
+                <Button
+                    android:id="@+id/btn_perrom"
+                    style="@style/MgbaButton"
+                    android:text="@string/per_rom" />
+
+                <Button
+                    android:id="@+id/btn_backup"
+                    style="@style/MgbaButton"
+                    android:text="@string/backup" />
+
+                <Button
+                    android:id="@+id/btn_translate"
+                    style="@style/MgbaButton"
+                    android:text="@string/translate" />
+
+                <Button
+                    android:id="@+id/btn_shot"
+                    style="@style/MgbaButton"
+                    android:text="@string/screenshot_short" />
+
+                <Button
+                    android:id="@+id/btn_gif"
+                    style="@style/MgbaButton"
+                    android:text="@string/gif_record" />
+
+                <Button
+                    android:id="@+id/btn_settings"
+                    style="@style/MgbaButton"
+                    android:text="@string/settings" />
+
+                <TextView
+                    android:id="@+id/fps"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:textColor="#9CCC9C"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </HorizontalScrollView>
+
+        <LinearLayout
+            android:id="@+id/speed_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#101810"
+            android:orientation="vertical"
+            android:paddingBottom="2dp"
+            android:visibility="gone">
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/speed_row"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="4dp"
+                    android:paddingTop="2dp"
+                    android:paddingEnd="4dp"
+                    android:paddingBottom="2dp" />
+            </HorizontalScrollView>
+
+            <!-- 倍速声音 / 不变速 常驻在第二行。放在横向滚动的按钮行里时它们
+                 被挤到屏幕右侧之外（且滚动条隐藏），用户根本看不到这个开关。 -->
+            <LinearLayout
+                android:id="@+id/audio_row"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingBottom="2dp" />
+        </LinearLayout>
+
+        <HorizontalScrollView
+            android:id="@+id/rewind_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#181020"
+            android:fillViewport="true"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/rewind_row"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="4dp"
+                android:paddingTop="2dp"
+                android:paddingEnd="4dp"
+                android:paddingBottom="2dp" />
+        </HorizontalScrollView>
+
+        <TextView
+            android:id="@+id/save_path"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#12281A"
+            android:maxLines="3"
+            android:paddingStart="8dp"
+            android:paddingTop="4dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="4dp"
+            android:textColor="#B7E3B7"
+            android:textSize="12sp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Picture stickers over the game; editable and persisted per orientation. -->
+    <io.mgba.android.StickerOverlay
+        android:id="@+id/sticker_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- AI translation overlay; hidden until a translation lands. -->
+    <io.mgba.android.AiOverlayView
+        android:id="@+id/ai_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- The editor floats above the stage: opening it must not change the
+         stage size, or the game would be rescaled while the keys are placed. -->
+    <LinearLayout
+        android:id="@+id/layout_editor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginStart="@dimen/layout_editor_side_margin"
+        android:layout_marginEnd="@dimen/layout_editor_side_margin"
+        android:background="#E6101810"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:paddingStart="8dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/layout_hint"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/layout_hint"
+                android:textColor="#F6E7A8"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_profiles"
+                style="@style/MgbaButton"
+                android:text="@string/layout_profiles" />
+
+            <Button
+                android:id="@+id/layout_reset"
+                style="@style/MgbaButton"
+                android:text="@string/layout_reset" />
+
+            <Button
+                android:id="@+id/layout_done"
+                style="@style/MgbaButton"
+                android:text="@string/layout_done" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingTop="4dp">
+
+            <TextView
+                android:id="@+id/layout_selected"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/layout_selected_none"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/layout_minus"
+                style="@style/MgbaButton"
+                android:text="−" />
+
+            <SeekBar
+                android:id="@+id/layout_scale"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="260" />
+
+            <Button
+                android:id="@+id/layout_plus"
+                style="@style/MgbaButton"
+                android:text="＋" />
+
+            <TextView
+                android:id="@+id/layout_scale_value"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minWidth="48dp"
+                android:gravity="center"
+                android:text="100%"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

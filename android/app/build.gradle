@@ -1,0 +1,113 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "io.mgba.android"
+    compileSdk 36
+    ndkVersion "28.2.13676358"
+
+    defaultConfig {
+        applicationId "io.mgba.android"
+        minSdk 24
+        targetSdk 36
+        versionCode 2
+        versionName "0.11.0-tcp"
+
+        ndk {
+            abiFilters "armeabi-v7a", "arm64-v8a", "x86_64"
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_static",
+                        "-DBUILD_SDL=OFF",
+                        "-DBUILD_QT=OFF",
+                        "-DBUILD_GL=OFF",
+                        "-DBUILD_GLES2=OFF",
+                        "-DBUILD_GLES3=OFF",
+                        "-DBUILD_LIBRETRO=OFF",
+                        "-DBUILD_PERF=OFF",
+                        "-DBUILD_TEST=OFF",
+                        "-DBUILD_SUITE=OFF",
+                        "-DBUILD_CINEMA=OFF",
+                        "-DBUILD_HEADLESS=OFF",
+                        "-DBUILD_EXAMPLE=OFF",
+                        "-DBUILD_PYTHON=OFF",
+                        "-DBUILD_DOCGEN=OFF",
+                        "-DBUILD_MAINTAINER_TOOLS=OFF",
+                        "-DBUILD_SHARED=OFF",
+                        "-DBUILD_STATIC=ON",
+                        "-DBUILD_LTO=OFF",
+                        "-DENABLE_DEBUGGERS=OFF",
+                        "-DENABLE_SCRIPTING=OFF",
+                        "-DUSE_FFMPEG=OFF",
+                        "-DUSE_EDITLINE=OFF",
+                        "-DUSE_LIBZIP=OFF",
+                        "-DUSE_MINIZIP=OFF",
+                        "-DUSE_SQLITE3=OFF",
+                        "-DUSE_ELF=OFF",
+                        "-DUSE_LUA=OFF",
+                        "-DUSE_JSON_C=OFF",
+                        "-DUSE_FREETYPE=OFF",
+                        "-DUSE_DISCORD_RPC=OFF",
+                        "-DUSE_LZMA=OFF",
+                        "-DUSE_EPOXY=OFF",
+                        "-DUSE_ZLIB=ON",
+                        "-DUSE_PNG=ON",
+                        "-DM_CORE_GBA=ON",
+                        "-DM_CORE_GB=ON",
+                        "-DDISABLE_DEPS=OFF",
+                        "-DPNG_HARDWARE_OPTIMIZATIONS=OFF",
+                        "-DSKIP_GIT=ON"
+                cFlags "-D_GNU_SOURCE"
+                cppFlags "-D_GNU_SOURCE"
+            }
+        }
+    }
+
+    signingConfigs {
+        // With minSdk 24 AGP emits a v2-only APK (no legacy v1/JAR signature).
+        // Several Android emulators, Windows Subsystem for Android and
+        // third-party installers only recognise v1 and report "not signed".
+        // Keep the platform debug certificate so existing installs can still
+        // be upgraded in place, but sign with every scheme Android supports.
+        // NOTE: plain `apksigner verify` reports v1=false because v1 is
+        // optional on Android 7+; confirm all three schemes with
+        //   apksigner verify --min-sdk-version 21 <apk>
+        debug {
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file("../../CMakeLists.txt")
+            version "3.22.1"
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.7.0"
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- L/R sit in the top corners in landscape (10dp..82dp from each edge,
+         plus 10dp of touch slop). Inset the floating editor past them so both
+         shoulder keys stay visible and draggable while the keys are edited. -->
+    <dimen name="layout_editor_side_margin">96dp</dimen>
+</resources>

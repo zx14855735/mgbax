@@ -1,32 +1,66 @@
-# mGBAx (iOS)
+# mGBAx 三端合一构建仓（PC / Android / iOS）
 
-基于 [mGBA](https://mgba.io)（MPL-2.0）的 iOS GBA/GB 模拟器，与同系列 Android 版共享模拟核心（`src/platform/mobile/`）。
+mGBAx 的公开镜像与持续构建仓：**PC(Qt)**、**Android**、**iOS** 三端源码同仓，
+push 即由 GitHub Actions 在三大系统上完整编译验证（含模拟器启动冒烟测试）。
 
-特性：皮肤/按键自定义布局、倒带、倍速（音乐保持原速）、GBoy/My Boy 兼容 WiFi 联机、云大厅、AI 覆盖层、WebDAV 同步等。
+基于 [mGBA](https://mgba.io)（MPL-2.0）。特性：皮肤/按键自定义布局、倒带、
+倍速（音乐保持原速）、GBoy/My Boy 兼容 WiFi 联机、本机多核锁步、云大厅、
+AI 覆盖层、WebDAV 同步等。
 
-## 本仓库说明
+> 本仓是内部主仓库的**无历史净镜像**：只含可公开的源码与文档，不含逆向材料、
+> ROM 与 git 历史。开发在内部仓库进行，本仓由脚本单向同步。
 
-这是一个 **CI 镜像仓库**，只包含 iOS 构建所需内容（App：`ios/`；核心：`src/` + `include/` + 根 `CMakeLists.txt`），不含开发主仓库的全部内容与历史。
+## 目录
+
+| 目录 | 内容 |
+|---|---|
+| `src/` | 三端共用核心（mGBA 核心 + mobile 联机层 + Qt 桌面端） |
+| `include/` | 核心头文件 |
+| `android/` | Android App（Gradle，NDK 经根 `CMakeLists.txt` 编核心） |
+| `ios/` | iOS App（Xcode 工程，`build-core.sh` 先 cmake 静态核心） |
+| `*.md` | 三端使用教程 |
+
+## 直接编译
+
+### PC（Windows / MSYS2 mingw64）
+
+```bash
+pacman -S --needed mingw-w64-x86_64-toolchain mingw-w64-x86_64-cmake \
+  mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf \
+  mingw-w64-x86_64-qt6-base mingw-w64-x86_64-qt6-multimedia \
+  mingw-w64-x86_64-qt6-websockets mingw-w64-x86_64-qt6-tools \
+  mingw-w64-x86_64-SDL2 mingw-w64-x86_64-libepoxy mingw-w64-x86_64-libpng \
+  mingw-w64-x86_64-zlib mingw-w64-x86_64-freetype mingw-w64-x86_64-sqlite3 \
+  mingw-w64-x86_64-xz mingw-w64-x86_64-ffmpeg mingw-w64-x86_64-wineditline
+export PATH=/c/msys64/mingw64/bin:$PATH
+cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_LTO=OFF \
+      -DBUILD_QT=ON -DBUILD_SDL=ON -DBUILD_SHARED=ON
+cmake --build build --target mgba-qt
+./build/mGBA.exe
+```
+
+### Android（Android Studio 或命令行）
+
+```bash
+cd android && ./gradlew :app:assembleDebug
+# 产物: android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+首次构建会自动下载 NDK 28.2 并经根 `CMakeLists.txt` 编译核心。
+
+### iOS（需 macOS/Xcode，或看 CI 产物）
+
+```bash
+cd ios && bash build-core.sh          # cmake 出静态核心
+open mGBA.xcodeproj                    # Xcode 选 iphonesimulator 运行
+```
 
 ## CI
 
-推送到 `main` 或手动触发 `workflow_dispatch` 会运行 macOS runner：
+| 工作流 | Runner | 内容 |
+|---|---|---|
+| `ios-build.yml` | macos-15 | cmake 核心 + xcodebuild + 模拟器启动存活 20s + 截图；附带未签名 IPA 产物（TrollStore/Sideloadly 可装） |
+| `android-build.yml` | ubuntu | Gradle `assembleDebug`，APK 传 Artifacts |
+| `pc-build.yml` | windows | MSYS2 全依赖 + Ninja 编 `mgba-qt` |
 
-1. CMake 编译 mGBA 核心（`ios/build-core.sh`，静态库 `libmgba_ios.a`）
-2. Xcode 为 iOS 模拟器构建 App（`ios/mGBA.xcodeproj`，product: `mGBAx`）
-3. 启动 iPhone 模拟器 → 安装 → 启动 App → 20 秒存活检查 → 截图上传 Artifacts
-4. **`ipa` job**：同时产出**未签名真机 IPA**（Artifact `mgbax-unsigned-ipa`）
-5. 手动勾选 "release" 触发时：签名归档 → 上传 TestFlight（需先配置 secrets）
-
-## 安装到 iPhone（免费，无需开发者账号）
-
-每次构建的 [Artifacts](https://github.com/zx14855735/mgbax-ios/actions) 里下载 `mgbax-unsigned-ipa`，二选一：
-
-- **TrollStore**（iOS 14.0~16.6.1、17.0 支持）：设备已装 TrollStore 的话，直接打开 IPA 安装，**永久有效、无需刷新**。
-- **Sideloadly**（任意 iOS 版本，Windows/Mac 工具）：数据线连 iPhone，把 IPA 拖进 [Sideloadly](https://sideloadly.io)，用自己的免费 Apple ID 签名安装。限制：**每 7 天需重新签名**，每个 Apple ID 最多 3 个自签 App。
-
-> TestFlight / App Store 正式分发需要 Apple 开发者账号（$99/年）。CI 的 `release` 流水线已就绪，配置 secrets 后一键上传。
-
-## License
-
-MPL-2.0，见 [LICENSE](LICENSE)。上游项目 mGBA 版权归 Jeffrey Pfau 及贡献者所有。
+隐私政策：https://zx14855735.github.io/mgbax-ios/

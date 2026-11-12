@@ -6,10 +6,12 @@
 #ifndef MGBA_MOBILE_LINK_LOCKSTEP_H
 #define MGBA_MOBILE_LINK_LOCKSTEP_H
 
-#include <mgba/core/core.h>
-
 #include <stdbool.h>
 #include <stddef.h>
+
+/* 只当不透明指针用：不 include <mgba/core/core.h>，避免 iOS 桥接头
+ * （HEADER_SEARCH_PATHS 没有 include/ 根）解析失败。 */
+struct mCore;
 
 /* link_lockstep.c 按 C 编译；Qt/PC harness（C++）直接调用这里的函数时
  * 缺了 C linkage 会按 mangled name 链接失败（mgbaLockstepSetAbort）。 */

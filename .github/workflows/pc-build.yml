@@ -1,0 +1,43 @@
+name: pc-build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'CMakeLists.txt'
+      - 'version.cmake'
+      - '.github/workflows/pc-build.yml'
+  workflow_dispatch:
+
+jobs:
+  pc:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 MINGW64 (Qt6 + deps)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: git
+          pacboy: >-
+            toolchain:p cmake:p ninja:p make:p pkgconf:p
+            qt6-base:p qt6-multimedia:p qt6-websockets:p qt6-tools:p
+            SDL2:p libepoxy:p libpng:p zlib:p freetype:p sqlite3:p
+            xz:p ffmpeg:p wineditline:p
+
+      - name: Configure (Release, LTO off)
+        shell: msys2 {0}
+        run: |
+          cmake -G Ninja -S . -B build-pc \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_LTO=OFF \
+            -DBUILD_QT=ON -DBUILD_SDL=ON -DBUILD_SHARED=ON \
+            -DBUILD_STATIC=OFF -DBUILD_SUITE=OFF -DBUILD_TEST=OFF
+
+      - name: Build mgba-qt + mgba-sdl
+        shell: msys2 {0}
+        run: cmake --build build-pc --target mgba-qt mgba-sdl
