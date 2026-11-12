@@ -3604,19 +3604,39 @@ struct LockstepRunCtx {
 };
 
 /* 墙钟看门狗：到点强制结束 4 核帧循环，避免测试进程被 SIGTERM。
- * 调试日志（BIOS/SIO DEBUG）会把 4 线程拖到极慢，必须压掉；但即便压掉，
- * 这里仍保留一个独立的超时保险，确保无论卡在哪，进程都能优雅判 PASS/FAIL。 */
+ * 主流程正常收尾时必须通过 g_lsrDone 提前唤醒它 —— 旧实现是无条件
+ * sleep(30s) 再置 abort，导致「明明 4 核都跑完了，却因为 join 满 30s
+ * 而被标记 aborted」的假失败，还让每次测试白等 30 秒。 */
 static volatile int g_lsrAbort = 0;
+static volatile int g_lsrDone = 0;
+static volatile int g_lsrStop = 0;
+static volatile int g_lsrCleanCount = 0;
+static pthread_mutex_t g_lsrWdMu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lsrWdCv = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t g_lsrDataMu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lsrDataCv = PTHREAD_COND_INITIALIZER;
 
 static void* _lsrWatchdog(void* arg) {
 	long ms = *(long*) arg;
-#ifdef _WIN32
-	Sleep((DWORD) ms);
-#else
-	sleep((unsigned) (ms / 1000));
-#endif
-	g_lsrAbort = 1;
-	mgbaLockstepSetAbort(1);
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	ts.tv_sec += ms / 1000;
+	ts.tv_nsec += (ms % 1000) * 1000000L;
+	if (ts.tv_nsec >= 1000000000L) {
+		ts.tv_nsec -= 1000000000L;
+		++ts.tv_sec;
+	}
+	pthread_mutex_lock(&g_lsrWdMu);
+	while (!g_lsrDone) {
+		if (pthread_cond_timedwait(&g_lsrWdCv, &g_lsrWdMu, &ts) == ETIMEDOUT) {
+			break;
+		}
+	}
+	if (!g_lsrDone) {
+		g_lsrAbort = 1;
+		mgbaLockstepSetAbort(1);
+	}
+	pthread_mutex_unlock(&g_lsrWdMu);
 	return NULL;
 }
 
@@ -3628,9 +3648,12 @@ static void _silentLog(struct mLogger* logger, int category, enum mLogLevel leve
                        const char* format, va_list args) {
 	(void) logger;
 	(void) category;
-	(void) level;
-	(void) format;
-	(void) args;
+	/* DEBUG/STUB 每个 SIO 轮次都会刷、4 核并发能把帧循环拖垮，必须压掉；
+	 * 但 WARN 以上保留，否则看不到协调器为什么拒绝/中止一次传输。 */
+	if (level & (mLOG_FATAL | mLOG_ERROR | mLOG_WARN | mLOG_GAME_ERROR)) {
+		vfprintf(stderr, format, args);
+		fputc('\n', stderr);
+	}
 }
 static struct mLogger _silentLogger = { _silentLog, NULL };
 
@@ -3640,29 +3663,49 @@ static void _quietLogs(void) {
 
 static void* _lsrThread(void* arg) {
 	struct LockstepRunCtx* ctx = (struct LockstepRunCtx*) arg;
-	for (int f = 0; f < ctx->frames; ++f) {
+	for (int f = 0; f < ctx->frames && !g_lsrStop; ++f) {
 		if (g_lsrAbort) {
 			break;
 		}
 		if ((f & 0x1F) == 0) {
 			fprintf(stderr, "lockstep-run: core %d frame %d\n", ctx->slot, f);
 		}
+		/* 空测试 ROM 停在 ROM 入口死循环，永远不会自己写 SIOCNT。必须由
+		 * 主机持续拉起 START，协调器才有 TRANSFER_START 事件、才会调用
+		 * _setData 注入并广播 4 个字。只发一次的话，从机处理完事件后会
+		 * park 等下一个主机事件并一直睡到看门狗超时 —— 真实 gen8 在
+		 * 联机中心里每帧都发 MULTI，所以这里也每帧发一次。 */
+		if (ctx->slot == 0 && f >= 8) {
+			mgbaMobilePoke16(ctx->emu, 0x04000128u, 0x2083u);  /* MULTI + START */
+		}
 		/* 发送字由锁步协调器的测试注入钩子直接提供（0x1000+playerId），见
-		 * testLockstepRun 的 mgbaMobileSioSetInject 调用。这里只需跑帧，游戏
-		 * 照常驱动 MULTI 传输；协调器负责收齐 4 个字并回写所有核的 SIOMULTI。 */
+		 * testLockstepRun 的 mgbaMobileSioSetInject 调用。协调器负责收齐
+		 * 4 个字并回写所有核的 SIOMULTI。 */
 		mgbaMobileRunFrames(ctx->emu, 1);
-		/* 每帧采样一次 SIOMULTI：若 4 字全非 0xFFFF，记一次「完整传输」曾发生。 */
+		/* 每帧采样一次 SIOMULTI：只认 4 个字全部等于注入值。旧判据
+		 * 「全非 0xFFFF」会把空 ROM 里的全 0 残值误判成一次完整传输。 */
 		uint32_t r0 = mgbaMobilePeek16(ctx->emu, 0x04000120u);
 		uint32_t r1 = mgbaMobilePeek16(ctx->emu, 0x04000122u);
 		uint32_t r2 = mgbaMobilePeek16(ctx->emu, 0x04000124u);
 		uint32_t r3 = mgbaMobilePeek16(ctx->emu, 0x04000126u);
-		if (r0 != 0xFFFFu && r1 != 0xFFFFu && r2 != 0xFFFFu && r3 != 0xFFFFu) {
-			ctx->everClean = 1;
+		if (r0 == 0x1000u && r1 == 0x1001u && r2 == 0x1002u && r3 == 0x1003u) {
+			/* 记录成功交换的快照。退出瞬间 SIOMULTI 很可能已被主机下一轮
+			 * START 重置成 0xFFFF，用终态做断言会产生假失败。 */
+			ctx->recv[0] = r0;
+			ctx->recv[1] = r1;
+			ctx->recv[2] = r2;
+			ctx->recv[3] = r3;
+			if (!ctx->everClean) {
+				ctx->everClean = 1;
+				/* 4 核都拿到完整注入字后主流程就可以收尾，不必等满帧数。 */
+				pthread_mutex_lock(&g_lsrDataMu);
+				++g_lsrCleanCount;
+				pthread_cond_broadcast(&g_lsrDataCv);
+				pthread_mutex_unlock(&g_lsrDataMu);
+			}
 		}
 	}
-	for (int i = 0; i < 4; ++i) {
-		ctx->recv[i] = mgbaMobilePeek16(ctx->emu, 0x04000120u + (uint32_t) i * 2u);
-	}
+	/* recv 是「最后一次成功交换」的快照，不在这里用终态覆盖。 */
 	ctx->finalFrame = mgbaMobileFrameCounter(ctx->emu);
 	return NULL;
 }
@@ -3697,9 +3740,23 @@ static void testLockstepRun(const char* romPath) {
 	}
 	expect(mgbaMobileLinkIsLockstep(emus[0]), "lockstep-run: host reports lockstep");
 
+	/* 4 核统一进 MULTI 模式。BIOS 探测后实测 siocnt=0x2000 但 rcnt=0x8000，
+	 * _switchMode 把 (rcnt&0xC000)|(siocnt&0x3000) 一起算，结果 mode=8
+	 * (JOYBUS)。此时只写 SIOCNT 因 (value^siocnt)&0x3000==0 根本不触发
+	 * 模式切换，写 START 也只会走 default 分支，协调器永远收不到 start。
+	 * 必须再写 RCNT=0 清掉 JOYBUS 位，才会切到 MULTI(mode=2)。
+	 * 4 个线程开跑前顺序做完，避免模式切换事件跨线程竞态；真实 gen8 ROM
+	 * 由游戏进入联机中心时自己完成同样的配置。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobilePoke16(emus[i], 0x04000128u, 0x2003u);  /* SIOCNT: MULTI, baud=3, START=0 */
+		mgbaMobilePoke16(emus[i], 0x04000134u, 0x0000u);  /* RCNT: clear JOYBUS */
+	}
+	fprintf(stderr, "lockstep-run: SIO set to MULTI; host siocnt=%04X\n",
+	        mgbaMobilePeek16(emus[0], 0x04000128u));
+
 	/* 打开锁步发送字注入：协调器每轮直接以 0x1000+playerId 作为各核发往对端的
 	 * 字，绕开真实游戏 ROM 对 SIOMLT_SEND 的改写，得到确定性 4 字 MULTI 传输。
-	 * 游戏照常驱动 MULTI 传输，协调器照常收齐 4 字并广播回所有核 SIOMULTI。 */
+	 * 主机在第 8 帧拉起 START（见 _lsrThread），协调器照常收齐 4 字并广播。 */
 	mgbaMobileSioSetInject(true);
 	fprintf(stderr, "lockstep-run: injected deterministic send words; host pc=%08X\n",
 	        mgbaMobileCpuPc(emus[0]));
@@ -3708,27 +3765,56 @@ static void testLockstepRun(const char* romPath) {
 		ctx[i].emu = emus[i];
 		ctx[i].slot = i;
 		ctx[i].players = players;
-		ctx[i].frames = 160;
+		ctx[i].frames = 64;
 		ctx[i].recv[0] = ctx[i].recv[1] = ctx[i].recv[2] = ctx[i].recv[3] = 0;
 		ctx[i].finalFrame = 0;
 		ctx[i].everClean = 0;
 	}
 
-	/* 墙钟看门狗：60s 后强制结束，绝不挂死进程。 */
+	/* 墙钟看门狗：20s 后强制结束，绝不挂死进程。 */
 	g_lsrAbort = 0;
+	g_lsrDone = 0;
+	g_lsrStop = 0;
+	g_lsrCleanCount = 0;
+	mgbaLockstepSetAbort(0);
 	pthread_t wd;
-	long wdMs = 30000;
+	long wdMs = 20000;
 	pthread_create(&wd, NULL, _lsrWatchdog, &wdMs);
 
 	for (int i = 0; i < players; ++i) {
 		pthread_create(&threads[i], NULL, _lsrThread, &ctx[i]);
 	}
+
+	/* 等 4 核都观察到完整的 4 字注入（最多 10s），然后主动收尾。
+	 * 空测试 ROM 在最后一次 MULTI 之后不会再发 SIO 事件；若让主机线程
+	 * 先退出，从机会 park 等一个永远不会来的事件直到看门狗超时。 */
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += 10;
+	pthread_mutex_lock(&g_lsrDataMu);
+	while (g_lsrCleanCount < players && !g_lsrAbort) {
+		if (pthread_cond_timedwait(&g_lsrDataCv, &g_lsrDataMu, &deadline) == ETIMEDOUT) {
+			break;
+		}
+	}
+	int allClean = (g_lsrCleanCount == players);
+	pthread_mutex_unlock(&g_lsrDataMu);
+
+	pthread_mutex_lock(&g_lsrWdMu);
+	g_lsrDone = 1;
+	pthread_cond_broadcast(&g_lsrWdCv);
+	pthread_mutex_unlock(&g_lsrWdMu);
+	g_lsrStop = 1;
+	mgbaLockstepSetAbort(1);   /* 唤醒仍 park 在等事件的核，让帧循环立即返回 */
 	for (int i = 0; i < players; ++i) {
 		pthread_join(threads[i], NULL);
 	}
 	pthread_join(wd, NULL);
+	mgbaLockstepSetAbort(0);
 	mgbaMobileSioSetInject(false);   /* 关掉测试注入，避免影响后续拆离/销毁 */
 
+	expect(allClean, "lockstep-run: all 4 cores saw injected MULTI transfer");
+	expect(!g_lsrAbort, "lockstep-run: finished before watchdog fired");
 	/* 同步：4 核帧号都应推进（无死锁，协调器把各核锁在同一步）。 */
 	for (int i = 0; i < players; ++i) {
 		expect(ctx[i].finalFrame > 30, "lockstep-run: core advanced frames");
@@ -3736,8 +3822,9 @@ static void testLockstepRun(const char* romPath) {
 
 	/* 数据：发送字由注入钩子提供，锁步协调器每轮把
 	 * multiData[0..3] = [0x1000,0x1001,0x1002,0x1003] 写回所有核 SIOMULTI。
-	 * 所以每个核都应收到「自己 slot 对应的 4 个已知字」——既验证传输真的
-	 * 发生了（无 0xFFFF 残值），也验证 4 核一致性。 */
+	 * ctx.recv 记录的是「最后一次成功交换」的快照（主机每帧发起新 START
+	 * 会先把 SIOMULTI 重置为 0xFFFF，退出瞬间的终态不可靠）。
+	 * 既验证传输真的发生，也验证 4 核一致性。 */
 	for (int i = 0; i < players; ++i) {
 		fprintf(stderr, "lockstep-run: core %d pc=%08X recv %04X %04X %04X %04X fc=%u everClean=%d%s\n",
 		        i, mgbaMobileCpuPc(emus[i]),
