@@ -351,17 +351,29 @@ public final class GBoyConsoleSet {
     }
 
     /** 可见核经 loadRom 复位后，其锁步驱动随 SIO 复位被卸掉（实测 SIO poll
-     *  出现 drv=0，房间只剩 3 家，握手永远 pc=3）。按 start() 时的原槽位把
-     *  可见核重新挂回房间。在重载+武装完成后立即调用。 */
-    public void rearmLockstepVisible() {
-        if (!lockstepActive || primary == null || linkPort < 0) {
-            return;
+     *  出现 drv=0，房间只剩 3 家，握手永远 pc=3；对已卸驱动的核重新
+     *  linkHostLockstep 也返回 false）。唯一可靠路径：整个 consoleSet 重启
+     *  ——stop() 拆镜像、复用同一 socket 会话与可见核，重新 start()（镜像
+     *  冷启动 ~200ms，与可见核的脚本计数天然对齐），镜像核随 start 重新武装。 */
+    public boolean restartAfterReload(int menuAt, int modeDowns) {
+        if (primary == null || !primary.isLoaded()) {
+            return false;
         }
-        boolean ok = visibleIsHost
-                ? primary.linkHostLockstep(linkPort, players, 0)
-                : primary.linkJoinLockstep(linkPort, visibleSlot);
-        android.util.Log.i("mGBA-App", "rearm visible lockstep slot=" + visibleSlot
-                + " host=" + visibleIsHost + " ok=" + ok);
+        GBoyLinkSession net = session;
+        File rom = this.rom;
+        File saves = this.saveDir;
+        File states = this.stateDir;
+        int slot = localSlot;
+        int count = players;
+        boolean lockstep = useLockstep;
+        stop();
+        useLockstep = lockstep;
+        if (!start(primary, net)) {
+            return false;
+        }
+        setBusGame(true, menuAt, modeDowns);
+        android.util.Log.i("mGBA-App", "consoleSet restarted after reload, mirrors rearmed");
+        return true;
     }
 
     /**

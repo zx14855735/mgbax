@@ -2249,12 +2249,14 @@ public class EmulatorActivity extends AppCompatActivity {
                     fpsStamp = nextSlice;
                     // busgame 调试脚本：重载后立刻武装可见核（f=0 = 复位帧），
                     // 必须在模拟线程做——广播线程直接换核会踩已释放的旧核。
-                    // loadRom 的复位会卸掉可见核的锁步驱动，随后重挂回房间。
+                    // loadRom 的复位会卸掉可见核的锁步驱动，整个 consoleSet
+                    // 重启（镜像重建）是唯一可靠的重挂路径。
                     if (pendingBusGameMenuAt >= 0) {
-                        core.busGameStart(0, pendingBusGameMenuAt, pendingBusGameModeDowns);
                         GBoyConsoleSet set = consoleSet;
                         if (set != null) {
-                            set.rearmLockstepVisible();
+                            set.restartAfterReload(pendingBusGameMenuAt, pendingBusGameModeDowns);
+                        } else {
+                            core.busGameStart(0, pendingBusGameMenuAt, pendingBusGameModeDowns);
                         }
                         Log.i(TAG, "busgame visible core armed menuAt="
                                 + pendingBusGameMenuAt + " modeDowns=" + pendingBusGameModeDowns);
