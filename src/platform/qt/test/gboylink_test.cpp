@@ -1863,9 +1863,55 @@ struct LsUser {
 	bool pauseRequested;
 };
 
+/* 菜单光标导航的统计（诊断用）。见 lsInjectKeys 里的 BUSGAME_FORCE_MULTI。 */
+static std::atomic<int> g_forceMultiWrites(0);
+static std::atomic<int> g_menuMaxSeen(0);
+static std::atomic<int> g_menuMaxPerCore[4];
+static std::atomic<int> g_walkDbg[4];   /* idx<<24 | px<<16 | py<<8 | keys */
+/* ChooseHalfPartyForBattle 队伍菜单诊断：
+ * gPartyMenu @0x02032A88，menuType(低4bit) @+8 =0x02032A90（4=CHOOSE_HALF）；
+ * gSelectedOrderFromParty @0x02032AD0，前两字节非 0 表示已选 2 只。 */
+static std::atomic<int> g_partyType[4];
+static std::atomic<int> g_selOrder[4];   /* (s0<<8)|s1 */
+/* 联机房间按键码握手：sPlayerTradingStates @0x03004A10 (4×u8)，
+ * 0x82=PLAYER_TRADING_STATE_UNK_2(已准备)；gFieldLinkPlayerCount @0x03004A39。
+ * sub_8087214() 要全员 0x82 才让 Task_EnterCableClubSeat 推进到开战。 */
+static std::atomic<uint32_t> g_tradeStates[4];
+static std::atomic<int> g_fieldPc(0);
+/* host(core0) 的 gMain.callback2 变化轨迹，诊断游戏到底走过哪些主回调。 */
+static uint32_t g_cb2Trace[64];
+static int g_cb2TraceN = 0;
+/* 终态画面 dump：把 4 核的 video buffer 写成 PPM，转 PNG 后直接看游戏停在
+ * 哪个界面，比继续猜内存快。（早先按帧号 dump 会因窗口内没跑到该帧而落空。） */
+static mColor (*g_lsVideo)[240 * 160] = nullptr;
+static void lsDumpPPM(int idx) {
+	if (!g_lsVideo) { return; }
+	char path[64];
+	snprintf(path, sizeof(path), "ls_core%d.ppm", idx);
+	FILE* fp = fopen(path, "wb");
+	if (!fp) { return; }
+	fprintf(fp, "P6\n240 160\n255\n");
+	for (int y = 0; y < 160; ++y) {
+		for (int x = 0; x < 240; ++x) {
+			uint32_t c = (uint32_t) g_lsVideo[idx][y * 240 + x];
+			unsigned char rgb[3] = {
+				(unsigned char) (c & 0xFFu),
+				(unsigned char) ((c >> 8) & 0xFFu),
+				(unsigned char) ((c >> 16) & 0xFFu)
+			};
+			fwrite(rgb, 1, 3, fp);
+		}
+	}
+	fclose(fp);
+}
+
 void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns) {
 	struct GBA* g = (struct GBA*) core->board;
-	const uint32_t A = 1, START = 8, LEFT = 32, UP = 64, DOWN = 128;
+	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手（f≈1365）就会出现，
+	 * 远早于菜单导航（menuAt=1500）。一旦那时停手，导航到 multi-battle 的
+	 * DOWN/A/UP/LEFT/modeDowns 按键全被跳过，游戏永远进不了对战。实测加过
+	 * 该逻辑后 gstat=0x370 与 tr0=8FFF 全部消失（假 LINKUP）。 */
+	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
 	const int boot = 240;
 	uint32_t keys = 0;
 	if (f >= boot && f < boot + 6) {
@@ -1889,9 +1935,110 @@ void lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDowns)
 	           && f < menuAt + 92 + modeDowns * 14) {
 		keys = A;
 	} else if (f >= menuAt + 240) {
-		keys = ((f % 40) < 25) ? A : 0u;
-	}
+		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
+		 * 开始走位。菜单/握手阶段继续按 A；过早给方向键会在菜单未确认时移动
+		 * 光标，把 3 个核的选择打乱（实测 var8004=[0,5,0,0]）。 */
+		int v8 = GBAView16(g->cpu, 0x0202196Cu);
+		int lt = GBAView16(g->cpu, 0x02027B82u);
+		/* gFieldLinkPlayerCount @0x03004A39：LINKUP 确认完成、玩家进房后
+		 * 才由游戏赋值（两人路径实测 2）。实测它恒为 0 且 trade 全 0，
+		 * 说明 TryBattleLinkup 的 waitstate 还没过 —— 玩家被锁在原地，
+		 * 此时给方向键/选队键全无意义。必须持续按 A 完成 LINKUP 确认。 */
+		int fpc = GBAView8(g->cpu, 0x03004A39u);
+		if (v8 != 5 || (lt != 0x2255 && lt != 0x2211) || fpc < 4) {
+			keys = ((f % 40) < 25) ? A : 0u;
+		} else {
+			/* 文本框优先级最高：CableClub_EventScript_Tutorial 用
+			 * lockall + 两个 msgbox(MSGBOX_DEFAULT) 锁住移动，进房后必须先按 A
+			 * 关掉；Task_EnterCableClubSeat 的 "Please wait for link" 也是文本框。
+			 * sFieldMessageBoxMode @0x020219D0，0=FIELD_MESSAGE_BOX_HIDDEN。 */
+			int mb = GBAView8(g->cpu, 0x020219D0u);
+			if (mb != 0) {
+				keys = ((f % 20) < 8) ? A : 0u;   /* 脉冲产生 JOY_NEW */
+			} else {
+			/* 座位触发后弹出的 ChooseHalfPartyForBattle 队伍菜单：
+			 * gPartyMenu.menuType==4 (PARTY_MENU_TYPE_CHOOSE_HALF)；
+			 * gSelectedOrderFromParty 前两字节非 0 表示已选够 2 只。
+			 * Task_HandleChooseMonInput：A 选怪 / START→MoveCursorToConfirm；
+			 * 选够后 A → Task_ValidateChosenHalfParty → Task_ClosePartyMenu
+			 * → 回脚本 ColosseumPlayerSpotTriggered → 开战。
+			 * 用内存状态驱动，每 24 帧一个「按下 8 帧 / 松开 16 帧」脉冲产生
+			 * JOY_NEW，不盲按。 */
+			int ptype = GBAView8(g->cpu, 0x02032A90u) & 0x0Fu;
+			int s0 = GBAView8(g->cpu, 0x02032AD0u);
+			int s1 = GBAView8(g->cpu, 0x02032AD1u);
+			g_partyType[idx].store(ptype);
+			g_selOrder[idx].store((s0 << 8) | s1);
+			if (ptype == 4) {
+				uint32_t want;
+				if (s0 == 0 || s1 == 0) {
+					want = A;                    /* 还没选够 2 只 */
+				} else {
+					/* 选够：交替 START(移光标到确认) / A(确认) */
+					want = (((f / 24) % 2) == 0) ? START : A;
+				}
+				keys = ((f % 24) < 8) ? want : 0u;
+			} else {
+				/* 队伍菜单未弹出：闭环走位到 4P 座位（后备）。 */
+				static const int seatX[4] = {3, 10, 3, 10};
+				static const int seatY[4] = {4, 4, 6, 6};
+				uint32_t sb1 = GBAView32(g->cpu, 0x03004964u);
+				int px = -1, py = -1;
+				if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+					px = (int16_t) GBAView16(g->cpu, sb1 + 0u);
+					py = (int16_t) GBAView16(g->cpu, sb1 + 2u);
+				}
+				if (px < 0) {
+					keys = ((f % 40) < 25) ? A : 0u;
+				} else if (py > seatY[idx]) {
+					keys = UP;
+				} else if (py < seatY[idx]) {
+					keys = DOWN;
+				} else if (px > seatX[idx]) {
+					keys = LEFT;
+				} else if (px < seatX[idx]) {
+					keys = RIGHT;
+				} else {
+					keys = ((f % 40) < 25) ? A : 0u;
+				}
+			g_walkDbg[idx].store((idx << 24) | ((px & 0xFF) << 16)
+			                     | ((py & 0xFF) << 8) | (keys & 0xFF));
+			}
+			}   /* 闭合「无文本框」分支 */
+		}       /* 闭合「已进房」分支 */
+	}           /* 闭合 f>=menuAt+240 分支 */
 	core->setKeys(core, keys);
+	/* 内存驱动的确定性导航（BUSGAME_FORCE_MULTI，默认开）。
+	 * 菜单刚弹出时 sProcessInputDelay 会吃掉 DOWN，盲按 modeDowns 次常常一次都
+	 * 不生效 —— 实测 4 核 var8004 全停在 1(USING_SINGLE_BATTLE)、multiTypeMask=0，
+	 * 于是 4 个玩家按 2 人单打项目比对，f≈2393 掉线。
+	 * 关键区分：联机服务菜单 4 项（maxCursorPos=3），战斗模式菜单 5 项
+	 * （MultichoiceList_BattleMode，maxCursorPos=4）。只在 max==4 时把
+	 * sMenu.cursorPos @0x020296C2 钳到 2（第 2 项「多人/4P」）。第一版无此
+	 * 区分，把服务菜单也钳到 2，结果 4 核一致进了「记录角」(var8004=4,
+	 * linkType=0x3311)。VAR_RESULT=2 仍由游戏脚本自己转成
+	 * VAR_0x8004=USING_MULTI_BATTLE(5)，不绕过任何游戏逻辑。 */
+	static int forceMulti = -1;
+	if (forceMulti < 0) {
+		bool ok = false;
+		int v = qEnvironmentVariableIntValue("BUSGAME_FORCE_MULTI", &ok);
+		forceMulti = ok ? v : 1;
+	}
+	/* 不设上界：菜单实际弹出/确认比固定帧窗口晚，早退会让光标回落到 0，
+	 * 导致 4 核 var8004 不一致（实测 [0,5,0,0]）。 */
+	if (forceMulti && f >= menuAt) {
+		int mx = GBAView8(g->cpu, 0x020296C4u);
+		if (mx > g_menuMaxSeen.load()) { g_menuMaxSeen.store(mx); }
+		if (mx > g_menuMaxPerCore[idx].load()) { g_menuMaxPerCore[idx].store(mx); }
+		if (mx == 4) {
+			int cur = GBAView8(g->cpu, 0x020296C2u);
+			if (cur != 2) {
+				int cc = 0;
+				GBAStore8(g->cpu, 0x020296C2u, (int8_t) 2, &cc);
+				g_forceMultiWrites.fetch_add(1);
+			}
+		}
+	}
 	/* 仅给 0 号核（主机）补 SD/Ready(bit3)：gen8 用 (SIOCNT & 0xC)==0x8 判主机。
 	 * 只置 bit3、不碰 bit2(SI/主从，协调器已置 0)、bit7(START，协调器管理)。 */
 	if (idx == 0) {
@@ -1981,6 +2128,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	}
 
 	static mColor video[4][240 * 160];
+	g_lsVideo = video;
 	struct mCore* cores[4] = {};
 	for (int i = 0; i < players; ++i) {
 		VFile* romVf = VFileOpen(romUtf8.constData(), O_RDONLY);
@@ -2024,6 +2172,12 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	std::atomic<bool> hold[4];
 	std::atomic<bool> held[4];
 	std::atomic<bool> stop(false);
+	/* 驱动模型开关。threaded（默认）= 4 线程自由竞争，已验证 LINKUP 可达但
+	 * 有 OS 分时抖动；serial = 单一调度线程严格轮转驱动 4 核，sleep/wake 退化
+	 * 为纯标志（无线程挂起、无分时），推进顺序完全确定。依据：协调器源码里
+	 * 没有任何阻塞/condvar 等待，共享状态仅一把短 mutex，全靠 user->sleep/wake
+	 * 暂停恢复各核，故单线程轮转在语义上等价且更确定。 */
+	const bool serialDriver = envInt("BUSGAME_DRIVER_SERIAL", 0) != 0;
 	for (int i = 0; i < players; ++i) {
 		frames[i].store(0);
 		hold[i].store(false);
@@ -2041,11 +2195,130 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		users[i].d.playerIdChanged = nullptr;
 	}
 
-	/* 每核一个 std::thread，用 runLoop 按“真实帧”推进（与官方 mCoreThread 的
-	 * runLoop 等价：一次只跑到下一个 timing 事件，锁步以小步跨线程同步）。这
-	 * 避免 runFrame 一次跑 ~28 万周期把单核冲到前面、睡死其它核的死锁。导航
-	 * 仍按真实帧计数（f），runLoop 跑到 frameCounter 进一帧即算一帧。hold 旗
-	 * 标用于干净地暂停 worker 以便挂锁步驱动。 */
+	/* 全程峰值追踪：监控线程在锁步跑动期间持续采样各核 gLink 状态，
+	 * 记录“到过的最高 pc / 最高 st / 是否见过 0x8FFF 主握手字”。终态掉线
+	 * 时仍能区分“全员曾连上后掉”与“个别核从未连上”。 */
+	std::atomic<int> maxSt[4];
+	std::atomic<int> maxPc[4];
+	std::atomic<bool> saw8FFF[4];
+	std::atomic<bool> monitorStop(false);
+	/* 4 核帧号离散度峰值：量化调度抖动。serial 下恒为 0（严格同步）。 */
+	std::atomic<int> maxFrameSpread(0);
+	/* 严格 LINKUP 判据：必须观察到「游戏态 st==4 且 pc==players」。
+	 * 单看 tr0==0x8FFF 会假阳性——握手过程中主握手字会短暂出现在接收缓冲，
+	 * 但游戏并未把状态推进到 4（实测：8FFF 见过而 gstat=0x370 从未出现）。
+	 * 真 LINKUP 的硬标志是 gLinkStatus 带 0x100 且 st=4。 */
+	std::atomic<int> st4Samples(0);
+	std::atomic<int> firstSt4Frame(-1);
+	std::atomic<int> lastSt4Frame(-1);
+	/* 真正的终点判据：进入对战。gMain.callback2 在 0x020290E8
+	 * （gMain=0x020290E4，struct Main 偏移 +4）。BattleMainCB2=0x0809AFCC，
+	 * battle_main.o 的 .text 为 0x08099848..0x080A30FC，含 Thumb 位。
+	 * 注意 LST 里打印的 0x03002AD4 是 gLinkCallback，不是 callback2。 */
+	std::atomic<int> battleSamples(0);
+	std::atomic<int> firstBattleFrame(-1);
+	std::atomic<int> lastBattleFrame(-1);
+	std::atomic<uint32_t> lastCb2(0);
+	/* 菜单选择结果（gen8 实测地址）：
+	 * gSpecialVar_0x8004 @0x0202196C 须为 5 (USING_MULTI_BATTLE)；
+	 * gLinkType         @0x02027B82 须为 0x2255 (LINKTYPE_MULTI_BATTLE)；
+	 * gSpecialVar_Result@0x0202197C 1=SUCCESS 3=项目不一致。
+	 * 用内存判定「4 核是否都选中多人模式」，避免靠盲按帧号猜。 */
+	std::atomic<int> lastLinkType[4];
+	std::atomic<int> lastVar8004[4];
+	std::atomic<int> lastResult[4];
+	std::atomic<int> multiTypeMask(0);
+	std::atomic<int> varMultiMask(0);
+	/* 玩家格坐标（gSaveBlock1Ptr @0x03004964 → SaveBlock1.pos，x@+0 y@+2）。
+	 * 4P 竞技场座位 (3,4)/(10,4)/(3,6)/(10,6)，warp 点是 (5,8)。 */
+	std::atomic<int> lastPosX[4];
+	std::atomic<int> lastPosY[4];
+	for (int i = 0; i < players; ++i) {
+		maxSt[i].store(0);
+		maxPc[i].store(0);
+		saw8FFF[i].store(false);
+		lastLinkType[i].store(0);
+		lastVar8004[i].store(0);
+		lastResult[i].store(0);
+		lastPosX[i].store(-1);
+		lastPosY[i].store(-1);
+	}
+
+	/* 两种驱动模型：
+	 * threaded（默认）：每核一个 std::thread，runLoop 按真实帧推进。一次
+	 *   runLoop 只跑到下一个 timing 事件（小步），避免 runFrame 一次跑
+	 *   ~28 万周期把单核冲到前面、睡死其它核。锁步靠协调器 sleep/wake
+	 *   跨线程会合。已验证能让 4 核 LINKUP，但每帧上百次 park/unpark +
+	 *   4 线程自由竞争带来 OS 分时抖动。
+	 * serial：单一调度线程严格轮转驱动全部 4 核，每轮对「未被 sleep 的核」
+	 *   各调一次 runLoop。协调器的 sleep/wake 退化为纯标志，无线程挂起、
+	 *   无内核调度、无分时竞争 —— 推进顺序 100% 确定。协调器内不做任何
+	 *   阻塞等待（源码确认），故此模型语义等价且更确定。
+	 */
+	if (serialDriver) {
+		threads[0] = std::thread([&]() {
+			bool serAttached = false;
+			int f = 0;
+			while (f < maxFrames) {
+				++f;
+				/* 帧首：所有核按同一帧号注入按键（严格同步，无先后差）。 */
+				for (int k = 0; k < players; ++k) {
+					frames[k].store(f);
+					lsInjectKeys(cores[k], k, f, pctx[k].menuAt, pctx[k].modeDowns);
+				}
+				uint32_t base[4];
+				for (int k = 0; k < players; ++k) {
+					base[k] = ((struct GBA*) cores[k]->board)->video.frameCounter;
+				}
+				/* 帧内：严格轮转小步，直到所有核都进帧。被协调器 sleep 的核
+				 * 本轮跳过（等价于它 park），wake 后下一轮恢复。 */
+				int guard = 0;
+				int allPaused = 0;
+				while (guard++ < 500000) {
+					int ran = 0;
+					for (int k = 0; k < players; ++k) {
+						if (users[k].pauseRequested) {
+							continue;
+						}
+						cores[k]->runLoop(cores[k]);
+						++ran;
+					}
+					if (ran == 0) {
+						if (++allPaused > 2000) {
+							fprintf(stderr, "LS: serial DEADLOCK (all %d cores asleep at frame %d)\n",
+							        players, f);
+							break;
+						}
+						std::this_thread::yield();
+					} else {
+						allPaused = 0;
+					}
+					bool all = true;
+					for (int k = 0; k < players; ++k) {
+						if (((struct GBA*) cores[k]->board)->video.frameCounter == base[k]) {
+							all = false;
+							break;
+						}
+					}
+					if (all) {
+						break;
+					}
+				}
+				/* 第 10 帧后挂锁步驱动：单线程、且此刻无 runLoop 在跑，
+				 * 无需 threaded 路径的 hold 暂停协议。 */
+				if (!serAttached && f >= 10) {
+					for (int k = 0; k < players; ++k) {
+						GBASIOLockstepDriverCreate(&nodes[k], &users[k].d);
+						GBASIOLockstepCoordinatorAttach(&coord, &nodes[k]);
+						cores[k]->setPeripheral(cores[k], mPERIPH_GBA_LINK_PORT, &nodes[k].d);
+					}
+					serAttached = true;
+					fprintf(stderr, "LS: serial attached %d cores at frame %d\n", players, f);
+				}
+			}
+			fprintf(stderr, "LS: serial driver finished at frame %d\n", f);
+		});
+	} else {
 		for (int i = 0; i < players; ++i) {
 		threads[i] = std::thread([&, i]() {
 			struct mCore* core = cores[i];
@@ -2080,6 +2353,7 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 				         && !stop.load() && !hold[i].load());
 			}
 		});
+		}
 	}
 
 	auto t0 = std::chrono::steady_clock::now();
@@ -2105,7 +2379,11 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		}
 		QThread::msleep(2);
 	}
-	if (attached) {
+	/* serial 路径已在自己的调度线程内、且无 runLoop 在跑时完成 attach，
+	 * 主线程不得重复挂驱动（会破坏协调器 player 表）。 */
+	if (attached && serialDriver) {
+		fprintf(stderr, "LS: serial attach handled inside driver thread\n");
+	} else if (attached) {
 		for (int i = 0; i < players; ++i) {
 			hold[i].store(true);
 		}
@@ -2135,6 +2413,82 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		fprintf(stderr, "LS: FAIL (never reached attach frame %d)\n", attachThreshold);
 	}
 
+	/* 监控线程：锁步跑动期间持续采样各核 gLink 峰值。读内存是只读的、
+	 * 诊断用途，偶发撕裂读不影响峰值判定（数千次采样必然覆盖峰值）。 */
+	std::thread monitor([&]() {
+		while (!monitorStop.load()) {
+			bool anySt4 = false;
+			for (int i = 0; i < players; ++i) {
+				struct GBA* gba = (struct GBA*) cores[i]->board;
+				int pc = GBAView8(gba->cpu, 0x03002AF7u);
+				int st = GBAView8(gba->cpu, 0x03002AF5u);
+				int tr0 = GBAView16(gba->cpu, 0x03002AF8u);
+				if (pc > maxPc[i].load()) { maxPc[i].store(pc); }
+				if (st > maxSt[i].load()) { maxSt[i].store(st); }
+				if (tr0 == 0x8FFF) { saw8FFF[i].store(true); }
+				if (st == 4 && pc == players) { anySt4 = true; }
+			}
+			/* 严格 LINKUP：游戏态 st==4 且 pc==players，记录首末帧与采样数。 */
+			int nowFrame = frames[0].load();
+			if (anySt4) {
+				if (firstSt4Frame.load() < 0) { firstSt4Frame.store(nowFrame); }
+				lastSt4Frame.store(nowFrame);
+				st4Samples.fetch_add(1);
+			}
+			/* 进对战：任一核 gMain.callback2 落在 battle_main.o .text 段。
+			 * 同时采 4 核的菜单选择结果（gLinkType / var8004 / result）。 */
+			bool anyBattle = false;
+			for (int i = 0; i < players; ++i) {
+				struct GBA* gba = (struct GBA*) cores[i]->board;
+				uint32_t cb2 = GBAView32(gba->cpu, 0x020290E8u);
+				lastCb2.store(cb2);
+				if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
+					anyBattle = true;
+				}
+				int lt = GBAView16(gba->cpu, 0x02027B82u);
+				int v8 = GBAView16(gba->cpu, 0x0202196Cu);
+				int rs = GBAView16(gba->cpu, 0x0202197Cu);
+				lastLinkType[i].store(lt);
+				lastVar8004[i].store(v8);
+				lastResult[i].store(rs);
+				if (lt == 0x2255) { multiTypeMask.fetch_or(1 << i); }
+				if (v8 == 5) { varMultiMask.fetch_or(1 << i); }
+				uint32_t sb1 = GBAView32(gba->cpu, 0x03004964u);
+				if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+					lastPosX[i].store((int16_t) GBAView16(gba->cpu, sb1 + 0u));
+					lastPosY[i].store((int16_t) GBAView16(gba->cpu, sb1 + 2u));
+				}
+				uint32_t ts = (uint32_t) GBAView8(gba->cpu, 0x03004A10u)
+				              | ((uint32_t) GBAView8(gba->cpu, 0x03004A11u) << 8)
+				              | ((uint32_t) GBAView8(gba->cpu, 0x03004A12u) << 16)
+				              | ((uint32_t) GBAView8(gba->cpu, 0x03004A13u) << 24);
+				g_tradeStates[i].fetch_or(ts);   /* 累积曾出现过的状态位 */
+				if (i == 0) {
+					int fpc = GBAView8(gba->cpu, 0x03004A39u);
+					if (fpc > g_fieldPc.load()) { g_fieldPc.store(fpc); }
+					if (g_cb2TraceN == 0 || g_cb2Trace[g_cb2TraceN - 1] != cb2) {
+						if (g_cb2TraceN < 64) { g_cb2Trace[g_cb2TraceN++] = cb2; }
+					}
+				}
+			}
+			if (anyBattle) {
+				if (firstBattleFrame.load() < 0) { firstBattleFrame.store(nowFrame); }
+				lastBattleFrame.store(nowFrame);
+				battleSamples.fetch_add(1);
+			}
+			/* 帧号离散度：量化 4 核推进错位。serial 下恒 0（严格同步）。 */
+			int lo = frames[0].load(), hi = lo;
+			for (int j = 1; j < players; ++j) {
+				int v = frames[j].load();
+				if (v < lo) { lo = v; }
+				if (v > hi) { hi = v; }
+			}
+			int spread = hi - lo;
+			if (spread > maxFrameSpread.load()) { maxFrameSpread.store(spread); }
+			QThread::msleep(25);
+		}
+	});
+
 	while (elapsedMs() < wallLimitMs) {
 		bool all = true;
 		for (int i = 0; i < players; ++i) {
@@ -2148,33 +2502,115 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 		QThread::msleep(50);
 	}
 
-	int maxPc[4] = {0, 0, 0, 0};
+	monitorStop.store(true);
+	if (monitor.joinable()) {
+		monitor.join();
+	}
+	/* 终态画面：4 核各写一张 PPM，供转 PNG 后直接观察游戏界面。 */
+	for (int i = 0; i < players; ++i) {
+		lsDumpPPM(i);
+	}
+	/* serial 路径只有 1 个调度线程且会自然跑完，join 后收集更干净；
+	 * threaded 路径的核仍卡在锁步 wait，不 join（见文件尾 _Exit 说明）。 */
+	if (serialDriver && threads[0].joinable()) {
+		threads[0].join();
+	}
+
+	int terminalPc[4] = {0, 0, 0, 0};
+	int failures = 0;
+	int everLinked = 0;
 	for (int i = 0; i < players; ++i) {
 		struct GBA* gba = (struct GBA*) cores[i]->board;
 		int pc = GBAView8(gba->cpu, 0x03002AF7u);
 		int st = GBAView8(gba->cpu, 0x03002AF5u);
 		int im = GBAView8(gba->cpu, 0x03002AF4u);
 		int lc = GBAView8(gba->cpu, 0x03002AF6u);
-		maxPc[i] = pc;
-		fprintf(stderr, "LS core %d: frame=%d im=%d lc=%d pc=%d st=%d\n",
-		        i, frames[i].load(), im, lc, pc, st);
-	}
-
-	int failures = 0;
-	for (int i = 0; i < players; ++i) {
-		if (maxPc[i] < players) {
+		terminalPc[i] = pc;
+		if (maxPc[i].load() < players) {
 			++failures;
 		}
+		if (saw8FFF[i].load()) {
+			++everLinked;
+		}
+		fprintf(stderr, "LS core %d: frame=%d im=%d lc=%d pc=%d st=%d "
+		        "peakPc=%d peakSt=%d saw8FFF=%d\n",
+		        i, frames[i].load(), im, lc, pc, st,
+		        maxPc[i].load(), maxSt[i].load(), saw8FFF[i].load() ? 1 : 0);
 	}
-	fprintf(stderr, "LS: %s (%d cores reached playerCount=%d)\n",
-	        failures ? "FAIL" : "PASS", players, players);
+
+	/* 两层判据：
+	 * linkedUp  = 联机层握手达成（游戏态 st==4 且 pc==players）。仅 8FFF/pc
+	 *             峰值会假阳性，必须看 st。
+	 * inBattle  = 真正进入对战（gMain.callback2 落在 battle_main.o），这才是
+	 *             3/4 人联机要跑通的目标。退出码以 inBattle 为准。 */
+	bool linkedUp = (failures == 0) && (everLinked > 0) && (st4Samples.load() > 0);
+	bool inBattle = (battleSamples.load() > 0);
+	/* stdout/stderr 都有 GBA 内核日志且无缓冲，逐字段 fprintf 会被交错截断。
+	 * 先把两行结论拼进单个缓冲，再一次性写出；同时落到独立结果文件，
+	 * 供脚本可靠读取（文件写入是一次 fputs，不会被别的输出插队）。 */
+	char report[2048];
+	snprintf(report, sizeof(report),
+	        "LS: %s BATTLE=%s driver=%s frameSpread=%d "
+	        "st4Samples=%d st4Frames=[%d,%d] battleSamples=%d battleFrames=[%d,%d] "
+	        "lastCb2=%08X (%d/%d cores reached playerCount=%d, %d cores saw 8FFF, "
+	        "terminal pc=[%d,%d,%d,%d])\n"
+	        "LS menu: linkType=[%04X,%04X,%04X,%04X] "
+	        "var8004=[%d,%d,%d,%d] result=[%d,%d,%d,%d] "
+	        "multiTypeMask=%X varMultiMask=%X forceWrites=%d menuMaxSeen=%d\n"
+	        "LS field: pos=[(%d,%d),(%d,%d),(%d,%d),(%d,%d)]\n"
+	        "LS dbg: menuMax=[%d,%d,%d,%d] walk=[%08X,%08X,%08X,%08X]\n"
+	        "LS party: type=[%d,%d,%d,%d] sel=[%04X,%04X,%04X,%04X]\n"
+	        "LS room: tradeEver=[%08X,%08X,%08X,%08X] maxFieldPc=%d\n",
+	        linkedUp ? "LINKUP-ACHIEVED" : "FAIL",
+	        inBattle ? "YES" : "NO",
+	        serialDriver ? "serial" : "threaded", maxFrameSpread.load(),
+	        st4Samples.load(), firstSt4Frame.load(), lastSt4Frame.load(),
+	        battleSamples.load(), firstBattleFrame.load(), lastBattleFrame.load(),
+	        lastCb2.load(),
+	        players - failures, players, players, everLinked,
+	        terminalPc[0], terminalPc[1], terminalPc[2], terminalPc[3],
+	        lastLinkType[0].load(), lastLinkType[1].load(),
+	        lastLinkType[2].load(), lastLinkType[3].load(),
+	        lastVar8004[0].load(), lastVar8004[1].load(),
+	        lastVar8004[2].load(), lastVar8004[3].load(),
+	        lastResult[0].load(), lastResult[1].load(),
+	        lastResult[2].load(), lastResult[3].load(),
+	        multiTypeMask.load(), varMultiMask.load(),
+	        g_forceMultiWrites.load(), g_menuMaxSeen.load(),
+	        lastPosX[0].load(), lastPosY[0].load(),
+	        lastPosX[1].load(), lastPosY[1].load(),
+	        lastPosX[2].load(), lastPosY[2].load(),
+	        lastPosX[3].load(), lastPosY[3].load(),
+	        g_menuMaxPerCore[0].load(), g_menuMaxPerCore[1].load(),
+	        g_menuMaxPerCore[2].load(), g_menuMaxPerCore[3].load(),
+	        g_walkDbg[0].load(), g_walkDbg[1].load(),
+	        g_walkDbg[2].load(), g_walkDbg[3].load(),
+	        g_partyType[0].load(), g_partyType[1].load(),
+	        g_partyType[2].load(), g_partyType[3].load(),
+	        g_selOrder[0].load(), g_selOrder[1].load(),
+	        g_selOrder[2].load(), g_selOrder[3].load(),
+	        g_tradeStates[0].load(), g_tradeStates[1].load(),
+	        g_tradeStates[2].load(), g_tradeStates[3].load(),
+	        g_fieldPc.load());
+	fputs(report, stdout);
+	fflush(stdout);
+	FILE* rf = fopen("ls_result.txt", "w");
+	if (rf) {
+		fputs(report, rf);
+		fprintf(rf, "LS cb2trace (%d):", g_cb2TraceN);
+		for (int i = 0; i < g_cb2TraceN; ++i) {
+			fprintf(rf, " %08X", g_cb2Trace[i]);
+		}
+		fputc('\n', rf);
+		fclose(rf);
+	}
 	fflush(stderr);
 
 	/* 核仍卡在锁步 wait 里，逐一 End/Join + deinit 会与协调器互相等待而
 	 * 段错误（实测 139）。这是一次性诊断进程，直接 _Exit 让 OS 回收，
-	 * 避免脆弱的拆解顺序。 */
-	_Exit(failures ? 1 : 0);
-	return failures ? 1 : 0;
+	 * 避免脆弱的拆解顺序。退出码：真正进对战=0，否则=1。 */
+	_Exit(inBattle ? 0 : 1);
+	return inBattle ? 0 : 1;
 }
 
 
