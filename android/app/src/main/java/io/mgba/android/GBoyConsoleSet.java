@@ -70,6 +70,8 @@ public final class GBoyConsoleSet {
     private long targetFrame = -1L;
     private long frameTimeouts;
     private int linkPort;
+    private boolean visibleIsHost;
+    private int visibleSlot;
     /* start() 里实际生效的锁步模式：beginFrame/endFrame 的 Java 帧栅栏只服务
      * 共享内存总线（它就是那种模式下的同步手段）；native 锁步自己会在 SIO
      * 轮次会合，帧栅栏会把镜像门成每帧一停、可见核每帧吃满超时。 */
@@ -196,6 +198,10 @@ public final class GBoyConsoleSet {
                 slotOf[0] = localSlot - 1;
                 taken[localSlot - 1] = true;
             }
+            /* busgame reload 后可见核的 SIO 驱动会被核复位卸掉（drv=0、退出
+             * 锁步房间），需要按原槽位重挂；把这两个量存下来供重挂用。 */
+            visibleIsHost = (hostIdx == 0);
+            visibleSlot = slotOf[0];
             int next = 1;
             for (int k = 0; k < cores; ++k) {
                 if (k == hostIdx || (k == 0 && hostIdx != 0)) {
@@ -342,6 +348,20 @@ public final class GBoyConsoleSet {
                 core.busGameStop();
             }
         }
+    }
+
+    /** 可见核经 loadRom 复位后，其锁步驱动随 SIO 复位被卸掉（实测 SIO poll
+     *  出现 drv=0，房间只剩 3 家，握手永远 pc=3）。按 start() 时的原槽位把
+     *  可见核重新挂回房间。在重载+武装完成后立即调用。 */
+    public void rearmLockstepVisible() {
+        if (!lockstepActive || primary == null || linkPort < 0) {
+            return;
+        }
+        boolean ok = visibleIsHost
+                ? primary.linkHostLockstep(linkPort, players, 0)
+                : primary.linkJoinLockstep(linkPort, visibleSlot);
+        android.util.Log.i("mGBA-App", "rearm visible lockstep slot=" + visibleSlot
+                + " host=" + visibleIsHost + " ok=" + ok);
     }
 
     /**

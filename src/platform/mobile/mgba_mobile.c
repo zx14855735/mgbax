@@ -3755,20 +3755,20 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 				emu->sioPrevAdv = (uint32_t) adv;
 			}
 			if ((uint32_t) hs != emu->sioPrevHs) {
-				MOBILE_LOGI("HS %u->%d st=%d pc=%d adv=%d m0=%04X m1=%04X me=%d",
-				            emu->sioPrevHs, hs, st, pc, adv, m0, m1, netLinkPlayer(emu->link));
+				MOBILE_LOGI("HS idx=%d %u->%d st=%d pc=%d adv=%d m0=%04X m1=%04X me=%d",
+				            emu->busGameIdx, emu->sioPrevHs, hs, st, pc, adv, m0, m1, netLinkPlayer(emu->link));
 				emu->sioPrevHs = (uint32_t) hs;
 			}
 			if (st != emu->sioPrevLinkState || pc != emu->sioPrevPc) {
-				MOBILE_LOGI("ST %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
-				            emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
+				MOBILE_LOGI("ST idx=%d %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
+				            emu->busGameIdx, emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
 				            netLinkPlayer(emu->link));
 				emu->sioPrevLinkState = st;
 				emu->sioPrevPc = pc;
 			}
 			if (m0 != emu->sioPrevM0 || m1 != emu->sioPrevM1) {
-				MOBILE_LOGI("MLT m0=%04X m1=%04X st=%d pc=%d hs=%d adv=%d me=%d",
-				            m0, m1, st, pc, hs, adv, netLinkPlayer(emu->link));
+				MOBILE_LOGI("MLT idx=%d m0=%04X m1=%04X st=%d pc=%d hs=%d adv=%d me=%d",
+				            emu->busGameIdx, m0, m1, st, pc, hs, adv, netLinkPlayer(emu->link));
 				emu->sioPrevM0 = m0;
 				emu->sioPrevM1 = m1;
 			}
