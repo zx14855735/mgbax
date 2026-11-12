@@ -47,9 +47,9 @@ final class LobbyKcpChannel {
     private static let handshakeWaitMs: Int64 = 3000
 
     private let kcp: Kcp?
-    private let socketFd: Int32
+    private var socketFd: Int32
     private let peer: sockaddr_in
-    private let tcpSocket: Int32
+    private var tcpSocket: Int32
     private let inbox = Inbox()
     private let lock = NSLock()
     private var runningFlag = true
