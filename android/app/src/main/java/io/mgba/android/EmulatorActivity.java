@@ -177,7 +177,9 @@ public class EmulatorActivity extends AppCompatActivity {
      *  {@code am broadcast -a io.mgba.android.action.GBOY_LOCAL_LINK
      *  --ez host true --ei tcp 19876 --ei sio 18781 --es rom /sdcard/rom.gba},
      *  or {@code --ez host false --es peer 10.0.2.2 ...} to join.
-     *  {@code --ez stop true} tears the link down. */
+     *  {@code --ez ncore true --ez use_lockstep true --ei players 4} switches
+     *  the 3/4-player in-process consoles to the official lockstep SIO room
+     *  (use_lockstep implies ncore). {@code --ez stop true} tears the link down. */
     private final BroadcastReceiver localLinkReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
