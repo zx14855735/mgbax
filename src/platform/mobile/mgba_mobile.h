@@ -154,6 +154,13 @@ bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, in
 bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot);
 bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu);
 
+/* 测试/调试用：直接读写本核 GBA 内存（I/O 寄存器同理）。仅锁步集成测试与诊断
+ * 使用，不在产品热路径上。 */
+void mgbaMobilePoke16(struct MgbaMobile* emu, uint32_t addr, uint16_t value);
+uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr);
+/* 当前已渲染帧号（gba->video.frameCounter），用于验证锁步帧循环推进。 */
+uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

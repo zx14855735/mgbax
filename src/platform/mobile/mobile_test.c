@@ -3579,6 +3579,119 @@ static void testLockstep(const char* romPath) {
 	}
 }
 
+/*
+ * 产品侧集成验证：直接走 mgba_mobile.c 的锁步 API（mgbaMobileLinkHostLockstep /
+ * JoinLockstep + mobileRunFramesLocked 的小步 runLoop），而不是 link_lockstep.c
+ * 的底层 API。这是 4 核 GBoyConsoleSet 在设备上的真实代码路径，之前从未被任何
+ * 测试驱动过。
+ *
+ * 验证三件事：
+ *  1) 4 个 MgbaMobile 实例经 Host/Join 全部 attach，且帧循环不互相死锁（帧号都推进）。
+ *  2) 真实 SIO MULTI 传输：每核写不同 SIOMLT_SEND，主机发起 START，协调器收齐后
+ *     回写 SIOMULTI0..3 —— 4 核都应收到全部 4 个字。
+ *  3) 拆离顺序正确（Close/Destroy 不空指针）。
+ */
+struct LockstepRunCtx {
+	struct MgbaMobile* emu;
+	int slot;
+	int players;
+	int frames;
+	uint32_t sendWord;       /* 本核要发的字 */
+	uint32_t recv[4];        /* 收齐后读到的 SIOMULTI0..3 */
+	uint32_t finalFrame;     /* 跑完后的帧号 */
+};
+
+static void* _lsrThread(void* arg) {
+	struct LockstepRunCtx* ctx = (struct LockstepRunCtx*) arg;
+	const uint32_t SIOCNT = 0x04000128;
+	const uint32_t SIOMLT_SEND = 0x0400012A;
+	const uint32_t MULTI_MODE = 0x2000;   /* SIOCNT bits[13:12] = 0b10 */
+	const uint32_t START = 0x0080;        /* SIOCNT busy/start */
+	for (int f = 0; f < ctx->frames; ++f) {
+		/* 在帧循环里写寄存器，避免与其它核的 runLoop 交叉。 */
+		if (f == 20) {
+			mgbaMobilePoke16(ctx->emu, SIOCNT, (uint16_t) MULTI_MODE);
+		} else if (f == 21) {
+			mgbaMobilePoke16(ctx->emu, SIOMLT_SEND, (uint16_t) ctx->sendWord);
+		} else if (f == 22 && ctx->slot == 0) {
+			/* 仅主机（id 0）发起传输；从机由协调器事件触发。 */
+			mgbaMobilePoke16(ctx->emu, SIOCNT, (uint16_t) (MULTI_MODE | START));
+		}
+		mgbaMobileRunFrames(ctx->emu, 1);
+	}
+	for (int i = 0; i < 4; ++i) {
+		ctx->recv[i] = mgbaMobilePeek16(ctx->emu, 0x04000120u + (uint32_t) i * 2u);
+	}
+	ctx->finalFrame = mgbaMobileFrameCounter(ctx->emu);
+	return NULL;
+}
+
+static void testLockstepRun(const char* romPath) {
+	const int key = 0x4C53;
+	const int players = 4;
+	struct MgbaMobile* emus[4] = {0};
+	struct LockstepRunCtx ctx[4];
+	pthread_t threads[4];
+
+	for (int i = 0; i < players; ++i) {
+		emus[i] = mgbaMobileCreate(".", ".", "0");
+		expect(emus[i] != NULL, "lockstep-run: emu created");
+		expect(mgbaMobileLoad(emus[i], romPath), "lockstep-run: rom loaded");
+	}
+	expect(mgbaMobileLinkHostLockstep(emus[0], key, players, 0),
+	       "lockstep-run: host attached");
+	for (int i = 1; i < players; ++i) {
+		expect(mgbaMobileLinkJoinLockstep(emus[i], key, i),
+		       "lockstep-run: join attached");
+	}
+	expect(mgbaMobileLinkIsLockstep(emus[0]), "lockstep-run: host reports lockstep");
+
+	for (int i = 0; i < players; ++i) {
+		ctx[i].emu = emus[i];
+		ctx[i].slot = i;
+		ctx[i].players = players;
+		ctx[i].frames = 400;
+		ctx[i].sendWord = (uint32_t) (0x1000 + i);   /* 各核发不同字 */
+		ctx[i].recv[0] = ctx[i].recv[1] = ctx[i].recv[2] = ctx[i].recv[3] = 0;
+		ctx[i].finalFrame = 0;
+	}
+	for (int i = 0; i < players; ++i) {
+		pthread_create(&threads[i], NULL, _lsrThread, &ctx[i]);
+	}
+	for (int i = 0; i < players; ++i) {
+		pthread_join(threads[i], NULL);
+	}
+
+	/* 同步：4 核帧号都应推进（无死锁，协调器把各核锁在同一步）。 */
+	for (int i = 0; i < players; ++i) {
+		expect(ctx[i].finalFrame > 30, "lockstep-run: core advanced frames");
+	}
+
+	/* 数据：每核都应收到全部 4 个字（协调器回写 SIOMULTI0..3）。 */
+	for (int i = 0; i < players; ++i) {
+		bool allMatch = true;
+		for (int j = 0; j < players; ++j) {
+			uint32_t want = (uint32_t) (0x1000 + j);
+			if (ctx[i].recv[j] != want) {
+				allMatch = false;
+			}
+		}
+		expect(allMatch, "lockstep-run: core received all 4 send words");
+	}
+
+	/* 拆离：先逐个 Close（解锁步 SIO），再 Destroy。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileLinkClose(emus[i]);
+	}
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileDestroy(emus[i]);
+	}
+	/* 房间应随所有引用释放而销毁，可被新 host 复用。 */
+	struct MgbaLockstepRoom* again = mgbaLockstepHost(key, players);
+	expect(again != NULL, "lockstep-run: room reusable after shutdown");
+	mgbaLockstepRelease(again);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
@@ -3718,6 +3831,10 @@ int main(int argc, char** argv) {
 	}
 	if (argc >= 2 && strcmp(argv[1], "--lockstep") == 0) {
 		testLockstep(argc > 2 ? argv[2] : "test.gba");
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--lockstep-run") == 0) {
+		testLockstepRun(argc > 2 ? argv[2] : "test.gba");
 		return g_failed ? 1 : 0;
 	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");

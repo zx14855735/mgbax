@@ -4633,6 +4633,31 @@ bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu) {
 	return emu && emu->lockstepSlot != NULL;
 }
 
+void mgbaMobilePoke16(struct MgbaMobile* emu, uint32_t addr, uint16_t value) {
+	if (!emu || !emu->core) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int cc = 0;
+	GBAStore16(gba->cpu, addr, (int16_t) value, &cc);
+}
+
+uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	return GBAView16(gba->cpu, addr);
+}
+
+uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	return gba->video.frameCounter;
+}
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu) {
 	if (!emu) {
 		return;
