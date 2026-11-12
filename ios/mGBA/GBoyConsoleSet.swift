@@ -10,10 +10,15 @@ import Foundation
  * 其余按空闲槽位填充。
  *
  * 非 lockstep 模式仍走 iOS 原有的单核跨设备联机（mgbaMobileLinkHost/Join），
- * 本类只在显式开启 3/4 人锁步时创建。
+ * 本类只在显式勾选「本机多核锁步」时创建；2/3/4 人均支持（与 Android
+ * 2026-11-13 修复后的行为一致）。
  *
- * 已知限制：本机只能做 Swift 语法解析校验；Xcode 类型检查、真机 60fps 与
- * 进对战验证尚未完成。远端按键由 LobbyLink/GBoyLink 的 onRemoteKeysForSlot
+ * 镜像线程自由推进（不按帧放行、不 sleep）：native 协调器在 SIO 传输轮次
+ * 上会合各核，跑太快的核会被 park 住等最慢者，这正是锁步语义。
+ *
+ * 已知限制：Windows 上只做过 swiftc -parse；Xcode 类型检查由 GitHub
+ * Actions macOS runner（mgbax 仓 ios-build）承担，真机 60fps 与进对战
+ * 待真机验证。远端按键由 LobbyLink/GBoyLink 的 onRemoteKeysForSlot
  * 按帧类型解析成全局槽位后调用 setRemoteKeys(slot:mask:)。
  */
 final class GBoyConsoleSet {
@@ -36,7 +41,7 @@ final class GBoyConsoleSet {
 
     init?(romPath: String, saveDir: String, stateDir: String,
           players: Int, localSlot: Int, roomKey: Int32 = 0x4C53) {
-        guard (3...4).contains(players), (1...players).contains(localSlot),
+        guard (2...4).contains(players), (1...players).contains(localSlot),
               !romPath.isEmpty, !saveDir.isEmpty, !stateDir.isEmpty else { return nil }
         self.romPath = romPath
         self.saveDir = saveDir
@@ -142,7 +147,9 @@ final class GBoyConsoleSet {
                     self.lock.unlock()
                     mgbaMobileSetKeys(core, keys)
                     _ = mgbaMobileRunFrames(core, 1)
-                    Thread.sleep(forTimeInterval: 1.0 / 60.0)
+                    // 不 sleep：与 Android 修复后一致，自由推进，跑太快会在
+                    // 下一个 SIO 轮被协调器 park 住等可见核（正是锁步语义）。
+                    // 每帧硬睡 1/60 会叠加固定延迟、拖慢整个房间。
                 }
             }
             thread.name = "mGBA-ios-console-\(i + 1)"

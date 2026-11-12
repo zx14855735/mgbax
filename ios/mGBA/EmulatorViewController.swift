@@ -5401,7 +5401,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(host)
         box.addArrangedSubview(port)
         box.addArrangedSubview(players)
-        let lockstepRow = labeledSwitch("3/4 人启用进程内锁步（实验性）",
+        let lockstepRow = labeledSwitch("本机多核锁步（2/3/4 人，网络只传按键）",
                                         defaults.bool(forKey: "link_use_lockstep"))
         let lockstepToggle = lockstepRow.1
         box.addArrangedSubview(lockstepRow.0)
@@ -5414,7 +5414,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let n = self.linkPlayerCount(players)
             self.remote?.close()
-            if n > 2 && lockstepToggle.isOn {
+            if lockstepToggle.isOn {
                 self.defaults.set(true, forKey: "link_use_lockstep")
                 self.defaults.set(Int(p), forKey: "link_port")
                 self.defaults.set(Int(n), forKey: "link_players")
@@ -5444,7 +5444,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let n = self.linkPlayerCount(players)
             self.remote?.close()
-            if n > 2 && lockstepToggle.isOn {
+            if lockstepToggle.isOn {
                 self.defaults.set(true, forKey: "link_use_lockstep")
                 self.defaults.set(ip, forKey: "link_host")
                 self.defaults.set(Int(p), forKey: "link_port")
@@ -5708,7 +5708,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let set = GBoyConsoleSet(romPath: rom, saveDir: saves, stateDir: states,
                                        players: n, localSlot: 1,
                                        roomKey: Int32(port)) else {
-            status.text = "锁步参数无效（人数需为 3 或 4）"
+            status.text = "锁步参数无效（人数需为 2、3 或 4）"
             return
         }
         if let error = set.start(visible: core) {
