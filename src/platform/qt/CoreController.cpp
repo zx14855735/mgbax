@@ -33,7 +33,30 @@
 #include <mgba-util/math.h>
 #include <mgba-util/vfs.h>
 
+#include <QSettings>
+
+#ifdef M_CORE_GBA
+#include "sio_link.h"
+#endif
+
 #include "moc_CoreController.cpp"
+
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+namespace {
+
+// The mobile layer owns the GBALuminanceSource inside its emulator struct and
+// recovers the owner with offsetof. The Qt frontend already attaches
+// InputController's luminance source (mPERIPH_GBA_LUMINANCE), so the solar
+// slider drives that one instead of inventing a second source: no container
+// trick, no pointer arithmetic on a foreign struct.
+
+QSettings& featureSettings() {
+	static QSettings settings(QStringLiteral("mGBAx"), QStringLiteral("features"));
+	return settings;
+}
+
+}
+#endif
 
 #define AUTOSAVE_GRANULARITY 600
 
@@ -306,6 +329,10 @@ void CoreController::loadConfig(ConfigController* config) {
 	m_autofireThreshold = config->getOption("autofireThreshold", m_autofireThreshold).toInt();
 	m_fastForwardVolume = config->getOption("fastForwardVolume", -1).toInt();
 	m_fastForwardMute = config->getOption("fastForwardMute", false).toInt();
+	/* 用户上次保存的静音选择要在焦点重载后保持；音量保持 -1（跟随
+	 * config），否则会永久盖掉「倍速音量」这个独立设置。 */
+	m_userVolume = -1;
+	m_userMute = config->getOption("mute", false).toInt();
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "volume");
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "mute");
 	m_preload = config->getOption("preload", true).toInt();
@@ -332,6 +359,9 @@ void CoreController::loadConfig(ConfigController* config) {
 		m_threadContext.core->reloadConfigOption(m_threadContext.core, "sgb.borders", nullptr);
 	}
 	m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", config->config());
+#endif
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	applyPersistedFeatures();
 #endif
 }
 
@@ -441,6 +471,358 @@ void CoreController::detachDolphin() {
 	}
 	GBASIODolphinDestroy(&m_dolphin);
 }
+
+bool CoreController::lanLinkHost(quint16 port) {
+	return lanLinkHostPlayers(port, 2);
+}
+
+/* players：本局人数。2 走原来的两人直连（行为不变）；3/4 走星型总线 ——
+ * 主机 accept 最多 players-1 个从机，每轮收齐所有人的字后一次广播。两边
+ * 填的人数必须一致：总线和两人直连是两种包格式，TCP 能连上但解不出包。 */
+bool CoreController::lanLinkHostPlayers(quint16 port, int players) {
+	if (!m_lanLink) {
+		m_lanLink = sioLinkCreate();
+	}
+	return m_lanLink && sioLinkHostPlayers(m_lanLink, port, players);
+}
+
+bool CoreController::lanLinkJoin(const QString& host, quint16 port) {
+	return lanLinkJoinPlayers(host, port, 2);
+}
+
+bool CoreController::lanLinkJoinPlayers(const QString& host, quint16 port, int players) {
+	if (!m_lanLink) {
+		m_lanLink = sioLinkCreate();
+	}
+	return m_lanLink && sioLinkJoinPlayers(m_lanLink, host.toUtf8().constData(), port, players);
+}
+
+void CoreController::lanLinkClose() {
+	if (m_lanLink) {
+		sioLinkDestroy(m_lanLink);
+		m_lanLink = nullptr;
+	}
+}
+
+int CoreController::lanLinkState() const {
+	return m_lanLink ? sioLinkState(m_lanLink) : 0;
+}
+
+int CoreController::lanLinkPlayer() const {
+	return m_lanLink ? sioLinkPlayer(m_lanLink) : -1;
+}
+
+int CoreController::lanLinkPlayers() const {
+	return m_lanLink ? sioLinkPlayerCount(m_lanLink) : 2;
+}
+
+// ---- mobile-parity features ----
+
+void CoreController::setChannelVolumes(const int gains[6]) {
+	for (int i = 0; i < 6; ++i) {
+		m_channelGains[i] = gains[i];
+	}
+	Interrupter interrupter(this);
+	if (m_threadContext.core && m_threadContext.core->board) {
+		switch (platform()) {
+#ifdef M_CORE_GBA
+		case mPLATFORM_GBA: {
+			struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+			for (int i = 0; i < 4; ++i) {
+				gba->audio.psg.chGain[i] = static_cast<int16_t>(gains[i]);
+			}
+			gba->audio.chGainA = static_cast<int16_t>(gains[4]);
+			gba->audio.chGainB = static_cast<int16_t>(gains[5]);
+			break;
+		}
+#endif
+#ifdef M_CORE_GB
+		case mPLATFORM_GB: {
+			struct GB* gb = static_cast<struct GB*>(m_threadContext.core->board);
+			for (int i = 0; i < 4; ++i) {
+				gb->audio.chGain[i] = static_cast<int16_t>(gains[i]);
+			}
+			break;
+		}
+#endif
+		default:
+			break;
+		}
+	}
+	QByteArray stored;
+	for (int i = 0; i < 6; ++i) {
+		stored.append(reinterpret_cast<const char*>(&m_channelGains[i]), sizeof(int));
+	}
+	featureSettings().setValue("channelGains", stored);
+}
+
+void CoreController::channelVolumes(int gains[6]) const {
+	for (int i = 0; i < 6; ++i) {
+		gains[i] = m_channelGains[i];
+	}
+}
+
+#ifdef M_CORE_GBA
+void CoreController::setSolarLevel(int level) {
+	if (level > 10) {
+		level = 10;
+	} else if (level < -1) {
+		level = -1;
+	}
+	m_solarLevel = level;
+	featureSettings().setValue("solarLevel", level);
+	if (platform() != mPLATFORM_GBA || !m_threadContext.core) {
+		return;
+	}
+	Interrupter interrupter(this);
+	struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+	if (level >= 0) {
+		// Drive the console's own 0-10 sunlight scale through the luminance
+		// source the frontend already attached (InputController's), then force
+		// the cartridge hardware bit so games that do not auto-detect the
+		// sensor (Boktai detects it, most hacks do not) still see it.
+		if (m_inputController) {
+			m_inputController->setLuminanceLevel(level);
+		}
+		gba->memory.hw.devices |= HW_LIGHT_SENSOR;
+	} else {
+		if (m_inputController) {
+			m_inputController->setLuminanceLevel(0);
+		}
+		gba->memory.hw.devices &= ~HW_LIGHT_SENSOR;
+	}
+}
+
+void CoreController::setCartRumble(bool enabled) {
+	m_cartRumble = enabled;
+	featureSettings().setValue("cartRumble", enabled ? 1 : 0);
+	if (platform() != mPLATFORM_GBA || !m_threadContext.core) {
+		return;
+	}
+	Interrupter interrupter(this);
+	struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+	if (enabled) {
+		gba->memory.hw.devices |= HW_RUMBLE;
+		// Keep whatever mPERIPH_RUMBLE attached; only fill in if the game was
+		// loaded before an input driver was available.
+		if (!gba->rumble && m_inputController) {
+			gba->rumble = m_inputController->rumble();
+		}
+	} else {
+		gba->memory.hw.devices &= ~HW_RUMBLE;
+		gba->rumble = NULL;
+	}
+}
+#endif
+
+void CoreController::setGbPalette(const int32_t colors[12]) {
+	memcpy(m_gbPalette, colors, sizeof(m_gbPalette));
+	m_gbPaletteSet = true;
+	QByteArray stored;
+	for (int i = 0; i < 12; ++i) {
+		stored.append(reinterpret_cast<const char*>(&m_gbPalette[i]), sizeof(int32_t));
+	}
+	featureSettings().setValue("gbPalette", stored);
+	featureSettings().setValue("gbPaletteSet", 1);
+	if (platform() == mPLATFORM_GB) {
+		Interrupter interrupter(this);
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			mCoreConfigSetOverrideIntValue(&m_threadContext.core->config, key, m_gbPalette[i]);
+		}
+		m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", NULL);
+	}
+}
+
+void CoreController::clearGbPalette() {
+	m_gbPaletteSet = false;
+	featureSettings().setValue("gbPaletteSet", 0);
+	if (platform() == mPLATFORM_GB) {
+		Interrupter interrupter(this);
+		for (int i = 0; i < 12; ++i) {
+			char key[16];
+			snprintf(key, sizeof(key), "gb.pal[%d]", i);
+			ConfigurationClearValue(&m_threadContext.core->config.overridesTable, m_threadContext.core->config.port, key);
+		}
+		m_threadContext.core->reloadConfigOption(m_threadContext.core, "gb.pal", NULL);
+	}
+}
+
+void CoreController::gbPalette(int32_t colors[12]) const {
+	memcpy(colors, m_gbPalette, sizeof(m_gbPalette));
+}
+
+void CoreController::setAudioHoldMode(int mode) {
+	if (mode < 0 || mode > 2) {
+		mode = 0;
+	}
+	if (m_audioHoldMode == mode) {
+		return;
+	}
+	m_audioHoldMode = mode;
+	featureSettings().setValue("audioHoldMode5", mode);
+	syncAudioHold();
+	// The fast-forward pacing depends on the mode (the music feature turns the
+	// free-running fast-forward into a controlled one), so re-apply it now.
+	if (m_fastForward || m_fastForwardForced) {
+		updateFastForward();
+	}
+}
+
+void CoreController::setAudioHoldRatio(double ratio) {
+	if (ratio < 2.0 || ratio > 32.0) {
+		// 1x would pace the core at native speed and make the turbo key do
+		// nothing; the smallest useful controlled fast-forward is 2x.
+		return;
+	}
+	if (fabs(ratio - m_audioHoldRatio) < 0.01) {
+		return;
+	}
+	m_audioHoldRatio = ratio;
+	featureSettings().setValue("audioHoldRatio", ratio);
+	syncAudioHold();
+	if (m_fastForward || m_fastForwardForced) {
+		updateFastForward();
+	}
+}
+
+void CoreController::setAudioHoldRate(double rate) {
+	if (rate < 0.5 || rate > 4.0) {
+		return;
+	}
+	if (fabs(rate - m_audioHoldRate) < 0.01) {
+		return;
+	}
+	m_audioHoldRate = rate;
+	featureSettings().setValue("audioHoldRate2", rate);
+	syncAudioHold();
+}
+
+void CoreController::syncAudioHold() {
+	if (!m_threadContext.impl) {
+		return;
+	}
+	m_threadContext.impl->sync.audioHoldMode = m_audioHoldMode;
+	m_threadContext.impl->sync.audioHoldRatio = m_audioHoldRatio;
+	m_threadContext.impl->sync.audioHoldRate = m_audioHoldRate;
+}
+
+void CoreController::audioHoldState(bool* on, double* stretch, double* rate) const {
+	// The hold feature only does something in the two stretch modes
+	// (1 = WSOLA, 2 = native "skip a section"). Mode 0 is "变调" - the pitch
+	// follows the game, which is exactly what the user is trying to avoid, so
+	// it must never engage the stretcher.
+	if (m_audioHoldMode == 0) {
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	mCore* core = m_threadContext.core;
+	double nativeFps = core ? mCoreCalculateFramerateRatio(core, 1.0) : 0.0;
+	if (nativeFps <= 0.0) {
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	// Decide purely from the core's live pacing: updateFastForward sets
+	// sync.fpsTarget to (m_fpsTarget * m_audioHoldRatio) the instant a
+	// fast-forward starts, in ANY hold mode, and restores it to the native
+	// target the moment it stops. The emulation thread never writes this
+	// field, so reading it here is a stable, race-free reflection of whether
+	// the game is actually running faster than native. Tying the decision to
+	// this - rather than to m_fastForward, which the audio thread may not
+	// observe at the same instant - is what makes the hold engage reliably.
+	double speed = m_threadContext.impl->sync.fpsTarget / nativeFps;
+	if (!(speed > 1.05 && speed < 64.0)) {
+		/* The game is not actually running faster than native, so there is no
+		 * surplus to absorb and the music needs no help. */
+		if (on) {
+			*on = false;
+		}
+		return;
+	}
+	if (on) {
+		*on = true;
+	}
+	/* The music may play faster than its own tempo, but never slower than the
+	 * game runs - slowing it down would need compression, not stretching. */
+	double musicRate = m_audioHoldRate > 0.05 ? m_audioHoldRate : 1.0;
+	if (musicRate > speed) {
+		musicRate = speed;
+	}
+	if (rate) {
+		*rate = musicRate;
+	}
+	if (stretch) {
+		/* The surplus has to be compressed by this much: the game runs at
+		 * `speed`, the music plays at `musicRate`, so the stretcher has to
+		 * absorb the difference. */
+		*stretch = speed / musicRate;
+	}
+}
+
+void CoreController::applyPersistedFeatures() {
+	QSettings& settings = featureSettings();
+	/* Key bumped (audioHoldMode4 -> audioHoldMode5) so configs that stored
+	 * mode 1 pick up the new default. Mode 1 (WSOLA) keeps the PITCH but
+	 * uniformly compresses 4 s of music into 1 s of wall clock, so the melody
+	 * still advances at 4x - it is NOT "1x speed" (audiodiag.log shows
+	 * rate=1.00 stretch=4.02 and the user still hears the tune racing).
+	 * Mode 2 (NATIVE) plays real untransposed samples at exactly 1x
+	 * wall-clock tempo and cuts whole surplus sections at quiet gaps, which is
+	 * what 音乐一倍速 actually means. Its ring-drift bug was fixed earlier
+	 * (natR = natW on the degenerate cut); both hold/audioff tests cover it. */
+	m_audioHoldMode = settings.value("audioHoldMode5", 2).toInt();
+	if (m_audioHoldMode < 0 || m_audioHoldMode > 2) {
+		m_audioHoldMode = 2;
+	}
+	m_audioHoldRatio = settings.value("audioHoldRatio", 4.0).toDouble();
+	/* 1x used to be offered as a fast-forward ratio, but it paced the core at
+	 * its native speed and so made the turbo key do nothing. Treat any value
+	 * below 2x as the 4x default so fast-forward always actually speeds up. */
+	if (m_audioHoldRatio < 2.0 || m_audioHoldRatio > 32.0) {
+		m_audioHoldRatio = 4.0;
+	}
+	/* Key bumped (audioHoldRate -> audioHoldRate2) to drop any stale value.
+	 * The default stays 1.0: only then does WSOLA hold the music at BOTH its
+	 * original tempo and its original pitch. Higher music rates deliberately
+	 * let the pitch follow the game partway - the resampler's source rate is
+	 * scaled by the music rate, so 2x comes out an octave up (880 Hz from a
+	 * 440 Hz tone, proved by the audioff CASE_4X_RATE2 scenario). That is a
+	 * valid "brighter / faster tune" option but it is NOT pitch-held, so it
+	 * must never be the default for a feature whose whole point is 不变调. */
+	m_audioHoldRate = settings.value("audioHoldRate2", 1.0).toDouble();
+	if (m_audioHoldRate < 0.5 || m_audioHoldRate > 4.0) {
+		m_audioHoldRate = 1.0;
+	}
+	syncAudioHold();
+	QByteArray stored = settings.value("channelGains").value<QByteArray>();
+	if (stored.size() == int(6 * sizeof(int))) {
+		int gains[6];
+		memcpy(gains, stored.constData(), sizeof(gains));
+		setChannelVolumes(gains);
+	}
+#ifdef M_CORE_GBA
+	int solar = settings.value("solarLevel", -1).toInt();
+	if (solar != m_solarLevel || solar >= 0) {
+		setSolarLevel(solar);
+	}
+	if (settings.value("cartRumble", 0).toInt()) {
+		setCartRumble(true);
+	}
+#endif
+	if (settings.value("gbPaletteSet", 0).toInt()) {
+		QByteArray pal = settings.value("gbPalette").value<QByteArray>();
+		if (pal.size() == int(12 * sizeof(int32_t))) {
+			int32_t colors[12];
+			memcpy(colors, pal.constData(), sizeof(colors));
+			setGbPalette(colors);
+		}
+	}
+}
 #endif
 
 void CoreController::setOverride(std::unique_ptr<Override> override) {
@@ -486,7 +868,12 @@ void CoreController::start() {
 	if (!mCoreThreadStart(&m_threadContext)) {
 		emit failed();
 		emit stopping();
+		return;
 	}
+	// The thread impl now exists, so the audio-hold settings can finally be
+	// mirrored into the sync struct (applyPersistedFeatures could not do it at
+	// startup). The SDL audio callback reads them from here.
+	syncAudioHold();
 }
 
 void CoreController::stop() {
@@ -500,6 +887,9 @@ void CoreController::stop() {
 #endif
 	setPaused(false);
 	mCoreThreadEnd(&m_threadContext);
+#ifdef M_CORE_GBA
+	lanLinkClose();
+#endif
 }
 
 void CoreController::reset() {
@@ -638,7 +1028,9 @@ void CoreController::overrideMute(bool override) {
 
 	Interrupter interrupter(this);
 	mCore* core = m_threadContext.core;
-	if (m_mute) {
+	/* 用户在设置/菜单里主动静音后，焦点恢复触发的 overrideMute(false)
+	 * 不能把静音解除掉。 */
+	if (m_mute || m_userMute) {
 		core->opts.mute = true;
 	} else {
 		if (m_fastForward || m_fastForwardForced) {
@@ -647,6 +1039,23 @@ void CoreController::overrideMute(bool override) {
 			mCoreConfigGetBoolValue(&core->config, "mute", &core->opts.mute);
 		}
 	}
+	core->reloadConfigOption(core, NULL, NULL);
+}
+
+void CoreController::setVolume(int volume) {
+	m_userVolume = volume;
+	Interrupter interrupter(this);
+	mCore* core = m_threadContext.core;
+	core->opts.volume = volume;
+	core->reloadConfigOption(core, NULL, NULL);
+}
+
+void CoreController::setMute(bool mute) {
+	m_userMute = mute;
+	Interrupter interrupter(this);
+	mCore* core = m_threadContext.core;
+	/* 焦点丢失/最小化带来的临时静音仍然优先，解除用户静音不会盖过它。 */
+	core->opts.mute = mute || m_mute;
 	core->reloadConfigOption(core, NULL, NULL);
 }
 
@@ -1223,9 +1632,11 @@ void CoreController::setFramebufferHandle(int fb) {
 void CoreController::updateKeys() {
 	int polledKeys = m_inputController->pollEvents() | updateAutofire();
 	int activeKeys = m_activeKeys | polledKeys;
+	activeKeys |= m_remoteKeys.load(std::memory_order_relaxed);
 	activeKeys |= m_threadContext.core->getKeys(m_threadContext.core) & ~m_removedKeys;
 	m_removedKeys = polledKeys;
 	m_threadContext.core->setKeys(m_threadContext.core, activeKeys);
+	m_lastKeys.store(activeKeys, std::memory_order_relaxed);
 }
 
 int CoreController::updateAutofire() {
@@ -1245,6 +1656,17 @@ int CoreController::updateAutofire() {
 }
 
 void CoreController::finishFrame() {
+#ifdef M_CORE_GBA
+	/* 只读诊断与联机对象无关：联机链路可能要到游戏已经进了菜单才建立，
+	 * 甚至整轮都没建立，脚本仍需靠游戏内存判定光标/项目码。 */
+	sioLinkDiagCore(m_threadContext.core);
+	if (m_lanLink) {
+		// Per-frame top-up on the core thread: attaches the SIO driver once
+		// the peer connects, re-attaches after a reset, drains requests and
+		// publishes our current send register (mirrors mgbaMobilePumpLink).
+		sioLinkPump(m_lanLink, m_threadContext.core);
+	}
+#endif
 	if (!m_hwaccel) {
 		unsigned width, height;
 		m_threadContext.core->currentVideoSize(m_threadContext.core, &width, &height);
@@ -1305,15 +1727,29 @@ void CoreController::updateFastForward() {
 	// If we have "Fast forward" checked in the menu (m_fastForwardForced)
 	// or are holding the fast forward button (m_fastForward):
 	if (m_fastForward || m_fastForwardForced) {
-		if (m_fastForwardVolume >= 0) {
+		/* 用户显式设定的总音量优先；未显式设定时才用倍速专用音量，
+		 * 这样两个设置不会互相覆盖。 */
+		if (m_userVolume >= 0) {
+			m_threadContext.core->opts.volume = m_userVolume;
+		} else if (m_fastForwardVolume >= 0) {
 			m_threadContext.core->opts.volume = m_fastForwardVolume;
 		}
-		m_threadContext.core->opts.mute = m_fastForwardMute || m_mute;
+		m_threadContext.core->opts.mute = m_fastForwardMute || m_mute || m_userMute;
 		setSync(false);
 
-		// If we aren't holding the fast forward button
-		// then use the non "(held)" ratio
-		if(!m_fastForward) {
+		// 倍速声音不变：把快进改成「固定倍率、由音频时钟驱动」的受控快进。
+		// 默认的快进是解除同步让核心全速跑：核心的音频环形缓冲以倍速产出，
+		// 而重采样器只按 1x 消费，缓冲溢出就丢样本，音乐于是变成断断续续的
+		// 「电音」。受控快进把核心产出速率钉死在已知倍率上，与拉伸引擎的
+		// 消耗速率一致，零丢弃，而且倍速可预期（不再取决于机器快慢）。
+		if (m_audioHoldMode != 0 && m_audioHoldRatio > 1.01) {
+			double nativeFps = m_threadContext.core ? mCoreCalculateFramerateRatio(m_threadContext.core, 1.0) : 0.0;
+			double base = (m_fpsTarget > 0 ? m_fpsTarget : nativeFps);
+			m_threadContext.impl->sync.fpsTarget = base * m_audioHoldRatio;
+			m_threadContext.impl->sync.audioWait = true;
+		} else if (!m_fastForward) {
+			// If we aren't holding the fast forward button
+			// then use the non "(held)" ratio
 			if (m_fastForwardRatio > 0) {
 				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_fastForwardRatio;
 				m_threadContext.impl->sync.audioWait = true;
@@ -1330,10 +1766,25 @@ void CoreController::updateFastForward() {
 		if (!mCoreConfigGetIntValue(&m_threadContext.core->config, "volume", &m_threadContext.core->opts.volume)) {
 			m_threadContext.core->opts.volume = 0x100;
 		}
+		if (m_userVolume >= 0) {
+			m_threadContext.core->opts.volume = m_userVolume;
+		}
 		mCoreConfigGetBoolValue(&m_threadContext.core->config, "mute", &m_threadContext.core->opts.mute);
+		if (m_userMute) {
+			m_threadContext.core->opts.mute = true;
+		}
 		m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
 		setSync(true);
 	}
+
+	// Mirror the audio-hold settings into the shared sync struct every time we
+	// touch pacing. The emulation thread reads them from there (the SDL audio
+	// callback has no CoreController to ask), and applyPersistedFeatures
+	// cannot do it at startup because the thread impl does not exist yet. If we
+	// skip this, sync.audioHoldMode stays 0 and the music stretcher never
+	// engages, so the music still races with the game on fast-forward - the
+	// exact "still ineffective" symptom.
+	syncAudioHold();
 
 	m_threadContext.core->reloadConfigOption(m_threadContext.core, NULL, NULL);
 }

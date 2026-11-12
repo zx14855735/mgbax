@@ -75,6 +75,7 @@ bool mSDLInitAudio(struct mSDLAudio* context, struct mCoreThread* threadContext)
 	mAudioBufferInit(&context->buffer, context->samples, context->obtainedSpec.channels);
 	mAudioResamplerInit(&context->resampler, mINTERPOLATOR_SINC);
 	mAudioResamplerSetDestination(&context->resampler, &context->buffer, context->obtainedSpec.freq);
+	audioStretchInit(&context->stretch);
 
 	if (threadContext) {
 		context->core = threadContext->core;
@@ -99,6 +100,7 @@ void mSDLDeinitAudio(struct mSDLAudio* context) {
 #endif
 	mAudioBufferDeinit(&context->buffer);
 	mAudioResamplerDeinit(&context->resampler);
+	audioStretchDeinit(&context->stretch);
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
@@ -140,15 +142,53 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 #endif
 	}
 	struct mAudioBuffer* buffer = audioContext->core->getAudioBuffer(audioContext->core);
-	unsigned sampleRate = audioContext->core->audioSampleRate(audioContext->core);
+	unsigned coreRate = audioContext->core->audioSampleRate(audioContext->core);
 	double fauxClock = 1;
+	bool holdOn = false;
+	double holdStretch = 1.0;
+	double holdRate = 1.0;
+	int holdMode = 0;
+	double fpsTarget = 0;
 	if (audioContext->sync) {
-		if (audioContext->sync->fpsTarget > 0 && audioContext->core) {
-			fauxClock = mCoreCalculateFramerateRatio(audioContext->core, audioContext->sync->fpsTarget);
+		struct mCoreSync* sync = audioContext->sync;
+		holdMode = sync->audioHoldMode;
+		fpsTarget = sync->fpsTarget;
+		if (sync->fpsTarget > 0 && audioContext->core) {
+			fauxClock = mCoreCalculateFramerateRatio(audioContext->core, sync->fpsTarget);
 		}
-		mCoreSyncLockAudio(audioContext->sync);
+		/* 倍速声音不变: mirror of CoreController::audioHoldState, read from the
+		 * shared sync struct because this callback has no CoreController. The
+		 * hold engages whenever the feature is on and the core is actually
+		 * running faster than native - which updateFastForward guarantees by
+		 * writing fpsTarget = native * ratio the instant a fast-forward starts. */
+		if (sync->audioHoldMode != 0 && sync->fpsTarget > 0) {
+			double nativeFps = mCoreCalculateFramerateRatio(audioContext->core, 1.0);
+			if (nativeFps > 0.0) {
+				double speed = sync->fpsTarget / nativeFps;
+				if (speed > 1.05 && speed < 64.0) {
+					holdOn = true;
+					holdRate = sync->audioHoldRate > 0.05 ? sync->audioHoldRate : 1.0;
+					if (holdRate > speed) {
+						holdRate = speed;
+					}
+					holdStretch = speed / holdRate;
+				}
+			}
+		}
+		mCoreSyncLockAudio(sync);
 		audioContext->sync->audioHighWater = audioContext->samples + audioContext->resampler.highWaterMark + audioContext->resampler.lowWaterMark + (audioContext->samples >> 6);
-		audioContext->sync->audioHighWater *= sampleRate / (fauxClock * audioContext->obtainedSpec.freq);
+		/* audioHighWater gates how much CORE audio may pile up before
+		 * mCoreSyncProduceAudio throttles the emulation thread. The core
+		 * produces audio at the fast-forward rate (4x) regardless of the rate
+		 * at which the stretcher stages its OUTPUT, so this gate must use the
+		 * same fauxClock a plain 4x fast-forward uses. The old hold-mode
+		 * special case (a 1x clock) set the gate four times too low: with
+		 * audioWait enabled the core was throttled back towards 1x and the
+		 * stretcher was starved of input - the music comes out thin / dull.
+		 * A spectral measurement showed WSOLA itself loses no high frequencies
+		 * (4k and 8k stay within ~1% of 440 Hz at both 2x and 4x stretch), so
+		 * the deficit is on the supply side, not in the stretch algorithm. */
+		audioContext->sync->audioHighWater *= coreRate / (fauxClock * audioContext->obtainedSpec.freq);
 
 		if (audioContext->resampler.source) {
 			size_t destSize = mAudioBufferCapacity(audioContext->resampler.source);
@@ -157,7 +197,56 @@ static void _mSDLAudioCallback(void* context, Uint8* data, int len) {
 			}
 		}
 	}
-	mAudioResamplerSetSource(&audioContext->resampler, buffer, sampleRate / fauxClock, true);
+	/* Diagnostic log: one line per second so the user can confirm whether the
+	 * hold actually engages. expectPitchMul = 1 means the music is at its own
+	 * tempo; > 1 means it is racing with the game. Written to
+	 * %APPDATA%\mGBA\audiodiag.log. (This backend is the one that actually
+	 * runs, unlike the Qt AudioDevice which is dead code in this build.) */
+	{
+		static Uint32 s_lastDiag = 0;
+		static FILE* s_diag = NULL;
+		Uint32 now = SDL_GetTicks();
+		if (now - s_lastDiag >= 1000) {
+			s_lastDiag = now;
+			if (!s_diag) {
+				const char* appdata = getenv("APPDATA");
+				char path[1024];
+				if (appdata) {
+					snprintf(path, sizeof(path), "%s\\mGBA\\audiodiag.log", appdata);
+				} else {
+					snprintf(path, sizeof(path), "audiodiag.log");
+				}
+				s_diag = fopen(path, "a");
+			}
+			if (s_diag) {
+				double expectPitchMul = holdOn ? holdRate : fauxClock;
+				fprintf(s_diag, "[AUDIOHOLD] on=%d mode=%d ratio=%.2f rate=%.2f stretch=%.2f fpsTarget=%.1f coreRate=%u outFreq=%d expectPitchMul=%.3f dropped=%zu\n",
+					holdOn ? 1 : 0, holdMode, (audioContext->sync ? audioContext->sync->audioHoldRatio : 0.0),
+					holdRate, holdStretch, fpsTarget, coreRate, audioContext->obtainedSpec.freq, expectPitchMul,
+					audioStretchDropped(&audioContext->stretch));
+				fflush(s_diag);
+			}
+		}
+	}
+	/* Mirror the chosen hold mode into the stretch engine. The engine defaults
+	 * to WSOLA and was never told to switch to NATIVE, so without this the
+	 * "原音高但跳段" option silently ran WSOLA - which is why the music kept
+	 * sounding muffled / 低沉 no matter what. audioStretchSetMode only acts on
+	 * a real change, so calling it every callback is cheap and safe. */
+	if (holdMode != 0) {
+		audioStretchSetMode(&audioContext->stretch, holdMode);
+	}
+	/* Feed the core audio through the fast-forward stretcher when engaged; it
+	 * returns the core buffer unchanged when disengaged. */
+	struct mAudioBuffer* src = audioStretchProcess(&audioContext->stretch, buffer, coreRate, holdOn, holdStretch, holdRate, audioContext->samples * 2);
+	/* The resampler reads the (possibly stretched) source at the console rate
+	 * scaled by the music rate and writes at the device rate. With the hold on
+	 * the destination is 1x (the staged audio is already at native tempo); off,
+	 * it is the fast-forward ratio so a plain fast-forward keeps its pitch. */
+	double destRate = audioContext->obtainedSpec.freq * (holdOn ? 1.0 : fauxClock);
+	double srcRate = coreRate * (holdOn ? holdRate : 1.0);
+	mAudioResamplerSetSource(&audioContext->resampler, src, srcRate, true);
+	mAudioResamplerSetDestination(&audioContext->resampler, &audioContext->buffer, destRate);
 	mAudioResamplerProcess(&audioContext->resampler);
 	if (audioContext->sync) {
 		mCoreSyncConsumeAudio(audioContext->sync);

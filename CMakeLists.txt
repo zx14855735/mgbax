@@ -1405,6 +1405,7 @@ if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "iOS" OR BUILD_MOBILE_TEST)
 	add_library(mgba_mobile STATIC
 		src/platform/mobile/mgba_mobile.c
 		src/platform/mobile/link_net.c
+		src/platform/mobile/link_lockstep.c
 		src/platform/mobile/remote_link.c)
 	target_include_directories(mgba_mobile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/platform/mobile)
 	target_link_libraries(mgba_mobile PUBLIC ${BINARY_NAME})

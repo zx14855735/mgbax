@@ -36,6 +36,11 @@ class CoreManager;
 class DebuggerConsoleController;
 class Display;
 class DolphinConnector;
+class ScriptedControl;
+class EnhancementsView;
+class LinkView;
+class LobbyView;
+class WebDavView;
 class FrameView;
 class GDBController;
 class GIFView;
@@ -202,6 +207,7 @@ private:
 
 	CoreManager* m_manager;
 	std::shared_ptr<CoreController> m_controller;
+	ScriptedControl* m_scripted = nullptr;
 	std::unique_ptr<AudioProcessor> m_audioProcessor;
 
 	std::unique_ptr<QGBA::Display> m_display;
@@ -256,6 +262,14 @@ private:
 	QPointer<OverrideView> m_overrideView;
 	QPointer<SensorView> m_sensorView;
 	QPointer<DolphinConnector> m_dolphinView;
+	QPointer<LinkView> m_linkView;
+#ifdef BUILD_QT_CLOUD
+	QPointer<LobbyView> m_lobbyView;
+#endif
+	QPointer<WebDavView> m_webdavView;
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	QPointer<EnhancementsView> m_enhancementsView;
+#endif
 	QPointer<FrameView> m_frameView;
 
 #ifdef USE_FFMPEG
@@ -277,6 +291,11 @@ private:
 
 	std::unique_ptr<QGBA::Display> m_cleanupDisplay;
 	std::shared_ptr<CoreController> m_cleanupController;
+
+#ifdef BUILD_QT_CLOUD
+	/** MGBAX_AUTOLINK 测试钩子：载入游戏后自动进云端联机，见 Window.cpp。 */
+	void startAutoCloudLink();
+#endif
 };
 
 class WindowBackground : public QWidget {

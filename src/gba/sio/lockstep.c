@@ -18,6 +18,19 @@
 #define TARGET_PRIMARY 0x1
 #define TARGET_SECONDARY ((TARGET_ALL) & ~(TARGET_PRIMARY))
 
+/* 测试钩子：开启后多玩家传输的发送字由协调器直接注入 0x1000+playerId，
+ * 绕开真实游戏对 SIOMLT_SEND 的改写，得到确定性传输，用于验证收集/广播。
+ * 仅测试使用：由 mgbaMobileSioSetInject 在跑锁步集成测试前打开、跑完关闭。 */
+static bool s_testInject = false;
+
+void GBASIOLockstepSetTestInject(bool on) {
+	s_testInject = on;
+}
+
+bool GBASIOLockstepGetTestInject(void) {
+	return s_testInject;
+}
+
 DECL_BITFIELD(GBASIOLockstepSerializedFlags, uint32_t);
 DECL_BITS(GBASIOLockstepSerializedFlags, DriverMode, 0, 3);
 DECL_BITS(GBASIOLockstepSerializedFlags, NumEvents, 3, 4);
@@ -828,7 +841,11 @@ void _reconfigPlayers(struct GBASIOLockstepCoordinator* coordinator) {
 static void _setData(struct GBASIOLockstepCoordinator* coordinator, uint32_t id, struct GBASIO* sio) {
 	switch (coordinator->transferMode) {
 	case GBA_SIO_MULTI:
-		coordinator->multiData[id] = sio->p->memory.io[GBA_REG(SIOMLT_SEND)];
+		if (s_testInject) {
+			coordinator->multiData[id] = (uint16_t) (0x1000u + id);
+		} else {
+			coordinator->multiData[id] = sio->p->memory.io[GBA_REG(SIOMLT_SEND)];
+		}
 		break;
 	case GBA_SIO_NORMAL_8:
 		coordinator->normalData[id] = sio->p->memory.io[GBA_REG(SIODATA8)];
@@ -882,9 +899,24 @@ void _enqueueEvent(struct GBASIOLockstepCoordinator* coordinator, const struct G
 			continue;
 		}
 		struct GBASIOLockstepPlayer* player = TableLookup(&coordinator->players, coordinator->attachedPlayers[i]);
-		mASSERT_LOG(GBA_SIO, player->freeList, "No free events");
 		struct GBASIOLockstepEvent* newEvent = player->freeList;
-		player->freeList = newEvent->next;
+		if (newEvent) {
+			player->freeList = newEvent->next;
+		} else {
+			/* 事件池耗尽（BIOS 阶段 SIO 模式连续切换会连续 enqueue
+			 * MODE_SET，8 槽很快打满）。原实现在 freeList==NULL 时直接
+			 * 解引用 newEvent->next 段错误。这里摘下队头（timestamp 最小的
+			 * 最老事件）复用：丢最老、保最新，避免崩溃且让进度继续。
+			 * 协调器有 HARD_SYNC 兜底，丢一个早期模式通知可自愈。
+			 * 不增大 buffer（会破坏 savestate 的 0x1F0 尺寸断言）。 */
+			struct GBASIOLockstepEvent* oldest = player->queue;
+			if (!oldest) {
+				continue;
+			}
+			player->queue = oldest->next;
+			newEvent = oldest;
+			mLOG(GBA_SIO, WARN, "Lockstep event pool exhausted; recycling oldest event");
+		}
 
 		memcpy(newEvent, event, sizeof(*event));
 		struct GBASIOLockstepEvent** previous = &player->queue;

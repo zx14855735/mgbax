@@ -13,6 +13,7 @@ CXX_GUARD_START
 #include <mgba/core/log.h>
 #include <mgba-util/audio-buffer.h>
 #include <mgba-util/audio-resampler.h>
+#include "../qt/audio_stretch.h"
 
 mLOG_DECLARE_CATEGORY(SDL_AUDIO);
 
@@ -24,6 +25,7 @@ struct mSDLAudio {
 	// State
 	struct mAudioBuffer buffer;
 	struct mAudioResampler resampler;
+	struct AudioStretch stretch;
 	SDL_AudioSpec desiredSpec;
 	SDL_AudioSpec obtainedSpec;
 #if SDL_VERSION_ATLEAST(3, 0, 0)

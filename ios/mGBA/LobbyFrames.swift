@@ -19,6 +19,16 @@ import Foundation
  * `type(of:)` and `intValue(of:)` operate on.
  */
 enum LobbyFrames {
+    /// Largest frame body accepted on a lobby stream.
+    ///
+    /// This is the same 16 MiB ceiling the Android `GBoyFrames` uses. The
+    /// original 65535 here was wrong: a GBA save state is roughly 790 KiB
+    /// (the Android log measured 790663 bytes), so every `typeState` frame was
+    /// rejected as "not a frame we understand" and the reader dropped the whole
+    /// stream. Everything after it - key frames included - was then parsed from
+    /// a corrupted offset, which is why the cloud link showed phantom inputs and
+    /// never received a state.
+    static let maxFrameLength = 16 * 1024 * 1024
     /// Key bitmask for the console this session owns.
     static let typeKeys = 0
     /// Session registration (ten byte body) and the plain acknowledgement.
@@ -57,6 +67,41 @@ enum LobbyFrames {
         putShort(&out, 4, type)
         putInt(&out, 6, value)
         return Data(out)
+    }
+
+    /// Frame carrying a raw payload (the length counts the two type bytes).
+    static func frame(_ type: Int, _ payload: Data) -> Data {
+        let bytes = [UInt8](payload)
+        var out = [UInt8](repeating: 0, count: 6 + bytes.count)
+        putInt(&out, 0, Int32(2 + bytes.count))
+        putShort(&out, 4, type)
+        for i in 0..<bytes.count {
+            out[6 + i] = bytes[i]
+        }
+        return Data(out)
+    }
+
+    /// TYPE_STATE = int length followed by the save-state blob. The host sends
+    /// one once the link is up so both cores start from the same point.
+    static func stateFrame(_ state: Data) -> Data {
+        let bytes = [UInt8](state)
+        var body = [UInt8](repeating: 0, count: 4 + bytes.count)
+        putInt(&body, 0, Int32(bytes.count))
+        for i in 0..<bytes.count {
+            body[4 + i] = bytes[i]
+        }
+        return frame(typeState, Data(body))
+    }
+
+    /// Extracts the save-state blob; nil when the length header does not fit.
+    /// The SIO relay bridge also uses type 6, but with a raw packet and no
+    /// length prefix, so those frames must not be loaded as save states.
+    static func state(of body: Data) -> Data? {
+        let payload = [UInt8](LobbyFrames.payload(of: body))
+        guard payload.count >= 4 else { return nil }
+        let length = Int(getInt(payload, 0))
+        guard length >= 0, length <= payload.count - 4 else { return nil }
+        return Data(payload[4..<(4 + length)])
     }
 
     /// The registration frame the official client sends right after the KCP
@@ -154,7 +199,7 @@ enum LobbyFrames {
                 return nil
             }
             let length = Int(getInt(buffer, position))
-            if length < 2 || length > 65535 {
+            if length < 2 || length > maxFrameLength {
                 // Not a frame we understand; drop the stream rather than spin.
                 position = buffer.count
                 return nil
@@ -167,7 +212,10 @@ enum LobbyFrames {
             if position >= buffer.count {
                 buffer.removeAll(keepingCapacity: true)
                 position = 0
-            } else if position > 65536 {
+            } else if position > 1 << 20 {
+                // 1 MiB before compacting rather than 64 KiB: a state frame can
+                // be a megabyte on its own, and compacting after every small
+                // frame memmoves the whole buffer for nothing.
                 buffer.removeFirst(position)
                 position = 0
             }

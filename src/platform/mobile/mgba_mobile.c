@@ -12,6 +12,7 @@
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
+#include <mgba/internal/gba/memory.h>
 #include <mgba/internal/gba/savedata.h>
 #include <mgba/internal/gb/gb.h>
 #include <mgba/internal/gb/io.h>
@@ -20,8 +21,12 @@
 #include <mgba-util/vfs.h>
 
 #include "link_net.h"
+#include "link_lockstep.h"
+#include <mgba/internal/gba/sio/lockstep.h>
 
 #include <ctype.h>
+#include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -31,11 +36,29 @@
 
 #ifdef __ANDROID__
 #include <android/log.h>
+#include <sys/system_properties.h>
 #define MOBILE_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "mGBA", __VA_ARGS__)
 #define MOBILE_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "mGBA", __VA_ARGS__)
 #else
-#define MOBILE_LOGI(...) ((void) 0)
-#define MOBILE_LOGE(...) ((void) 0)
+/* 桌面端（Qt 版）默认静默；排查联机时序时设 MGBAX_SIO_LOG=1 就把同一条轨迹打到
+ * stderr，和安卓 logcat 里的 mGBA 标签内容一致。 */
+static int mobileLogEnabled(void) {
+	static int cached = -1;
+	if (cached < 0) {
+		const char* env = getenv("MGBAX_SIO_LOG");
+		cached = (env && *env && *env != '0') ? 1 : 0;
+	}
+	return cached;
+}
+#define MOBILE_LOGI(...) \
+	do { \
+		if (mobileLogEnabled()) { \
+			fprintf(stderr, __VA_ARGS__); \
+			fputc('\n', stderr); \
+			fflush(stderr); \
+		} \
+	} while (0)
+#define MOBILE_LOGE(...) MOBILE_LOGI(__VA_ARGS__)
 #endif
 
 /* 每次传输都打日志会拖慢联机（一秒钟几十条），排查时再打开。 */
@@ -66,6 +89,12 @@ struct GbLinkDriver {
 };
 
 struct MgbaMobile {
+	/* Serialises core access between the emulation thread (runFrames) and
+	 * link threads calling saveStateToMemory/loadStateFromMemory. A TYPE_STATE
+	 * frame arrives on the socket reader thread while the mirror core is
+	 * running, so both paths must hold this lock. */
+	pthread_mutex_t coreMutex;
+	bool coreMutexReady;
 	struct mCore* core;
 	mColor* video;
 	uint32_t* prev;
@@ -76,6 +105,8 @@ struct MgbaMobile {
 	unsigned height;
 	char savePath[1024];
 	char statePath[1024];
+	/* Suffix of the battery save actually opened (.sav, .srm, .saN). */
+	char saveSuffix[8];
 	char port[32];
 	int fast;
 	struct NetLink* link;
@@ -83,6 +114,11 @@ struct MgbaMobile {
 	struct GbLinkDriver gbLink;
 	struct mTimingEvent linkEvent;
 	bool linkAttached;
+	/* 进程内锁步 SIO（mgbaMobileLinkHostLockstep/JoinLockstep 启用）。
+	 * 非空时帧循环走 mgbaLockstepRunFrame 的小步 runLoop，并跳过 netLink
+	 * 的 poll/service，避免自研 gbaLink 驱动覆盖协调器。 */
+	struct MgbaLockstepRoom* lockstepRoom;
+	struct MgbaLockstepSlot* lockstepSlot;
 	/* 一次 MULTI 传输的挂起状态：发起时把本帧数据发出去，传输应当结束的时刻
 	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
 	 * 毫秒，游戏内的联机握手会直接超时。 */
@@ -100,6 +136,13 @@ struct MgbaMobile {
 	bool sioWaiting;
 	uint16_t sioSeq;
 	int sioRetries;
+	uint32_t sioRetryWall;
+	/* 从机本轮要回推的字：游戏写 SIOCNT 起轮那一刻扣下来。等到本轮完成
+	 * 再读 SIOMLT_SEND，游戏往往已写入下一轮的字 —— 16bit 错一位就会让
+	 * gLink 的字节流命令队列（SendBlockRequest / 块校验）整体偏移，现象是
+	 * 链路连着、gBlockReceivedStatus 恒 0、对战起不来。 */
+	uint16_t sioRoundWord;
+	bool sioRoundWordValid;
 	bool sioHasRemote;
 	uint32_t sioRemote;
 	/* 联机传输统计：真机/游戏里排查时对着 logcat 看这几项就够 ——
@@ -274,10 +317,9 @@ struct MgbaMobile {
 	 * audio once before the next WSOLA run so a re-enable never replays stale
 	 * samples. Kept as a flag so the UI thread never touches the buffers. */
 	bool wsolaClearPending;
-	/* Last three raw window readings; the middle one feeds the estimator. A
-	 * free-running front end's window readings scatter with a heavy tail
-	 * (scheduler jitter shows up as one window running several percent off),
-	 * and a median strips those single-window spikes without adding lag. */
+	/* 上一次的原始窗口读数（audioPaceHist[0]），HistLen>0 表示有效。
+	 * 估算器按「两个连续读数一致才跳」过滤单点调度卡顿：三点中值会把
+	 * 一次真实的速度变化也拖到 3~5 个窗口才确认，反而更慢。 */
 	double audioPaceHist[3];
 	int audioPaceHistLen;
 	/* Front-end overrides applied on the next load. */
@@ -315,6 +357,22 @@ struct MgbaMobile {
 	unsigned rewindCounter;
 	/* Per-channel audio gains, replayed on every load (see SetChannelVolumes). */
 	int32_t channelGains[6];
+	/*
+	 * Per-instance state that used to live in function-local `static`s. With
+	 * two cores in one process (本机双核心), those statics were shared: the
+	 * unstick one-shot latch fired on core A and core B then skipped its own
+	 * patch forever, while the streak counter was incremented by both cores.
+	 * The desktop test injects a synthetic wall clock here too - a global hook
+	 * meant destroying one core could silently change the other core's pacing.
+	 */
+	double (*audioClock)(void);
+	bool unstickDone;
+	int unstickStreak;
+	int unstickModeCached;   /* -1 = not read yet */
+	int rearmEnabled;        /* -1 = not read yet */
+	int sioPipelineEnabled;  /* -1 = not read yet */
+	unsigned diagTick;
+	unsigned traceTick;
 };
 
 enum {
@@ -386,9 +444,9 @@ enum {
 
 /* Wall clock for pacing the 音乐原速 hand-out. The native test runs emulation
  * as fast as it can, so no real time passes between its reads and a wall clock
- * would hand out nothing; it installs a synthetic clock instead (one frame per
- * read), which is exactly what the front end does on a device. */
-double (*mgbaMobileAudioClock)(void);
+ * would hand out nothing; it installs a synthetic clock through
+ * mgbaMobileSetAudioClock() instead. The hook is per MgbaMobile instance:
+ * two cores in one process must not share it. */
 
 /* 真实墙钟（毫秒）。不用 audioNow —— 那个可能被原生测试替换成合成时钟，
  * 而联机排查要量的是真实耗时（等对端应答花了多少毫秒）。 */
@@ -400,22 +458,28 @@ static uint32_t wallNowMs(void) {
 	return 0;
 }
 
-static double audioNow(void) {	if (mgbaMobileAudioClock) {
-		return mgbaMobileAudioClock();
+static double audioNow(struct MgbaMobile* emu) {
+	if (emu && emu->audioClock) {
+		return emu->audioClock();
 	}
-#if defined(_WIN32)
-	struct timespec ts;
-	if (timespec_get(&ts, TIME_UTC) == TIME_UTC) {
-		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
-	}
-	return 0.0;
-#else
+	/* clock_gettime 在安卓(bionic)与桌面(winpthreads)都有；旧的
+	 * timespec_get 分支在 MSYS2 MinGW 头文件里不存在，桌面构建过不去。 */
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
 		return (double) ts.tv_sec + (double) ts.tv_nsec / 1e9;
 	}
 	return 0.0;
-#endif
+}
+
+/* Per-instance synthetic wall clock, used by the desktop audio tests. */
+void mgbaMobileSetAudioClock(struct MgbaMobile* emu, double (*clock)(void)) {
+	if (emu) {
+		emu->audioClock = clock;
+	}
+}
+
+bool mgbaMobileHasSyntheticAudioClock(const struct MgbaMobile* emu) {
+	return emu && emu->audioClock != NULL;
 }
 
 /* How fast-forward audio is produced when the front end asks for it: see the
@@ -866,7 +930,7 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	 * device can actually emulate. This is the only quantity that means the
 	 * same thing at every speed, so it is the one that keeps the music at the
 	 * console's own tempo. */
-	double now = audioNow();
+	double now = audioNow(emu);
 	double dt = now - emu->natLastTime;
 	emu->natLastTime = now;
 	if (dt > 0.0 && dt < 0.5) {
@@ -885,6 +949,14 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	}
 	if (budget > holdCap - holdAvail) {
 		budget = holdCap - holdAvail;
+	}
+	/* wsolaScratch holds exactly MOBILE_AUDIO_WSOLA_SCRATCH stereo frames, but
+	 * `want` can be 8192 (the device pump reads 8192-frame blocks). Without
+	 * this clamp the copy below writes up to 2x past the allocation whenever a
+	 * wall-clock jump makes `budget` large - a load-dependent heap overwrite,
+	 * which is why the full suite only crashed intermittently under load. */
+	if (budget > MOBILE_AUDIO_WSOLA_SCRATCH) {
+		budget = MOBILE_AUDIO_WSOLA_SCRATCH;
 	}
 
 	/* 3. Copy `budget` frames out of the ring into the playback buffer. The
@@ -993,15 +1065,37 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (!emu) {
 		return NULL;
 	}
+	/* 递归锁：加锁点既在 C 层的 mgbaMobileRunFrames / SaveStateToMemory /
+	 * LoadStateToMemory 内部（这样 iOS 直接调用 C 函数也受保护，它不经过
+	 * JNI），也在 JNI 的入口（安卓侧的历史做法）。同一线程沿途二次加锁必须
+	 * 不能自死锁，所以这里用 PTHREAD_MUTEX_RECURSIVE。 */
+	{
+		pthread_mutexattr_t attr;
+		pthread_mutexattr_init(&attr);
+		pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+		int rc = pthread_mutex_init(&emu->coreMutex, &attr);
+		pthread_mutexattr_destroy(&attr);
+		if (rc != 0) {
+			free(emu);
+			return NULL;
+		}
+	}
+	emu->coreMutexReady = true;
 	copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
 	copyPath(emu->statePath, sizeof(emu->statePath), stateDir);
 	copyPath(emu->port, sizeof(emu->port), port && port[0] ? port : "mobile");
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), ".sav");
 	if (emu->savePath[0]) {
 		mobile_mkdir(emu->savePath);
 	}
 	if (emu->statePath[0]) {
 		mobile_mkdir(emu->statePath);
 	}
+	/* -1 means "not resolved yet": calloc gives 0, which would otherwise look
+	 * like a cached "disabled" answer and skip the env/property lookup. */
+	emu->unstickModeCached = -1;
+	emu->rearmEnabled = -1;
+	emu->sioPipelineEnabled = -1;
 	emu->link = netLinkCreate();
 	emu->gbaLink.emu = emu;
 	emu->gbLink.emu = emu;
@@ -1033,11 +1127,92 @@ void mgbaMobileDestroy(struct MgbaMobile* emu) {
 		mCoreRewindContextDeinit(&emu->rewind);
 		emu->rewindInited = false;
 	}
+	/* 必须在 destroyCore 之前卸下锁步驱动：driver 内存由 slot 持有，core
+	 * 销毁后 gba->sio.driver 会悬空。 */
+	if (emu->lockstepSlot) {
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+	}
+	if (emu->lockstepRoom) {
+		mgbaLockstepRelease(emu->lockstepRoom);
+		emu->lockstepRoom = NULL;
+	}
 	destroyCore(emu);
 	deinitAudioOutput(emu);
 	netLinkDestroy(emu->link);
 	emu->link = NULL;
+	if (emu->coreMutexReady) {
+		emu->coreMutexReady = false;
+		pthread_mutex_destroy(&emu->coreMutex);
+	}
 	free(emu);
+}
+
+void mgbaMobileLock(struct MgbaMobile* emu) {
+	if (emu && emu->coreMutexReady) {
+		pthread_mutex_lock(&emu->coreMutex);
+	}
+}
+
+void mgbaMobileUnlock(struct MgbaMobile* emu) {
+	if (emu && emu->coreMutexReady) {
+		pthread_mutex_unlock(&emu->coreMutex);
+	}
+}
+
+void mgbaMobileSetSaveDirs(struct MgbaMobile* emu, const char* saveDir, const char* stateDir) {
+	if (!emu) {
+		return;
+	}
+	if (saveDir && saveDir[0]) {
+		copyPath(emu->savePath, sizeof(emu->savePath), saveDir);
+	}
+	if (stateDir && stateDir[0]) {
+		copyPath(emu->statePath, sizeof(emu->statePath), stateDir);
+	}
+}
+
+/*
+ * Battery saves kept next to the ROM may carry any of the usual suffixes:
+ * mGBA writes <base>.sav, other emulators <base>.srm, and per-player saves
+ * use .sa1..sa4. Open an existing one rather than letting the core create
+ * an empty .sav beside a real .srm. The VFile stays owned by the core so
+ * later saves are written back to the same file.
+ */
+static bool autoloadExistingSave(struct MgbaMobile* emu, struct mCore* core) {
+	char preferred[16] = ".sav";
+	const char* suffixes[7];
+	size_t count = 0;
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), ".sav");
+	if (!core || !core->dirs.save || !core->dirs.baseName[0]) {
+		return false;
+	}
+	/* Match mCoreAutoloadSave's per-player suffix first, so a player who
+	 * configured savePlayerId keeps using the same file as before. */
+	int savePlayerId = 0;
+	mCoreConfigGetIntValue(&core->config, "savePlayerId", &savePlayerId);
+	if (savePlayerId > 1) {
+		snprintf(preferred, sizeof(preferred), ".sa%i", savePlayerId);
+	}
+	snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), "%s", preferred);
+	suffixes[count++] = preferred;
+	suffixes[count++] = ".sav";
+	suffixes[count++] = ".srm";
+	suffixes[count++] = ".sa1";
+	suffixes[count++] = ".sa2";
+	suffixes[count++] = ".sa3";
+	suffixes[count++] = ".sa4";
+	for (size_t i = 0; i < count; ++i) {
+		struct VFile* vf = mDirectorySetOpenSuffix(&core->dirs, core->dirs.save, suffixes[i], O_RDWR);
+		if (!vf) {
+			continue;
+		}
+		core->loadSave(core, vf);
+		snprintf(emu->saveSuffix, sizeof(emu->saveSuffix), "%s", suffixes[i]);
+		MOBILE_LOGI("Loaded battery save %s%s", core->dirs.baseName, suffixes[i]);
+		return true;
+	}
+	return false;
 }
 
 bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
@@ -1100,7 +1275,10 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		// No patch next to the ROM is the normal case; a bad patch only warns.
 		MOBILE_LOGI("No patch applied for %s", filename);
 	}
-	mCoreAutoloadSave(core);
+	if (!autoloadExistingSave(emu, core)) {
+		/* No save next to the ROM yet: let the core create its own .sav. */
+		mCoreAutoloadSave(core);
+	}
 	core->setAudioBufferSize(core, 16384);
 	if (!ensureVideo(emu)) {
 		MOBILE_LOGE("No video buffer before reset for %s", filename);
@@ -1143,6 +1321,11 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		emu->rewindInited = false;
 	}
 	emu->rewindCounter = 0;
+	/* 加载新 ROM 不能让加载前的一个读数与加载后的读数凑成「连续两次」，
+	 * 否则换游戏那一瞬间的卡顿会被当成持续变慢。保留已锁定的 pace
+	 * 与吞吐记忆，只清掉未确认的反馈历史。 */
+	emu->audioPaceHistLen = 0;
+	emu->audioPaceOutliers = 0;
 	MOBILE_LOGI("Loaded %s (%ux%u, %u Hz)", filename, emu->width, emu->height, core->audioSampleRate(core));
 	return true;
 }
@@ -1755,6 +1938,7 @@ static void finishIncoming(struct MgbaMobile* emu, uint16_t mode, uint32_t remot
 }
 
 static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate);
+static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals[4], int players, uint32_t cyclesLate);
 
 /* 联机排查用的游戏内存窥探（只在开着 MGBA_LINK_PEEK 时编译进去）。
  * 地址来自 ROM 工程的 rom.map（pokeemerald 系布局）。 */
@@ -1873,8 +2057,18 @@ static void serviceLink(struct MgbaMobile* emu) {
 		 *
 		 * 改成「对端队列里有字才挂」：没联机时主机一个字都不推，从机永远
 		 * 不会被挂上，模拟线程保持满速；联机开始后主机每轮推一个字，从机
-		 * 照旧一轮一个地取走。 */
-		if (player != 0 && !emu->sioSlaveArmed && netLinkPeerPending(emu->link) > 0) {
+		 * 照旧一轮一个地取走。
+		 *
+		 * 总线例外（2026-11-10）：3/4 人的字走 PKT_PUSH / PKT_BUS_ROUND，
+		 * 根本不进 peerQ，netLinkPeerPending() 恒为 0 —— 沿用原判据会让
+		 * 从机轮次事件永远 arm 不上（主机每轮等满超时窗，从机收不到 SIO
+		 * 中断卡在进房前：busgame 实测从机 45s 只跑 302 帧）。总线改看
+		 * sioRoundWordValid：游戏自己写过 SIOCNT 起 MULTI 才算一轮，既不
+		 * 会在还没进房间时自旋，也不依赖主机先广播（避开第一轮互等）。 */
+		bool busMode = netLinkBusActive(emu->link);
+		bool roundReady = busMode ? emu->sioRoundWordValid
+		                          : netLinkPeerPending(emu->link) > 0;
+		if (player != 0 && !emu->sioSlaveArmed && roundReady) {
 			struct mTiming* timing = coreTiming(emu);
 			if (timing) {
 				mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
@@ -1947,19 +2141,118 @@ static void linkPollEvent(struct mTiming* timing, void* user, uint32_t cyclesLat
 }
 
 /* 用一次传输的数据填 SIOMULTI0..3 并结束这次传输。 */
-static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
-	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+/**
+ * 有线俱乐部 standby 卡死的运行时适配，与 Qt 版 sio_link.c 对称。
+ * 默认关闭：安卓用系统属性 mgbax.link.unstick=1 打开，桌面用
+ * MGBAX_LINK_UNSTICK=1。只在精确命中 gen8 的卡死状态时写一次
+ * IWRAM 函数指针，把它换成游戏自带的 LinkCB_Standby，保留原来的
+ * gLastRecvQueueCount 门控，不改 ROM、不改游戏逻辑。
+ */
+static int unstickEnabled(struct MgbaMobile* emu) {
+	if (emu->unstickModeCached < 0) {
+#ifdef __ANDROID__
+		char v[PROP_VALUE_MAX] = {0};
+		__system_property_get("mgbax.link.unstick", v);
+		emu->unstickModeCached = (v[0] == '1') ? 1 : ((v[0] == '2') ? 2 : 0);
+#else
+		const char* v = getenv("MGBAX_LINK_UNSTICK");
+		emu->unstickModeCached = (v && v[0] == '1') ? 1 : ((v && v[0] == '2') ? 2 : 0);
+#endif
+	}
+	return emu->unstickModeCached;
+}
+
+/* One decision step, kept as a public per-instance function so the desktop
+ * test can prove two cores in one process do not share the one-shot latch.
+ * Returns 1 exactly on the call that arms the patch. */
+int mgbaMobileUnstickStep(struct MgbaMobile* emu, int mode, bool matched) {
+	if (!emu || emu->unstickDone || !mode) {
+		return 0;
+	}
+	if (!matched) {
+		emu->unstickStreak = 0;
+		return 0;
+	}
+	if (++emu->unstickStreak >= 3) {
+		emu->unstickDone = true;
+		return 1;
+	}
+	return 0;
+}
+
+static void maybeUnstickStandby(struct MgbaMobile* emu, struct GBA* gba) {
+	int mode = unstickEnabled(emu);
+	if (!mode || !gba || !gba->cpu) {
 		return;
 	}
+	uint16_t l0 = GBAView16(gba->cpu, 0x03002AF4u);
+	uint16_t rem16 = GBAView16(gba->cpu, 0x03002AC0u);
+	uint16_t cbLo = GBAView16(gba->cpu, 0x03002AD4u);
+	uint16_t cbHi = GBAView16(gba->cpu, 0x03002AD6u);
+	uint32_t cb = (uint32_t) cbLo | ((uint32_t) cbHi << 16);
+	uint16_t mu = GBAView16(gba->cpu, 0x0201CFC4u) & 0xFFu;
+	uint16_t brs = GBAView16(gba->cpu, 0x03002A40u);
+	int state = (l0 >> 8) & 0xFF;
+	int rem = (rem16 >> 8) & 0xFF;
+	bool matched = (state == 4 && rem == 1 && cb == 0x08151DA9u && mu == 0 && brs == 0);
+	if (mgbaMobileUnstickStep(emu, mode, matched)) {
+		/* mode 2 直接置 NULL，跳过 standby，让游戏进 CB2_InitBattle；
+		 * SendBlock 会自行安装 LinkCB_BlockSend* 回调。 */
+		uint32_t target = (mode == 2) ? 0x00000000u : 0x081529BDu;
+		gba->memory.iwram[(0x03002AD4u - 0x03000000u) >> 2] = target;
+		MOBILE_LOGI("[unstick] mode=%d cb %08X -> %08X (state=%d rem=%d mu=%u)",
+		            mode, cb, target, state, rem, mu);
+	}
+}
+
+/**
+ * 联机房间握手「主从选举」补触发（默认开启，系统属性 mgbax.link.rearm=0 关闭）。
+ *
+ * gen8 的 LinkMain1 只在 gShouldAdvanceLinkState==1 的那一帧做一次主从选举
+ * （Task_TriggerHandshake 在 OpenLink 后第 5 帧置 1），且要求那一瞬间
+ * gLink.playerCount > 1。网络联机时两端进房间必然差几十帧以上，主机端选举时
+ * 对方还没出现，两端就都退化成从机、都只发 0xB9A0，DoHandshake() 永远等不到
+ * 0x8FFF，双端永久卡在「等待连接」。这里在「双方已连上(playerCount>=2)、仍在
+ * 握手态(state==2)、但还没选出主机(handshakeAsMaster==0)」时代游戏把
+ * gShouldAdvanceLinkState 置 1，重新选举一次。只写 IWRAM 的 1 个字节标志。
+ */
+static void maybeRearmHandshake(struct MgbaMobile* emu, struct GBA* gba) {
+	if (emu->rearmEnabled < 0) {
+#ifdef __ANDROID__
+		char v[PROP_VALUE_MAX] = {0};
+		__system_property_get("mgbax.link.rearm", v);
+		emu->rearmEnabled = (v[0] == '0') ? 0 : 1;
+#else
+		const char* v = getenv("MGBAX_LINK_REARM");
+		emu->rearmEnabled = (v && v[0] == '0') ? 0 : 1;
+#endif
+	}
+	if (!emu->rearmEnabled || !gba || !gba->cpu) {
+		return;
+	}
+	/* 逐字节读 struct Link（不能从 uint16 右移 24 位取 playerCount，会恒为 0）。 */
+	int isMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
+	int state = GBAView8(gba->cpu, 0x03002AF4u + 0x01u);
+	int players = GBAView8(gba->cpu, 0x03002AF4u + 0x03u);
+	int hs = GBAView8(gba->cpu, 0x03002AF4u + 0x0Eu);       // handshakeAsMaster
+	if (state != 2 || players < 2 || hs != 0) {
+		return;
+	}
+	if (isMaster != 8) {
+		MOBILE_LOGI("[rearm] waiting: isMaster=%d (need 8) players=%d", isMaster, players);
+		return;
+	}
+	/* gShouldAdvanceLinkState @ 0x03002AD8：只置最低字节的最低位。 */
+	uint32_t idx = (0x03002AD8u - 0x03000000u) >> 2;
+	gba->memory.iwram[idx] |= 0x00000001u;
+	MOBILE_LOGI("[rearm] handshake election retriggered (players=%d)", players);
+}
+
+/* 四个槽位已经凑齐之后的公共收尾：耗时统计、诊断日志、写 SIOMULTI0..3、
+ * 发 SIO 中断。两人直连和 3/4 人总线都汇到这里，诊断口径保持一致。 */
+static void finishMultiTransfer(struct MgbaMobile* emu, uint16_t data[4], uint32_t cyclesLate) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	int me = netLinkPlayer(emu->link);
-	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
-	if (me >= 0 && me < 4) {
-		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
-	}
-	if (haveRemote) {
-		data[me == 0 ? 1 : 0] = (uint16_t) remote;
-	}
 	/* 单次传输耗时（单位 0.1ms）与统计，联机排查就靠这行。 */
 	struct mTiming* timing = coreTiming(emu);
 	if (timing) {
@@ -1980,25 +2273,95 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		++emu->hsDbg;
 		MOBILE_LOGI("HSX #%u me=%d idx=%u m0=%04X m1=%04X have=%d to=%u mis=%u",
 		            emu->hsDbg, me, (unsigned) emu->sioIndex, data[0], data[1],
-		            haveRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
+		            emu->sioHasRemote ? 1 : 0, emu->sioTimeouts, emu->sioMisorder);
 	}
 	if (emu->xferDbg < 900) {
+		/* 「对端」在 3/4 人总线里有多个槽位，日志里取第一个非空槽，
+		 * 两人直连时它就是唯一的对端。 */
+		uint32_t peerWord = 0xDEADu;
+		int peerHave = 0;
+		for (int i = 0; i < 4; ++i) {
+			if (i != me && data[i] != 0xFFFF) {
+				peerWord = data[i];
+				peerHave = 1;
+				break;
+			}
+		}
 		++emu->xferDbg;
 		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
 		            emu->xferDbg, me, (unsigned) emu->sioIndex,
 		            (unsigned) (me >= 0 && me < 4 ? data[me] : 0),
-		            (unsigned) (haveRemote ? remote : 0xDEADu), haveRemote ? 1 : 0,
+		            (unsigned) peerWord, peerHave,
 		            emu->sioTimeouts);
 	}
 	if ((emu->sioOk & 0x3F) == 0) {
-		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		mLOG(GBA_SIO, INFO, "SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u mis=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
-		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
-		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u m0=%04X m1=%04X",
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, emu->sioMisorder, data[0], data[1]);
+		MOBILE_LOGI("SIO multi me=%d ok=%u last=%u.%ums peak=%u.%ums retry=%d to=%u fb=%u mis=%u m0=%04X m1=%04X",
 		     me, emu->sioOk, emu->sioLateness / 10, emu->sioLateness % 10,
-		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, data[0], data[1]);
+		     emu->sioPeak / 10, emu->sioPeak % 10, emu->sioRetries, emu->sioTimeouts, emu->sioFallback, emu->sioMisorder, data[0], data[1]);
+		/* 联机协议层诊断：链路「连着」不等于数据在走。gen8 的 LINKUP 结果、
+		 * 远端玩家标志、块接收状态、收发命令索引都在内存里，一次打全，
+		 * 就能区分「命令没到」和「到了但校验不过」。 */
+		MOBILE_LOGI("GLINK res=%u rem=%u bad=%u qf=%u lid=%u pc=%u sc=%u rc=%u brs=%04X st=%04X",
+		            (unsigned) GBAView16(gba->cpu, 0x0202197Cu),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AC1u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B05u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B06u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AF6u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002AF7u),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B0Au),
+		            (unsigned) GBAView8(gba->cpu, 0x03002B0Bu),
+		            (unsigned) GBAView16(gba->cpu, 0x03002A40u),
+		            (unsigned) GBAView16(gba->cpu, 0x03002A9Cu));
+		maybeUnstickStandby(emu, gba);
+		maybeRearmHandshake(emu, gba);
+	}
+	/* 玩家格坐标（gSaveBlock1Ptr→SaveBlock1.pos）：走位闭环导航的输入，走位
+	 * 阶段每 16 轮打一次就够了（9 轮/帧），不打会让按键步数与实际位移脱钩。 */
+	if ((emu->sioOk & 0x0F) == 0) {
+		uint32_t sb1 = GBAView32(gba->cpu, 0x03004964u);
+		if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
+			MOBILE_LOGI("POS x=%d y=%d",
+			            (int) (int16_t) GBAView16(gba->cpu, sb1 + 0u),
+			            (int) (int16_t) GBAView16(gba->cpu, sb1 + 2u));
+		}
 	}
 	GBASIOMultiplayerFinishTransfer(&gba->sio, data, cyclesLate);
+}
+
+/* 两人直连：本机一槽 + 对端一槽，其余保持 0xFFFF（空槽）。 */
+static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int me = netLinkPlayer(emu->link);
+	uint16_t data[4] = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+	if (me >= 0 && me < 4) {
+		data[me] = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	}
+	if (haveRemote) {
+		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	finishMultiTransfer(emu, data, cyclesLate);
+}
+
+/* 3/4 人总线：四个槽位来自主机的汇聚广播，没连上的槽位是 0xFFFF。 */
+static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals[4], int players, uint32_t cyclesLate) {
+	if (!emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) {
+		return;
+	}
+	uint16_t data[4];
+	/* 3/4 人总线：四槽来自主机唯一一次聚合广播（vals[4]），所有核（含主机）
+	 * 都写入同一份快照，不再用本核当前 SIOMLT_SEND 覆盖自身槽位——那样会让
+	 * 三核的 SIOMULTI 互不相同，握手永远对不齐（busgame 实测 f=1191 起分叉）。
+	 * vals 里未连上的槽位已是 0xFFFF（主机缺席槽 + 掉线从机）。 */
+	for (int i = 0; i < 4; ++i) {
+		data[i] = (i < players && vals) ? (uint16_t) vals[i] : 0xFFFF;
+	}
+	finishMultiTransfer(emu, data, cyclesLate);
 }
 
 /**
@@ -2036,6 +2399,10 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
  *   - 直接采用主机给的轮次号当作自己的 sioIndex；
  *   - 回推时也用这个号，主机那边严格匹配就一定对得上。
  */
+static int sioWaitMs(struct MgbaMobile* emu);
+static int sioPeerWaitMs(struct MgbaMobile* emu);
+static int sioPipelineWaitMs(struct MgbaMobile* emu, int want);
+
 static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	emu->sioSlaveArmed = false;
@@ -2050,11 +2417,84 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		/* 游戏还没进多人传输（或者已经退出）：不收尾，等下一次轮询再挂。 */
 		return;
 	}
+	/* 【主从角色看游戏，不看链路层的 player 号】
+	 *
+	 * 原来这里用 netLinkPlayer()==0 判「我是主机，不用管」。可走云端房间时
+	 * 两端的链路层都是 TCP 主机（播放器号都停在初值 0），于是**两边都走这个
+	 * 分支直接 return**：谁都不执行从机收尾、谁都不回推字。现场证据就是
+	 * 两端日志同时报 me=0，主机侧 `done want=1 have=0 retries=27` 永远等不到
+	 * 回字，`m1=0000`、`pc=0` 一路到底。
+	 *
+	 * gen8 自己会选举主从：gLink(+0)=isMaster 为 8 表示主机，(+2)=localId。
+	 * 这里只认 gLink.isMaster：不是主机就必须走从机路径。 */
 	int me = netLinkPlayer(emu->link);
-	if (me == 0) {
-		/* 主机自己驱动轮次，这里不管。 */
+	int gameMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
+	if (gameMaster == 8) {
+		/* 游戏认定自己是主机：轮次由它驱动，这里不管。 */
 		return;
 	}
+	/* 3/4 人总线：从机先把自己的字推给主机（主机要收齐才广播），再等广播。
+	 * 两人走下面原来的「取对端字 → 收尾 → 回推」路径。 */
+	{
+		int busPlayers = netLinkBusPlayers(emu->link);
+		if (netLinkBusActive(emu->link) && busPlayers >= 2) {
+			uint16_t own = emu->sioRoundWordValid ? emu->sioRoundWord
+			                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+			emu->sioRoundWordValid = false;
+			uint32_t busVals[4];
+			uint16_t used = emu->sioIndex;
+			int busGot = netLinkBusRound(emu->link, emu->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(emu, -1), &used);
+			if (busGot < 0) {
+				/* 主机还没广播（还在等别的从机）：快速重挂，绝不拿空槽收尾
+				 * —— 一次空槽就会让游戏的 DoHandshake 把 playerCount 清 0。 */
+				++emu->sioTimeouts;
+				if (emu->toDbg < 30) {
+					++emu->toDbg;
+					MOBILE_LOGI("BUS slave wait-me me=%d last=%u", me, (unsigned) emu->sioIndex);
+				}
+				if (timing) {
+					mTimingSchedule(timing, &emu->sioSlaveDone, 2048);
+					emu->sioSlaveArmed = true;
+				}
+				return;
+			}
+			/* 轮次节奏跟随主机：与两人路径用 PUSH.cycles 做的事一样。 */
+			{
+				uint32_t peerCycles = netLinkBusRoundCycles(emu->link);
+				if (peerCycles != 0) {
+					if (emu->sioPeerCyclesValid) {
+						uint32_t delta = peerCycles - emu->sioPeerCycles;
+						if (delta > 4000 && delta < 400000) {
+							emu->sioSlavePeriod = delta;
+						}
+					}
+					emu->sioPeerCycles = peerCycles;
+					emu->sioPeerCyclesValid = true;
+				}
+			}
+			if (used != emu->sioIndex) {
+				++emu->sioMisorder;
+				if (emu->sioMisorder < 8) {
+					MOBILE_LOGI("BUS slave 跟随主机轮次 me=%d was=%u now=%u n=%u",
+					            me, (unsigned) emu->sioIndex, (unsigned) used, emu->sioMisorder);
+				}
+			}
+			emu->sioIndex = used;
+			emu->sioHasRemote = true;
+			emu->sioRemote = busVals[0];
+			completeMultiTransferBus(emu, busVals, busPlayers, cyclesLate);
+			emu->sioPushValue = own;
+			emu->sioPushIndex = emu->sioIndex;
+			emu->sioPushed = true;
+			if (timing) {
+				mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+				emu->sioSlaveArmed = true;
+			}
+			return;
+		}
+	}
+
 	uint16_t got = 0;
 	uint32_t remote = 0;
 	uint32_t peerCycles = 0;
@@ -2088,8 +2528,37 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 *
 	 * 现在改成**非阻塞取字 + 短周期重试**：取不到就 2048 个模拟周期后再试，
 	 * 一次也不阻塞。主机每轮推一个字、从机照单全收（队列是 FIFO，轮次天然
-	 * 一一对应），从机的时钟不再被墙钟拖住。 */
-	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, 0, &remote, &got, &peerCycles);
+	 * 一一对应），从机的时钟不再被墙钟拖住。
+	 *
+	 * 【跨网例外：从机的游戏有传输在飞时必须阻塞等】
+	 * 走服务器隧道时主控每轮要等一个网络往返（实测 142ms 均值、250ms 尖峰），
+	 * 主控的模拟时钟在等待里冻结，它的游戏一帧要走 9×160ms 真实时间；而从机
+	 * 的游戏照常 60fps 跑——从机一帧只摊到 ~0.1 次 SIO 中断，gen8 的
+	 * LinkVSync 数出「每帧不足 9 次」就置 gLink.lag = LAG_MASTER，游戏当场报
+	 * 「连接发生了错误」。真机语义是：从机的传输挂着，线路就一直等主机的时
+	 * 钟沿。所以这里在**主控的轮次还在密集到达（交换正在进行）**时改为阻塞
+	 * 等（窗口自适应 RTT）：从机的一帧因此包含主控一帧的全部轮次，LAG 消
+	 * 除，两边的游戏速率重新锁死。交换停了（对端 500ms 没推字）就回到自旋，
+	 * 模拟帧率不受影响。 */
+	/* 【跨网时从机必须阻塞等；判据不能是本机推字时间】
+	 *
+	 * 这里原来用「本机 500ms 内推过字」当作「交换正在进行」的判据。可这个
+	 * 判据在**第一轮**必然为假：从机还没完成过任何一轮，自然没推过字 →
+	 * 走下面的自旋分支 → 每次自旋把模拟时钟推进 2048 cycles（≈0.12ms），
+	 * 而墙钟只过去几微秒，等于模拟时间以约 300 倍真实速度狂奔。主机那一个
+	 * 字还在路上（一个 RTT），从机这边已经空转出几百上千个游戏帧，gen8 的
+	 * LinkVSync 数出「这些帧一次 SIO 中断都没有」→ gLink.lag = LAG_MASTER
+	 * → 当场「通信错误……请检查所有的连接」，link 任务直接停掉，之后从机
+	 * 再也不写 SIOMLT_SEND，主机收到的全是 0x0000（RECEIVED_NOTHING）。
+	 * 实测从机自旋计数 to=1721192，与这个推断完全吻合。
+	 *
+	 * 而这个事件只有在 netLinkPeerPending() > 0（主机确实推过字）时才会被
+	 * 挂上，也就是说「进到这里」本身就证明交换正在进行。所以只要链路还连
+	 * 着，就按 RTT 自适应窗口阻塞等——模拟时钟冻结，游戏看不见这段墙钟
+	 * 时间，从机的每帧轮次数与主机严格一致，LAG 不会触发。
+	 * 真正没联机时事件根本不会被挂上，帧率不受影响。 */
+	int slaveWaitMs = sioPipelineWaitMs(emu, -1);
+	bool have = netLinkTakePeerWordAny(emu->link, emu->sioIndex, slaveWaitMs, &remote, &got, &peerCycles);
 	if (!have) {
 		/* 【从机没有对端数据时绝不收尾】
 		 *
@@ -2139,7 +2608,9 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		emu->sioPeerCycles = peerCycles;
 		emu->sioPeerCyclesValid = true;
 	}
-	uint16_t own = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	uint16_t own = emu->sioRoundWordValid ? emu->sioRoundWord
+	                                      : gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	emu->sioRoundWordValid = false;
 	if (got != emu->sioIndex) {
 		/* 轮次跳跃：主机那边跳过了几轮（或者从机刚接上）。不影响正确性
 		 * —— 从机跟随主机的号，双方仍然一一对应。 */
@@ -2175,6 +2646,142 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 }
 
 
+/* 跨网等待窗：局域网 RTT 1-3ms，800ms 绰绰有余；走服务器隧道 RTT 上百毫秒
+ * 还会抖（手机网络尖峰能到秒级），固定 800ms 必然误超时——超时一次就用空槽
+ * 收尾，游戏立刻报「连接发生了错误」。等待窗跟随实测 RTT（20 倍余量），
+ * 下限仍是局域网的 800ms，上限 20s 防死等。等待期间模拟时钟冻结，游戏自己
+ * 不会超时，只是这一轮变慢。 */
+static int sioWaitMs(struct MgbaMobile* emu);
+
+/* 本轮到底允不允许阻塞模拟线程。
+ *
+ * 隧道连着（state==2）不等于对端在跑联机：当对端还停在开机/标题画面时它
+ * 一个字都不推，这边若照旧按 sioWaitMs 死等，模拟线程就被按在超时窗里，
+ * 整帧不动——实测整屏 4 秒逐字节一致、按键完全不响应，驱动层只能看着它
+ * 「假死」。所以只有「对端确实在这条链路上交换字」时才阻塞：
+ *   1) 队列里已有对端字 → 阻塞（实际只是取队列，几乎不耗时）；
+ *   2) 对端 800ms 内推过字 → 阻塞，但只给半个秒窗（这一轮只是晚到）；
+ *   3) 对端完全没动静 → 立刻用空槽收尾，模拟线程照常跑。
+ * 第 3 条是这次假死的解药；它不会污染握手以外的轮次，因为握手期对端一定
+ * 在推字，条件 1/2 必然命中。 */
+static int sioPeerWaitMs(struct MgbaMobile* emu) {
+	if (!emu->link || netLinkState(emu->link) != 2) {
+		return 0;
+	}
+	if (netLinkBusActive(emu->link)) {
+		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
+		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
+		 * 两边都等满窗。给 3 倍实测 RTT，下限 2ms（本机环回 RTT≈0.1ms，
+		 * 原 12ms 下限让每个落后轮次都付满 12ms，9 轮/帧把帧率压到约 5fps）；
+		 * 字到达时 cond_broadcast 仍会立刻唤醒，LAN（RTT≥3ms×3≈9~12ms）
+		 * 行为不变。 */
+		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (ms < 2u) {
+			ms = 2u;
+		}
+		if (ms > 120u) {
+			ms = 120u;
+		}
+		return (int) ms;
+	}
+	if (netLinkPeerPending(emu->link) > 0) {
+		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
+		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
+		 * 覆盖实测 150ms 均值 / 441ms 尖峰的隧道 RTT。 */
+		return 1200;
+	}
+	if (netLinkPushAgeMs(emu->link) < 800) {
+		return 900;                 /* 对端仍在活跃交换，这一轮只是晚到 */
+	}
+	/* 与 Qt 侧同一条修正：链路刚建立时两端都还没推过字，pushSeenAt=0
+	 * 会让上面两条全部落空，于是最需要等一个公网 RTT 的第一轮反而零等待，
+	 * 主机按空槽收尾 → 从机回字迟到后无人认领 → 握手停在 START0/START1。
+	 * 前 8 轮、头 3 次重试给 900ms 预算；之后恢复 0，避免对端根本没进
+	 * 联机时把模拟线程按死（11-08 的假死）。 */
+	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
+		return 900;
+	}
+	/* 与 Qt 侧同一条修正：隧道抖动会让「对端 800ms 内推过字」间歇失效，
+	 * 零等待 + 100 cycles 重试间隔会在极短时间内耗尽 40 次重试并按空槽
+	 * 收尾，破坏玩家数据块校验（隧道轮 brs 全 0 / cnt 恒 0）。游戏确实
+	 * 发起了本轮 MULTI 且链路还连着时，给一个跟随实测 RTT 的最小预算。 */
+	if (emu->sioWaiting) {
+		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (ms < 300u) {
+			ms = 300u;
+		}
+		if (ms > 1200u) {
+			ms = 1200u;
+		}
+		return (int) ms;
+	}
+	return 0;                       /* 对端没在交换：立刻收尾，别冻住模拟线程 */
+}
+
+static int sioWaitMs(struct MgbaMobile* emu) {
+	uint32_t rttUs = emu->link ? netLinkRttUs(emu->link) : 0;
+	uint32_t ms = (rttUs / 1000u) * 20u;
+	if (ms < 800) {
+		ms = 800;
+	}
+	if (ms > 20000) {
+		ms = 20000;
+	}
+	return (int) ms;
+}
+
+/* 与 Qt 侧同一条按帧流水线：系统属性 mgbax.sio.pipeline=1 开启。
+ * 队列里有对端字就零等待消费，队列空才给一次整批预算；字严格按轮次配对。 */
+static bool sioPipelineMode(struct MgbaMobile* emu) {
+	if (emu->sioPipelineEnabled < 0) {
+#ifdef __ANDROID__
+		char v[PROP_VALUE_MAX] = {0};
+		__system_property_get("mgbax.sio.pipeline", v);
+		emu->sioPipelineEnabled = (v[0] == '1') ? 1 : 0;
+#else
+		/* Desktop and the local test build share the Qt-side switch name. */
+		const char* v = getenv("MGBAX_SIO_PIPELINE");
+		emu->sioPipelineEnabled = (v && v[0] == '1') ? 1 : 0;
+#endif
+	}
+	return emu->sioPipelineEnabled != 0;
+}
+
+static int sioPipelineWaitMs(struct MgbaMobile* emu, int want) {
+	/* 总线不受两人按帧流水线开关影响，始终用局域网短窗。 */
+	if (emu->link && netLinkBusActive(emu->link)) {
+		return sioPeerWaitMs(emu);
+	}
+	if (!sioPipelineMode(emu)) {
+		return sioPeerWaitMs(emu);
+	}
+	if (!emu->link || netLinkState(emu->link) != 2) {
+		return 0;
+	}
+	if (netLinkPeerPending(emu->link) > 0) {
+		/* 队列非空不等于**本轮**的字已经到：队首常常是后续轮次。只有队首
+		 * 正是本轮才零等待，否则照样按 RTT 给等待窗（取字函数自己按轮次
+		 * 严格匹配，不再把后续轮次的字喂给这一轮）。 */
+		if (want < 0) {
+			return 0;
+		}
+		int qCount = 0;
+		unsigned qHead = 0;
+		netLinkPeerHeadInfo(emu->link, &qCount, &qHead);
+		if (qCount > 0 && (int) qHead == want) {
+			return 0;
+		}
+	}
+	uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+	if (ms < 500u) {
+		ms = 500u;
+	}
+	if (ms > 4000u) {
+		ms = 4000u;
+	}
+	return (int) ms;
+}
+
 static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
 	struct MgbaMobile* emu = (struct MgbaMobile*) user;
 	if (!emu->sioWaiting) {
@@ -2182,18 +2789,54 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	uint32_t remote = 0;
 	uint16_t got = 0;
+	/* 3/4 人总线：主机在这一刻收齐所有从机本轮的字，再一次性广播给它们。
+	 *
+	 * 判据必须是「链路处于总线模式」，不能只看人数：总线里只有一个从机
+	 * 连上来时 netLinkBusPlayers() 正好是 2，按人数判会掉进下面的两人直连
+	 * 分支，而总线的字根本不进 peerQ，结果永远是「对端没回字」。 */
+	{
+		int busPlayers = netLinkBusPlayers(emu->link);
+		if (netLinkBusActive(emu->link) && busPlayers >= 1
+		    && emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+			if (busPlayers < 2) {
+				busPlayers = 2;   /* 还没从机连上：按「只有自己」收尾 */
+			}
+			struct GBA* gbaBus = (struct GBA*) emu->core->board;
+			uint32_t busVals[4];
+			uint16_t used = emu->sioIndex;
+			uint32_t own = gbaBus->memory.io[GBA_REG(SIOMLT_SEND)];
+			int busGot = netLinkBusRound(emu->link, emu->sioIndex, own, busVals, busPlayers,
+			                             sioPipelineWaitMs(emu, (int) emu->sioIndex), &used);
+			if (busGot <= 0 && emu->sioRetries < 3 && netLinkState(emu->link) == 2) {
+				/* 有从机连着却一个都没收到：它们是慢了一拍，不是没有。
+				 * 重试几次再按空槽收尾，否则一次迟到就会把这一轮的握手数据
+				 * 变成 0xFFFF，游戏当场报 checksum 错。 */
+				++emu->sioRetries;
+				struct mTiming* t2 = coreTiming(emu);
+				if (t2) {
+					mTimingSchedule(t2, &emu->sioDone, 100);
+					return;   /* sioWaiting 保持 true */
+				}
+			}
+			emu->sioRetries = 0;
+			emu->sioWaiting = false;
+			emu->sioHasRemote = busGot > 0;
+			emu->sioRemote = busVals[0];
+			if (busGot <= 0 && emu->toDbg < 40) {
+				++emu->toDbg;
+				MOBILE_LOGI("BUS host round me=%d idx=%u got=%d n=%d",
+				            netLinkPlayer(emu->link), (unsigned) emu->sioIndex, busGot, busPlayers);
+			}
+			completeMultiTransferBus(emu, busVals, busPlayers, cyclesLate);
+			return;
+		}
+	}
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
-	 * 一帧就只剩下一次传输，必然被判掉线。
-	 *
-	 * 等待窗口给到 2500ms：本机阻塞期间模拟时钟不动，所以拉长窗口只花真实
-	 * 时间、不会让游戏的 LAG 计数变差；但对端（客机）只要有一次真的卡了
-	 * 几十毫秒——比如渲染通路挤了、被系统调度走了——400ms 就会误判成
-	 * 「对端没回」而用 0xFFFF 收尾，游戏当场报「连接发生了错误」。实测客机
-	 * 卡顿是偶发上百毫秒的，窗口必须留够。 */
+	 * 一帧就只剩下一次传输，必然被判掉线。 */
 	double t0 = (double) wallNowMs();
-	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, 800, &remote, &got, NULL);
+	bool haveRemote = emu->link && netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL);
 	double waited = (double) wallNowMs() - t0;
 	if (waited > 3.0) {
 		/* 超过 3ms 就说明这一轮不是「网络瞬时往返」，而是对端真的慢了。
@@ -2228,6 +2871,24 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	}
 	LINK_VERBOSE("SIO multi timeout seq=%u", emu->sioSeq);
 	emu->sioTimeouts++;
+	/* 对端还在线就继续等，别急着用空槽收尾：跨网时对端的字只是迟到（RTT
+	 * 尖峰、手机切基站），不是没有。等待继续冻结模拟时钟，游戏看不见这段
+	 * 时间；真机语义也一样——从机不回字，线路就不动。真正断线（state≠2）
+	 * 或重试次数耗尽才按「这一轮没有对端数据」收尾。 */
+	/* 墙钟上限看的是**这一轮**累计等了多久：等待窗现在能到 4s，光靠 40 次
+	 * 重试计数会变成 160s 的死等，一个僵死的对端就能把整帧按住不放。 */
+	if (emu->sioRetries == 0) {
+		emu->sioRetryWall = wallNowMs();
+	}
+	if (emu->link && netLinkState(emu->link) == 2 && emu->sioRetries < 40 &&
+	    (uint32_t) (wallNowMs() - emu->sioRetryWall) < 20000u) {
+		++emu->sioRetries;
+		struct mTiming* t2 = coreTiming(emu);
+		if (t2) {
+			mTimingSchedule(t2, &emu->sioDone, 100);
+			return;
+		}
+	}
 	if (emu->toDbg < 40) {
 		++emu->toDbg;
 		MOBILE_LOGI("TO #%u seq=%u me=%d stashed=%d",
@@ -2316,10 +2977,19 @@ static bool gbaLinkHandles(struct GBASIODriver* driver, enum GBASIOMode mode) {
 }
 
 static int gbaLinkDevices(struct GBASIODriver* driver) {
-	UNUSED(driver);
+	struct MgbaMobile* emu = ((struct GbaLinkDriver*) driver)->emu;
 	/* 与 gbp.c 的语义一致：连着的“对端”数量（不含自己）。两边 2 人联机
 	 * 时这里是 1，内核才会用 2P 的传输周期；填 2 会按 3P 算，每次传输
-	 * 比真机慢 50%，游戏的超时窗口就对不上了。 */
+	 * 比真机慢 50%，游戏的超时窗口就对不上了。
+	 *
+	 * 3/4 人总线按实际人数上报（players-1），内核才会用 3P/4P 的周期 ——
+	 * 一直返回 1 会让每一轮都比真机短，游戏数出的每帧轮次数对不上。 */
+	if (emu && netLinkBusActive(emu->link)) {
+		int players = netLinkBusPlayers(emu->link);
+		if (players > 2) {
+			return players - 1;
+		}
+	}
 	return 1;
 }
 
@@ -2420,6 +3090,12 @@ static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 				/* 只有 1P 真的发起传输；从机的传输由 1P 的那一次驱动，
 				 * 见 serviceLink。 */
 				beginMultiTransfer(emu, driver, nowBusy ? "busy" : "irq");
+			}
+			else if (!emu->sioWaiting && netLinkPlayer(emu->link) != 0 &&
+			         emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA) {
+				struct GBA* g = (struct GBA*) emu->core->board;
+				emu->sioRoundWord = g->memory.io[GBA_REG(SIOMLT_SEND)];
+				emu->sioRoundWordValid = true;
 			}
 		}
 		uint16_t out = GBASIOMultiplayerFillReady(GBASIOMultiplayerClearError(value));
@@ -2563,7 +3239,9 @@ static uint8_t gbaLinkFinish8(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA8)] & 0xFFu;
 	uint32_t remote = 0xFFu;
-	netLinkExchange(emu->link, GBA_SIO_NORMAL_8, local, &remote, 800);
+	/* 不能重试：重发 REQ 会让对端的请求队列多出一轮、双方向量错位。等待窗
+	 * 自适应 RTT（见 sioWaitMs），跨网尖峰时宁可慢不可错。 */
+	netLinkExchange(emu->link, GBA_SIO_NORMAL_8, local, &remote, sioWaitMs(emu));
 	return (uint8_t) remote;
 }
 
@@ -2572,7 +3250,7 @@ static uint32_t gbaLinkFinish32(struct GBASIODriver* driver) {
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint32_t local = gba->memory.io[GBA_REG(SIODATA32_LO)] | ((uint32_t) gba->memory.io[GBA_REG(SIODATA32_HI)] << 16);
 	uint32_t remote = 0xFFFFFFFFu;
-	netLinkExchange(emu->link, GBA_SIO_NORMAL_32, local, &remote, 800);
+	netLinkExchange(emu->link, GBA_SIO_NORMAL_32, local, &remote, sioWaitMs(emu));
 	return remote;
 }
 
@@ -2601,13 +3279,13 @@ static void gbLinkWriteSb(struct GBSIODriver* driver, uint8_t value) {
 
 static uint8_t gbLinkWriteSc(struct GBSIODriver* driver, uint8_t value) {
 	struct MgbaMobile* emu = ((struct GbLinkDriver*) driver)->emu;
-	if (GBRegisterSCIsEnable(value) && GBRegisterSCIsShiftClock(value)) {
-		uint8_t local = driver->p->p->memory.io[GB_REG_SB];
-		uint32_t remote = 0xFFu;
-		if (netLinkExchange(emu->link, 0, local, &remote, 800)) {
-			driver->p->pendingSB = (uint8_t) remote;
+		if (GBRegisterSCIsEnable(value) && GBRegisterSCIsShiftClock(value)) {
+			uint8_t local = driver->p->p->memory.io[GB_REG_SB];
+			uint32_t remote = 0xFFu;
+			if (netLinkExchange(emu->link, 0, local, &remote, sioWaitMs(emu))) {
+				driver->p->pendingSB = (uint8_t) remote;
+			}
 		}
-	}
 	return value;
 }
 
@@ -2792,14 +3470,17 @@ uint16_t mgbaMobileLastKeys(struct MgbaMobile* emu) {
 	return GBAIORead(gba, GBA_REG_KEYINPUT);
 }
 
-bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
+/* RunFrames 的实现体。调用方必须已持有核心锁（见下面的公开包装）。 */
+static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	if (!emu || !emu->core) {
 		return false;
 	}
 	if (count < 1) {
 		count = 1;
 	}
-	pollLink(emu);
+	if (!emu->lockstepSlot) {
+		pollLink(emu);
+	}
 	/* 真实速度探针：模拟帧率是判断「游戏是不是被网络等待拖死」的第一指标。
 	 * 联机时模拟时钟会在等对端应答的那段时间里冻住，所以模拟帧率远低于
 	 * 真实帧率就说明有阻塞。每 60 个模拟帧打一行，带上真实耗时。 */
@@ -2993,7 +3674,13 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 			MOBILE_LOGI("FrameKeys 0x%x", nowKeys);
 		}
 		emu->core->setKeys(emu->core, nowKeys);
-		emu->core->runFrame(emu->core);
+		if (emu->lockstepSlot) {
+			/* 协调器靠 sleep/wake 在 SIO 传输轮次会合，必须小步推进；
+			 * runFrame 会在帧内忙等并破坏锁步。 */
+			mgbaLockstepRunFrame(emu->lockstepSlot, emu->core);
+		} else {
+			emu->core->runFrame(emu->core);
+		}
 		if (emu->rewindEnabled && ++emu->rewindCounter >= REWIND_DIVIDER) {
 			emu->rewindCounter = 0;
 			if (!emu->rewindInited) {
@@ -3005,6 +3692,20 @@ bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
 	}
 	ensureVideo(emu);
 	return true;
+}
+
+/* 核心锁下沉到这一层：iOS 直接调用这个函数（不经过 JNI 的 nativeRunFrames），
+ * 而状态帧是在 socket 读线程上被注入的 —— 不加锁就是「一边 runFrame 一边
+ * 换核心状态」的竞态。安卓侧的 JNI 入口也加了锁，核心锁是递归的，同线程
+ * 重入安全。 */
+bool mgbaMobileRunFrames(struct MgbaMobile* emu, int count) {
+	if (!emu || !emu->core) {
+		return false;
+	}
+	mgbaMobileLock(emu);
+	bool ok = mobileRunFramesLocked(emu, count);
+	mgbaMobileUnlock(emu);
+	return ok;
 }
 
 int mgbaMobileReadAudio(struct MgbaMobile* emu, int16_t* out, int maxFrames) {
@@ -3036,6 +3737,12 @@ void mgbaMobileClearAudio(struct MgbaMobile* emu) {
 	if (emu->audioHoldInited) {
 		mAudioBufferClear(&emu->audioHold);
 	}
+	/* The WSOLA input queue and the native-hold cursors are owned by the audio
+	 * thread. Publish a pending clear instead of touching them here: the next
+	 * mgbaMobileReadAudioOut() runs the full reset (wsolaIn, wsolaAnaPos,
+	 * natR/natW, primed/outAcc/lastTime), so a re-enable after ClearAudio can
+	 * no longer replay stale samples against a reset analysis cursor. */
+	emu->wsolaClearPending = true;
 	resetAudioOutput(emu);
 }
 
@@ -3155,26 +3862,7 @@ void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode) {
  * Readings far outside the estimate are treated as stalls and need a
  * confirming window before the estimate follows them at all.
  */
-/* Middle value of three readings. */
-static double median3(double x, double y, double z) {
-	double t;
-	if (x > y) {
-		t = x;
-		x = y;
-		y = t;
-	}
-	if (y > z) {
-		t = y;
-		y = z;
-		z = t;
-	}
-	if (x > y) {
-		t = x;
-		x = y;
-		y = t;
-	}
-	return y;
-}
+/* 两点确认：只保留上一次读数，不再用三点中值（见 mgbaMobileSetAudioPaceFps）。 */
 
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	if (!emu || !(fps > 0.0)) {
@@ -3185,42 +3873,45 @@ void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps) {
 	} else if (fps > MOBILE_AUDIO_PACE_FPS_MAX) {
 		fps = MOBILE_AUDIO_PACE_FPS_MAX;
 	}
-	if (emu->audioPaceHistLen < 3) {
-		emu->audioPaceHist[emu->audioPaceHistLen++] = fps;
-	} else {
-		emu->audioPaceHist[0] = emu->audioPaceHist[1];
-		emu->audioPaceHist[1] = emu->audioPaceHist[2];
-		emu->audioPaceHist[2] = fps;
-	}
-	double reading = emu->audioPaceHistLen < 3
-			? fps
-			: median3(emu->audioPaceHist[0], emu->audioPaceHist[1], emu->audioPaceHist[2]);
-	if (emu->audioPaceFps <= 0.0) {
-		// First reading after a reset: lock at once so the resampler stops
-		// running at the seeded rate.
-		emu->audioPaceFps = reading;
+	/* 回到「两个连续读数一致才跳」的设计意图（见 struct 注释）。
+	 * 旧实现用 median3 三点中值，确认一次变化要 3~5 个窗口；更糟的是
+	 * audioPaceFps==0（未测量）时首个读数直接锁定，一次调度卡顿就把
+	 * 音乐拖成半速。现在 audioPaceHist[0] 只存上一次读数，
+	 * audioPaceHistLen>0 表示它有效。未锁定时以控制台标称帧率作基准，
+	 * 首个离群读数只记一次、不改 pace —— 0 仍表示「未测量」，
+	 * readAudioOut 继续按标称输出，AudioPaceSeeded 的语义不变。 */
+	double baseline = emu->audioPaceFps > 0.0
+			? emu->audioPaceFps : audioNativeFps(emu);
+	bool havePrevious = emu->audioPaceHistLen > 0;
+	double previous = emu->audioPaceHist[0];
+	emu->audioPaceHist[0] = fps;
+	emu->audioPaceHistLen = 1;
+
+	double delta = fabs(fps - baseline);
+	if (delta > baseline * MOBILE_AUDIO_PACE_OUTLIER) {
+		/* 离群：上一次读数与本次一致（同方向）才确认；单次只是卡顿。 */
+		bool agreed = havePrevious
+				&& fabs(previous - fps) <= fps * MOBILE_AUDIO_PACE_OUTLIER;
+		if (!agreed && ++emu->audioPaceOutliers < 2) {
+			return;
+		}
+		emu->audioPaceFps = fps;
 		emu->audioPaceOutliers = 0;
 		emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-				emu->audioPaceFps * emu->audioPaceSpeed);
-		return;
-	}
-	double delta = reading > emu->audioPaceFps ? reading - emu->audioPaceFps : emu->audioPaceFps - reading;
-	if (delta > emu->audioPaceFps * MOBILE_AUDIO_PACE_OUTLIER) {
-		// One window can be a stall, not the pacing rate: wait for the next
-		// window to agree before moving the stream.
-		if (++emu->audioPaceOutliers >= 2) {
-			emu->audioPaceFps = reading;
-			emu->audioPaceOutliers = 0;
-			emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-					emu->audioPaceFps * emu->audioPaceSpeed);
-		}
+						emu->audioPaceFps * emu->audioPaceSpeed);
 		return;
 	}
 	emu->audioPaceOutliers = 0;
-	double share = reading < emu->audioPaceFps ? MOBILE_AUDIO_PACE_EMA_DOWN : MOBILE_AUDIO_PACE_EMA_UP;
-	emu->audioPaceFps += (reading - emu->audioPaceFps) * share;
+	if (emu->audioPaceFps <= 0.0) {
+		/* deadband 内的首个正常读数：直接锁定，不必等两次。 */
+		emu->audioPaceFps = fps;
+	} else {
+		double share = fps < emu->audioPaceFps
+				? MOBILE_AUDIO_PACE_EMA_DOWN : MOBILE_AUDIO_PACE_EMA_UP;
+		emu->audioPaceFps += (fps - emu->audioPaceFps) * share;
+	}
 	emu->audioPaceThroughput = fmax(emu->audioPaceThroughput * MOBILE_AUDIO_PACE_THROUGHPUT_DECAY,
-			emu->audioPaceFps * emu->audioPaceSpeed);
+					emu->audioPaceFps * emu->audioPaceSpeed);
 }
 
 /*
@@ -3460,8 +4151,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 	 * here (engagement bug); holdInited=0 means the hold failed to allocate and
 	 * the pass-through fast path runs instead. */
 	if (speed > 1.01) {
-		static int diagTick;
-		if ((diagTick++ % 60) == 1) {
+		if ((emu->diagTick++ % 60) == 1) {
 			MOBILE_LOGI("audio diag: speed %.1f holdOn %d holdInited %d mode %s natRing %p",
 					speed, emu->audioHoldOn, emu->audioHoldInited,
 					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
@@ -3480,8 +4170,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		 * the stretcher is running, at what ratio, and whether it is keeping
 		 * up: hold/in back up permanently means it is not draining, held = 0
 		 * means it produced nothing for this read. */
-		static int traceTick;
-		if ((traceTick++ % 60) == 1) {
+		if ((emu->traceTick++ % 60) == 1) {
 			MOBILE_LOGI("audio ff: mode %s stretch %.2f speed %.2f inRate %.0f coreRate %u held %zu hold %zu in %zu lagDrops %zu cuts %zu",
 					emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE ? "native" : "pitch",
 					emu->wsolaStretch, speed, inRate, coreRate, held,
@@ -3600,6 +4289,93 @@ bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot) {
 	}
 	MOBILE_LOGI("State slot %d %s", slot, ok ? "loaded" : "missing");
 	return ok;
+}
+
+/* 快照的实现体。调用方必须已持有核心锁。 */
+static bool mobileSaveStateLocked(struct MgbaMobile* emu, void** out, size_t* outSize) {
+	if (!emu || !emu->core || !out || !outSize) {
+		return false;
+	}
+	*out = NULL;
+	*outSize = 0;
+	struct VFile* vf = VFileMemChunk(NULL, 0);
+	if (!vf) {
+		return false;
+	}
+	if (emu->fast > 0) {
+		setFastAudio(emu, 0);
+	}
+	applyFrameskip(emu->core, 0);
+	bool ok = mCoreSaveStateNamed(emu->core, vf,
+	                              SAVESTATE_SAVEDATA | SAVESTATE_RTC | SAVESTATE_METADATA);
+	emu->fast = -1;
+	if (ok) {
+		ssize_t size = vf->size(vf);
+		if (size > 0) {
+			void* buffer = malloc((size_t) size);
+			if (!buffer) {
+				ok = false;
+			} else if (vf->seek(vf, 0, SEEK_SET) != 0
+			           || vf->read(vf, buffer, (size_t) size) != size) {
+				free(buffer);
+				ok = false;
+			} else {
+				*out = buffer;
+				*outSize = (size_t) size;
+			}
+		} else {
+			ok = false;
+		}
+	}
+	vf->close(vf);
+	return ok;
+}
+
+bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize) {
+	if (!emu || !emu->core || !out || !outSize) {
+		return false;
+	}
+	/* 与 RunFrames 同一把核心锁：iOS 直接调 C 函数，不经 JNI。 */
+	mgbaMobileLock(emu);
+	bool ok = mobileSaveStateLocked(emu, out, outSize);
+	mgbaMobileUnlock(emu);
+	return ok;
+}
+
+/* 状态注入的实现体。调用方必须已持有核心锁。 */
+static bool mobileLoadStateLocked(struct MgbaMobile* emu, const void* data, size_t size) {
+	if (!emu || !emu->core || !data || size == 0) {
+		return false;
+	}
+	struct VFile* vf = VFileFromConstMemory(data, size);
+	if (!vf) {
+		return false;
+	}
+	bool ok = mCoreLoadStateNamed(emu->core, vf, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+	vf->close(vf);
+	if (ok) {
+		applyFrameskip(emu->core, 0);
+		ensureVideo(emu);
+		emu->fast = -1;
+		attachKeyCallback(emu);
+	}
+	return ok;
+}
+
+bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size) {
+	if (!emu || !emu->core || !data || size == 0) {
+		return false;
+	}
+	/* 这条路径的危险性最高：状态帧在 socket 读线程上到达，镜像核正在另一条
+	 * 线程上 runFrame。没有这把锁就是「运行中换掉整个核心状态」。 */
+	mgbaMobileLock(emu);
+	bool ok = mobileLoadStateLocked(emu, data, size);
+	mgbaMobileUnlock(emu);
+	return ok;
+}
+
+void mgbaMobileFreeState(void* state) {
+	free(state);
 }
 
 void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled) {
@@ -3751,35 +4527,173 @@ void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen) 
 	if (!emu || !emu->core || emu->savePath[0] == '\0' || emu->core->dirs.baseName[0] == '\0') {
 		return;
 	}
-	snprintf(out, outLen, "%s/%s.sav", emu->savePath, emu->core->dirs.baseName);
+	snprintf(out, outLen, "%s/%s%s", emu->savePath, emu->core->dirs.baseName, emu->saveSuffix);
 }
 
 void mgbaMobilePumpLink(struct MgbaMobile* emu) {
-	if (!emu) {
+	if (!emu || emu->lockstepSlot) {
+		/* 锁步模式下 SIO 由协调器驱动，netLink 的 poll/service 会挂上自研
+		 * gbaLink 驱动并把终端位改坏，必须完全旁路。 */
 		return;
 	}
 	pollLink(emu);
 	serviceLink(emu);
 }
 
-bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port) {
+/* players：本局人数。2 走原来的两人直连；3/4 走星型总线（主机 accept 多个
+ * 从机并汇聚每一轮的字）。 */
+bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port, int players) {
 	if (!emu || !emu->link) {
 		return false;
 	}
-	return netLinkHost(emu->link, port);
+	if (players < 2) {
+		players = 2;
+	}
+	return netLinkBusHost(emu->link, port, players);
 }
 
-bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port) {
+/* players 必须和主机一致：两边用不同的包格式连上去，TCP 层能连上但一个包
+ * 都解不出来（总线用定长 BusPacket，两人直连用 struct Packet）。 */
+bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int players) {
 	if (!emu || !emu->link || !host) {
 		return false;
+	}
+	if (players > 2) {
+		return netLinkBusJoin(emu->link, host, port);
 	}
 	return netLinkJoin(emu->link, host, port);
 }
 
-void mgbaMobileLinkClose(struct MgbaMobile* emu) {
+bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players) {
 	if (!emu || !emu->link) {
+		return false;
+	}
+	if (players < 3) {
+		players = 3;
+	}
+	return netLinkBusHostLocal(emu->link, key, players);
+}
+
+bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key) {
+	if (!emu || !emu->link) {
+		return false;
+	}
+	return netLinkBusJoinLocal(emu->link, key);
+}
+
+bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot) {
+	if (!emu || !emu->link) {
+		return false;
+	}
+	return netLinkBusJoinLocalSlot(emu->link, key, slot);
+}
+
+bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot) {
+	if (!emu || !emu->core || emu->lockstepSlot) {
+		return false;
+	}
+	struct MgbaLockstepRoom* room = mgbaLockstepHost(key, players);
+	if (!room) {
+		return false;
+	}
+	struct MgbaLockstepSlot* ls = mgbaLockstepAttach(room, emu->core, slot);
+	if (!ls) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	emu->lockstepRoom = room;
+	emu->lockstepSlot = ls;
+	/* 自研 gbaLink 驱动与协调器互斥：linkAttached=false 让 attachLink 不再
+	 * 尝试挂它；帧循环也会据此跳过 netLink 的 poll/service。 */
+	emu->linkAttached = false;
+	MOBILE_LOGI("Link LOCKSTEP host key=%d players=%d slot=%d", key, players, slot);
+	return true;
+}
+
+bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot) {
+	if (!emu || !emu->core || emu->lockstepSlot) {
+		return false;
+	}
+	struct MgbaLockstepRoom* room = mgbaLockstepJoin(key);
+	if (!room) {
+		return false;
+	}
+	struct MgbaLockstepSlot* ls = mgbaLockstepAttach(room, emu->core, slot);
+	if (!ls) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	emu->lockstepRoom = room;
+	emu->lockstepSlot = ls;
+	emu->linkAttached = false;
+	MOBILE_LOGI("Link LOCKSTEP join key=%d slot=%d", key, slot);
+	return true;
+}
+
+bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu) {
+	return emu && emu->lockstepSlot != NULL;
+}
+
+void mgbaMobilePoke16(struct MgbaMobile* emu, uint32_t addr, uint16_t value) {
+	if (!emu || !emu->core) {
 		return;
 	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	int cc = 0;
+	GBAStore16(gba->cpu, addr, (int16_t) value, &cc);
+}
+
+uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	return GBAView16(gba->cpu, addr);
+}
+
+	uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	return gba->video.frameCounter;
+}
+
+/* 诊断：返回本核 CPU 当前 PC（gba->cpu->gprs[15]）。仅测试用，用来确认
+ * 冻结是否真的把 CPU 拽到了 IWRAM 循环里。 */
+uint32_t mgbaMobileCpuPc(struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	struct GBA* gba = (struct GBA*) emu->core->board;
+	return (uint32_t) gba->cpu->gprs[15];
+}
+
+/* 测试钩子：开启后锁步多玩家传输直接注入 0x1000+playerId 作为发送字，
+ * 绕开真实游戏对 SIOMLT_SEND 的改写，得到确定性传输用于验证收集/广播。
+ * 仅测试使用，必须在跑锁步集成测试前打开、跑完关闭。 */
+void mgbaMobileSioSetInject(bool inject) {
+	GBASIOLockstepSetTestInject(inject);
+}
+
+void mgbaMobileLinkClose(struct MgbaMobile* emu) {
+	if (!emu) {
+		return;
+	}
+	if (emu->lockstepSlot) {
+		MOBILE_LOGI("Link LOCKSTEP close");
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		if (emu->lockstepRoom) {
+			mgbaLockstepRelease(emu->lockstepRoom);
+			emu->lockstepRoom = NULL;
+		}
+		return;
+	}
+	if (!emu->link) {
+		return;
+	}
+	MOBILE_LOGI("Link close requested by app (state=%d)", netLinkState(emu->link));
 	netLinkClose(emu->link);
 }
 
@@ -3788,7 +4702,18 @@ void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen
 		return;
 	}
 	out[0] = '\0';
-	if (emu && emu->link) {
+	if (!emu) {
+		return;
+	}
+	if (emu->lockstepSlot) {
+		/* 上层（GBoyConsoleSet.connectedStatus）用首字符 '2' 判定已连接。
+		 * 锁步模式不走 netLink，这里给出等价状态，Java 侧无需分支。 */
+		snprintf(out, outLen, "2 lockstep slot=%d attached=%zu",
+		         mgbaLockstepSlotId(emu->lockstepSlot),
+		         mgbaLockstepAttached(emu->lockstepRoom));
+		return;
+	}
+	if (emu->link) {
 		netLinkStatusText(emu->link, out, outLen);
 	}
 }

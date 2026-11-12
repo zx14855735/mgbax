@@ -241,22 +241,30 @@ final class LobbyKcpChannel {
 
     func close() {
         lock.lock()
-        if !runningFlag {
-            lock.unlock()
-            return
-        }
+        // 这里原来在 !runningFlag 时直接 return。但 runningFlag 会被 markDead()
+        // 在对端断开时自己置成 false —— 于是「对端先断、再关房间」这条路直接
+        // 返回，下面的 socketFd / tcpSocket 一个都不关，描述符就漏了。反复联机
+        // 掉线会把 fd 耗尽（之后连什么都失败）。
+        //
+        // 现在只用 wasRunning 决定「要不要发 goodbye」，关闭本身无条件执行。
+        let wasRunning = runningFlag
         runningFlag = false
         lock.unlock()
-        if let kcp {
+        if wasRunning, let kcp {
             kcp.send([UInt8](LobbyKcpChannel.goodbye))
             flush()
         }
+        // 关闭后必须置 -1：不置的话第二次 close 会对同一个 fd 再调一次
+        // Darwin.close，而那时这个号码可能已经分配给别的线程，等于关掉别人
+        // 正在用的 fd（double-close 是最难查的一类问题）。
         if socketFd >= 0 {
             Darwin.close(socketFd)
+            socketFd = -1
         }
         if tcpSocket >= 0 {
             shutdown(tcpSocket, SHUT_RDWR)
             Darwin.close(tcpSocket)
+            tcpSocket = -1
         }
         inbox.wake()
     }
@@ -329,7 +337,11 @@ final class LobbyKcpChannel {
                 break
             }
             let length = Int(LobbyFrames.getInt(head, 0))
-            if length <= 0 || length > 65535 {
+            // Same 16 MiB ceiling as the frame reader. With the old 65535 a
+            // state frame (~790 KiB) failed this check and the whole KCP stream
+            // was torn down - so the cloud link never carried a save state at
+            // all, on either direction.
+            if length <= 0 || length > LobbyFrames.maxFrameLength {
                 break
             }
             var body = [UInt8](repeating: 0, count: length)

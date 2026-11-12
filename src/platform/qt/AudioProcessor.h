@@ -52,6 +52,7 @@ public slots:
 
 protected:
 	mCoreThread* input() { return m_context ? m_context->thread() : nullptr; }
+	CoreController* controllerPtr() { return m_context.get(); }
 
 private:
 	std::shared_ptr<CoreController> m_context;

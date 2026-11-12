@@ -27,6 +27,7 @@ AudioProcessorQt::AudioProcessorQt(QObject* parent)
 void AudioProcessorQt::setInput(std::shared_ptr<CoreController> controller) {
 	AudioProcessor::setInput(std::move(controller));
 	if (m_device) {
+		m_device->setController(controllerPtr());
 		m_device->setInput(input());
 		if (m_audioOutput) {
 			m_device->setFormat(m_audioOutput->format());
@@ -81,6 +82,7 @@ bool AudioProcessorQt::start() {
 		m_audioOutput->resume();
 	} else {
 		m_device->setBufferSamples(m_samples);
+		m_device->setController(controllerPtr());
 		m_device->setInput(input());
 		m_device->setFormat(m_audioOutput->format());
 		m_audioOutput->start(m_device.get());

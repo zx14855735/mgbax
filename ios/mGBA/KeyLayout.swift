@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 
 struct KeyLayout {
-    static let keys = ["dpad", "a", "b", "l", "r", "select", "start", "ta", "tb", "lr", "c", "c2", "save", "load", "ff", "shot"]
+    static let keys = ["dpad", "a", "b", "l", "r", "select", "start", "ta", "tb", "lr", "c", "c2", "save", "load", "ff", "shot", "rewind"]
     static let minScale: CGFloat = 0.4
     static let maxScale: CGFloat = 3.0
 

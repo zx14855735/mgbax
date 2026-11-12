@@ -1,0 +1,211 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>QGBA::LinkView</class>
+ <widget class="QDialog" name="QGBA::LinkView">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>360</width>
+    <height>360</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>WiFi 联机</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="0" colspan="2">
+    <layout class="QHBoxLayout" name="modeLayout">
+     <item>
+      <widget class="QRadioButton" name="radioHost">
+       <property name="text">
+        <string>创建房间（1P）</string>
+       </property>
+       <property name="checked">
+        <bool>true</bool>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">modeGroup</string>
+       </attribute>
+      </widget>
+     </item>
+     <item>
+      <widget class="QRadioButton" name="radioJoin">
+       <property name="text">
+        <string>加入房间（2P）</string>
+       </property>
+       <attribute name="buttonGroup">
+        <string notr="true">modeGroup</string>
+       </attribute>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item row="1" column="0">
+    <widget class="QLabel" name="ipLabel">
+     <property name="text">
+      <string>主机 IP</string>
+     </property>
+    </widget>
+   </item>
+   <item row="1" column="1">
+    <widget class="QLineEdit" name="ipAddr">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="placeholderText">
+      <string>例如 192.168.1.23</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="0">
+    <widget class="QLabel" name="portLabel">
+     <property name="text">
+      <string>端口</string>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="1">
+    <widget class="QSpinBox" name="port">
+     <property name="minimum">
+      <number>1024</number>
+     </property>
+     <property name="maximum">
+      <number>65535</number>
+     </property>
+     <property name="value">
+      <number>6374</number>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="0">
+    <widget class="QLabel" name="playersLabel">
+     <property name="text">
+      <string>人数</string>
+     </property>
+    </widget>
+   </item>
+   <item row="3" column="1">
+    <widget class="QSpinBox" name="players">
+     <property name="toolTip">
+      <string>3 或 4 人走局域网总线（主机每轮收齐所有人的字再广播）。两边必须填一样；2 人是原来的直连，WiFi 合并按键模式只支持 2 人。</string>
+     </property>
+     <property name="minimum">
+      <number>2</number>
+     </property>
+     <property name="maximum">
+      <number>4</number>
+     </property>
+     <property name="value">
+      <number>2</number>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="0" colspan="2">
+    <widget class="QCheckBox" name="lanMode">
+     <property name="toolTip">
+      <string>局域网精确 SIO 联机线（端口 18765），与安卓/iOS 局域网模式同协议，支持游戏内对战与交换。</string>
+     </property>
+     <property name="text">
+      <string>局域网精确 SIO 联机线（区别于 WiFi 合并按键）</string>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="0" colspan="2">
+    <widget class="QTextEdit" name="status">
+     <property name="readOnly">
+      <bool>true</bool>
+     </property>
+     <property name="placeholderText">
+      <string>请先打开游戏，再开始联机。</string>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="0" colspan="2">
+    <layout class="QHBoxLayout" name="buttonLayout">
+     <item>
+      <widget class="QPushButton" name="start">
+       <property name="text">
+        <string>开始</string>
+       </property>
+       <property name="icon">
+        <iconset theme="network-connect"/>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="disconnect">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>断开</string>
+       </property>
+       <property name="icon">
+        <iconset theme="network-disconnect"/>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="sendReset">
+       <property name="enabled">
+        <bool>false</bool>
+       </property>
+       <property name="text">
+        <string>发送复位</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QPushButton" name="close">
+       <property name="text">
+        <string>关闭</string>
+       </property>
+       <property name="icon">
+        <iconset theme="window-close"/>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>close</sender>
+   <signal>clicked()</signal>
+   <receiver>QGBA::LinkView</receiver>
+   <slot>close()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>300</x>
+     <y>300</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>180</x>
+     <y>160</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>radioJoin</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>ipAddr</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>120</x>
+     <y>30</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>250</x>
+     <y>66</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+ <buttongroups>
+  <buttongroup name="modeGroup"/>
+ </buttongroups>
+</ui>

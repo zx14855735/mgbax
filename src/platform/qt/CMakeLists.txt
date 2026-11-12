@@ -38,7 +38,7 @@ endif()
 foreach(V ${QT_VERSIONS})
 	set(QT Qt${V})
 	set(QT_V ${V})
-	find_package(${QT} COMPONENTS Core Widgets Network OPTIONAL_COMPONENTS Multimedia)
+	find_package(${QT} COMPONENTS Core Widgets Network OPTIONAL_COMPONENTS Multimedia WebSockets)
 	if(QT_V GREATER_EQUAL 6)
 		find_package(${QT} COMPONENTS OpenGL OpenGLWidgets)
 	endif()
@@ -118,6 +118,9 @@ set(SOURCE_FILES
 	Display.cpp
 	DisplayGL.cpp
 	DisplayQt.cpp
+	EnhancementsView.cpp
+	ExternalShader.cpp
+	audio_stretch.c
 	ForwarderController.cpp
 	ForwarderGenerator.cpp
 	ForwarderGenerator3DS.cpp
@@ -126,9 +129,12 @@ set(SOURCE_FILES
 	FrameView.cpp
 	GBAApp.cpp
 	GBAKeyEditor.cpp
+	GBoyFrames.cpp
+	GBoyLink.cpp
 	GIFView.cpp
 	HistoryLineEdit.cpp
 	IOViewer.cpp
+	LinkView.cpp
 	input/Gamepad.cpp
 	input/GamepadAxisEvent.cpp
 	input/GamepadButtonEvent.cpp
@@ -173,8 +179,11 @@ set(SOURCE_FILES
 	Swatch.cpp
 	TilePainter.cpp
 	TileView.cpp
+	WebDavSync.cpp
+	WebDavView.cpp
 	utils.cpp
 	Window.cpp
+	ScriptedControl.cpp
 	VFileDevice.cpp
 	VideoProxy.cpp
 	VideoView.cpp)
@@ -192,6 +201,7 @@ set(UI_FILES
 	FrameView.ui
 	GIFView.ui
 	IOViewer.ui
+	LinkView.ui
 	LoadSaveState.ui
 	LogView.ui
 	MapView.ui
@@ -219,7 +229,9 @@ set(GBA_SRC
 	BattleChipUpdater.cpp
 	BattleChipView.cpp
 	DolphinConnector.cpp
-	GBAOverride.cpp)
+	GBAOverride.cpp
+	sio_link.c
+	${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c)
 
 set(GB_SRC
 	GameBoy.cpp
@@ -259,6 +271,37 @@ if(${QT}Multimedia_FOUND)
 	list(APPEND QT_LIBRARIES ${QT}::Multimedia)
 	list(APPEND QT_DEFINES BUILD_QT_MULTIMEDIA)
 	set(CPACK_DEBIAN_PACKAGE_DEPENDS "${CPACK_DEBIAN_PACKAGE_DEPENDS},libqt${QT_V}multimedia${QT_V}")
+endif()
+
+if(TARGET ${QT}::WebSockets)
+	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
+	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp)
+	list(APPEND UI_FILES LobbyView.ui)
+
+	# The official-mode mirror console wraps the same headless mobile core the
+	# Android app uses; on Windows it needs winsock for the loopback link.
+	set_source_files_properties(${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c
+		PROPERTIES COMPILE_DEFINITIONS "ENABLE_VFS;ENABLE_DIRECTORIES")
+	list(APPEND SOURCE_FILES ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
+
+	# Console E2E harness: wifi round trip + gboy.top signalling self test.
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp GBoyLinkSession.cpp GBoyMirror.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
+	set_source_files_properties(${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c
+		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c
+		PROPERTIES COMPILE_DEFINITIONS "ENABLE_VFS;ENABLE_DIRECTORIES")
+	target_link_libraries(test-gboylink ${QT}::Core ${QT}::Network ${QT}::WebSockets ${BINARY_NAME})
+	if(WIN32)
+		target_link_libraries(test-gboylink ws2_32 pthread)
+	endif()
+	target_include_directories(test-gboylink PRIVATE ${PROJECT_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/include ${PROJECT_SOURCE_DIR}/src)
+	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD ENABLE_VFS ENABLE_VFS_FD ENABLE_DIRECTORIES)
+	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
 endif()
 
 if(NOT AUDIO_SRC)
@@ -452,7 +495,10 @@ else()
 	qt5_wrap_ui(UI_SRC ${UI_FILES})
 endif()
 
-add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
+	add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
+	if(WIN32)
+		target_link_libraries(${BINARY_NAME}-qt ws2_32)
+	endif()
 set_target_properties(${BINARY_NAME}-qt PROPERTIES MACOSX_BUNDLE_INFO_PLIST ${PROJECT_SOURCE_DIR}/res/info.plist.in COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES};${QT_DEFINES}" COMPILE_OPTIONS "${FEATURE_FLAGS}")
 
 if(WIN32)

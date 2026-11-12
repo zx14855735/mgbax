@@ -16,7 +16,14 @@ struct MgbaMobile;
 
 struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port);
 void mgbaMobileDestroy(struct MgbaMobile* emu);
+/* Core serialisation for the JNI boundary: runFrames and the two in-memory
+ * state calls must not touch the same mCore from different threads. */
+void mgbaMobileLock(struct MgbaMobile* emu);
+void mgbaMobileUnlock(struct MgbaMobile* emu);
 bool mgbaMobileLoad(struct MgbaMobile* emu, const char* path);
+/* Overrides the battery-save / save-state folders before the next load.
+ * Passing the ROM's own folder keeps saves beside the game. */
+void mgbaMobileSetSaveDirs(struct MgbaMobile* emu, const char* saveDir, const char* stateDir);
 bool mgbaMobileIsLoaded(const struct MgbaMobile* emu);
 void mgbaMobileSetKeys(struct MgbaMobile* emu, uint32_t keys);
 void mgbaMobileSetTurbo(struct MgbaMobile* emu, uint32_t mask);
@@ -107,6 +114,16 @@ int64_t mgbaMobileFrameNanos(const struct MgbaMobile* emu);
 bool mgbaMobileCopyVideo(struct MgbaMobile* emu, uint32_t* pixels, int stride);
 bool mgbaMobileSaveState(struct MgbaMobile* emu, int slot);
 bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot);
+/*
+ * In-memory save state, the equivalent of the official client's
+ * Console.saveStateToMemory()/loadStateFromMemory() used by TYPE_STATE frames.
+ * On success *out points to a malloc'd blob that the caller releases with
+ * mgbaMobileFreeState(). Screenshot data is omitted: the state travels over
+ * the link and the receiving core does not need it.
+ */
+bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize);
+bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size);
+void mgbaMobileFreeState(void* state);
 /* Rewind history: append a differential state every ~half second while
  * enabled; rewind by about the given number of seconds of gameplay. */
 void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled);
@@ -117,8 +134,41 @@ void mgbaMobileSetInterframe(struct MgbaMobile* emu, bool enabled);
 void mgbaMobileSetFrameskip(struct MgbaMobile* emu, int skip);
 void mgbaMobileSaveFile(const struct MgbaMobile* emu, char* out, size_t outLen);
 void mgbaMobilePumpLink(struct MgbaMobile* emu);
-bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port);
-bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port);
+bool mgbaMobileLinkHost(struct MgbaMobile* emu, int port, int players);
+bool mgbaMobileLinkJoin(struct MgbaMobile* emu, const char* host, int port, int players);
+
+/* 进程内总线：同一进程里 N 个核心经共享内存回合屏障互联，不开 socket、不起
+ * IO 线程。key 区分同一进程内的不同会话，主机必须先于从机建立。3/4 人本机
+ * 多核用它，跨设备仍走 mgbaMobileLinkHost/Join。 */
+bool mgbaMobileLinkHostLocal(struct MgbaMobile* emu, int key, int players);
+bool mgbaMobileLinkJoinLocal(struct MgbaMobile* emu, int key);
+/* 占用指定链路槽位（0 归主机）。本机可见核要占全局会话里它自己的槽位。 */
+bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot);
+
+/* 进程内锁步 SIO（默认关闭，显式调用才启用）。与上面的共享内存轮次总线
+ * 不同，它直接挂 mGBA 官方 GBASIOLockstepCoordinator，在 SIO 传输轮次粒度
+ * 会合，没有墙钟超时、没有轮次索引配对、不开 socket。
+ * 启用后该核的帧循环自动切到小步 runLoop（见 mgbaLockstepRunFrame）。
+ * PC 侧已用同一协调器让 4 核 gen8 multi-battle 进对战并稳定维持。 */
+bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot);
+bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot);
+bool mgbaMobileLinkIsLockstep(const struct MgbaMobile* emu);
+
+/* 测试/调试用：直接读写本核 GBA 内存（I/O 寄存器同理）。仅锁步集成测试与诊断
+ * 使用，不在产品热路径上。 */
+void mgbaMobilePoke16(struct MgbaMobile* emu, uint32_t addr, uint16_t value);
+uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr);
+/* 当前已渲染帧号（gba->video.frameCounter），用于验证锁步帧循环推进。 */
+uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
+
+/* 测试钩子：开启后锁步多玩家传输直接注入 0x1000+playerId 作为发送字，绕开
+ * 真实游戏对 SIOMLT_SEND 的改写，得到确定性传输用于验证收集/广播。仅测试使用，
+ * 必须在跑锁步集成测试前打开、跑完关闭。 */
+void mgbaMobileSioSetInject(bool inject);
+
+/* 诊断：返回本核 CPU 当前 PC（gba->cpu->gprs[15]）。 */
+uint32_t mgbaMobileCpuPc(struct MgbaMobile* emu);
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 
@@ -197,6 +247,16 @@ int mgbaMobileBusReadBlock(const struct MgbaMobile* emu, uint32_t address, int s
 
 /* Linear resample used by the iOS audio path. pos is carried between calls. */
 int mgbaMobileResample(const int16_t* in, int inFrames, int inRate, int outRate, int16_t* out, int maxOutFrames, double* pos);
+
+/*
+ * Desktop test hooks. Both are per-instance on purpose: two cores in one
+ * process (本机双核心) must not share the synthetic audio clock or the link
+ * unstick one-shot latch. mgbaMobileUnstickStep() returns 1 exactly on the
+ * call that arms the patch; matched=false resets that core's streak.
+ */
+void mgbaMobileSetAudioClock(struct MgbaMobile* emu, double (*clock)(void));
+bool mgbaMobileHasSyntheticAudioClock(const struct MgbaMobile* emu);
+int mgbaMobileUnstickStep(struct MgbaMobile* emu, int mode, bool matched);
 
 /* Same BIOS filename rules as the Android importer. */
 void mgbaMobileBiosFileName(const char* name, long size, char* out, size_t outLen);

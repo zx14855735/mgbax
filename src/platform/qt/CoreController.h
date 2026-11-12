@@ -5,6 +5,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #pragma once
 
+#include <atomic>
+
 #include <QByteArray>
 #include <QFile>
 #include <QList>
@@ -12,6 +14,7 @@
 #include <QObject>
 #include <QSize>
 
+#include "SioLinkHost.h"
 #include "VFileDevice.h"
 
 #include <functional>
@@ -34,6 +37,7 @@
 #endif
 
 struct mCore;
+struct SioLink;
 
 namespace QGBA {
 
@@ -44,7 +48,7 @@ class MemoryAccessLogController;
 class MultiplayerController;
 class Override;
 
-class CoreController : public QObject {
+class CoreController : public QObject, public SioLinkHost {
 Q_OBJECT
 
 public:
@@ -160,6 +164,11 @@ public slots:
 
 	void overrideMute(bool);
 
+	/** 用户显式音量/静音：立即作用于运行中的核心，不依赖 Settings 的
+	 * Apply → reloadConfig 间接链路；并在倍速/焦点重载时保持优先级。 */
+	void setVolume(int volume);   // 0..256 = 0..100%，允许到 384 = 150%
+	void setMute(bool mute);
+
 	void loadState(int slot = 0);
 	void loadState(const QString& path, int flags = -1);
 	void loadState(QIODevice* iodev, int flags = -1);
@@ -181,6 +190,11 @@ public slots:
 	void addKey(int key);
 	void clearKey(int key);
 	void setAutofire(int key, bool enable);
+
+	// WiFi link (GBoy/My Boy): the remote player's key mask is OR-ed into
+	// every key update, mirroring the Android lobby's merged-keys mode.
+	void setRemoteKeys(int keys) { m_remoteKeys.store(keys, std::memory_order_relaxed); }
+	int localKeys() const { return m_lastKeys.load(std::memory_order_relaxed); }
 
 #ifdef USE_PNG
 	void screenshot();
@@ -208,7 +222,68 @@ public slots:
 
 	bool attachDolphin(const Address& address);
 	void detachDolphin();
+
+	// LAN SIO link cable (exact-cycle link over TCP, a port of the mobile
+	// layer's GbaLinkDriver). Host or join first; the driver attaches itself
+	// on the first pump once the peer connects.
+	bool lanLinkHost(quint16 port);
+	bool lanLinkJoin(const QString& host, quint16 port);
+	/** 3/4 人：走 link_net 的星型总线（主机 accept 多个从机、每轮汇聚广播）。
+	 * players 为 2 时行为与上面的两参数版本完全一致。 */
+	bool lanLinkHostPlayers(quint16 port, int players);
+	bool lanLinkJoinPlayers(const QString& host, quint16 port, int players);
+	void lanLinkClose();
+	int lanLinkState() const;
+	int lanLinkPlayer() const;
+	/** 本局目标人数（含自己）：总线房是开房时定的人数，两人直连恒为 2。 */
+	int lanLinkPlayers() const;
+
+	// SioLinkHost: the cloud bridge drives the same driver through this
+	// interface so it does not have to link CoreController.
+	bool sioHost(quint16 port) override { return lanLinkHost(port); }
+	bool sioJoin(const QString& host, quint16 port) override { return lanLinkJoin(host, port); }
+	void sioClose() override { lanLinkClose(); }
 #endif
+
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	// ---- mobile-parity features (per-channel volume, solar sensor, cart
+	// rumble, GB palette), ported from the Android mobile layer ----
+	void setChannelVolumes(const int gains[6]); // 0..256, 256 = 100%; GBA: PSG1-4 + DMA A/B, GB: PSG1-4
+	void channelVolumes(int gains[6]) const;
+	void setSolarLevel(int level); // -1 = sensor off, 0..10 lux steps
+	int solarLevel() const { return m_solarLevel; }
+	void setCartRumble(bool enabled);
+	bool cartRumble() const { return m_cartRumble; }
+	void setGbPalette(const int32_t colors[12]); // 0xRRGGBB, same 4 colors x3 (BG/OBJ0/OBJ1)
+	void clearGbPalette();
+	bool gbPaletteSet() const { return m_gbPaletteSet; }
+	void gbPalette(int32_t colors[12]) const;
+	void applyPersistedFeatures(); // re-apply saved feature state after a game loads
+#endif
+
+	// ---- 倍速音乐原速: fast-forward audio production (0 = pitch up like
+	// stock mGBA, 1 = WSOLA constant pitch, 2 = native hold), ported from the
+	// Android mobile layer's audio engine ----
+	void setAudioHoldMode(int mode);
+	int audioHoldMode() const { return m_audioHoldMode; }
+	// The controlled fast-forward multiplier used while the music feature is
+	// on: the core is paced at exactly this speed, so its audio output rate is
+	// known and nothing has to be dropped to keep it.
+	void setAudioHoldRatio(double ratio);
+	double audioHoldRatio() const { return m_audioHoldRatio; }
+	// How fast the music itself plays during fast-forward: 1 = its own
+	// tempo (the tune is stretched back to normal), 2 = twice as fast (less
+	// stretching, more of the tune squeezed in).
+	void setAudioHoldRate(double rate);
+	double audioHoldRate() const { return m_audioHoldRate; }
+	// Called from the audio thread every pull; cheap atomic-free reads.
+	// `stretch` is how much the surplus has to be compressed by, `rate` is
+	// the tempo the music ends up playing at.
+	void audioHoldState(bool* on, double* stretch, double* rate) const;
+
+	/* Push the current hold settings into the shared sync struct so the SDL
+	 * audio backend (which has no CoreController pointer) can read them. */
+	void syncAudioHold();
 
 	void setAVStream(mAVStream*);
 	void clearAVStream();
@@ -292,6 +367,8 @@ private:
 
 	int m_activeKeys = 0;
 	int m_removedKeys = 0;
+	std::atomic<int> m_remoteKeys{0};
+	std::atomic<int> m_lastKeys{0};
 	bool m_autofire[32] = {};
 	int m_autofireStatus[32] = {};
 	int m_autofireThreshold = 1;
@@ -323,14 +400,27 @@ private:
 	float m_fastForwardHeldRatio = -1.f;
 	float m_fpsTarget;
 
-	bool m_mute;
+	bool m_mute = false;
+	int m_userVolume = -1;      // -1 = 跟随配置；否则为用户显式设定
+	bool m_userMute = false;
 
 	InputController* m_inputController = nullptr;
 	LogController* m_log = nullptr;
 	MultiplayerController* m_multiplayer = nullptr;
 #ifdef M_CORE_GBA
 	GBASIODolphin m_dolphin;
+	struct SioLink* m_lanLink = nullptr;
+	int m_solarLevel = -1;
+	bool m_cartRumble = false;
 #endif
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	int m_channelGains[6] = {256, 256, 256, 256, 256, 256};
+	bool m_gbPaletteSet = false;
+	int32_t m_gbPalette[12] = {};
+#endif
+	int m_audioHoldMode = 2; // NATIVE: real 1x tempo, not just 1x pitch
+	double m_audioHoldRatio = 4.0;
+	double m_audioHoldRate = 1.0;
 
 #ifdef ENABLE_DEBUGGERS
 	std::shared_ptr<MemoryAccessLogController> m_malController;

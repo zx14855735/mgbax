@@ -90,6 +90,11 @@ size_t GBASIOLockstepCoordinatorAttached(struct GBASIOLockstepCoordinator*);
 
 void GBASIOLockstepDriverCreate(struct GBASIOLockstepDriver*, struct mLockstepUser*);
 
+/* 测试钩子：开启后多玩家传输直接注入 0x1000+playerId 作为发送字，得到确定性
+ * 传输用于验证锁步收集/广播。仅测试使用。 */
+void GBASIOLockstepSetTestInject(bool on);
+bool GBASIOLockstepGetTestInject(void);
+
 CXX_GUARD_END
 
 #endif

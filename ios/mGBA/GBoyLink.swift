@@ -44,6 +44,9 @@ final class GBoyLink {
     var localKeys: () -> Int32 = { 0 }
     /// Key mask received from the peer; called from the reader thread.
     var onRemoteKeys: (Int32) -> Void = { _ in }
+    /// Slot-tagged variant for the N-core layout. This 2-player protocol has
+    /// no per-slot tag, so the peer always maps to global slot 1.
+    var onRemoteKeysForSlot: (Int, Int32) -> Void = { _, _ in }
     /// Called from background threads; the owner hops to the main queue.
     var onStatus: (String) -> Void = { _ in }
     /// Peer asked for a console reset; called from the reader thread.
@@ -212,6 +215,7 @@ final class GBoyLink {
                 if messageType == Self.msgKeys, frame.count >= 6 {
                     let keys = Int32(frame[2]) << 24 | Int32(frame[3]) << 16 | Int32(frame[4]) << 8 | Int32(frame[5])
                     onRemoteKeys(keys)
+                    onRemoteKeysForSlot(1, keys)
                 } else if messageType == Self.msgReset {
                     onRemoteReset()
                 }

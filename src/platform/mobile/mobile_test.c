@@ -2,23 +2,26 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "link_net.h"
+#include "link_lockstep.h"
 #include "mgba_mobile.h"
 #include "remote_link.h"
 
 #include <mgba/core/core.h>
+#include <mgba/core/log.h>
 #include <mgba/internal/arm/arm.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
 #include <mgba/internal/gba/memory.h>
+#include <mgba/internal/gba/sio.h>
 #include <mgba/internal/gba/video.h>
 #include <mgba-util/vfs.h>
 #include <mgba-util/image.h>
 
 #include <fcntl.h>
+#include <pthread.h>
 
-/* Synthetic clock hook owned by mgba_mobile.c: 音乐原速 paces its output by
- * elapsed real time, and this test runs emulation as fast as it can. */
-extern double (*mgbaMobileAudioClock)(void);
+/* The synthetic clock is a per-instance hook (mgbaMobileSetAudioClock), so
+ * two cores in one process cannot change each other's pacing. */
 
 /* TEMP PROBE: IRQ 派发链路计数器（gba.c / arm.c）。 */
 extern uint32_t mgbaStatTestIrq;
@@ -765,7 +768,7 @@ static void testAudioConstPitchRealtime(const char* dir) {
 	expect(total >= CAP * 0.8, "WSOLA 不变速 4x plays the whole track (no 3/4 dropped)");
 	expect(held < 0.10 && held < shredded * 0.7,
 			"WSOLA 不变速 4x is far more continuous than the shredded path (no section jump)");
-	mgbaMobileAudioClock = NULL;
+	mgbaMobileSetAudioClock(emu, NULL);
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	free(out);
 	mgbaMobileDestroy(emu);
@@ -1030,7 +1033,7 @@ static void testAudioNativeHold(const char* dir) {
 	}
 	expect(mgbaMobileSetAudioOutput(emu, OUT_RATE), "native-hold resampler");
 	g_fakeAudioNow = 0.0;
-	mgbaMobileAudioClock = fakeAudioClock;
+	mgbaMobileSetAudioClock(emu, fakeAudioClock);
 
 	mgbaMobileResetAudioPace(emu);
 	mgbaMobileClearAudio(emu);
@@ -1121,9 +1124,160 @@ static void testAudioNativeHold(const char* dir) {
 
 	mgbaMobileSetAudioConstantPitch(emu, false, 1.0);
 	mgbaMobileSetAudioHoldMode(emu, 0);
+	mgbaMobileSetAudioClock(emu, NULL);
 	free(out);
 	free(tmp);
 	free(baseline);
+	mgbaMobileDestroy(emu);
+}
+
+/* 本机双核心: two MgbaMobile instances in one process, each running its own
+ * thread and SIO loopback. Function-local statics used to be shared between
+ * them - the unstick one-shot latch fired on core A and core B then skipped
+ * its own standby patch forever, while the streak counter was incremented by
+ * both cores. Prove the state is per-instance now. */
+static void testDualCoreIsolation(void) {
+	struct MgbaMobile* a = mgbaMobileCreate("", "", "dual-a");
+	struct MgbaMobile* b = mgbaMobileCreate("", "", "dual-b");
+	struct MgbaMobile* c;
+	expect(a != NULL && b != NULL, "two cores can coexist in one process");
+	if (!a || !b) {
+		mgbaMobileDestroy(a);
+		mgbaMobileDestroy(b);
+		return;
+	}
+	/* Interleaved rounds: a shared streak counter would arm on the third
+	 * *global* match instead of each core's third own match. */
+	expect(mgbaMobileUnstickStep(a, 1, true) == 0, "core A round 1 does not arm");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B round 1 does not arm");
+	expect(mgbaMobileUnstickStep(a, 1, true) == 0, "core A round 2 does not arm");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B round 2 does not arm (streaks are separate)");
+	expect(mgbaMobileUnstickStep(a, 1, true) == 1, "core A arms on its own third match");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 1, "core B still arms its own patch after A");
+	expect(mgbaMobileUnstickStep(b, 1, true) == 0, "core B patch is a one-shot too");
+
+	c = mgbaMobileCreate("", "", "dual-c");
+	expect(c != NULL, "a third core can be created");
+	if (c) {
+		mgbaMobileUnstickStep(c, 1, true);
+		mgbaMobileUnstickStep(c, 1, false);
+		expect(mgbaMobileUnstickStep(c, 1, true) == 0, "a miss resets only that core's streak");
+		expect(mgbaMobileUnstickStep(c, 1, true) == 0, "streak restarts from one");
+		expect(mgbaMobileUnstickStep(c, 1, true) == 1, "core C arms after three fresh matches");
+		mgbaMobileDestroy(c);
+	}
+
+	/* The synthetic audio clock is per-instance as well. */
+	expect(!mgbaMobileHasSyntheticAudioClock(a), "core A starts with the real clock");
+	mgbaMobileSetAudioClock(a, fakeAudioClock);
+	expect(mgbaMobileHasSyntheticAudioClock(a), "core A takes the synthetic clock");
+	expect(!mgbaMobileHasSyntheticAudioClock(b), "core B keeps the real clock");
+	mgbaMobileSetAudioClock(a, NULL);
+	mgbaMobileDestroy(a);
+	expect(!mgbaMobileHasSyntheticAudioClock(b), "destroying core A does not change core B");
+	mgbaMobileDestroy(b);
+}
+
+/* In-memory save state used by TYPE_STATE link synchronisation. */
+static void testStateMemory(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	void* blob = NULL;
+	void* blob2 = NULL;
+	size_t size = 0;
+	size_t size2 = 0;
+
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/state.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "state: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "state");
+	expect(mgbaMobileLoad(emu, path), "state: load gba");
+	expect(mgbaMobileRunFrames(emu, 4), "state: run frames before snapshot");
+	expect(mgbaMobileSaveStateToMemory(emu, &blob, &size), "state: save to memory");
+	expect(blob != NULL && size > 0, "state: snapshot is not empty");
+	expect(mgbaMobileRunFrames(emu, 4), "state: run frames after snapshot");
+	expect(mgbaMobileLoadStateFromMemory(emu, blob, size), "state: load from memory");
+	expect(mgbaMobileSaveStateToMemory(emu, &blob2, &size2), "state: save again");
+	expect(size2 == size, "state: snapshot size is stable across a round trip");
+	expect(!mgbaMobileLoadStateFromMemory(emu, NULL, 0), "state: null blob rejected");
+	expect(!mgbaMobileLoadStateFromMemory(emu, blob, 0), "state: zero length rejected");
+	expect(!mgbaMobileSaveStateToMemory(NULL, &blob2, &size2), "state: null core rejected");
+
+	mgbaMobileFreeState(blob2);
+	mgbaMobileFreeState(blob);
+	mgbaMobileDestroy(emu);
+}
+
+struct StateRace {
+	struct MgbaMobile* emu;
+	int frames;
+	int completed;
+};
+
+static void* stateRaceFrames(void* arg) {
+	struct StateRace* race = (struct StateRace*) arg;
+	for (int i = 0; i < race->frames; ++i) {
+		mgbaMobileLock(race->emu);
+		mgbaMobileRunFrames(race->emu, 1);
+		mgbaMobileUnlock(race->emu);
+		++race->completed;
+	}
+	return NULL;
+}
+
+/* A TYPE_STATE frame reaches the mirror core from the socket reader thread
+ * while the emulation thread is inside runFrames. Both paths go through the
+ * per-instance core lock at the JNI boundary; verify the real two-thread case
+ * neither deadlocks nor corrupts the state blob. */
+static void testStateConcurrency(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/state_race.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "race: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "race");
+	expect(mgbaMobileLoad(emu, path), "race: load gba");
+	struct StateRace race = { emu, 120, 0 };
+	pthread_t thread;
+	int started = pthread_create(&thread, NULL, stateRaceFrames, &race) == 0;
+	expect(started, "race: frame thread started");
+
+	int snapshots = 0;
+	for (int i = 0; i < 12; ++i) {
+		void* blob = NULL;
+		size_t size = 0;
+		bool ok;
+		mgbaMobileLock(emu);
+		ok = mgbaMobileSaveStateToMemory(emu, &blob, &size);
+		if (ok && blob && size > 0) {
+			ok = mgbaMobileLoadStateFromMemory(emu, blob, size);
+		}
+		mgbaMobileUnlock(emu);
+		mgbaMobileFreeState(blob);
+		if (ok) {
+			++snapshots;
+		}
+	}
+	if (started) {
+		expect(pthread_join(thread, NULL) == 0, "race: frame thread joined");
+	}
+	expect(!started || race.completed == race.frames,
+	       "race: all frames completed without deadlock");
+	expect(snapshots == 12, "race: concurrent save/load round trips succeeded");
 	mgbaMobileDestroy(emu);
 }
 
@@ -1138,6 +1292,865 @@ static void* exchangeThread(void* arg) {
 	struct ExArgs* ex = (struct ExArgs*) arg;
 	ex->ok = netLinkExchange(ex->link, 1, ex->value, &ex->got, 2000);
 	return NULL;
+}
+
+static void linkSleepMs(int ms) {
+#ifdef _WIN32
+	Sleep((DWORD) ms);
+#else
+	usleep((useconds_t) ms * 1000);
+#endif
+}
+
+struct LockProbe {
+	struct MgbaMobile* emu;
+	volatile int done;
+};
+
+static void* lockProbeFrames(void* arg) {
+	struct LockProbe* p = (struct LockProbe*) arg;
+	mgbaMobileRunFrames(p->emu, 2);
+	p->done = 1;
+	return NULL;
+}
+
+/* 核心锁必须真的包住公开入口。
+ *
+ * 只靠「并发跑不崩」是弱证据 —— 竞态是概率性的，没崩不代表有锁。这里给确定
+ * 性证据：主线程先持锁，另一线程调 mgbaMobileRunFrames 必须被挡住；主线程解锁
+ * 后它才跑完。
+ *
+ * 守的是「iOS 直接调用 C 函数」那条路径：核心锁原来只加在 JNI 的三个入口
+ * （nativeRunFrames / SaveStateToMemory / LoadStateFromMemory）上，而 iOS
+ * 不经过 JNI —— 于是 iOS 上「镜像核跑帧」与「状态帧注入」从来没有互斥过。
+ */
+static void testCoreLockHeld(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	struct LockProbe probe;
+	pthread_t thread;
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/lock_probe.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "lock: write gba rom");
+
+	emu = mgbaMobileCreate(dir, dir, "lock");
+	expect(mgbaMobileLoad(emu, path), "lock: load gba");
+
+	probe.emu = emu;
+	probe.done = 0;
+	mgbaMobileLock(emu);
+	expect(pthread_create(&thread, NULL, lockProbeFrames, &probe) == 0,
+	       "lock: probe thread started");
+	linkSleepMs(250);
+	expect(!probe.done, "lock: run frames blocks while the core lock is held");
+	mgbaMobileUnlock(emu);
+	pthread_join(thread, NULL);
+	expect(probe.done, "lock: run frames finishes after the lock is released");
+	mgbaMobileDestroy(emu);
+}
+
+
+struct BusRoundArg {
+	struct NetLink* link;
+	uint16_t index;
+	uint32_t own;
+	uint32_t values[4];
+	int got;
+	uint16_t used;
+};
+
+static void* busRoundThread(void* arg) {
+	struct BusRoundArg* a = (struct BusRoundArg*) arg;
+	/* 等待窗给足 8s：这些用例是 4 个线程在同一个进程里跑，机器满载（比如同时
+	 * 在编 PC 端）时一轮里某一端晚到几百毫秒是正常的，2s 会偶发误判。等待窗
+	 * 只影响「慢到异常」的那一次，判据本身不变。 */
+	a->got = netLinkBusRound(a->link, a->index, a->own, a->values, 4, 8000, &a->used);
+	return NULL;
+}
+
+/* 3/4 人总线（星型汇聚）回归。
+ *
+ * 四项断言各自对应一个真实缺陷面：
+ *   1. 主机 accept 多连接、按接入顺序分配槽位 —— 原来 listen(fd, 1) 只收一个。
+ *   2. 每个从机能拿到「总人数」—— 只靠 TCP 连上是拿不到的，必须主机在
+ *      WELCOME 里告知。
+ *   3. 每一轮四个槽位的数据在四台机器上完全一致 —— 这是 3/4 人联机能进行
+ *      SIOMULTI 握手的充要条件（原来 data[2]/data[3] 永远是 0xFFFF）。
+ *   4. players == 2 时不启用总线 —— 保证已验证的双人直连路径不被改动波及。 */
+static void testBusPlayers(void) {
+	int port = 18791;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest[3];
+	struct NetLink* duo = netLinkCreate();
+	int i;
+	int k;
+	const uint32_t base[4] = { 0x1000u, 0x1100u, 0x1200u, 0x1300u };
+
+	expect(netLinkBusHost(host, port, 4), "bus host up for 4 players");
+	for (i = 0; i < 3; ++i) {
+		int ok = 0;
+		int tries;
+		guest[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(guest[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus join");
+		{
+			int seen = 0;
+			for (tries = 0; tries < 300; ++tries) {
+				if (netLinkBusPlayers(host) >= i + 2) {
+					seen = 1;
+					break;
+				}
+				linkSleepMs(10);
+			}
+			expect(seen, "bus host accepted peer");
+		}
+		{
+			int slot = -1;
+			int ready = 0;
+			for (tries = 0; tries < 300; ++tries) {
+				if (netLinkState(guest[i]) == 2) {
+					slot = netLinkPlayer(guest[i]);
+					ready = 1;
+					break;
+				}
+				linkSleepMs(10);
+			}
+			expect(ready, "bus joiner welcomed");
+			expect(slot == i + 1, "bus slot assigned in accept order");
+			expect(netLinkBusPlayers(guest[i]) == 4, "bus joiner learns player count");
+		}
+	}
+	expect(netLinkBusPlayers(host) == 4, "bus host sees 4 players");
+
+	{
+		int rounds = 40;
+		int agree = 0;
+		for (k = 0; k < rounds; ++k) {
+			struct BusRoundArg args[4];
+			pthread_t th[4];
+			int okRound = 1;
+			for (i = 0; i < 4; ++i) {
+				args[i].link = i == 0 ? host : guest[i - 1];
+				args[i].index = (uint16_t) k;
+				args[i].own = base[i] + (uint32_t) k;
+				args[i].got = 0;
+				args[i].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[i].values[s] = 0;
+				}
+				pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+			}
+			for (i = 0; i < 4; ++i) {
+				pthread_join(th[i], NULL);
+			}
+			for (i = 0; i < 4; ++i) {
+				if (args[i].got != 3) {
+					okRound = 0;
+				}
+				if (args[i].used != (uint16_t) k) {
+					okRound = 0;
+				}
+				for (int s = 0; s < 4; ++s) {
+					if (args[i].values[s] != base[s] + (uint32_t) k) {
+						okRound = 0;
+					}
+				}
+			}
+			if (okRound) {
+				++agree;
+			} else if (agree + 1 == k + 1) {
+				/* 只报第一轮不一致，省得 40 轮把输出刷满。 */
+				fprintf(stderr, "bus round %d mismatch:", k);
+				for (i = 0; i < 4; ++i) {
+					fprintf(stderr, " [p%d got=%d used=%u %04X %04X %04X %04X]", i,
+					        args[i].got, (unsigned) args[i].used,
+					        (unsigned) args[i].values[0], (unsigned) args[i].values[1],
+					        (unsigned) args[i].values[2], (unsigned) args[i].values[3]);
+				}
+				fprintf(stderr, "\n");
+			}
+		}
+		expect(agree == rounds, "bus 4-player rounds agree on all four slots");
+	}
+
+	/* 两人场景必须仍然走原来的直连路径：总线模式不得被打开。 */
+	expect(netLinkBusHost(duo, 18792, 2), "duo host up");
+	expect(!netLinkBusActive(duo), "duo keeps the direct 2-player path off the bus");
+
+	netLinkDestroy(duo);
+	for (i = 0; i < 3; ++i) {
+		netLinkDestroy(guest[i]);
+	}
+	netLinkDestroy(host);
+}
+
+/* ---- 进程内总线（同进程 N 核，无 socket）----------------------------------
+ *
+ * TCP 星型总线在 busgame 里暴露的是两个独立缺陷：full=0（从机轮次索引不
+ * 收敛）和 5.6fps（每轮 2ms 超时地板）。这里的断言直接对着这两件事：
+ *   - 从机故意传一个与主机完全不同的 index，仍必须每轮采用主机轮次号；
+ *   - full == rounds、empty == 0、future == 0、四个槽位逐字一致；
+ *   - 120 轮墙钟必须远小于「每轮都付 2ms 地板」的量级。
+ * 连续三个 case 复用同一个 LocalBus 槽位，覆盖会话结束后 mutex/cond 不能
+ * 被 memset 后重复 init 的边界。 */
+#define LOCALBUS_TEST_MAX 4
+
+struct LocalBusBarrier {
+	pthread_mutex_t mu;
+	pthread_cond_t cv;
+	int need;
+	int arrived;
+	int gen;
+};
+
+struct LocalBusArg {
+	struct NetLink* link;
+	struct LocalBusBarrier* barrier;
+	int slot;
+	int players;
+	int rounds;
+	int okRounds;
+	int badIndex;
+	int badWords;
+};
+
+static uint64_t localBusNowMs(void) {
+#ifdef _WIN32
+	return (uint64_t) GetTickCount64();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t) ts.tv_sec * 1000u + (uint64_t) (ts.tv_nsec / 1000000);
+#endif
+}
+
+static uint32_t localBusWord(int r, int slot) {
+	return 0x1000u + (uint32_t) (r * 0x10) + (uint32_t) slot;
+}
+
+/* 从机拿到 -1 表示「主机还没开这一轮」，生产路径靠重新挂载模拟时钟事件，
+ * 不吃墙钟。测试里也不能 sleep 1ms，否则测得的是测试自身退避而不是会合成本。 */
+static void localBusYield(void) {
+#ifdef _WIN32
+	SwitchToThread();
+#else
+	struct timespec ts = { 0, 1000L };
+	nanosleep(&ts, NULL);
+#endif
+}
+
+static void localBusBarrierInit(struct LocalBusBarrier* b, int need) {
+	pthread_mutex_init(&b->mu, NULL);
+	pthread_cond_init(&b->cv, NULL);
+	b->need = need;
+	b->arrived = 0;
+	b->gen = 0;
+}
+
+static void localBusBarrierWait(struct LocalBusBarrier* b) {
+	pthread_mutex_lock(&b->mu);
+	int gen = b->gen;
+	if (++b->arrived >= b->need) {
+		b->arrived = 0;
+		++b->gen;
+		pthread_cond_broadcast(&b->cv);
+	} else {
+		while (gen == b->gen) {
+			pthread_cond_wait(&b->cv, &b->mu);
+		}
+	}
+	pthread_mutex_unlock(&b->mu);
+}
+
+static void* localBusThread(void* arg) {
+	struct LocalBusArg* a = (struct LocalBusArg*) arg;
+	int r;
+	for (r = 1; r <= a->rounds; ++r) {
+		uint32_t vals[LOCALBUS_TEST_MAX];
+		uint16_t used = 0;
+		int ret = -1;
+		int tries = 0;
+		/* 主机是唯一时钟源：从机传的 index 故意和主机差很远。 */
+		uint16_t bogus = a->slot == 0 ? (uint16_t) r
+		                              : (uint16_t) (r * 7u + 1000u);
+		localBusBarrierWait(a->barrier);
+		while (ret < 0 && tries++ < 20000) {
+			int i;
+			for (i = 0; i < LOCALBUS_TEST_MAX; ++i) {
+				vals[i] = 0xDEADu;
+			}
+			ret = netLinkBusRound(a->link, bogus, localBusWord(r, a->slot),
+			                      vals, a->players, 200, &used);
+			if (ret < 0) {
+				localBusYield();
+			}
+		}
+		if (ret >= 0 && used == (uint16_t) r) {
+			++a->okRounds;
+		} else {
+			++a->badIndex;
+		}
+		{
+			int s;
+			for (s = 0; s < LOCALBUS_TEST_MAX; ++s) {
+				uint32_t want = s < a->players ? localBusWord(r, s) : 0xFFFFu;
+				if (vals[s] != want) {
+					++a->badWords;
+				}
+			}
+		}
+		localBusBarrierWait(a->barrier);
+	}
+	return NULL;
+}
+
+static void testBusLocalCase(int players, int key, int rounds) {
+	struct NetLink* links[LOCALBUS_TEST_MAX];
+	struct LocalBusArg args[LOCALBUS_TEST_MAX];
+	pthread_t th[LOCALBUS_TEST_MAX];
+	struct LocalBusBarrier barrier;
+	char label[160];
+	int32_t diag[7];
+	uint64_t totalUs;
+	uint64_t t0;
+	uint64_t elapsed;
+	int slaveCalls;
+	int i;
+
+	for (i = 0; i < players; ++i) {
+		links[i] = netLinkCreate();
+	}
+	snprintf(label, sizeof(label), "local bus %dp: host up (key=%d)", players, key);
+	expect(netLinkBusHostLocal(links[0], key, players), label);
+	for (i = 1; i < players; ++i) {
+		snprintf(label, sizeof(label), "local bus %dp: join slot %d", players, i);
+		expect(netLinkBusJoinLocal(links[i], key), label);
+		expect(netLinkPlayer(links[i]) == i, "local bus: slot is assigned in join order");
+	}
+	expect(netLinkBusActive(links[0]), "local bus: active without any socket");
+	expect(netLinkBusPlayers(links[players - 1]) == players,
+	       "local bus: joiner learns the player count");
+	expect(netLinkState(links[0]) == 2, "local bus: state is connected");
+
+	localBusBarrierInit(&barrier, players);
+	for (i = 0; i < players; ++i) {
+		args[i].link = links[i];
+		args[i].barrier = &barrier;
+		args[i].slot = i;
+		args[i].players = players;
+		args[i].rounds = rounds;
+		args[i].okRounds = 0;
+		args[i].badIndex = 0;
+		args[i].badWords = 0;
+	}
+	t0 = localBusNowMs();
+	for (i = 0; i < players; ++i) {
+		expect(pthread_create(&th[i], NULL, localBusThread, &args[i]) == 0,
+		       "local bus: worker started");
+	}
+	for (i = 0; i < players; ++i) {
+		pthread_join(th[i], NULL);
+	}
+	elapsed = localBusNowMs() - t0;
+
+	for (i = 0; i < players; ++i) {
+		expect(args[i].okRounds == rounds, "local bus: every round completed");
+		expect(args[i].badIndex == 0, "local bus: master round index adopted");
+		expect(args[i].badWords == 0, "local bus: all slots agree");
+	}
+	netLinkBusDiag(links[0], diag);
+	netLinkBusDiagTiming(links[0], &totalUs, &slaveCalls);
+	expect(diag[0] == rounds, "local bus: diag round count");
+	expect(diag[1] == rounds, "local bus: every round full");
+	expect(diag[2] == 0, "local bus: no empty rounds");
+	expect(diag[3] == 0, "local bus: no stale pushes");
+	expect(diag[4] == 0, "local bus: no future pushes");
+	expect(diag[5] == 0 && diag[6] == 0, "local bus: round lead is exactly zero");
+	/* 会合内部累计墙钟按「每轮每核」摊：TCP 星型总线每轮吃满 2ms 地板，
+	 * 这里必须低一个数量级。端到端 elapsed 含测试自身的 barrier / 重试退避，
+	 * 只作宽松兜底。 */
+	expect(totalUs < (uint64_t) rounds * (uint64_t) players * 1000u,
+	       "local bus: no per-round 2ms wait floor");
+	expect((int64_t) elapsed < (int64_t) rounds * 15,
+	       "local bus: end-to-end rounds stay fast");
+	fprintf(stderr, "[local-bus] players=%d key=%d rounds=%d elapsed=%llums inside=%lluus slaveCalls=%d diag=%d/%d/%d/%d/%d/%d/%d\n",
+	        players, key, rounds, (unsigned long long) elapsed,
+	        (unsigned long long) totalUs, slaveCalls,
+	        diag[0], diag[1], diag[2], diag[3], diag[4], diag[5], diag[6]);
+
+	/* 从机先退出，主机最后一个：host 的 detach 会释放槽位并叫醒所有等待者。 */
+	for (i = 1; i < players; ++i) {
+		netLinkDestroy(links[i]);
+	}
+	netLinkDestroy(links[0]);
+	pthread_mutex_destroy(&barrier.mu);
+	pthread_cond_destroy(&barrier.cv);
+}
+
+/* 指定槽位 join：多台设备各跑 N 核时，本机可见核必须占它在全局会话里的
+ * 那个槽位。乱序占用、冲突拒绝、释放后复用都要覆盖。 */
+static void testBusLocalSlots(void) {
+	const int key = 91004;
+	struct NetLink* links[4];
+	struct NetLink* spare = netLinkCreate();
+	int i;
+	for (i = 0; i < 4; ++i) {
+		links[i] = netLinkCreate();
+	}
+	expect(netLinkBusHostLocal(links[0], key, 4), "local bus: host up");
+	expect(netLinkBusIsLocal(links[0]), "local bus: host reports local mode");
+	expect(netLinkBusLocalSlot(links[0]) == 0, "local bus: host owns link slot 0");
+	expect(netLinkBusJoinLocalSlot(links[2], key, 2),
+	       "local bus: slot 2 can be claimed out of order");
+	expect(netLinkBusLocalSlot(links[2]) == 2, "local bus: claimed slot recorded");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 2),
+	       "local bus: duplicate slot is rejected");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 0),
+	       "local bus: host slot is reserved");
+	expect(!netLinkBusJoinLocalSlot(spare, key, 4),
+	       "local bus: slot beyond player count is rejected");
+	expect(!netLinkBusJoinLocalSlot(spare, 987654, 1),
+	       "local bus: unknown key is rejected for a slot join");
+	expect(netLinkBusJoinLocalSlot(links[1], key, 1),
+	       "local bus: slot 1 can be claimed after slot 2");
+	expect(netLinkBusJoinLocalSlot(links[3], key, 3),
+	       "local bus: slot 3 can be claimed last");
+	expect(netLinkBusPlayers(links[0]) == 4, "local bus: all four slots attached");
+	/* 退出某个从机后，它的槽位必须能被重新占用。 */
+	netLinkDestroy(links[2]);
+	expect(netLinkBusJoinLocalSlot(spare, key, 2),
+	       "local bus: freed slot can be reused");
+	expect(netLinkBusLocalSlot(spare) == 2, "local bus: reused slot recorded");
+
+	netLinkDestroy(spare);
+	netLinkDestroy(links[1]);
+	netLinkDestroy(links[3]);
+	netLinkDestroy(links[0]);
+}
+
+static void testBusLocal(void) {
+	struct NetLink* stray = netLinkCreate();
+	expect(!netLinkBusJoinLocal(stray, 987654), "local bus: unknown key is rejected");
+	netLinkDestroy(stray);
+	testBusLocalCase(4, 91001, 120);
+	testBusLocalCase(3, 91002, 120);
+	testBusLocalCase(4, 91003, 120);
+	testBusLocalSlots();
+}
+
+/* 3 人总线：人数少于 4 时，第 4 个槽位必须是空槽 0xFFFF。
+ * 这条和四点用例是两件事：四点测「四个槽都能填对」，三点测「人数不足时
+ * 不能把别人的字错填进多余的槽」——后者一旦错了，游戏的玩家数判定会多出
+ * 一个人，握手直接失败。 */
+static void testBusThree(void) {
+	int port = 18793;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest[2];
+	const uint32_t base[3] = { 0x2000u, 0x2100u, 0x2200u };
+	int i;
+	int k;
+
+	expect(netLinkBusHost(host, port, 3), "bus host up for 3 players");
+	for (i = 0; i < 2; ++i) {
+		int ok = 0;
+		int tries;
+		guest[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(guest[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus3 join");
+		for (tries = 0; tries < 300; ++tries) {
+			if (netLinkState(guest[i]) == 2) {
+				break;
+			}
+			linkSleepMs(10);
+		}
+		expect(netLinkBusPlayers(guest[i]) == 3, "bus3 joiner learns 3 players");
+	}
+	expect(netLinkBusPlayers(host) == 3, "bus3 host sees 3 players");
+
+	{
+		int okRound = 1;
+		for (k = 0; k < 20; ++k) {
+			struct BusRoundArg args[3];
+			pthread_t th[3];
+			for (i = 0; i < 3; ++i) {
+				args[i].link = i == 0 ? host : guest[i - 1];
+				args[i].index = (uint16_t) k;
+				args[i].own = base[i] + (uint32_t) k;
+				args[i].got = 0;
+				args[i].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[i].values[s] = 0;
+				}
+				pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+			}
+			for (i = 0; i < 3; ++i) {
+				pthread_join(th[i], NULL);
+			}
+			for (i = 0; i < 3; ++i) {
+				if (args[i].got != 2) {
+					okRound = 0;
+				}
+				if (args[i].used != (uint16_t) k) {
+					okRound = 0;
+				}
+				for (int s = 0; s < 3; ++s) {
+					if (args[i].values[s] != base[s] + (uint32_t) k) {
+						okRound = 0;
+					}
+				}
+				if (args[i].values[3] != 0xFFFFu) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus3 third slot stays empty");
+	}
+
+	for (i = 0; i < 2; ++i) {
+		netLinkDestroy(guest[i]);
+	}
+	netLinkDestroy(host);
+}
+
+/* 4 人房只来了 1 个从机：链路必须仍然按总线跑。
+ *
+ * 这条用例针对一个真实踩过的坑：如果「是否走总线」按人数判（== 2 就当成两人
+ * 直连），那么 1 个从机时正好是 2 人，会掉进直连分支去 peerQ 里取字 —— 而总线
+ * 的字根本不进 peerQ，对端永远「没有回字」，一轮都过不去。 */
+static void testBusSinglePeer(void) {
+	int port = 18794;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest = netLinkCreate();
+	int i;
+	int tries;
+	int ok = 0;
+
+	expect(netLinkBusHost(host, port, 4), "bus1 host up for 4 players");
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(guest, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus1 join");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(guest) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkBusPlayers(host) == 2, "bus1 host sees the single peer");
+	expect(netLinkBusActive(host) && netLinkBusActive(guest), "bus1 stays on the bus with one peer");
+
+	{
+		int okRound = 1;
+		for (i = 0; i < 10; ++i) {
+			struct BusRoundArg args[2];
+			pthread_t th[2];
+			int k;
+			for (k = 0; k < 2; ++k) {
+				args[k].link = k == 0 ? host : guest;
+				args[k].index = (uint16_t) i;
+				args[k].own = (k == 0 ? 0x3000u : 0x3100u) + (uint32_t) i;
+				args[k].got = 0;
+				args[k].used = 0;
+				for (int s = 0; s < 4; ++s) {
+					args[k].values[s] = 0;
+				}
+				pthread_create(&th[k], NULL, busRoundThread, &args[k]);
+			}
+			for (k = 0; k < 2; ++k) {
+				pthread_join(th[k], NULL);
+			}
+			for (k = 0; k < 2; ++k) {
+				if (args[k].got != 1 || args[k].used != (uint16_t) i) {
+					okRound = 0;
+				}
+				if (args[k].values[0] != 0x3000u + (uint32_t) i
+				    || args[k].values[1] != 0x3100u + (uint32_t) i) {
+					okRound = 0;
+				}
+				if (args[k].values[2] != 0xFFFFu || args[k].values[3] != 0xFFFFu) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus1 round works with a single peer");
+	}
+
+	netLinkDestroy(guest);
+	netLinkDestroy(host);
+}
+
+/* 总线会话里必须让两人路径的入口失效。
+ *
+ * `serviceLink` 每次轮询都会调 `netLinkPingTick`。总线从机的 `sock >= 0` 且
+ * `state == CONNECTED`，如果不拦，它就按两人格式（20 字节 `struct Packet`）
+ * 往总线连接上写 —— 对端按 28 字节 `BusPacket` 解析就读到垃圾。现场症状是
+ * 主机报 `Link bus bad magic=00000000` 然后掉线，端到端表现为「连上了但一秒
+ * 就断」。
+ *
+ * 这条用例在总线会话里持续调用这些入口，然后断言链路还活着、轮次仍然一致。 */
+static void testBusIgnoresPointToPoint(void) {
+	int port = 18795;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* guest = netLinkCreate();
+	int i;
+	int k;
+	int tries;
+	int ok = 0;
+	int rejected = 1;
+	int rounds = 12;
+	int agree = 0;
+
+	expect(netLinkBusHost(host, port, 3), "bus-p2p host up");
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(guest, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus-p2p join");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(host) == 2 && netLinkState(guest) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+
+	for (k = 0; k < rounds; ++k) {
+		struct BusRoundArg args[2];
+		pthread_t th[2];
+		int okRound = 1;
+		/* 模拟 serviceLink 的高频轮询：两人专用入口必须什么也不做。 */
+		for (i = 0; i < 30; ++i) {
+			uint32_t remote = 0;
+			netLinkPingTick(host);
+			netLinkPingTick(guest);
+			if (netLinkExchange(host, 2, 0x1234u, &remote, 0)) {
+				rejected = 0;
+			}
+			if (netLinkBarrier(host, 0)) {
+				rejected = 0;
+			}
+		}
+		for (i = 0; i < 2; ++i) {
+			args[i].link = i == 0 ? host : guest;
+			args[i].index = (uint16_t) k;
+			args[i].own = (i == 0 ? 0x4000u : 0x4100u) + (uint32_t) k;
+			args[i].got = 0;
+			args[i].used = 0;
+			for (int s = 0; s < 4; ++s) {
+				args[i].values[s] = 0;
+			}
+			pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+		}
+		for (i = 0; i < 2; ++i) {
+			pthread_join(th[i], NULL);
+		}
+		for (i = 0; i < 2; ++i) {
+			if (args[i].got != 1 || args[i].used != (uint16_t) k) {
+				okRound = 0;
+			}
+			if (args[i].values[0] != 0x4000u + (uint32_t) k
+			    || args[i].values[1] != 0x4100u + (uint32_t) k) {
+				okRound = 0;
+			}
+		}
+		if (okRound) {
+			++agree;
+		}
+	}
+
+	expect(rejected, "bus rejects point-to-point exchange and barrier");
+	expect(netLinkState(host) == 2 && netLinkState(guest) == 2,
+	       "bus link survives point-to-point pings");
+	expect(agree == rounds, "bus rounds still agree with pings in flight");
+
+	netLinkDestroy(guest);
+	netLinkDestroy(host);
+}
+
+/* 四槽装配规则（`netLinkBusSlots`，纯函数）。
+ *
+ * 这是 3/4 人联机里最容易错、也最致命的一处：把不该填的槽填上，游戏会数出
+ * 多余玩家；把该填的槽漏掉，玩家数就是 2 —— 正好是「只填 data[0]/data[1]」
+ * 那个原始缺陷的形态。六条用例逐条钉住规则。 */
+static void testBusSlots(void) {
+	uint16_t out[4];
+	int ok;
+
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 0, 0x1111, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0x4444;
+		expect(ok, "bus slots: four players copy every slot");
+	}
+	{
+		/* 第 4 个槽里塞了脏数据，但人数是 3 —— 必须被 0xFFFF 覆盖。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0xDEADu };
+		netLinkBusSlots(v, 3, 1, 0x2222, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0xFFFF;
+		expect(ok, "bus slots: three players leave slot 3 empty");
+	}
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0xDEADu, 0xDEADu };
+		netLinkBusSlots(v, 2, 1, 0x2222, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0xFFFF && out[3] == 0xFFFF;
+		expect(ok, "bus slots: two players leave slots 2/3 empty");
+	}
+	{
+		/* 广播里自己那份是旧值 —— 必须被本机这一轮的字覆盖。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 2, 0x9999, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x9999 && out[3] == 0x4444;
+		expect(ok, "bus slots: own slot always uses the local word");
+	}
+	{
+		/* 链路还没连上时 player 号可能是 -1：不许越界写，也不许改任何槽。 */
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, -1, 0x9999, out);
+		ok = out[0] == 0x1111 && out[1] == 0x2222 && out[2] == 0x3333 && out[3] == 0x4444;
+		expect(ok, "bus slots: invalid player id overrides nothing");
+	}
+	{
+		const uint32_t v[4] = { 0x1111u, 0x2222u, 0x3333u, 0x4444u };
+		netLinkBusSlots(v, 4, 4, 0x9999, out);
+		ok = out[0] == 0x1111 && out[3] == 0x4444;
+		expect(ok, "bus slots: player id 4 does not write past the array");
+	}
+}
+
+
+
+/* 槽位复用：4 人房里有人掉线后重连，新玩家必须拿到空出来的槽。
+ *
+ * 原来槽位来自单调递增的计数器：3 个从机占满 1/2/3，2 号位掉线后重连的
+ * 第 4 个连接会分到 **4 号槽**。而槽位只认 0..3，4 号会被
+ * netLinkBusRound 的边界判断静默忽略 —— 新玩家连得上、握手也过，但永远
+ * 收不到任何数据，也没有任何报错。 */
+static void testBusSlotReuse(void) {
+	int port = 18798;
+	struct NetLink* host = netLinkCreate();
+	struct NetLink* peer[3];
+	struct NetLink* rejoin;
+	int i;
+	int tries;
+	int ok = 0;
+	int slotsOk = 1;
+
+	expect(netLinkBusHost(host, port, 4), "bus-slot host up for 4 players");
+	for (i = 0; i < 3; ++i) {
+		ok = 0;
+		peer[i] = netLinkCreate();
+		for (tries = 0; tries < 60 && !ok; ++tries) {
+			ok = netLinkBusJoin(peer[i], "127.0.0.1", port);
+			if (!ok) {
+				linkSleepMs(20);
+			}
+		}
+		expect(ok, "bus-slot join");
+		for (tries = 0; tries < 300; ++tries) {
+			if (netLinkState(peer[i]) == 2 && netLinkBusPlayers(host) == i + 2) {
+				break;
+			}
+			linkSleepMs(10);
+		}
+		if (netLinkPlayer(peer[i]) != i + 1) {
+			slotsOk = 0;
+		}
+	}
+	expect(slotsOk, "bus-slot first three peers take slots 1/2/3");
+
+	/* 2 号位掉线。 */
+	netLinkDestroy(peer[1]);
+	peer[1] = NULL;
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkBusPlayers(host) == 3) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkBusPlayers(host) == 3, "bus-slot host notices the dropped peer");
+
+	/* 新玩家补进来，必须拿到 2 号槽。 */
+	rejoin = netLinkCreate();
+	ok = 0;
+	for (tries = 0; tries < 60 && !ok; ++tries) {
+		ok = netLinkBusJoin(rejoin, "127.0.0.1", port);
+		if (!ok) {
+			linkSleepMs(20);
+		}
+	}
+	expect(ok, "bus-slot rejoin");
+	for (tries = 0; tries < 300; ++tries) {
+		if (netLinkState(rejoin) == 2) {
+			break;
+		}
+		linkSleepMs(10);
+	}
+	expect(netLinkPlayer(rejoin) == 2, "bus-slot rejoin reuses the freed slot 2");
+	expect(netLinkBusPlayers(host) == 4, "bus-slot host is back to four players");
+
+	/* 一轮聚合验证四个槽都真的能填：掉线重连之后仍然是一局完整的 4 人。 */
+	{
+		struct BusRoundArg args[4];
+		pthread_t th[4];
+		const uint32_t base[4] = { 0x8000u, 0x8100u, 0x8200u, 0x8300u };
+		int okRound = 1;
+		args[0].link = host;
+		args[1].link = peer[0];
+		args[2].link = rejoin;
+		args[3].link = peer[2];
+		for (i = 0; i < 4; ++i) {
+			args[i].index = 0;
+			args[i].own = base[i];
+			args[i].got = 0;
+			args[i].used = 0;
+			for (int s = 0; s < 4; ++s) {
+				args[i].values[s] = 0;
+			}
+			pthread_create(&th[i], NULL, busRoundThread, &args[i]);
+		}
+		for (i = 0; i < 4; ++i) {
+			pthread_join(th[i], NULL);
+		}
+		for (i = 0; i < 4; ++i) {
+			if (args[i].got != 3) {
+				okRound = 0;
+			}
+			for (int s = 0; s < 4; ++s) {
+				if (args[i].values[s] != base[s]) {
+					okRound = 0;
+				}
+			}
+		}
+		expect(okRound, "bus-slot four players still agree after a rejoin");
+	}
+
+	netLinkDestroy(rejoin);
+	for (i = 0; i < 3; ++i) {
+		if (peer[i]) {
+			netLinkDestroy(peer[i]);
+		}
+	}
+	netLinkDestroy(host);
 }
 
 static void testLink(void) {
@@ -2494,8 +3507,355 @@ static void testRom64Mobile(const char* dir, const char* rompath) {
 	mgbaMobileDestroy(emu);
 }
 
+/* 进程内锁步 SIO 的 C 层契约测试。不加载 ROM、不跑帧（游戏侧由 PC 的
+ * busgame-lockstep 端到端验证）；这里钉住房共享、槽位 ID、协调器设备 ID、
+ * sleep/wake 非阻塞语义、拆离与房间复用，避免产品接线时踩空。 */
+static void testLockstep(const char* romPath) {
+	const int key = 0x4C53;   /* "LS" */
+	const int players = 4;
+	struct mCore* cores[4] = {0};
+	struct MgbaLockstepSlot* slots[4] = {0};
+	struct MgbaLockstepRoom* rooms[4] = {0};
+
+	for (int i = 0; i < players; ++i) {
+		cores[i] = mCoreCreate(mPLATFORM_GBA);
+		expect(cores[i] != NULL, "lockstep: core created");
+		if (cores[i]) {
+			cores[i]->init(cores[i]);
+			/* 和 loadRomForBusTest 一致：不 loadROM 就 reset 会访问未初始化
+			 * 的 ROM 映射而段错误。 */
+			expect(mCoreLoadFile(cores[i], romPath), "lockstep: rom loaded");
+		}
+	}
+	rooms[0] = mgbaLockstepHost(key, players);
+	expect(rooms[0] != NULL, "lockstep: host created room");
+	for (int i = 1; i < players; ++i) {
+		rooms[i] = mgbaLockstepJoin(key);
+		expect(rooms[i] == rooms[0], "lockstep: join shares the same room");
+	}
+	expect(mgbaLockstepJoin(key + 1) == NULL, "lockstep: unknown key rejected");
+	expect(mgbaLockstepHost(key, players) == NULL, "lockstep: duplicate host rejected");
+
+	for (int i = 0; i < players; ++i) {
+		slots[i] = mgbaLockstepAttach(rooms[0], cores[i], i);
+		expect(slots[i] != NULL, "lockstep: core attached");
+		expect(mgbaLockstepSlotId(slots[i]) == i, "lockstep: slot id preserved");
+	}
+	expect(mgbaLockstepAttached(rooms[0]) == (size_t) players,
+	       "lockstep: coordinator has all players");
+
+	/* 设备 ID 由协调器按 requestedId 分配，必须是 0..3。
+	 * 注意 _GBACoreGetPeripheral 没实现 mPERIPH_GBA_LINK_PORT（直接返回 NULL），
+	 * 必须从 gba->sio.driver 读。 */
+	for (int i = 0; i < players; ++i) {
+		struct GBA* gba = (struct GBA*) cores[i]->board;
+		struct GBASIODriver* d = gba->sio.driver;
+		expect(d != NULL && d->deviceId && d->deviceId(d) == i,
+		       "lockstep: device id matches requested slot");
+	}
+
+	/* sleep 只是非阻塞请求，wake 清除并通知，都不阻塞调用方。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepUserSleep(slots[i]);
+		expect(mgbaLockstepPaused(slots[i]), "lockstep: sleep requests pause");
+		mgbaLockstepUserWake(slots[i]);
+		expect(!mgbaLockstepPaused(slots[i]), "lockstep: wake clears pause");
+	}
+
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepDetach(slots[i]);
+	}
+	expect(mgbaLockstepAttached(rooms[0]) == 0, "lockstep: detach removes all players");
+	for (int i = 0; i < players; ++i) {
+		mgbaLockstepRelease(rooms[i]);
+	}
+	struct MgbaLockstepRoom* again = mgbaLockstepHost(key, players);
+	expect(again != NULL, "lockstep: room reusable after all releases");
+	mgbaLockstepRelease(again);
+
+	for (int i = 0; i < players; ++i) {
+		if (cores[i]) {
+			cores[i]->deinit(cores[i]);
+		}
+	}
+}
+
+/*
+ * 产品侧集成验证：直接走 mgba_mobile.c 的锁步 API（mgbaMobileLinkHostLockstep /
+ * JoinLockstep + mobileRunFramesLocked 的小步 runLoop），而不是 link_lockstep.c
+ * 的底层 API。这是 4 核 GBoyConsoleSet 在设备上的真实代码路径，之前从未被任何
+ * 测试驱动过。
+ *
+ * 验证三件事：
+ *  1) 4 个 MgbaMobile 实例经 Host/Join 全部 attach，且帧循环不互相死锁（帧号都推进）。
+ *  2) 真实 SIO MULTI 传输：每核写不同 SIOMLT_SEND，主机发起 START，协调器收齐后
+ *     回写 SIOMULTI0..3 —— 4 核都应收到全部 4 个字。
+ *  3) 拆离顺序正确（Close/Destroy 不空指针）。
+ */
+struct LockstepRunCtx {
+	struct MgbaMobile* emu;
+	int slot;
+	int players;
+	int frames;
+	uint32_t sendWord;       /* 本核要发的字 */
+	uint32_t recv[4];        /* 收齐后读到的 SIOMULTI0..3 */
+	uint32_t finalFrame;     /* 跑完后的帧号 */
+	int everClean;           /* 是否观察过一次 4 字全非 0xFFFF 的完整传输 */
+};
+
+/* 墙钟看门狗：到点强制结束 4 核帧循环，避免测试进程被 SIGTERM。
+ * 主流程正常收尾时必须通过 g_lsrDone 提前唤醒它 —— 旧实现是无条件
+ * sleep(30s) 再置 abort，导致「明明 4 核都跑完了，却因为 join 满 30s
+ * 而被标记 aborted」的假失败，还让每次测试白等 30 秒。 */
+static volatile int g_lsrAbort = 0;
+static volatile int g_lsrDone = 0;
+static volatile int g_lsrStop = 0;
+static volatile int g_lsrCleanCount = 0;
+static pthread_mutex_t g_lsrWdMu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lsrWdCv = PTHREAD_COND_INITIALIZER;
+static pthread_mutex_t g_lsrDataMu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_lsrDataCv = PTHREAD_COND_INITIALIZER;
+
+static void* _lsrWatchdog(void* arg) {
+	long ms = *(long*) arg;
+	struct timespec ts;
+	clock_gettime(CLOCK_REALTIME, &ts);
+	ts.tv_sec += ms / 1000;
+	ts.tv_nsec += (ms % 1000) * 1000000L;
+	if (ts.tv_nsec >= 1000000000L) {
+		ts.tv_nsec -= 1000000000L;
+		++ts.tv_sec;
+	}
+	pthread_mutex_lock(&g_lsrWdMu);
+	while (!g_lsrDone) {
+		if (pthread_cond_timedwait(&g_lsrWdCv, &g_lsrWdMu, &ts) == ETIMEDOUT) {
+			break;
+		}
+	}
+	if (!g_lsrDone) {
+		g_lsrAbort = 1;
+		mgbaLockstepSetAbort(1);
+	}
+	pthread_mutex_unlock(&g_lsrWdMu);
+	return NULL;
+}
+
+/* 压掉 mGBA 内部冗余日志（BIOS SWI / GBA_SIO DEBUG 一次能刷几 MB，把 4 个
+ * 帧循环拖到超时）。mGBA 在没有任何默认 logger 时会 fallback 到 printf，所以
+ * 这里直接装一个「什么都不打印」的默认 logger，彻底静音（expect 自己的
+ * 输出走 fprintf，不受影响）。 */
+static void _silentLog(struct mLogger* logger, int category, enum mLogLevel level,
+                       const char* format, va_list args) {
+	(void) logger;
+	(void) category;
+	/* DEBUG/STUB 每个 SIO 轮次都会刷、4 核并发能把帧循环拖垮，必须压掉；
+	 * 但 WARN 以上保留，否则看不到协调器为什么拒绝/中止一次传输。 */
+	if (level & (mLOG_FATAL | mLOG_ERROR | mLOG_WARN | mLOG_GAME_ERROR)) {
+		vfprintf(stderr, format, args);
+		fputc('\n', stderr);
+	}
+}
+static struct mLogger _silentLogger = { _silentLog, NULL };
+
+static void _quietLogs(void) {
+	mLogSetDefaultLogger(&_silentLogger);
+}
+
+static void* _lsrThread(void* arg) {
+	struct LockstepRunCtx* ctx = (struct LockstepRunCtx*) arg;
+	for (int f = 0; f < ctx->frames && !g_lsrStop; ++f) {
+		if (g_lsrAbort) {
+			break;
+		}
+		if ((f & 0x1F) == 0) {
+			fprintf(stderr, "lockstep-run: core %d frame %d\n", ctx->slot, f);
+		}
+		/* 空测试 ROM 停在 ROM 入口死循环，永远不会自己写 SIOCNT。必须由
+		 * 主机持续拉起 START，协调器才有 TRANSFER_START 事件、才会调用
+		 * _setData 注入并广播 4 个字。只发一次的话，从机处理完事件后会
+		 * park 等下一个主机事件并一直睡到看门狗超时 —— 真实 gen8 在
+		 * 联机中心里每帧都发 MULTI，所以这里也每帧发一次。 */
+		if (ctx->slot == 0 && f >= 8) {
+			mgbaMobilePoke16(ctx->emu, 0x04000128u, 0x2083u);  /* MULTI + START */
+		}
+		/* 发送字由锁步协调器的测试注入钩子直接提供（0x1000+playerId），见
+		 * testLockstepRun 的 mgbaMobileSioSetInject 调用。协调器负责收齐
+		 * 4 个字并回写所有核的 SIOMULTI。 */
+		mgbaMobileRunFrames(ctx->emu, 1);
+		/* 每帧采样一次 SIOMULTI：只认 4 个字全部等于注入值。旧判据
+		 * 「全非 0xFFFF」会把空 ROM 里的全 0 残值误判成一次完整传输。 */
+		uint32_t r0 = mgbaMobilePeek16(ctx->emu, 0x04000120u);
+		uint32_t r1 = mgbaMobilePeek16(ctx->emu, 0x04000122u);
+		uint32_t r2 = mgbaMobilePeek16(ctx->emu, 0x04000124u);
+		uint32_t r3 = mgbaMobilePeek16(ctx->emu, 0x04000126u);
+		if (r0 == 0x1000u && r1 == 0x1001u && r2 == 0x1002u && r3 == 0x1003u) {
+			/* 记录成功交换的快照。退出瞬间 SIOMULTI 很可能已被主机下一轮
+			 * START 重置成 0xFFFF，用终态做断言会产生假失败。 */
+			ctx->recv[0] = r0;
+			ctx->recv[1] = r1;
+			ctx->recv[2] = r2;
+			ctx->recv[3] = r3;
+			if (!ctx->everClean) {
+				ctx->everClean = 1;
+				/* 4 核都拿到完整注入字后主流程就可以收尾，不必等满帧数。 */
+				pthread_mutex_lock(&g_lsrDataMu);
+				++g_lsrCleanCount;
+				pthread_cond_broadcast(&g_lsrDataCv);
+				pthread_mutex_unlock(&g_lsrDataMu);
+			}
+		}
+	}
+	/* recv 是「最后一次成功交换」的快照，不在这里用终态覆盖。 */
+	ctx->finalFrame = mgbaMobileFrameCounter(ctx->emu);
+	return NULL;
+}
+
+static void testLockstepRun(const char* romPath) {
+	_quietLogs();
+	const int key = 0x4C53;
+	const int players = 4;
+	struct MgbaMobile* emus[4] = {0};
+	struct LockstepRunCtx ctx[4];
+	pthread_t threads[4];
+
+	for (int i = 0; i < players; ++i) {
+		emus[i] = mgbaMobileCreate(".", ".", "0");
+		expect(emus[i] != NULL, "lockstep-run: emu created");
+		expect(mgbaMobileLoad(emus[i], romPath), "lockstep-run: rom loaded");
+	}
+	/* 引导阶段：先不挂锁步驱动，正常 runFrame 跑 ~60 帧让 BIOS 完成 boot。
+	 * GBA BIOS 开机时会探测 SIO 链路，若此刻已挂上锁步驱动（报「已连接」），
+	 * BIOS 会进入多启动等待、永远收不到多启动头而卡死。先 boot 完再挂驱动即可
+	 * 绕开（参考 busGameLockstepTest 同样在帧 10 之后才 attach）。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileRunFrames(emus[i], 60);
+	}
+	fprintf(stderr, "lockstep-run: booted 60 frames each, attaching lockstep driver\n");
+
+	expect(mgbaMobileLinkHostLockstep(emus[0], key, players, 0),
+	       "lockstep-run: host attached");
+	for (int i = 1; i < players; ++i) {
+		expect(mgbaMobileLinkJoinLockstep(emus[i], key, i),
+		       "lockstep-run: join attached");
+	}
+	expect(mgbaMobileLinkIsLockstep(emus[0]), "lockstep-run: host reports lockstep");
+
+	/* 4 核统一进 MULTI 模式。BIOS 探测后实测 siocnt=0x2000 但 rcnt=0x8000，
+	 * _switchMode 把 (rcnt&0xC000)|(siocnt&0x3000) 一起算，结果 mode=8
+	 * (JOYBUS)。此时只写 SIOCNT 因 (value^siocnt)&0x3000==0 根本不触发
+	 * 模式切换，写 START 也只会走 default 分支，协调器永远收不到 start。
+	 * 必须再写 RCNT=0 清掉 JOYBUS 位，才会切到 MULTI(mode=2)。
+	 * 4 个线程开跑前顺序做完，避免模式切换事件跨线程竞态；真实 gen8 ROM
+	 * 由游戏进入联机中心时自己完成同样的配置。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobilePoke16(emus[i], 0x04000128u, 0x2003u);  /* SIOCNT: MULTI, baud=3, START=0 */
+		mgbaMobilePoke16(emus[i], 0x04000134u, 0x0000u);  /* RCNT: clear JOYBUS */
+	}
+	fprintf(stderr, "lockstep-run: SIO set to MULTI; host siocnt=%04X\n",
+	        mgbaMobilePeek16(emus[0], 0x04000128u));
+
+	/* 打开锁步发送字注入：协调器每轮直接以 0x1000+playerId 作为各核发往对端的
+	 * 字，绕开真实游戏 ROM 对 SIOMLT_SEND 的改写，得到确定性 4 字 MULTI 传输。
+	 * 主机在第 8 帧拉起 START（见 _lsrThread），协调器照常收齐 4 字并广播。 */
+	mgbaMobileSioSetInject(true);
+	fprintf(stderr, "lockstep-run: injected deterministic send words; host pc=%08X\n",
+	        mgbaMobileCpuPc(emus[0]));
+
+	for (int i = 0; i < players; ++i) {
+		ctx[i].emu = emus[i];
+		ctx[i].slot = i;
+		ctx[i].players = players;
+		ctx[i].frames = 64;
+		ctx[i].recv[0] = ctx[i].recv[1] = ctx[i].recv[2] = ctx[i].recv[3] = 0;
+		ctx[i].finalFrame = 0;
+		ctx[i].everClean = 0;
+	}
+
+	/* 墙钟看门狗：20s 后强制结束，绝不挂死进程。 */
+	g_lsrAbort = 0;
+	g_lsrDone = 0;
+	g_lsrStop = 0;
+	g_lsrCleanCount = 0;
+	mgbaLockstepSetAbort(0);
+	pthread_t wd;
+	long wdMs = 20000;
+	pthread_create(&wd, NULL, _lsrWatchdog, &wdMs);
+
+	for (int i = 0; i < players; ++i) {
+		pthread_create(&threads[i], NULL, _lsrThread, &ctx[i]);
+	}
+
+	/* 等 4 核都观察到完整的 4 字注入（最多 10s），然后主动收尾。
+	 * 空测试 ROM 在最后一次 MULTI 之后不会再发 SIO 事件；若让主机线程
+	 * 先退出，从机会 park 等一个永远不会来的事件直到看门狗超时。 */
+	struct timespec deadline;
+	clock_gettime(CLOCK_REALTIME, &deadline);
+	deadline.tv_sec += 10;
+	pthread_mutex_lock(&g_lsrDataMu);
+	while (g_lsrCleanCount < players && !g_lsrAbort) {
+		if (pthread_cond_timedwait(&g_lsrDataCv, &g_lsrDataMu, &deadline) == ETIMEDOUT) {
+			break;
+		}
+	}
+	int allClean = (g_lsrCleanCount == players);
+	pthread_mutex_unlock(&g_lsrDataMu);
+
+	pthread_mutex_lock(&g_lsrWdMu);
+	g_lsrDone = 1;
+	pthread_cond_broadcast(&g_lsrWdCv);
+	pthread_mutex_unlock(&g_lsrWdMu);
+	g_lsrStop = 1;
+	mgbaLockstepSetAbort(1);   /* 唤醒仍 park 在等事件的核，让帧循环立即返回 */
+	for (int i = 0; i < players; ++i) {
+		pthread_join(threads[i], NULL);
+	}
+	pthread_join(wd, NULL);
+	mgbaLockstepSetAbort(0);
+	mgbaMobileSioSetInject(false);   /* 关掉测试注入，避免影响后续拆离/销毁 */
+
+	expect(allClean, "lockstep-run: all 4 cores saw injected MULTI transfer");
+	expect(!g_lsrAbort, "lockstep-run: finished before watchdog fired");
+	/* 同步：4 核帧号都应推进（无死锁，协调器把各核锁在同一步）。 */
+	for (int i = 0; i < players; ++i) {
+		expect(ctx[i].finalFrame > 30, "lockstep-run: core advanced frames");
+	}
+
+	/* 数据：发送字由注入钩子提供，锁步协调器每轮把
+	 * multiData[0..3] = [0x1000,0x1001,0x1002,0x1003] 写回所有核 SIOMULTI。
+	 * ctx.recv 记录的是「最后一次成功交换」的快照（主机每帧发起新 START
+	 * 会先把 SIOMULTI 重置为 0xFFFF，退出瞬间的终态不可靠）。
+	 * 既验证传输真的发生，也验证 4 核一致性。 */
+	for (int i = 0; i < players; ++i) {
+		fprintf(stderr, "lockstep-run: core %d pc=%08X recv %04X %04X %04X %04X fc=%u everClean=%d%s\n",
+		        i, mgbaMobileCpuPc(emus[i]),
+		        ctx[i].recv[0], ctx[i].recv[1], ctx[i].recv[2], ctx[i].recv[3],
+		        ctx[i].finalFrame, ctx[i].everClean, g_lsrAbort ? " (aborted)" : "");
+		for (int j = 0; j < players; ++j) {
+			expect(ctx[i].recv[j] == (uint32_t) (0x1000 + j),
+			       "lockstep-run: core received correct MULTI word");
+		}
+		expect(ctx[i].everClean, "lockstep-run: core saw a complete 4-word transfer");
+	}
+
+	/* 拆离：先逐个 Close（解锁步 SIO），再 Destroy。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileLinkClose(emus[i]);
+	}
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileDestroy(emus[i]);
+	}
+	/* 房间应随所有引用释放而销毁，可被新 host 复用。 */
+	struct MgbaLockstepRoom* again = mgbaLockstepHost(key, players);
+	expect(again != NULL, "lockstep-run: room reusable after shutdown");
+	mgbaLockstepRelease(again);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
+	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
+	 * 现场就只剩「0 条 ok」，没法判断崩在哪。这里强制无缓冲。 */
+	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 #ifdef _WIN32
 	WSADATA data;
 	WSAStartup(MAKEWORD(2, 2), &data);
@@ -2516,6 +3876,125 @@ int main(int argc, char** argv) {
 		fprintf(stderr, "join-relay is covered by the in-process relay test\n");
 		return 2;
 	}
+	if (argc >= 2 && strcmp(argv[1], "--preaudio") == 0) {
+		/* 跑指定的前置用例后再跑 device pump，用来二分段错误的触发源。
+		 * 第三个参数是字母集合：b=bios s=resample g=gb G=gba R=rom64 T=turboB */
+		const char* set = argc > 3 ? argv[3] : "bsgGRT";
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		if (strchr(set, 'b')) {
+			testBios();
+		}
+		if (strchr(set, 's')) {
+			testResample();
+		}
+		if (strchr(set, 'g')) {
+			testGb(dir);
+		}
+		if (strchr(set, 'G')) {
+			testGba(dir);
+		}
+		if (strchr(set, 'R')) {
+			testRom64(dir);
+		}
+		if (strchr(set, 'T')) {
+			testTurboB(dir);
+		}
+		if (strchr(set, 'a')) {
+			testAudioOut(dir);
+			testAudioPitch(dir);
+			testAudioConstPitch(dir);
+			testAudioConstPitchRealtime(dir);
+		}
+		testAudioConstPitchDevicePump(dir);
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--audioall") == 0) {
+		/* 只跑音频整组，用来二分「device pump 的段错误由谁触发」。 */
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		if (argc <= 3 || strchr(argv[3], 'o')) {
+			testAudioOut(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'p')) {
+			testAudioPitch(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'c')) {
+			testAudioConstPitch(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'r')) {
+			testAudioConstPitchRealtime(dir);
+		}
+		if (argc <= 3 || strchr(argv[3], 'd')) {
+			testAudioConstPitchDevicePump(dir);
+		}
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--audio") == 0) {
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		testAudioConstPitch(dir);
+		testAudioConstPitchRealtime(dir);
+		testAudioConstPitchDevicePump(dir);
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
+		testBusSlots();
+	testBusSlotReuse();
+	testBusIgnoresPointToPoint();
+	testBusSinglePeer();
+	testBusThree();
+		testBusPlayers();
+		testBusLocal();
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--link") == 0) {
+		testLink();
+		testBusSlots();
+	testBusSlotReuse();
+	testBusIgnoresPointToPoint();
+	testBusSinglePeer();
+	testBusThree();
+		testBusPlayers();
+		testBusLocal();
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--state") == 0) {
+		snprintf(dir, sizeof(dir), "%s", argc > 2 ? argv[2] : ".");
+#ifdef _WIN32
+		_mkdir(dir);
+#else
+		mkdir(dir, 0755);
+#endif
+		testStateMemory(dir);
+	testCoreLockHeld(dir);
+	testStateConcurrency(dir);
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--dual") == 0) {
+		testDualCoreIsolation();
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--lockstep") == 0) {
+		testLockstep(argc > 2 ? argv[2] : "test.gba");
+		return g_failed ? 1 : 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--lockstep-run") == 0) {
+		testLockstepRun(argc > 2 ? argv[2] : "test.gba");
+		return g_failed ? 1 : 0;
+	}
 	snprintf(dir, sizeof(dir), "%s", argc > 1 ? argv[1] : ".");
 #ifdef _WIN32
 	_mkdir(dir);
@@ -2535,7 +4014,17 @@ int main(int argc, char** argv) {
 	testAudioConstPitchDevicePump(dir);
 	testAudioNativeHold(dir);
 	testLink();
+	testBusSlots();
+	testBusSlotReuse();
+	testBusIgnoresPointToPoint();
+	testBusSinglePeer();
+	testBusThree();
+	testBusPlayers();
+	testStateMemory(dir);
 	testRelay();
+	testCoreLockHeld(dir);
+	testStateConcurrency(dir);
+	testDualCoreIsolation();
 	if (g_failed) {
 		fprintf(stderr, "mobile tests failed\n");
 		return 1;

@@ -100,8 +100,13 @@ bool mCoreSyncProduceAudio(struct mCoreSync* sync, const struct mAudioBuffer* bu
 
 	size_t produced = mAudioBufferCapacity(buf);
 	size_t producedNew = mAudioBufferAvailable(buf);
+	/* The wait is timed: the frontend that drains the audio can stall (a
+	 * blocked or closed audio device stops asking for samples), and an
+	 * untimed wait would leave the emulation thread stuck in here forever -
+	 * the whole emulator would freeze instead of just running without sound.
+	 * Waking up periodically costs nothing when the audio keeps flowing. */
 	while (sync->audioWait && sync->audioHighWater && producedNew >= sync->audioHighWater) {
-		ConditionWait(&sync->audioRequiredCond, &sync->audioBufferMutex);
+		ConditionWaitTimed(&sync->audioRequiredCond, &sync->audioBufferMutex, 10);
 		produced = producedNew;
 		producedNew = mAudioBufferAvailable(buf);
 	}

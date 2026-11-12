@@ -25,6 +25,14 @@ struct mCoreSync {
 	size_t audioHighWater;
 
 	float fpsTarget;
+
+	/* 倍速声音不变 (fast-forward music hold): mirrored from CoreController so
+	 * the SDL audio callback - which has no CoreController pointer - can apply
+	 * the WSOLA / native stretch. Mode 0 = off (pitch follows the game), 1 =
+	 * WSOLA time-stretch, 2 = native "skip a section". */
+	int audioHoldMode;
+	double audioHoldRatio;
+	double audioHoldRate;
 };
 
 struct mCoreOptions;

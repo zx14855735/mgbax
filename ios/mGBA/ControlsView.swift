@@ -21,7 +21,10 @@ final class ControlsView: UIView {
     static let actionFFToggle = 5
     static let actionMenu = 6
     static let actionMute = 7
+    /** Original rewind control: opens the seconds bar. */
     static let actionRewind = 8
+    /** Extra shortcut key: one tap rewinds a few seconds, no menu needed. */
+    static let actionRewindQuick = 9
     /** Button styles: the classic translucent outlines or the handheld shell. */
     static let styleClassic = 0
     static let styleHandheld = 1
@@ -77,6 +80,7 @@ final class ControlsView: UIView {
     private var keyLoad = CGRect.zero
     private var keyFast = CGRect.zero
     private var keyShot = CGRect.zero
+    private var keyRewind = CGRect.zero
     private var keyTurboADefault = CGRect.zero
     private var keyTurboBDefault = CGRect.zero
     private var keyLRDefault = CGRect.zero
@@ -86,6 +90,15 @@ final class ControlsView: UIView {
     private var keyLoadDefault = CGRect.zero
     private var keyFastDefault = CGRect.zero
     private var keyShotDefault = CGRect.zero
+    private var keyRewindDefault = CGRect.zero
+    /** Seconds printed on the extra one-tap rewind key. */
+    private var quickRewindSeconds = 2
+
+    func setQuickRewindSeconds(_ seconds: Int) {
+        quickRewindSeconds = min(10, max(1, seconds))
+        setNeedsDisplay()
+    }
+
     private var visibleExtras: Set<String> = []
     /** When true the d-pad reports only its dominant direction, no diagonals. */
     private var diagonalLock = false
@@ -414,6 +427,7 @@ final class ControlsView: UIView {
         let lrTop = shoulderTop + 36 + 8
         keyLRDefault = CGRect(x: center - utilW, y: lrTop, width: utilW * 2, height: utilH)
         keyShotDefault = CGRect(x: center - utilW / 2, y: lrTop + utilH + 8, width: utilW, height: utilH)
+        keyRewindDefault = CGRect(x: keyShotDefault.maxX + 8, y: keyShotDefault.minY, width: utilW, height: utilH)
         let turbo: CGFloat = 46
         keyTurboADefault = CGRect(x: buttonADefault.minX - 4, y: buttonADefault.minY - turbo - 6, width: turbo, height: turbo)
         keyTurboBDefault = CGRect(x: keyTurboADefault.minX - turbo - 8, y: keyTurboADefault.minY + 10, width: turbo, height: turbo)
@@ -476,6 +490,7 @@ final class ControlsView: UIView {
         keyLoadDefault = CGRect(x: 31 * fw, y: utilTop, width: utilW, height: utilH)
         keyFastDefault = CGRect(x: 44 * fw, y: utilTop, width: utilW, height: utilH)
         keyShotDefault = CGRect(x: 57 * fw, y: utilTop, width: utilW, height: utilH)
+        keyRewindDefault = CGRect(x: 83 * fw, y: utilTop, width: utilW, height: utilH)
         keyLRDefault = CGRect(x: 70 * fw, y: utilTop, width: utilW, height: utilH)
         let turbo = 9 * fw
         keyTurboADefault = CGRect(x: buttonADefault.minX - turbo - 2 * fw, y: buttonADefault.minY + 2 * fh, width: turbo, height: turbo)
@@ -502,6 +517,7 @@ final class ControlsView: UIView {
         shrink(&keyLoadDefault, 0.8)
         shrink(&keyFastDefault, 0.8)
         shrink(&keyShotDefault, 0.8)
+        shrink(&keyRewindDefault, 0.8)
     }
 
     /** Landscape shell (GBA hardware style): d-pad left, A/B right, slanted
@@ -545,6 +561,7 @@ final class ControlsView: UIView {
         keyLoadDefault = CGRect(x: 50 * fw, y: utilTop, width: utilW, height: utilH)
         keyFastDefault = CGRect(x: 60 * fw, y: utilTop, width: utilW, height: utilH)
         keyShotDefault = CGRect(x: 70 * fw, y: utilTop, width: utilW, height: utilH)
+        keyRewindDefault = CGRect(x: 81 * fw, y: utilTop, width: utilW, height: utilH)
         keyLRDefault = CGRect(x: 45 * fw, y: 82 * fh, width: utilW + 6 * fw, height: utilH)
         keyTurboADefault = CGRect(x: buttonADefault.minX - utilW - 1.5 * fw, y: buttonADefault.minY, width: utilW, height: utilH)
         keyTurboBDefault = CGRect(x: buttonBDefault.minX - utilW - 1.5 * fw, y: buttonBDefault.minY, width: utilW, height: utilH)
@@ -662,6 +679,10 @@ final class ControlsView: UIView {
         }
         if visibleExtras.contains("shot") {
             drawKey(keyShot, "截图", actionPointers.values.contains(Self.actionShot), editing, false)
+        }
+        if visibleExtras.contains("rewind") {
+            drawKey(keyRewind, "倒带\(quickRewindSeconds)s",
+                    actionPointers.values.contains(Self.actionRewindQuick), editing, false)
         }
     }
 
@@ -1201,6 +1222,7 @@ final class ControlsView: UIView {
         if visibleExtras.contains("load"), keyLoad.contains(point) { return Self.actionLoad }
         if visibleExtras.contains("ff"), keyFast.contains(point) { return Self.actionFF }
         if visibleExtras.contains("shot"), keyShot.contains(point) { return Self.actionShot }
+        if visibleExtras.contains("rewind"), keyRewind.contains(point) { return Self.actionRewindQuick }
         return 0
     }
 
@@ -1330,6 +1352,7 @@ final class ControlsView: UIView {
         if visibleExtras.contains("load"), keyLoad.contains(point) { return "load" }
         if visibleExtras.contains("ff"), keyFast.contains(point) { return "ff" }
         if visibleExtras.contains("shot"), keyShot.contains(point) { return "shot" }
+        if visibleExtras.contains("rewind"), keyRewind.contains(point) { return "rewind" }
         return nil
     }
 
@@ -1356,6 +1379,7 @@ final class ControlsView: UIView {
         case "load": return keyLoad
         case "ff": return keyFast
         case "shot": return keyShot
+        case "rewind": return keyRewind
         default: return buttonStart
         }
     }
@@ -1377,6 +1401,7 @@ final class ControlsView: UIView {
         if visibleExtras.contains("load") { place(&keyLoad, keyLoadDefault, "load") }
         if visibleExtras.contains("ff") { place(&keyFast, keyFastDefault, "ff") }
         if visibleExtras.contains("shot") { place(&keyShot, keyShotDefault, "shot") }
+        if visibleExtras.contains("rewind") { place(&keyRewind, keyRewindDefault, "rewind") }
         layoutDpadArms()
         onLayoutChanged?()
     }

@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "Window.h"
 
+#include <QBuffer>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -34,6 +35,8 @@
 #include "DebuggerConsoleController.h"
 #include "Display.h"
 #include "DolphinConnector.h"
+#include "EnhancementsView.h"
+#include "ScriptedControl.h"
 #include "CoreController.h"
 #include "ForwarderView.h"
 #include "FrameView.h"
@@ -45,6 +48,14 @@
 #include "input/SDLInputDriver.h"
 #endif
 #include "IOViewer.h"
+#include "LinkView.h"
+#ifdef BUILD_QT_CLOUD
+#include "LobbyView.h"
+#ifdef BUILD_QT_CLOUD
+#include "CloudLink.h"
+#include <QLoggingCategory>
+#endif
+#endif
 #include "LoadSaveState.h"
 #include "LogView.h"
 #include "MapView.h"
@@ -65,6 +76,7 @@
 #endif
 #include "SensorView.h"
 #include "ShaderSelector.h"
+#include "WebDavView.h"
 #include "ShortcutController.h"
 #include "TileView.h"
 #include "VideoProxy.h"
@@ -583,6 +595,19 @@ void Window::openSettingsWindow(SettingsView::Page page) {
 	connect(settingsWindow, &SettingsView::videoRendererChanged, this, &Window::changeRenderer);
 	connect(settingsWindow, &SettingsView::languageChanged, this, &Window::mustRestart);
 	connect(settingsWindow, &SettingsView::pathsChanged, this, &Window::reloadConfig);
+	/* 音量/静音即时通道：直接写核心 opts，同时落 config（点 OK 时写盘）。 */
+	connect(settingsWindow, &SettingsView::volumeChanged, this, [this](int volume) {
+		m_config->setOption("volume", volume);
+		if (m_controller) {
+			m_controller->setVolume(volume);
+		}
+	});
+	connect(settingsWindow, &SettingsView::muteChanged, this, [this](bool mute) {
+		m_config->setOption("mute", mute);
+		if (m_controller) {
+			m_controller->setMute(mute);
+		}
+	});
 #ifdef USE_SQLITE3
 	connect(settingsWindow, &SettingsView::libraryCleared, m_libraryView, &LibraryController::clear);
 #endif
@@ -1476,6 +1501,18 @@ void Window::setupMenu(QMenuBar* menubar) {
 #ifdef M_CORE_GBA
 	auto dolphin = m_actions.addAction(tr("Connect to Dolphin..."), "connectDolphin", openNamedTView<DolphinConnector>(&m_dolphinView, true, this), "file");
 	m_platformActions.insert(mPLATFORM_GBA, dolphin);
+
+	auto gboyLink = m_actions.addAction(tr("WiFi 联机…"), "gboyLink", openNamedTView<LinkView>(&m_linkView, true, this), "file");
+	m_platformActions.insert(mPLATFORM_GBA, gboyLink);
+#endif
+
+#ifdef BUILD_QT_CLOUD
+	auto cloudLobby = m_actions.addAction(tr("联机大厅…"), "cloudLobby", openNamedTView<LobbyView>(&m_lobbyView, true, this), "file");
+#ifdef M_CORE_GBA
+	m_platformActions.insert(mPLATFORM_GBA, cloudLobby);
+#else
+	(void) cloudLobby;
+#endif
 #endif
 
 	m_actions.addSeparator("file");
@@ -1606,6 +1643,22 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addMenu(tr("Audio/&Video"), "av");
+
+	/* 音量/静音快捷入口：主菜单即可调节，不必打开设置窗口。
+	 * 精细调节仍用 Tools → Settings → Audio/Video 的滑块（拖动即时生效）。 */
+	m_actions.addMenu(tr("&Volume"), "volume", "av");
+	for (int v : {0, 64, 128, 192, 256, 384}) {
+		auto volumeAction = m_actions.addAction(tr("%1%").arg(v * 100 / 256),
+		    QString("volume.%1").arg(v), [this, v]() {
+			m_config->setOption("volume", v);
+			if (m_controller) {
+				m_controller->setVolume(v);
+			}
+		}, "volume");
+		volumeAction->setExclusive(true);
+	}
+	/* 静音沿用下面已有的 ConfigOption("mute") 菜单动作，不重复造一个。 */
+
 	m_actions.addMenu(tr("Frame size"), "frame", "av");
 	for (int i = 1; i <= 8; ++i) {
 		auto setSize = m_actions.addAction(tr("%1×").arg(QString::number(i)), QString("frame.%1x").arg(QString::number(i)), [this, i]() {
@@ -1715,7 +1768,12 @@ void Window::setupMenu(QMenuBar* menubar) {
 	auto muteAction = mute->addBoolean(tr("Mute"), &m_actions, "av");
 	muteAction->setActive(m_config->getOption("mute").toInt());
 	mute->connect([this](const QVariant& value) {
-		m_config->setOption("fastForwardMute", static_cast<bool>(value.toInt()));
+		/* 旧实现误把静音值写到 fastForwardMute，用户勾静音只改了倍速静音，
+		 * 正常播放下 core->opts.mute 没变，所以「静音无效」。这里改为直接
+		 * 作用于运行中的核心（addOption 已负责把 mute 写回 config）。 */
+		if (m_controller) {
+			m_controller->setMute(value.toBool());
+		}
 		reloadConfig();
 	}, this);
 
@@ -1797,6 +1855,12 @@ void Window::setupMenu(QMenuBar* menubar) {
 	addGameAction(tr("&Cheats..."), "cheatsWindow", openControllerTView<CheatsView>(), "tools");
 #ifdef ENABLE_SCRIPTING
 	m_actions.addAction(tr("Scripting..."), "scripting", this, &Window::scriptingOpen, "tools");
+#endif
+
+	m_actions.addAction(tr("WebDAV 存档同步…"), "webdavSync", openNamedTView<WebDavView>(&m_webdavView, false, this), "tools");
+
+#if defined(M_CORE_GBA) || defined(M_CORE_GB)
+	m_actions.addAction(tr("模拟器增强..."), "enhancements", openNamedTView<EnhancementsView>(&m_enhancementsView, true, this), "tools");
 #endif
 
 	m_actions.addAction(tr("Create forwarder..."), "createForwarder", openTView<ForwarderView>(), "tools");
@@ -2237,6 +2301,21 @@ void Window::setController(CoreController* controller) {
 	m_controller->setInputController(&m_inputController);
 	m_controller->setLogger(&m_log);
 
+#ifdef BUILD_QT_CLOUD
+	// 测试钩子：MGBAX_AUTOLINK="邮箱:密码[:房号]" 时，游戏一载入就自动进云端联机，
+	// 好让真实对局能在无人值守的情况下跑起来（导播台/SIO 轨迹都进 stdout）。
+	// 正常使用不会设置这个变量，行为与手动点「联机大厅」完全一致。
+	startAutoCloudLink();
+#endif
+
+	// 测试钩子：MGBAX_SCRIPT_DIR 目录存在时，从 <dir>/keys 读按键掩码、
+	// 从 <dir>/shot 的序号触发截图，让 PC 端也能被脚本驱动（联机对局回归用）。
+	// 正常启动不设置这个变量，完全不参与。
+	if (!qEnvironmentVariableIsEmpty("MGBAX_SCRIPT_DIR")) {
+		m_scripted = new ScriptedControl(m_controller.get(), this);
+		m_scripted->start();
+	}
+
 	connect(this, &Window::shutdown, [this]() {
 		if (!m_controller) {
 			return;
@@ -2447,3 +2526,80 @@ void WindowBackground::paintEvent(QPaintEvent* event) {
 	QRect full(clampSize(QSize(m_aspectWidth, m_aspectHeight), size(), true, false));
 	painter.drawPixmap(full, logo);
 }
+
+#ifdef BUILD_QT_CLOUD
+/*
+ * 联机自动化钩子（测试用，不影响正常流程）：环境变量
+ *   MGBAX_AUTOLINK="邮箱:密码[:房号]"
+ * 会让游戏一载入就按与「联机大厅」相同的路径启动云端联机，房号留空即建房。
+ * 目的是让真实对局能在无界面的情况下复现/抓 SIO 轨迹（stdout 会带上状态与诊断）。
+ */
+void Window::startAutoCloudLink() {
+	QString spec = qEnvironmentVariable("MGBAX_AUTOLINK");
+	if (spec.isEmpty() || !m_controller) {
+		return;
+	}
+	QStringList parts = spec.split(':');
+	if (parts.size() < 2 || parts.at(0).isEmpty()) {
+		qWarning() << "[AUTOLINK] 需要 邮箱:密码[:房号]，收到的是" << spec;
+		return;
+	}
+	CloudLink::Config config;
+	config.user = parts.at(0);
+	config.password = parts.at(1);
+	config.roomId = parts.size() > 2 ? parts.at(2) : QString();
+	// path() 可能只是文件名（从媒体库/VFile 加载时），绝对位置在 baseDirectory：
+	// 镜像核要拿它重新加载 ROM，必须解析成真实文件路径。
+	QString romPath = m_controller->path();
+	if (!QFileInfo::exists(romPath)) {
+		QString base = m_controller->baseDirectory();
+		if (!base.isEmpty() && QFileInfo::exists(QDir(base).filePath(romPath))) {
+			romPath = QDir(base).filePath(romPath);
+		}
+	}
+	config.romPath = romPath;
+	// 官方镜像模式（MGBAX_OFFICIAL_LINK=1）的镜像核要拿本机存档起步；
+	// savePath 同样可能是相对形式（./rom.sav），一并解析。
+	QString savePath = m_controller->savePath();
+	if (!QFileInfo::exists(savePath)) {
+		QString base = m_controller->baseDirectory();
+		if (!base.isEmpty() && QFileInfo::exists(QDir(base).filePath(savePath))) {
+			savePath = QDir(base).filePath(savePath);
+		}
+	}
+	config.savePath = savePath;
+
+	CloudLink* link = new CloudLink(this);
+	link->setController(m_controller.get());
+	// TYPE_STATE: the host seeds the joiner with one save-state snapshot.
+	// CoreController::saveState(QIODevice*) runs on the core thread but waits
+	// for completion (mCoreThreadRunFunction), so the buffer is filled by the
+	// time it returns even when the provider is called from the link thread.
+	link->setStateSnapshotProvider([this]() -> QByteArray {
+		if (!m_controller) {
+			return QByteArray();
+		}
+		QBuffer buffer;
+		buffer.open(QIODevice::WriteOnly);
+		m_controller->saveState(&buffer);
+		return buffer.data();
+	});
+	connect(link, &CloudLink::remoteState, this, [this](const QByteArray& state) {
+		if (!m_controller || state.isEmpty()) {
+			return;
+		}
+		QBuffer buffer;
+		buffer.setData(state);
+		buffer.open(QIODevice::ReadOnly);
+		m_controller->loadState(&buffer);
+	});
+	connect(link, &CloudLink::statusMessage, this, [](const QString& text) {
+		qInfo().noquote() << "[AUTOLINK]" << text;
+	});
+	connect(link, &CloudLink::linkEnded, this, [](const QString& text) {
+		qInfo().noquote() << "[AUTOLINK] ended:" << text;
+	});
+	qInfo().noquote() << "[AUTOLINK] 启动云端联机，房号" << (config.roomId.isEmpty() ? QStringLiteral("(建房)") : config.roomId);
+	link->startLink(config);
+}
+#endif
