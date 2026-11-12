@@ -118,6 +118,10 @@ if(ENABLE_SCRIPTING)
 	endif()
 endif()
 
+# 倍速音频 WSOLA 拉伸：sdl-audio.c 调 audioStretch*，实现体在 Qt 目录
+# （与 Qt 版共用一份），SDL 目标必须一起编，否则链接期 undefined reference。
+list(APPEND PLATFORM_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../qt/audio_stretch.c)
+
 add_executable(${BINARY_NAME}-sdl WIN32 ${PLATFORM_SRC} ${MAIN_SRC})
 set_target_properties(${BINARY_NAME}-sdl PROPERTIES COMPILE_DEFINITIONS "${FEATURE_DEFINES};${FUNCTION_DEFINES};${OS_DEFINES}")
 target_link_libraries(${BINARY_NAME}-sdl ${BINARY_NAME} ${PLATFORM_LIBRARY} ${OPENGL_LIBRARY} ${OPENGLES2_LIBRARY})
