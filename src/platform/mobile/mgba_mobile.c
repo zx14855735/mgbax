@@ -4768,8 +4768,16 @@ bool mgbaMobileLinkJoinLocalSlot(struct MgbaMobile* emu, int key, int slot) {
 }
 
 bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, int slot) {
-	if (!emu || !emu->core || emu->lockstepSlot) {
+	if (!emu || !emu->core) {
 		return false;
+	}
+	if (emu->lockstepSlot) {
+		/* 残留槽位：loadROM 的复位会 deinit 锁步驱动（玩家已退出房间）但
+		 * 不动本结构，指针从此悬空。干净拆掉再重挂，否则重挂永远被拒
+		 * （busgame reload 后主机重新入房依赖这一点）。 */
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		emu->lockstepRoom = NULL;
 	}
 	struct MgbaLockstepRoom* room = mgbaLockstepHost(key, players);
 	if (!room) {
@@ -4790,8 +4798,14 @@ bool mgbaMobileLinkHostLockstep(struct MgbaMobile* emu, int key, int players, in
 }
 
 bool mgbaMobileLinkJoinLockstep(struct MgbaMobile* emu, int key, int slot) {
-	if (!emu || !emu->core || emu->lockstepSlot) {
+	if (!emu || !emu->core) {
 		return false;
+	}
+	if (emu->lockstepSlot) {
+		/* 残留槽位：同 Host 侧——loadROM 复位后驱动已 deinit，先拆再挂。 */
+		mgbaLockstepDetach(emu->lockstepSlot);
+		emu->lockstepSlot = NULL;
+		emu->lockstepRoom = NULL;
 	}
 	struct MgbaLockstepRoom* room = mgbaLockstepJoin(key);
 	if (!room) {
