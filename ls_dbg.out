@@ -1,0 +1,72 @@
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+lockstep-run: booted 60 frames each, attaching lockstep driver
+ok lockstep-run: host attached
+ok lockstep-run: join attached
+ok lockstep-run: join attached
+ok lockstep-run: join attached
+ok lockstep-run: host reports lockstep
+FREEZE dbg: wrote@0=4805 readback=4805 pf0=4805 pf1=BF00 pc=03007E02 exec=1 cpsr=600000FF lit@18=012A lit@20=1000
+FREEZE dbg: wrote@0=4805 readback=4805 pf0=4805 pf1=BF00 pc=03007E02 exec=1 cpsr=600000FF lit@18=012A lit@20=1001
+FREEZE dbg: wrote@0=4805 readback=4805 pf0=4805 pf1=BF00 pc=03007E02 exec=1 cpsr=600000FF lit@18=012A lit@20=1002
+FREEZE dbg: wrote@0=4805 readback=4805 pf0=4805 pf1=BF00 pc=03007E02 exec=1 cpsr=600000FF lit@18=012A lit@20=1003
+lockstep-run: froze ARM SIO loop; host pc=03007E02
+lockstep-run: core 2 frame 0
+lockstep-run: core 1 frame 0
+lockstep-run: core 0 frame 0
+lockstep-run: core 3 frame 0
+lockstep-run: core 0 frame 32
+lockstep-run: core 1 frame 32
+lockstep-run: core 2 frame 32
+lockstep-run: core 3 frame 32
+lockstep-run: core 0 frame 64
+lockstep-run: core 2 frame 64
+lockstep-run: core 1 frame 64
+lockstep-run: core 3 frame 64
+lockstep-run: core 0 frame 96
+lockstep-run: core 1 frame 96
+lockstep-run: core 2 frame 96
+lockstep-run: core 3 frame 96
+lockstep-run: core 0 frame 128
+lockstep-run: core 1 frame 128
+lockstep-run: core 3 frame 128
+lockstep-run: core 2 frame 128
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)

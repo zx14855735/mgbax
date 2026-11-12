@@ -1,0 +1,93 @@
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+ok lockstep-run: emu created
+ok lockstep-run: rom loaded
+lockstep-run: booted 60 frames each, attaching lockstep driver
+ok lockstep-run: host attached
+ok lockstep-run: join attached
+ok lockstep-run: join attached
+ok lockstep-run: join attached
+ok lockstep-run: host reports lockstep
+lockstep-run: core 2 frame 0
+lockstep-run: core 1 frame 0
+lockstep-run: core 0 frame 0
+lockstep-run: core 3 frame 0
+lockstep-run: core 0 frame 32
+lockstep-run: core 1 frame 32
+lockstep-run: core 3 frame 32
+lockstep-run: core 2 frame 32
+lockstep-run: core 0 frame 64
+lockstep-run: core 1 frame 64
+lockstep-run: core 2 frame 64
+lockstep-run: core 3 frame 64
+lockstep-run: core 0 frame 96
+lockstep-run: core 1 frame 96
+lockstep-run: core 2 frame 96
+lockstep-run: core 3 frame 96
+lockstep-run: core 0 frame 128
+lockstep-run: core 1 frame 128
+lockstep-run: core 2 frame 128
+lockstep-run: core 3 frame 128
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=363)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=368)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=360)
+ok lockstep-run: core advanced frames
+ok lockstep-run: core advanced frames
+ok lockstep-run: core advanced frames
+ok lockstep-run: core advanced frames
+lockstep-run: core 0 recv 494E FFFF 0000 0000 fc=220 everClean=0 (aborted)
+ok lockstep-run: core received same SIOMULTI as others
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 1 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+ok lockstep-run: core received same SIOMULTI as others
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 2 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+ok lockstep-run: core received same SIOMULTI as others
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 3 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+ok lockstep-run: core received same SIOMULTI as others
+FAIL lockstep-run: core saw a complete 4-word transfer
+ok lockstep-run: room reusable after shutdown

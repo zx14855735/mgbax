@@ -54,4 +54,8 @@ bool mgbaLockstepPaused(struct MgbaLockstepSlot* slot);
 void mgbaLockstepUserSleep(struct MgbaLockstepSlot* slot);
 void mgbaLockstepUserWake(struct MgbaLockstepSlot* slot);
 
+/* 看门狗：置 1 后 mgbaLockstepRunFrame 在 park 等待与每帧循环里立即返回，
+ * 避免测试线程被永久 park 在 cond_wait 里。仅用于测试/诊断。 */
+void mgbaLockstepSetAbort(int abort);
+
 #endif

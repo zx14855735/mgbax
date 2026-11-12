@@ -161,6 +161,15 @@ uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr);
 /* 当前已渲染帧号（gba->video.frameCounter），用于验证锁步帧循环推进。 */
 uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
 
+/* 冻结 ARM：把一段自包含的 Thumb SIO MULTI 循环写进本核 IWRAM 并跳过去执行，
+ * 关 IRQ（避免 VBlank 中断把 CPU 拽回游戏代码），让 SIO 完全由该循环驱动。
+ * 这样锁步集成测试可以绕开真实游戏 ROM 对 SIOMLT_SEND 的改写，得到确定性的
+ * 4 字 MULTI 传输。slot 决定本核发往对端的字（0x1000+slot）。仅测试使用。 */
+void mgbaMobileFreezeSioLoop(struct MgbaMobile* emu, uint32_t slot);
+
+/* 诊断：返回本核 CPU 当前 PC（gba->cpu->gprs[15]），用来确认冻结是否生效。 */
+uint32_t mgbaMobileCpuPc(struct MgbaMobile* emu);
+
 void mgbaMobileLinkClose(struct MgbaMobile* emu);
 void mgbaMobileLinkStatus(const struct MgbaMobile* emu, char* out, size_t outLen);
 

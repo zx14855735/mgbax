@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define LOCKSTEP_MAX_ROOMS 8
 #define LOCKSTEP_MAX_PLAYERS 4
@@ -160,6 +161,13 @@ struct MgbaLockstepSlot* mgbaLockstepAttach(struct MgbaLockstepRoom* room,
 	return slot;
 }
 
+/* 看门狗：置 1 后 runFrame 立即返回，避免测试线程被永久 park。 */
+static volatile int g_lockstepAbort = 0;
+
+void mgbaLockstepSetAbort(int abort) {
+	g_lockstepAbort = abort;
+}
+
 void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 	if (!slot || !core) {
 		return;
@@ -169,10 +177,36 @@ void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 	int guard = 0;
 	while (gba->video.frameCounter == startFc && guard++ < LOCKSTEP_RUN_GUARD) {
 		pthread_mutex_lock(&slot->mu);
+		int parkedMs = 0;
 		while (slot->pauseRequested) {
-			pthread_cond_wait(&slot->cv, &slot->mu);
+			if (g_lockstepAbort) {
+				pthread_mutex_unlock(&slot->mu);
+				return;
+			}
+			/* 限时等待：既能让看门狗/abort 从 park 里脱身，也能在长时间
+			 * park（正常锁步会合）时周期性打印诊断，暴露死锁所在核。 */
+			struct timespec ts;
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_nsec += 200000000;   /* 200ms */
+			if (ts.tv_nsec >= 1000000000) {
+				ts.tv_nsec -= 1000000000;
+				++ts.tv_sec;
+			}
+			int rc = pthread_cond_timedwait(&slot->cv, &slot->mu, &ts);
+			if (rc == ETIMEDOUT) {
+				parkedMs += 200;
+				if (parkedMs >= 2000) {
+					fprintf(stderr,
+					        "LOCKSTEP: slot %d PARKED >2s (abort=%d, guard=%d)\n",
+					        slot->slotId, g_lockstepAbort, guard);
+					parkedMs = 0;
+				}
+			}
 		}
 		pthread_mutex_unlock(&slot->mu);
+		if (g_lockstepAbort) {
+			return;
+		}
 		core->runLoop(core);
 	}
 }

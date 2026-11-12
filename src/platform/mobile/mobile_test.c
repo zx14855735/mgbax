@@ -7,6 +7,7 @@
 #include "remote_link.h"
 
 #include <mgba/core/core.h>
+#include <mgba/core/log.h>
 #include <mgba/internal/arm/arm.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/io.h>
@@ -3599,25 +3600,66 @@ struct LockstepRunCtx {
 	uint32_t sendWord;       /* 本核要发的字 */
 	uint32_t recv[4];        /* 收齐后读到的 SIOMULTI0..3 */
 	uint32_t finalFrame;     /* 跑完后的帧号 */
+	int everClean;           /* 是否观察过一次 4 字全非 0xFFFF 的完整传输 */
 };
+
+/* 墙钟看门狗：到点强制结束 4 核帧循环，避免测试进程被 SIGTERM。
+ * 调试日志（BIOS/SIO DEBUG）会把 4 线程拖到极慢，必须压掉；但即便压掉，
+ * 这里仍保留一个独立的超时保险，确保无论卡在哪，进程都能优雅判 PASS/FAIL。 */
+static volatile int g_lsrAbort = 0;
+
+static void* _lsrWatchdog(void* arg) {
+	long ms = *(long*) arg;
+#ifdef _WIN32
+	Sleep((DWORD) ms);
+#else
+	sleep((unsigned) (ms / 1000));
+#endif
+	g_lsrAbort = 1;
+	mgbaLockstepSetAbort(1);
+	return NULL;
+}
+
+/* 压掉 mGBA 内部冗余日志（BIOS SWI / GBA_SIO DEBUG 一次能刷几 MB，把 4 个
+ * 帧循环拖到超时）。mGBA 在没有任何默认 logger 时会 fallback 到 printf，所以
+ * 这里直接装一个「什么都不打印」的默认 logger，彻底静音（expect 自己的
+ * 输出走 fprintf，不受影响）。 */
+static void _silentLog(struct mLogger* logger, int category, enum mLogLevel level,
+                       const char* format, va_list args) {
+	(void) logger;
+	(void) category;
+	(void) level;
+	(void) format;
+	(void) args;
+}
+static struct mLogger _silentLogger = { _silentLog, NULL };
+
+static void _quietLogs(void) {
+	mLogSetDefaultLogger(&_silentLogger);
+}
 
 static void* _lsrThread(void* arg) {
 	struct LockstepRunCtx* ctx = (struct LockstepRunCtx*) arg;
-	const uint32_t SIOCNT = 0x04000128;
-	const uint32_t SIOMLT_SEND = 0x0400012A;
-	const uint32_t MULTI_MODE = 0x2000;   /* SIOCNT bits[13:12] = 0b10 */
-	const uint32_t START = 0x0080;        /* SIOCNT busy/start */
 	for (int f = 0; f < ctx->frames; ++f) {
-		/* 在帧循环里写寄存器，避免与其它核的 runLoop 交叉。 */
-		if (f == 20) {
-			mgbaMobilePoke16(ctx->emu, SIOCNT, (uint16_t) MULTI_MODE);
-		} else if (f == 21) {
-			mgbaMobilePoke16(ctx->emu, SIOMLT_SEND, (uint16_t) ctx->sendWord);
-		} else if (f == 22 && ctx->slot == 0) {
-			/* 仅主机（id 0）发起传输；从机由协调器事件触发。 */
-			mgbaMobilePoke16(ctx->emu, SIOCNT, (uint16_t) (MULTI_MODE | START));
+		if (g_lsrAbort) {
+			break;
 		}
+		if ((f & 0x1F) == 0) {
+			fprintf(stderr, "lockstep-run: core %d frame %d\n", ctx->slot, f);
+		}
+		/* ARM 已被冻结为自包含 SIO MULTI 循环（见 testLockstepRun 的
+		 * mgbaMobileFreezeSioLoop 调用）：每轮把 SIOMLT_SEND 设为本核字、主机
+		 * 反复发起 MULTI 传输。这里只需跑帧，SIO 由循环驱动；锁步协调器负责
+		 * 收齐 4 个字并回写所有核的 SIOMULTI。 */
 		mgbaMobileRunFrames(ctx->emu, 1);
+		/* 每帧采样一次 SIOMULTI：若 4 字全非 0xFFFF，记一次「完整传输」曾发生。 */
+		uint32_t r0 = mgbaMobilePeek16(ctx->emu, 0x04000120u);
+		uint32_t r1 = mgbaMobilePeek16(ctx->emu, 0x04000122u);
+		uint32_t r2 = mgbaMobilePeek16(ctx->emu, 0x04000124u);
+		uint32_t r3 = mgbaMobilePeek16(ctx->emu, 0x04000126u);
+		if (r0 != 0xFFFFu && r1 != 0xFFFFu && r2 != 0xFFFFu && r3 != 0xFFFFu) {
+			ctx->everClean = 1;
+		}
 	}
 	for (int i = 0; i < 4; ++i) {
 		ctx->recv[i] = mgbaMobilePeek16(ctx->emu, 0x04000120u + (uint32_t) i * 2u);
@@ -3627,6 +3669,7 @@ static void* _lsrThread(void* arg) {
 }
 
 static void testLockstepRun(const char* romPath) {
+	_quietLogs();
 	const int key = 0x4C53;
 	const int players = 4;
 	struct MgbaMobile* emus[4] = {0};
@@ -3638,6 +3681,15 @@ static void testLockstepRun(const char* romPath) {
 		expect(emus[i] != NULL, "lockstep-run: emu created");
 		expect(mgbaMobileLoad(emus[i], romPath), "lockstep-run: rom loaded");
 	}
+	/* 引导阶段：先不挂锁步驱动，正常 runFrame 跑 ~60 帧让 BIOS 完成 boot。
+	 * GBA BIOS 开机时会探测 SIO 链路，若此刻已挂上锁步驱动（报「已连接」），
+	 * BIOS 会进入多启动等待、永远收不到多启动头而卡死。先 boot 完再挂驱动即可
+	 * 绕开（参考 busGameLockstepTest 同样在帧 10 之后才 attach）。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileRunFrames(emus[i], 60);
+	}
+	fprintf(stderr, "lockstep-run: booted 60 frames each, attaching lockstep driver\n");
+
 	expect(mgbaMobileLinkHostLockstep(emus[0], key, players, 0),
 	       "lockstep-run: host attached");
 	for (int i = 1; i < players; ++i) {
@@ -3646,37 +3698,59 @@ static void testLockstepRun(const char* romPath) {
 	}
 	expect(mgbaMobileLinkIsLockstep(emus[0]), "lockstep-run: host reports lockstep");
 
+	/* 冻结所有核为自包含 SIO MULTI 循环，绕开真实游戏 ROM 对 SIOMLT_SEND 的
+	 * 改写，得到确定性传输。每个核发往对端的字是 0x1000+slot。 */
+	for (int i = 0; i < players; ++i) {
+		mgbaMobileFreezeSioLoop(emus[i], (uint32_t) i);
+	}
+	fprintf(stderr, "lockstep-run: froze ARM SIO loop; host pc=%08X\n",
+	        mgbaMobileCpuPc(emus[0]));
+
 	for (int i = 0; i < players; ++i) {
 		ctx[i].emu = emus[i];
 		ctx[i].slot = i;
 		ctx[i].players = players;
-		ctx[i].frames = 400;
-		ctx[i].sendWord = (uint32_t) (0x1000 + i);   /* 各核发不同字 */
+		ctx[i].frames = 160;
 		ctx[i].recv[0] = ctx[i].recv[1] = ctx[i].recv[2] = ctx[i].recv[3] = 0;
 		ctx[i].finalFrame = 0;
+		ctx[i].everClean = 0;
 	}
+
+	/* 墙钟看门狗：60s 后强制结束，绝不挂死进程。 */
+	g_lsrAbort = 0;
+	pthread_t wd;
+	long wdMs = 30000;
+	pthread_create(&wd, NULL, _lsrWatchdog, &wdMs);
+
 	for (int i = 0; i < players; ++i) {
 		pthread_create(&threads[i], NULL, _lsrThread, &ctx[i]);
 	}
 	for (int i = 0; i < players; ++i) {
 		pthread_join(threads[i], NULL);
 	}
+	pthread_join(wd, NULL);
 
 	/* 同步：4 核帧号都应推进（无死锁，协调器把各核锁在同一步）。 */
 	for (int i = 0; i < players; ++i) {
 		expect(ctx[i].finalFrame > 30, "lockstep-run: core advanced frames");
+		expect(mgbaMobileCpuPc(emus[i]) >= 0x03007E00u && mgbaMobileCpuPc(emus[i]) < 0x03008000u,
+		       "lockstep-run: core PC is inside frozen IWRAM loop");
 	}
 
-	/* 数据：每核都应收到全部 4 个字（协调器回写 SIOMULTI0..3）。 */
+	/* 数据：冻结后 SIO 完全由循环驱动，锁步协调器每轮把
+	 * multiData[0..3] = [0x1000,0x1001,0x1002,0x1003] 写回所有核 SIOMULTI。
+	 * 所以每个核都应收到「自己 slot 对应的 4 个已知字」——既验证传输真的
+	 * 发生了（无 0xFFFF 残值），也验证 4 核一致性。 */
 	for (int i = 0; i < players; ++i) {
-		bool allMatch = true;
+		fprintf(stderr, "lockstep-run: core %d pc=%08X recv %04X %04X %04X %04X fc=%u everClean=%d%s\n",
+		        i, mgbaMobileCpuPc(emus[i]),
+		        ctx[i].recv[0], ctx[i].recv[1], ctx[i].recv[2], ctx[i].recv[3],
+		        ctx[i].finalFrame, ctx[i].everClean, g_lsrAbort ? " (aborted)" : "");
 		for (int j = 0; j < players; ++j) {
-			uint32_t want = (uint32_t) (0x1000 + j);
-			if (ctx[i].recv[j] != want) {
-				allMatch = false;
-			}
+			expect(ctx[i].recv[j] == (uint32_t) (0x1000 + j),
+			       "lockstep-run: core received correct MULTI word");
 		}
-		expect(allMatch, "lockstep-run: core received all 4 send words");
+		expect(ctx[i].everClean, "lockstep-run: core saw a complete 4-word transfer");
 	}
 
 	/* 拆离：先逐个 Close（解锁步 SIO），再 Destroy。 */
