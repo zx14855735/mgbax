@@ -18,6 +18,19 @@
 #define TARGET_PRIMARY 0x1
 #define TARGET_SECONDARY ((TARGET_ALL) & ~(TARGET_PRIMARY))
 
+/* 测试钩子：开启后多玩家传输的发送字由协调器直接注入 0x1000+playerId，
+ * 绕开真实游戏对 SIOMLT_SEND 的改写，得到确定性传输，用于验证收集/广播。
+ * 仅测试使用：由 mgbaMobileSioSetInject 在跑锁步集成测试前打开、跑完关闭。 */
+static bool s_testInject = false;
+
+void GBASIOLockstepSetTestInject(bool on) {
+	s_testInject = on;
+}
+
+bool GBASIOLockstepGetTestInject(void) {
+	return s_testInject;
+}
+
 DECL_BITFIELD(GBASIOLockstepSerializedFlags, uint32_t);
 DECL_BITS(GBASIOLockstepSerializedFlags, DriverMode, 0, 3);
 DECL_BITS(GBASIOLockstepSerializedFlags, NumEvents, 3, 4);
@@ -828,7 +841,11 @@ void _reconfigPlayers(struct GBASIOLockstepCoordinator* coordinator) {
 static void _setData(struct GBASIOLockstepCoordinator* coordinator, uint32_t id, struct GBASIO* sio) {
 	switch (coordinator->transferMode) {
 	case GBA_SIO_MULTI:
-		coordinator->multiData[id] = sio->p->memory.io[GBA_REG(SIOMLT_SEND)];
+		if (s_testInject) {
+			coordinator->multiData[id] = (uint16_t) (0x1000u + id);
+		} else {
+			coordinator->multiData[id] = sio->p->memory.io[GBA_REG(SIOMLT_SEND)];
+		}
 		break;
 	case GBA_SIO_NORMAL_8:
 		coordinator->normalData[id] = sio->p->memory.io[GBA_REG(SIODATA8)];

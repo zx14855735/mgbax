@@ -22,6 +22,7 @@
 
 #include "link_net.h"
 #include "link_lockstep.h"
+#include <mgba/internal/gba/sio/lockstep.h>
 
 #include <ctype.h>
 #include <fcntl.h>
@@ -4668,68 +4669,11 @@ uint32_t mgbaMobileCpuPc(struct MgbaMobile* emu) {
 	return (uint32_t) gba->cpu->gprs[15];
 }
 
-/* 冻结 ARM：把一段自包含 Thumb SIO MULTI 循环写进本核 IWRAM 并跳过去执行。
- * 关 IRQ（cpsr.i=1）避免 VBlank 中断把 CPU 拽回游戏代码，从而让 SIO 完全由
- * 该循环驱动——绕开真实游戏 ROM 对 SIOMLT_SEND 的改写，得到确定性的 4 字
- * MULTI 传输。详见 mobile_test.c 的 testLockstepRun 说明。仅测试使用。
- *
- * 手写 Thumb 半字（IWRAM 0x03007E00 起，4 字节对齐）：
- *   0: LDR  r0,[pc,#20]  r0 = SIOMLT_SEND (0x0400012A)
- *   1: NOP               对齐填充
- *   2: LDR  r1,[pc,#20]  r1 = SIOCNT    (0x04000128)
- *   3: NOP
- *   4: LDR  r2,[pc,#20]  r2 = word (0x1000+slot，写在 0x03007E20)
- *   5: NOP
- *   6: loop: STRH r2,[r0,#0]   SIOMLT_SEND = word
- *   7:       MOV  r3,#0x80
- *   8:       LSL  r3,r3,#6      r3 = 0x2000 (MULTI)
- *   9:       ADD  r3,#0x80      r3 = 0x2080 (MULTI|START)
- *  10:       STRH r3,[r1,#0]    SIOCNT = MULTI|START（仅主机真正发起；从机 START
- *                                走 sio.c 的 TODO 分支，无副作用，见 GBASIOWriteSIOCNT）
- *  11:       B    loop
- *  literals: 0x0400012A, 0x04000128, (0x1000+slot 写在 0x03007E20)
- * 循环幂等：每轮把 SIOMLT_SEND 设为本核发往对端的字，主机反复发起 MULTI 传输，
- * 锁步协调器每轮把 multiData[0..3]=[0x1000,0x1001,0x1002,0x1003] 写回所有核
- * 的 SIOMULTI。 */
-void mgbaMobileFreezeSioLoop(struct MgbaMobile* emu, uint32_t slot) {
-	if (!emu || !emu->core) {
-		return;
-	}
-	struct GBA* gba = (struct GBA*) emu->core->board;
-	struct ARMCore* cpu = gba->cpu;
-	if (!cpu) {
-		return;
-	}
-	static const uint16_t kCode[] = {
-		0x4805, 0xBF00, 0x4905, 0xBF00, 0x4A05, 0xBF00,
-		0xE7FE, 0x2380, 0x019B, 0x3380, 0x8320, 0xE7F9,
-		0x012A, 0x0400, 0x0128, 0x0400,  /* literals: SIOMLT_SEND, SIOCNT */
-	};
-	uint32_t base = 0x03007E00u;
-	for (size_t i = 0; i < sizeof(kCode) / sizeof(kCode[0]); ++i) {
-		int cc = 0;
-		GBAStore16(cpu, base + (uint32_t) i * 2u, (int16_t) kCode[i], &cc);
-	}
-	/* 本核发往对端的字（0x1000+slot） */
-	int cc = 0;
-	uint16_t word = (uint16_t) (0x1000u + (slot & 0xFu));
-	GBAStore16(cpu, 0x03007E20u, (int16_t) word, &cc);
-	GBAStore16(cpu, 0x03007E22u, (int16_t) 0, &cc);
-
-	/* 跳过去执行：复制 ThumbWritePC 的语义（setActiveRegion + 预取双字 + PC）。 */
-	uint32_t a = base;
-	cpu->memory.setActiveRegion(cpu, a);
-	cpu->prefetch[0] = GBAView16(cpu, a);       /* 指令 @a */
-	cpu->prefetch[1] = GBAView16(cpu, a + 2u);   /* 指令 @a+2 */
-	cpu->gprs[15] = (int32_t) (a + 2u);
-	cpu->executionMode = 1;   /* MODE_THUMB */
-	cpu->cpsr.t = 1;   /* Thumb */
-	cpu->cpsr.i = 1;   /* 关 IRQ：VBlank 不会把 CPU 拽回游戏代码 */
-	cpu->cpsr.f = 1;   /* 关 FIQ */
-	fprintf(stderr, "FREEZE dbg: wrote@0=%04X readback=%04X pf0=%04X pf1=%04X pc=%08X exec=%d cpsr=%08X lit@18=%04X lit@20=%04X\n",
-	        kCode[0], GBAView16(cpu, a), (uint16_t) cpu->prefetch[0], (uint16_t) cpu->prefetch[1],
-	        (uint32_t) cpu->gprs[15], cpu->executionMode, cpu->cpsr.packed,
-	        GBAView16(cpu, 0x03007E18u), GBAView16(cpu, 0x03007E20u));
+/* 测试钩子：开启后锁步多玩家传输直接注入 0x1000+playerId 作为发送字，
+ * 绕开真实游戏对 SIOMLT_SEND 的改写，得到确定性传输用于验证收集/广播。
+ * 仅测试使用，必须在跑锁步集成测试前打开、跑完关闭。 */
+void mgbaMobileSioSetInject(bool inject) {
+	GBASIOLockstepSetTestInject(inject);
 }
 
 void mgbaMobileLinkClose(struct MgbaMobile* emu) {

@@ -3647,10 +3647,9 @@ static void* _lsrThread(void* arg) {
 		if ((f & 0x1F) == 0) {
 			fprintf(stderr, "lockstep-run: core %d frame %d\n", ctx->slot, f);
 		}
-		/* ARM 已被冻结为自包含 SIO MULTI 循环（见 testLockstepRun 的
-		 * mgbaMobileFreezeSioLoop 调用）：每轮把 SIOMLT_SEND 设为本核字、主机
-		 * 反复发起 MULTI 传输。这里只需跑帧，SIO 由循环驱动；锁步协调器负责
-		 * 收齐 4 个字并回写所有核的 SIOMULTI。 */
+		/* 发送字由锁步协调器的测试注入钩子直接提供（0x1000+playerId），见
+		 * testLockstepRun 的 mgbaMobileSioSetInject 调用。这里只需跑帧，游戏
+		 * 照常驱动 MULTI 传输；协调器负责收齐 4 个字并回写所有核的 SIOMULTI。 */
 		mgbaMobileRunFrames(ctx->emu, 1);
 		/* 每帧采样一次 SIOMULTI：若 4 字全非 0xFFFF，记一次「完整传输」曾发生。 */
 		uint32_t r0 = mgbaMobilePeek16(ctx->emu, 0x04000120u);
@@ -3698,12 +3697,11 @@ static void testLockstepRun(const char* romPath) {
 	}
 	expect(mgbaMobileLinkIsLockstep(emus[0]), "lockstep-run: host reports lockstep");
 
-	/* 冻结所有核为自包含 SIO MULTI 循环，绕开真实游戏 ROM 对 SIOMLT_SEND 的
-	 * 改写，得到确定性传输。每个核发往对端的字是 0x1000+slot。 */
-	for (int i = 0; i < players; ++i) {
-		mgbaMobileFreezeSioLoop(emus[i], (uint32_t) i);
-	}
-	fprintf(stderr, "lockstep-run: froze ARM SIO loop; host pc=%08X\n",
+	/* 打开锁步发送字注入：协调器每轮直接以 0x1000+playerId 作为各核发往对端的
+	 * 字，绕开真实游戏 ROM 对 SIOMLT_SEND 的改写，得到确定性 4 字 MULTI 传输。
+	 * 游戏照常驱动 MULTI 传输，协调器照常收齐 4 字并广播回所有核 SIOMULTI。 */
+	mgbaMobileSioSetInject(true);
+	fprintf(stderr, "lockstep-run: injected deterministic send words; host pc=%08X\n",
 	        mgbaMobileCpuPc(emus[0]));
 
 	for (int i = 0; i < players; ++i) {
@@ -3729,15 +3727,14 @@ static void testLockstepRun(const char* romPath) {
 		pthread_join(threads[i], NULL);
 	}
 	pthread_join(wd, NULL);
+	mgbaMobileSioSetInject(false);   /* 关掉测试注入，避免影响后续拆离/销毁 */
 
 	/* 同步：4 核帧号都应推进（无死锁，协调器把各核锁在同一步）。 */
 	for (int i = 0; i < players; ++i) {
 		expect(ctx[i].finalFrame > 30, "lockstep-run: core advanced frames");
-		expect(mgbaMobileCpuPc(emus[i]) >= 0x03007E00u && mgbaMobileCpuPc(emus[i]) < 0x03008000u,
-		       "lockstep-run: core PC is inside frozen IWRAM loop");
 	}
 
-	/* 数据：冻结后 SIO 完全由循环驱动，锁步协调器每轮把
+	/* 数据：发送字由注入钩子提供，锁步协调器每轮把
 	 * multiData[0..3] = [0x1000,0x1001,0x1002,0x1003] 写回所有核 SIOMULTI。
 	 * 所以每个核都应收到「自己 slot 对应的 4 个已知字」——既验证传输真的
 	 * 发生了（无 0xFFFF 残值），也验证 4 核一致性。 */

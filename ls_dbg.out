@@ -70,3 +70,45 @@ LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
 LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
 LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
 LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 2 PARKED >2s (abort=0, guard=13234)
+LOCKSTEP: slot 1 PARKED >2s (abort=0, guard=13068)
+LOCKSTEP: slot 3 PARKED >2s (abort=0, guard=13069)
+ok lockstep-run: core advanced frames
+FAIL lockstep-run: core PC is inside frozen IWRAM loop
+ok lockstep-run: core advanced frames
+FAIL lockstep-run: core PC is inside frozen IWRAM loop
+ok lockstep-run: core advanced frames
+FAIL lockstep-run: core PC is inside frozen IWRAM loop
+ok lockstep-run: core advanced frames
+FAIL lockstep-run: core PC is inside frozen IWRAM loop
+lockstep-run: core 0 pc=00000394 recv 494E FFFF 0000 0000 fc=220 everClean=0 (aborted)
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 1 pc=00000394 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 2 pc=000003D4 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core saw a complete 4-word transfer
+lockstep-run: core 3 pc=00000394 recv 494E FFFF 0000 0000 fc=219 everClean=0 (aborted)
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core received correct MULTI word
+FAIL lockstep-run: core saw a complete 4-word transfer
+ok lockstep-run: room reusable after shutdown
