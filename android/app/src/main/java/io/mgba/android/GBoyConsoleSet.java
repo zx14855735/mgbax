@@ -365,9 +365,7 @@ public final class GBoyConsoleSet {
         File states = this.stateDir;
         int slot = localSlot;
         int count = players;
-        boolean lockstep = useLockstep;
         stop();
-        useLockstep = lockstep;
         if (!start(primary, net)) {
             return false;
         }
