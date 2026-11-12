@@ -1516,13 +1516,13 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 			px = (int16_t) GBAView16(g->cpu, sb1 + 0u);
 			py = (int16_t) GBAView16(g->cpu, sb1 + 2u);
 		}
-		MOBILE_LOGI("BUSGAME f=%u idx=%d pc=%d st=%d var8004=%d lt=%04X pos=%d,%d cb2=%08X%s",
+		MOBILE_LOGI("BUSGAME f=%u idx=%d pc=%d st=%d var8004=%d lt=%04X pos=%d,%d mm=%d cb2=%08X%s",
 		            f, idx,
 		            (int) GBAView8(g->cpu, 0x03004A39u),
 		            (int) GBAView8(g->cpu, 0x020219D0u),
 		            (int) GBAView16(g->cpu, 0x0202196Cu),
 		            (unsigned) GBAView16(g->cpu, 0x02027B82u),
-		            px, py, cb2,
+		            px, py, emu->busGameMenuMax, cb2,
 		            cb2 == 0x0809AFCDu ? " BATTLE=YES" : "");
 	}
 	return keys;
