@@ -21,6 +21,9 @@
 #define LOCKSTEP_MAX_PLAYERS 4
 /* 一帧内允许的 runLoop 小步上限：防止某核被永久 park 时把线程卡死。 */
 #define LOCKSTEP_RUN_GUARD 500000
+/** park 超过这个时长且本核不在 MULTI 模式时自行解除 park：对方在做连机、
+ *  本核还停在菜单/野外时，协调器不会再有回合来唤醒它（见 RunFrame 注释）。 */
+#define LOCKSTEP_PARK_IDLE_MS 600
 
 struct MgbaLockstepRoom {
 	int key;
@@ -197,10 +200,22 @@ void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 			int rc = pthread_cond_timedwait(&slot->cv, &slot->mu, &ts);
 			if (rc == ETIMEDOUT) {
 				parkedMs += 200;
+				/* 自愈：本核不在 MULTI 模式时不该被卷进锁步回合。
+				 * 协调器每个回合结束只会把「非 runner」park 掉，等主核
+				 * 下一次 MULTI 传输才唤醒；若对方正在连机、本核还停在
+				 * 菜单/野外（不做 MULTI），就再也没有下一个回合来唤醒
+				 * 它——核永久 park、按键全丢（实测镜像核 32 秒只跑 1 帧）。
+				 * 这里按 SIOCNT 的 mode 位判断：不是 MULTI 就自行解除
+				 * park，让本核按自己的游戏节奏继续跑。 */
+				if (parkedMs >= LOCKSTEP_PARK_IDLE_MS
+				        && (gba->sio.siocnt & 0x3000) != 0x2000) {
+					slot->pauseRequested = false;
+					break;
+				}
 				if (parkedMs >= 2000) {
 					fprintf(stderr,
-					        "LOCKSTEP: slot %d PARKED >2s (abort=%d, guard=%d)\n",
-					        slot->slotId, g_lockstepAbort, guard);
+					        "LOCKSTEP: slot %d PARKED >2s (abort=%d, guard=%d, siocnt=%04X)\n",
+					        slot->slotId, g_lockstepAbort, guard, gba->sio.siocnt);
 					parkedMs = 0;
 				}
 			}
