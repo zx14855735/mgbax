@@ -109,23 +109,17 @@ jobs:
           sleep 45
           if ! pgrep -f 'mGBAx.app' > /dev/null; then
             echo "::error::APP DIED during lockstep check"
-            CRASH=$(ls -t ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
-            if [ -n "$CRASH" ]; then
-              echo "===== sim crash report: $CRASH ====="
-              grep -E 'Exception Type|Termination|Crashed|Thread [0-9]+ Crashed|GBoyConsoleSet|EmulatorView|mgba' "$CRASH" | head -40 || head -60 "$CRASH"
-              cp "$CRASH" "$GITHUB_WORKSPACE/mgbax-crash.log" 2>/dev/null || cp "$CRASH" mgbax-crash.log
-            else
-              echo "no sim DiagnosticReports found"
-            fi
           fi
+          # 先落盘再断言：无论断言是否失败，lockstep.log 都进产物供诊断。
+          cp lockstep.log "$GITHUB_WORKSPACE/lockstep-runtime.log" 2>/dev/null || cp lockstep.log lockstep-runtime.log
           echo "===== GBOY_RT markers ====="
-          grep 'GBOY_RT' lockstep.log | tail -20 || true
+          grep 'GBOY_RT' lockstep.log | tail -30 || true
+          echo "===== assertions ====="
           grep -q 'GBOY_RT lockstep started players=4' lockstep.log
           grep -q 'GBOY_RT mirror idx=1 frames=600 ok' lockstep.log
           grep -q 'GBOY_RT mirror idx=2 frames=600 ok' lockstep.log
           grep -q 'GBOY_RT mirror idx=3 frames=600 ok' lockstep.log
           echo "LOCKSTEP RUNTIME OK (4 mirrors advanced 600+ frames under frame clock)"
-          cp lockstep.log "$GITHUB_WORKSPACE/lockstep-runtime.log" 2>/dev/null || cp lockstep.log lockstep-runtime.log
 
       - name: Upload lockstep runtime log
         if: always()
