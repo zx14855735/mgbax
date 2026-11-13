@@ -1,0 +1,23 @@
+﻿2026-11-13T18:15:57.2733560Z ##[group]Run actions/upload-artifact@v4
+2026-11-13T18:15:57.2733840Z with:
+2026-11-13T18:15:57.2733970Z   name: build-log
+2026-11-13T18:15:57.2734220Z   path: build.log
+2026-11-13T18:15:57.2734410Z   if-no-files-found: ignore
+2026-11-13T18:15:57.2734700Z   compression-level: 6
+2026-11-13T18:15:57.2734960Z   overwrite: false
+2026-11-13T18:15:57.2735160Z   include-hidden-files: false
+2026-11-13T18:15:57.2735450Z ##[endgroup]
+2026-11-13T18:15:57.8403980Z (node:5207) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-13T18:15:57.8461780Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-13T18:15:57.8488300Z With the provided path, there will be 1 file uploaded
+2026-11-13T18:15:57.8489920Z Artifact name is valid!
+2026-11-13T18:15:57.8490800Z Root directory input is valid!
+2026-11-13T18:15:58.0832140Z Beginning upload of artifact content to blob storage
+2026-11-13T18:15:58.1113310Z (node:5207) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-13T18:15:58.1844990Z Uploaded bytes 22195
+2026-11-13T18:15:58.2022920Z Finished uploading artifact content to blob storage!
+2026-11-13T18:15:58.2023620Z SHA256 digest of uploaded artifact zip is fa14524f8e386b1207410c9d9659bea742b0958bf085d5978adaef8742bb2158
+2026-11-13T18:15:58.2024160Z Finalizing artifact upload
+2026-11-13T18:15:58.5278690Z Artifact build-log.zip successfully finalized. Artifact ID 14065760725
+2026-11-13T18:15:58.5279270Z Artifact build-log has been successfully uploaded! Final size is 22195 bytes. Artifact ID is 14065760725
+2026-11-13T18:15:58.5286590Z Artifact download URL: https://github.com/zx14855735/mgbax/actions/runs/43480722942/artifacts/14065760725

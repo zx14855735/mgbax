@@ -1716,12 +1716,25 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	 * 对方的进度，一旦某一方在菜单/连机里多走一步，两核就再也不会回到同一
 	 * 子状态（实测 pc 恒 0）。官方客户端用 case 6 周期纠偏，这里照做。 */
 	qint64 lastStateSync = 0;
+	qint64 lastStatePoll = 0;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
-		if (now - lastStateSync >= 3000) {
-			lastStateSync = now;
-			sendStateSync([link](const QByteArray& frame) { link->send(frame); });
+		/* 状态补发走「按需触发」而不是定时：整份存档几百 KB，经大厅 WS 隧道
+		 * 传一次就会把本循环拖到 0.6fps（实测），周期发不可行。测试脚本在
+		 * MGBAX_SCRIPT_DIR 下放 sync_state 文件即触发一次，发完删掉。 */
+		if (now - lastStatePoll >= 250) {
+			lastStatePoll = now;
+			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
+			if (!dir.isEmpty()) {
+				QFile trigger(dir + QStringLiteral("/sync_state"));
+				if (trigger.exists()) {
+					trigger.remove();
+					if (sendStateSync([link](const QByteArray& frame) { link->send(frame); })) {
+						GbCloud::debugLog(QStringLiteral("[gboy] state sync sent"));
+					}
+				}
+			}
 		}
 		if (now - lastTick >= 16) {
 			lastTick = now;
