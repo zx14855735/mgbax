@@ -530,7 +530,7 @@ public final class GBoyCloudLink {
         send(sig, settingsJson(token, room.roomId), 1500);
         // 4) 再问一次：这时服务器会连同中继节点一起返回
         send(sig, createJson(token), 2500);
-        waitForRoom(sig, room, null, ROOM_WAIT_MS);
+        waitForRoom(sig, room, null, ROOM_WAIT_MS, true);
         if (room.nodeAddress == null || room.nodePort <= 0) {
             throw new IOException("服务器没有返回中继节点");
         }
@@ -2009,6 +2009,17 @@ public final class GBoyCloudLink {
      * {@code player_joined} pushes.
      */
     private void waitForRoom(GbCloud.Session sig, Room room, String roomId, long timeoutMs) throws IOException {
+        waitForRoom(sig, room, roomId, timeoutMs, false);
+    }
+
+    /**
+     * @param nodeRequired 房主建房最后一步必须拿到中继节点：此时房间里可能还飘着
+     *     上一个（已经死掉的）客户端的隧道 hello 回显，如果照「见到对端 hello 就
+     *     提前返回」的老逻辑收工，nodeAddress 会是空的，接着就抛
+     *     「服务器没有返回中继节点」——实测就是这么翻车的。
+     */
+    private void waitForRoom(GbCloud.Session sig, Room room, String roomId, long timeoutMs,
+                            boolean nodeRequired) throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline && !closed) {
             String text = sig.recv(1200);
@@ -2110,8 +2121,9 @@ public final class GBoyCloudLink {
             if (room.nodeAddress != null && room.nodePort > 0) {
                 return;
             }
-            // 对方已经在服务器隧道上等着了，节点不会再来，直接进入数据阶段
-            if (tunnelPeerSeen) {
+            // 对方已经在服务器隧道上等着了，节点不会再来，直接进入数据阶段。
+            // 房主取节点这一步例外：残留的对端 hello 不能当成「节点不会再来」。
+            if (tunnelPeerSeen && !nodeRequired) {
                 return;
             }
         }
