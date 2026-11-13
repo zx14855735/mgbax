@@ -96,8 +96,10 @@ jobs:
           rom[0:4] = bytes([0xFE, 0xFF, 0xFF, 0xEA])   # ARM `b .`
           rom[4:4+len(logo)] = logo
           rom[0xA0:0xA0+12] = b'LOCKSTEPTEST'
+          rom[0xBC] = 0
+          rom[0xBD] = (-(sum(rom[0xA0:0xBD])) - 0x19) & 0xFF   # 头部校验和
           open('lockstep.gba', 'wb').write(rom)
-          print('lockstep.gba bytes:', len(rom))
+          print('lockstep.gba bytes:', len(rom), 'checksum:', hex(rom[0xBD]))
           PY
           CONTAINER=$(xcrun simctl get_app_container "$UDID" io.mgba.ios data)
           cp lockstep.gba "$CONTAINER/Documents/lockstep.gba"
