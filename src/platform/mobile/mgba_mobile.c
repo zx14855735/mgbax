@@ -2908,6 +2908,16 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	 * 时一律保持原跨网窗口，避免第一轮公网 RTT 被误判成超时。 */
 	uint32_t rttUs = netLinkRttUs(emu->link);
 	bool loopback = rttUs != 0u && rttUs < 5000u;
+	/* 本机环回保持 12ms 快窗。
+	 *
+	 * 曾按实测 RTT 尖峰（均值 1.678ms / 尖峰 35.085ms）把窗口抬到
+	 * 40~80ms 以避免 ahead 恢复路径被误触发，结果每轮等待付出的墙钟
+	 * 时间过多：握手只到 st=2 pc=0、帧率掉到 0.26~5fps，比 12ms 版本
+	 * 更差。12ms 版本能稳定到 st=4 pc=2 并走进卡片交换。
+	 *
+	 * 误超时本身已由主机路径的 `sioIndex = got` 兜住（见
+	 * completeMultiTransfer 前的轮次错位分支），不需要靠放大窗口规避。 */
+	int shortWaitMs = 12;
 	if (netLinkBusActive(emu->link)) {
 		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
 		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
@@ -2928,10 +2938,10 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
 		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
 		 * 覆盖实测 150ms 均值 / 441ms 尖峰的隧道 RTT。 */
-		return loopback ? 12 : 1200;
+		return loopback ? shortWaitMs : 1200;
 	}
 	if (netLinkPushAgeMs(emu->link) < 800) {
-		return loopback ? 12 : 900;  /* 对端仍在活跃交换，这一轮只是晚到 */
+		return loopback ? shortWaitMs : 900;  /* 对端仍在活跃交换，这一轮只是晚到 */
 	}
 	/* 与 Qt 侧同一条修正：链路刚建立时两端都还没推过字，pushSeenAt=0
 	 * 会让上面两条全部落空，于是最需要等一个公网 RTT 的第一轮反而零等待，
@@ -2939,7 +2949,7 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	 * 前 8 轮、头 3 次重试给 900ms 预算；之后恢复 0，避免对端根本没进
 	 * 联机时把模拟线程按死（11-08 的假死）。 */
 	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
-		return loopback ? 12 : 900;
+		return loopback ? shortWaitMs : 900;
 	}
 	/* 与 Qt 侧同一条修正：隧道抖动会让「对端 800ms 内推过字」间歇失效，
 	 * 零等待 + 100 cycles 重试间隔会在极短时间内耗尽 40 次重试并按空槽
@@ -2947,7 +2957,7 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	 * 发起了本轮 MULTI 且链路还连着时，给一个跟随实测 RTT 的最小预算。 */
 	if (emu->sioWaiting) {
 		if (loopback) {
-			return 12;
+			return shortWaitMs;
 		}
 		uint32_t ms = rttUs / 1000u * 3u;
 		if (ms < 300u) {
@@ -3105,6 +3115,17 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 				MOBILE_LOGI("SIO 轮次错位 me=%d want=%u got=%u n=%u",
 				            0, (unsigned) emu->sioIndex, (unsigned) got, emu->sioMisorder);
 			}
+			/* 【主机必须对齐到实际收到的轮次号】
+			 *
+			 * takePeerWord 等待窗耗尽且队首是后续轮次时，会把队首交出来
+			 * 并记一次 misorder。这里若只记日志、不更新 sioIndex，主机
+			 * 就把「轮次 got 的数据片段」当作「本轮 want 的数据」喂给
+			 * 游戏，而下一轮仍从 want+1 推字：训练家卡片块是跨多轮的
+			 * 连续数据，整体错一格后校验和必然失败（LINK_ERR ck=1，
+			 * 游戏报「通信错误……请检查所有的连接」）。
+			 * 从机路径早就有 emu->sioIndex = got 的跟随逻辑，主机路径
+			 * 缺这一句。只在错位时生效，正常轮次行为不变。 */
+			emu->sioIndex = got;
 		}
 		emu->sioWaiting = false;
 		emu->sioHasRemote = true;
