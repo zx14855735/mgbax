@@ -52,6 +52,13 @@ public:
 	 *  把这份掩码并进去，否则对端永远只收到「按键=0」。 */
 	int mask() const { return m_maskApplied ? m_mask : 0; }
 
+	/** 进程级共享的脚本按键掩码。
+	 *
+	 *  官方镜像联机会另起镜像核/窗口，喂给 CloudLink 的那个实例未必是
+	 *  持有本对象的那个（实测 keyFeed 收到 8、线上帧里还是 0）。发送端
+	 *  统一 OR 上这个静态值，跟对象的归属无关。 */
+	static int globalMask();
+
 private slots:
 	void poll();
 

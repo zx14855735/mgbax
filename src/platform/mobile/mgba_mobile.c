@@ -2154,6 +2154,10 @@ static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals
 #define PEEK_LINK_ERROCC 0x03002A30u
 #define PEEK_LINK_RECVPL 0x03002AC1u
 #define PEEK_LINK_BLOCKS 0x03002A40u
+/* gSaveBlock1Ptr：玩家坐标 x/y（+0/+2）和所在地图 group/num（+4/+5）。
+ * 镜像核没有画面输出，只有这三个量能判断它和可见核是不是在同一张图的
+ * 同一格上——联机时两边走散就是从这里看出来的。 */
+#define PEEK_SAVEBLOCK1  0x03004964u
 /* struct Link 内部偏移 */
 #define PEEK_LK_ISMASTER 0x00
 #define PEEK_LK_STATE    0x01
@@ -3870,9 +3874,15 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (int) g->sio.mode, g->sio.siocnt, g->sio.rcnt,
 		            g->sio.driver != NULL, emu->sioWaiting);
 #if MGBA_LINK_PEEK
-		MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
+			{
+				uint32_t sb1 = (uint32_t) GBAView32(g->cpu, PEEK_SAVEBLOCK1);
+				int posX = sb1 ? (int) GBAView16(g->cpu, sb1 + 0) : -1;
+				int posY = sb1 ? (int) GBAView16(g->cpu, sb1 + 2) : -1;
+				int mapG = sb1 ? (int) GBAView8(g->cpu, sb1 + 4) : -1;
+				int mapN = sb1 ? (int) GBAView8(g->cpu, sb1 + 5) : -1;
+				MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
 		            "link[m=%d st=%d id=%d pc=%d sic=%d hs=%d fF=%d hw=%d ck=%d lag=%d "
-		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u]",
+		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u pos=%d,%d map=%d.%d]",
 		            stNow,
 		            (int) GBAView8(g->cpu, PEEK_LINK_STATE),
 		            (int) GBAView8(g->cpu, PEEK_LINK_OPEN),
@@ -3896,7 +3906,9 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_POS),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_CNT),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_POS),
-		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT));
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT),
+		            posX, posY, mapG, mapN);
+			}
 #endif
 		}
 		/* 命令队列探针：每 30 帧打一行，看游戏自己有没有在入队/出队。

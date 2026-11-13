@@ -9,6 +9,8 @@
 #include "GbCloud.h"
 #include "GBoyFrames.h"
 #include "GBoyLinkSession.h"
+
+#include "ScriptedControl.h"
 #include "GBoyMirror.h"
 #include "DirectLink.h"
 #include "KcpChannel.h"
@@ -1715,8 +1717,24 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
 		if (now - lastTick >= 16) {
 			lastTick = now;
-			m_gboySession->onLocalFrame(++m_officialFrame,
-			                            m_localKeys.load(std::memory_order_relaxed));
+			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
+			 * addKey/clearKey，不进本对象的 m_localKeys（GUI 的 keyFeed 喂的
+			 * 可能是另一个实例）。这里并进进程级掩码，保证线上帧带着真实按键。 */
+			int keys = m_localKeys.load(std::memory_order_relaxed)
+			         | ScriptedControl::globalMask();
+			{
+				static qint64 lastDiagKeys = 0;
+				if (now - lastDiagKeys >= 500) {
+					lastDiagKeys = now;
+					QFile f(QStringLiteral("D:/mgba-android-version/.zcode-tmp/cloud2p/serve_keys.log"));
+					if (f.open(QIODevice::Append | QIODevice::Text)) {
+						f.write(QStringLiteral("frame=%1 local=%2 scripted=%3 keys=%4\n")
+						            .arg(m_officialFrame).arg(m_localKeys.load())
+						            .arg(ScriptedControl::globalMask()).arg(keys).toUtf8());
+					}
+				}
+			}
+			m_gboySession->onLocalFrame(++m_officialFrame, keys);
 		}
 		if (now - lastFps >= 1000) {
 			lastFps = now;
