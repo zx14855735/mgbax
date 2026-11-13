@@ -109,13 +109,13 @@ jobs:
           sleep 45
           if ! pgrep -f 'mGBAx.app' > /dev/null; then
             echo "::error::APP DIED during lockstep check"
-            CRASH=$(ls -t ~/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
+            CRASH=$(ls -t ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
             if [ -n "$CRASH" ]; then
-              echo "===== crash report: $CRASH ====="
+              echo "===== sim crash report: $CRASH ====="
               grep -E 'Exception Type|Termination|Crashed|Thread [0-9]+ Crashed|GBoyConsoleSet|EmulatorView|mgba' "$CRASH" | head -40 || head -60 "$CRASH"
               cp "$CRASH" "$GITHUB_WORKSPACE/mgbax-crash.log" 2>/dev/null || cp "$CRASH" mgbax-crash.log
             else
-              echo "no DiagnosticReports found"
+              echo "no sim DiagnosticReports found"
             fi
           fi
           echo "===== GBOY_RT markers ====="
