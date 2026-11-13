@@ -583,7 +583,14 @@ public final class GBoyConsoleSet {
             synchronized (lock) {
                 done = mirrorFrames[index];
             }
-            while (state == State.READY && done < ceiling) {
+            /* 天花板与镜像帧钟失配时（快照重载、可见核被 SIO 等待窗拖慢），
+             * 一次追平几百帧会让镜像核在极短时间内推完上百轮 MULTI 传输，
+             * 主机侧轮次队列瞬时积压、训练家卡片块被喂进错轮次，游戏报
+             * LINK_ERR ck=1（校验和失败）并断开。实测可见核 10fps 时镜像
+             * 冲到 152fps。正常 60fps 下 ceiling - done 只有 1，这个预算
+             * 不改变行为；失配时分多次追，给 native SIO 会合留出节拍。 */
+            int budget = 4;
+            while (state == State.READY && done < ceiling && budget-- > 0) {
                 int keys = 0;
                 if (!busGame) {
                     keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
@@ -597,6 +604,16 @@ public final class GBoyConsoleSet {
                 ++done;
                 synchronized (lock) {
                     mirrorFrames[index] = done;
+                }
+            }
+            if (done < ceiling) {
+                synchronized (lock) {
+                    try {
+                        lock.wait(2);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
                 }
             }
             synchronized (lock) {
