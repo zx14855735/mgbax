@@ -1971,7 +1971,18 @@ public class EmulatorActivity extends AppCompatActivity {
         gboyRemoteKeysEnabled = false;
         gboyRemoteKeys = 0;
         GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
-        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
+        /* 云端官方镜像模式的两个本机核改走进程内锁步房间。
+         *
+         * 原来的 4 参构造让两核走 netLink 环回：SIO 字要在两个核心之间
+         * 按轮次过一遍 TCP 环回，并套用为公网准备的等待窗。实测握手与
+         * 训练家卡片块交换阶段只有 3~11fps，且块交换末尾稳定报
+         * LINK_ERR ck=1（校验和失败）后断开，7 处时序修复都未能消除。
+         *
+         * 进程内锁步由 GBASIOLockstepCoordinator 在 SIO 轮次直接会合，
+         * 2P 在 AVD 上实测 59.7fps。云端会话只负责按键与状态快照，
+         * 与本机 SIO 房间解耦，改这里不影响跨设备信令。 */
+        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port,
+                2, 1, true);
         boolean ok = set.start(core, session);
         consoleSet = set;
         return ok;

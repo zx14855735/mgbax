@@ -2608,7 +2608,19 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 这里只认 gLink.isMaster：不是主机就必须走从机路径。 */
 	int me = netLinkPlayer(emu->link);
 	int gameMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
-	if (gameMaster == 8) {
+	int localId = GBAView8(gba->cpu, 0x03002AF4u + 0x02u);
+	/* 【不能只看 isMaster】
+	 *
+	 * 云端官方镜像模式的隐藏镜像核是用房主推来的 TYPE_STATE 快照起步的，
+	 * 快照里 gLink.isMaster 已经是 8。若照单全收，镜像核会认定「我是主机」
+	 * 而直接 return，从不做从机收尾、也从不回推本轮的字；主机侧
+	 * netLinkTakePeerWord 就永久 peer-timeout。现场实测：主机轮次 idx=113
+	 * 且 to=3491 次超时，镜像核的 idx 一直卡在 38，两核一起掉到 1fps。
+	 *
+	 * gLink.localId(+2) 才是本局身份：房主为 0，镜像核为 1（PEEK 实测
+	 * 可见核 m=8 id=0、镜像核 m=0 id=1）。只有「isMaster==8 且
+	 * localId==0」才是真正驱动轮次的主机。 */
+	if (gameMaster == 8 && localId == 0) {
 		/* 游戏认定自己是主机：轮次由它驱动，这里不管。 */
 		return;
 	}
