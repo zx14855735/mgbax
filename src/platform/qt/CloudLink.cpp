@@ -1712,9 +1712,17 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	qint64 lastAdvertise = 0;
 	// 每分钟一次的会话自检：对端按键积压/掉帧从会话里捞出来打日志。
 	qint64 lastDiag = 0;
+	/* 状态补发节奏：官方镜像模式下两端各自跑两个核，镜像核只靠对端按键复现
+	 * 对方的进度，一旦某一方在菜单/连机里多走一步，两核就再也不会回到同一
+	 * 子状态（实测 pc 恒 0）。官方客户端用 case 6 周期纠偏，这里照做。 */
+	qint64 lastStateSync = 0;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
+		if (now - lastStateSync >= 3000) {
+			lastStateSync = now;
+			sendStateSync([link](const QByteArray& frame) { link->send(frame); });
+		}
 		if (now - lastTick >= 16) {
 			lastTick = now;
 			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
@@ -1976,8 +1984,7 @@ void CloudLink::handle(const QByteArray& body) {
 	}
 }
 
-bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
-	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
+bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
 		return false;
 	}
 	QByteArray state = m_stateSnapshot();
@@ -1985,6 +1992,22 @@ bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&
 		return false;   // core not ready yet; retry on the next tick
 	}
 	m_initialStateSent.store(true, std::memory_order_relaxed);
+	send(GBoyFrames::stateFrame(state));
+	return true;
+}
+
+/* 官方 case 6：把本机可见核的即时存档推给对端，让对端的镜像核（= 本机这个
+ * 玩家）停在同一幕。只在连接瞬间发一次时，对端镜像核会一直停在旧画面，
+ * 两台机的两个核永远进不到同一连机子状态（实测 pc 恒 0、握手字恒为等待字）。
+ * 这里供官方镜像模式按周期调用，host / joiner 都要发。 */
+bool CloudLink::sendStateSync(const std::function<void(const QByteArray&)>& send) {
+	if (!m_stateSnapshot) {
+		return false;
+	}
+	QByteArray state = m_stateSnapshot();
+	if (state.isEmpty()) {
+		return false;
+	}
 	send(GBoyFrames::stateFrame(state));
 	return true;
 }
