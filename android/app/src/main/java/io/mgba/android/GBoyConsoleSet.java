@@ -536,6 +536,34 @@ public final class GBoyConsoleSet {
         return state;
     }
 
+    /** 调试：把某个镜像核此刻的画面搬到可见核上（镜像核没有画面输出，联机时
+     *  只能这么"看见"它停在哪一幕）。先 hold 住镜像线程再取内存存档，避免和
+     *  正在跑的 runFrames 撞车；可见核的状态被覆盖，看完重载 ROM 即恢复。 */
+    public String showMirrorOnVisible(int index) {
+        if (mirrors == null || index < 0 || index >= mirrors.length || mirrors[index] == null) {
+            return "no mirror " + index;
+        }
+        MgbaCore visible = primary;
+        if (visible == null) {
+            return "no visible";
+        }
+        mirrorHold = true;
+        try {
+            Thread.sleep(300);
+            byte[] blob = mirrors[index].saveStateToMemory();
+            if (blob == null || blob.length == 0) {
+                return "mirror save failed";
+            }
+            boolean ok = visible.loadStateFromMemory(blob);
+            return (ok ? "ok " : "apply failed ") + blob.length;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            mirrorHold = false;
+        }
+    }
+
     public String failure() {
         return failure;
     }
@@ -645,6 +673,11 @@ public final class GBoyConsoleSet {
                 /* busgame 时 keys 传 0 即可：镜像核的脚本由它自己 runFrames 里的
                  * beginFrameKeys 接管（native 每帧 tick 一次）。绝不能再在 Java 层
                  * 调 busGameTick——那会一帧 tick 两次（实测镜像 2 倍速冲出天花板）。 */
+                if (done % 120 == 0) {
+                    android.util.Log.i("mGBA-App", "mirror keys=" + keys + " net="
+                            + (net != null) + " slot="
+                            + mirrorSlotFor(localSlot, players, index));
+                }
                 core.setKeys(keys);
                 core.pumpLink();
                 core.runFrames(keys, 1);

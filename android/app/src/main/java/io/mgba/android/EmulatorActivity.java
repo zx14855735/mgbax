@@ -206,6 +206,15 @@ public class EmulatorActivity extends AppCompatActivity {
                                               : consoleSet.dumpMirrorStates(stateSlot)));
                 return;
             }
+            /* 调试看画面：把隐藏镜像核的当前画面搬到可见核，直接在屏幕上看见
+             * 它停在哪一幕（镜像核只跑 SIO 回合、没有画面输出）。 */
+            if (intent.getBooleanExtra("peek_mirror", false)) {
+                int idx = intent.getIntExtra("mirror_index", 0);
+                Log.i(TAG, "peek mirror " + idx + " -> "
+                        + (consoleSet == null ? "no console set"
+                                              : consoleSet.showMirrorOnVisible(idx)));
+                return;
+            }
             if (core == null || !core.isLoaded()) {
                 Log.i(TAG, "local link broadcast ignored: no rom loaded");
                 return;
@@ -1982,6 +1991,8 @@ public class EmulatorActivity extends AppCompatActivity {
         gboyRemoteKeysEnabled = false;
         gboyRemoteKeys = 0;
         GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
+        Log.i(TAG, "cloud link session=" + (session == null ? "NULL" : "ok")
+                + " cloud=" + (cloudLink == null ? "null" : "set"));
         /* 云端官方镜像模式保持 netLink 环回（4 参构造）。
          *
          * 曾改试进程内锁步房间（7 参构造 useLockstep=true），房间确实建起来了
