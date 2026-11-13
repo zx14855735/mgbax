@@ -2755,6 +2755,23 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 			MOBILE_LOGI("SIO slave wait-me me=%d last=%u synced=%d",
 			            me, (unsigned) emu->sioIndex, emu->sioPeerCyclesValid ? 1 : 0);
 		}
+		/* 【事件链必须能熄灭】
+		 *
+		 * 从机轮次事件一旦挂上，这个分支每 2048 cycles（≈0.12ms 模拟时间）
+		 * 就会重挂一次；而每次进来都先按跨网等待窗（300~1200ms）阻塞模拟
+		 * 线程。对端没在跑联机时（标题画面、柜台，或房间已散但云端隧道仍
+		 * 在发按键帧），链路上没有 PKT_PUSH（SIO 字推送包）、peerQ 恒空，
+		 * 于是形成「每 0.12ms 模拟时间阻塞近 1 秒墙钟」的循环：实测标题
+		 * 画面 1.29fps、单帧 15 秒，与 1.4fps 假死同一病理。
+		 *
+		 * 判据只认 SIO 字本身：peerQ 空且 ≥800ms 没收到过 PKT_PUSH，就
+		 * 认定这一轮不存在，熄灭事件链，模拟线程恢复满速。下一次
+		 * serviceLink 看到 peerQ 有字会重新挂上，真正开始联机不受影响。 */
+		if (netLinkPeerPending(emu->link) == 0 &&
+		    netLinkPushAgeMs(emu->link) >= 800u) {
+			emu->sioSlaveArmed = false;
+			return;
+		}
 		if (timing) {
 			/* 重试周期取 2048（≈0.12ms 模拟时间）：主机推字之后从机几乎
 			 * 立刻就能取到，回推的延迟远小于一轮（18363 cycles）。 */
