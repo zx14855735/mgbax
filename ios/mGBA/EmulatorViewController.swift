@@ -259,10 +259,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 let path = self.docs.appendingPathComponent(romName).path
                 NSLog("GBOY_RT loading %@", path)
                 self.loadRom(path)
-                NSLog("GBOY_RT rom loaded")
-                if players >= 2 {
-                    self.startLocalLockstep(players: players, port: 18781, status: UILabel())
-                    NSLog("GBOY_RT lockstep started players=%d", players)
+                if let core = self.core, mgbaMobileIsLoaded(core) {
+                    NSLog("GBOY_RT rom loaded ok")
+                    if players >= 2 {
+                        let err = self.startLocalLockstep(players: players, port: 18781,
+                                                          status: UILabel())
+                        if let err {
+                            NSLog("GBOY_RT lockstep FAILED: %@", err)
+                        } else {
+                            NSLog("GBOY_RT lockstep started players=%d", players)
+                        }
+                    }
+                } else {
+                    NSLog("GBOY_RT rom load FAILED")
                 }
             }
         }
@@ -5733,11 +5742,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     /// 显式启用进程内锁步：创建 N-1 个镜像核并接入同一锁步房间。
     /// 与 Android GBoyConsoleSet(useLockstep=true) 走同一条 C API；默认关闭，
-    /// 未启用时仍走 iOS 原有的单核跨设备联机。
-    private func startLocalLockstep(players n: Int, port: Int, status: UILabel) {
+    /// 未启用时仍走 iOS 原有的单核跨设备联机。返回 nil=成功，否则为错误。
+    @discardableResult
+    private func startLocalLockstep(players n: Int, port: Int, status: UILabel) -> String? {
         guard let core = self.core, let rom = currentRomPath else {
             status.text = "请先加载 ROM 再启用进程内锁步"
-            return
+            return "请先加载 ROM 再启用进程内锁步"
         }
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
@@ -5745,15 +5755,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                                        players: n, localSlot: 1,
                                        roomKey: Int32(port)) else {
             status.text = "锁步参数无效（人数需为 2、3 或 4）"
-            return
+            return "锁步参数无效（人数需为 2、3 或 4）"
         }
         if let error = set.start(visible: core) {
             status.text = error
-            return
+            return error
         }
         consoleSet?.stop()
         consoleSet = set
         status.text = "进程内锁步已启用：本机 \(n) 核，SIO 不跨网络\n网络仍只传按键"
+        return nil
     }
 
     private func ensureGboy() -> GBoyLink {
