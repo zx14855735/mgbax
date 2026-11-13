@@ -529,6 +529,10 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean paceSeeded = true;
     private Bitmap frame;
     private final AtomicBoolean presentQueued = new AtomicBoolean();
+    /** 上一次 post 的呈现时刻：post 的 Runnable 万一没被执行（View 被 detach、
+     *  surface 重建），闸门会永久为 true，之后所有帧被静默丢弃——外观就是
+     *  核心仍跑 60fps、画面却整块白/黑、怎么切前后台都不恢复。超时自愈。 */
+    private volatile long presentQueuedAt;
     private final AtomicReference<Bitmap> pendingPreview = new AtomicReference<>();
     private boolean emulatorStarted;
     private boolean awaitingStorage;
@@ -2826,9 +2830,16 @@ public class EmulatorActivity extends AppCompatActivity {
             return;
         }
         captureGifFrame();
+        if (presentQueued.get()
+                && System.currentTimeMillis() - presentQueuedAt > 300L) {
+            /* post 的 Runnable 没回来：别让这一帧把后续所有帧都堵死。 */
+            presentQueued.set(false);
+            Log.w(TAG, "present gate stuck, released");
+        }
         if (!presentQueued.compareAndSet(false, true)) {
             return;
         }
+        presentQueuedAt = System.currentTimeMillis();
         Bitmap shown = frame.copy(Bitmap.Config.ARGB_8888, false);
         gameView.post(() -> {
             try {
