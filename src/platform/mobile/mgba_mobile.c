@@ -1437,7 +1437,14 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 		int v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
 		int lt = (int) GBAView16(g->cpu, 0x02027B82u);
 		int fpc = (int) GBAView8(g->cpu, 0x03004A39u);
-		if (v8 != 5 || (lt != 0x2255 && lt != 0x2211) || fpc < 4) {
+		int lst = (int) GBAView8(g->cpu, 0x03002AF5u);   /* gLink.state */
+		/* 4 人多人对战：var8004=5 且 gLinkType=0x2255/0x2211。
+		 * 2 人单打（云端 2P 的目标）：实测 gLinkType=0x046D、var8004=3，
+		 * 用那套常量永远进不了走位分支，所以 2 人改成「房间握手完成
+		 * （gLink.state>=4）且 fieldCount==2」就放行。 */
+		bool ready4 = (v8 == 5 && (lt == 0x2255 || lt == 0x2211) && fpc >= 4);
+		bool ready2 = (fpc == 2 && lst >= 4);
+		if (!ready4 && !ready2) {
 			keys = ((f % 40) < 25) ? A : 0u;
 		} else {
 			int mb = (int) GBAView8(g->cpu, 0x020219D0u);
