@@ -2883,6 +2883,19 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	if (!emu->link || netLinkState(emu->link) != 2) {
 		return 0;
 	}
+	/* 【本机环回必须走短窗】
+	 *
+	 * 云端官方镜像模式里，可见核与隐藏镜像核是通过 127.0.0.1 环回 SIO
+	 * 连起来的（EmulatorActivity.startGBoyLink），实测 RTT 只有几十微秒；
+	 * 公网只传按键帧和状态快照，SIO 字从不过公网。原来的 300~1200ms
+	 * 跨网等待窗是给「SIO 字真的过公网」准备的，套在本机环回上时，只要
+	 * 某一轮两核互等就各自等满 300ms：gen8 每帧 9 轮 → 2.7 秒一帧，
+	 * 现场进入握手后掉到 3.5fps、POLL rate 从 2000/s 掉到 130/s。
+	 *
+	 * 只有确实测到 <5ms 的 RTT 才启用 12ms 短窗；RTT 未测出（0）或偏大
+	 * 时一律保持原跨网窗口，避免第一轮公网 RTT 被误判成超时。 */
+	uint32_t rttUs = netLinkRttUs(emu->link);
+	bool loopback = rttUs != 0u && rttUs < 5000u;
 	if (netLinkBusActive(emu->link)) {
 		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
 		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
@@ -2903,10 +2916,10 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
 		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
 		 * 覆盖实测 150ms 均值 / 441ms 尖峰的隧道 RTT。 */
-		return 1200;
+		return loopback ? 12 : 1200;
 	}
 	if (netLinkPushAgeMs(emu->link) < 800) {
-		return 900;                 /* 对端仍在活跃交换，这一轮只是晚到 */
+		return loopback ? 12 : 900;  /* 对端仍在活跃交换，这一轮只是晚到 */
 	}
 	/* 与 Qt 侧同一条修正：链路刚建立时两端都还没推过字，pushSeenAt=0
 	 * 会让上面两条全部落空，于是最需要等一个公网 RTT 的第一轮反而零等待，
@@ -2914,14 +2927,17 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	 * 前 8 轮、头 3 次重试给 900ms 预算；之后恢复 0，避免对端根本没进
 	 * 联机时把模拟线程按死（11-08 的假死）。 */
 	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
-		return 900;
+		return loopback ? 12 : 900;
 	}
 	/* 与 Qt 侧同一条修正：隧道抖动会让「对端 800ms 内推过字」间歇失效，
 	 * 零等待 + 100 cycles 重试间隔会在极短时间内耗尽 40 次重试并按空槽
 	 * 收尾，破坏玩家数据块校验（隧道轮 brs 全 0 / cnt 恒 0）。游戏确实
 	 * 发起了本轮 MULTI 且链路还连着时，给一个跟随实测 RTT 的最小预算。 */
 	if (emu->sioWaiting) {
-		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (loopback) {
+			return 12;
+		}
+		uint32_t ms = rttUs / 1000u * 3u;
 		if (ms < 300u) {
 			ms = 300u;
 		}
