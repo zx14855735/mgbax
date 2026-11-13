@@ -259,7 +259,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         if let romName = autoRom {
             let players = lockstepPlayers
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            // 后台队列执行：loadRom+镜像创建是秒级长任务，主线程跑会被
+            // watchdog 击杀（CI 实测 app 静默死亡、无崩溃报告）。loadRom
+            // 的 UI 更新都在内部 runOnUiThread/main.async 跳回主线程。
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 guard let self else { return }
                 let path = self.docs.appendingPathComponent(romName).path
                 NSLog("GBOY_RT loading %@", path)
