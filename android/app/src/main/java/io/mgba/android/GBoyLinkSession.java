@@ -68,6 +68,8 @@ public final class GBoyLinkSession {
     private int remoteCounter = -1;
     private int remoteFps = -1;
     private int lastLocalKeys;
+    /** 上一次真正发出去的按键掩码；边沿立即发送靠它判变化（-1 = 强制首帧）。 */
+    private int lastSentKeys = -1;
     private int sentFrames;
     private long droppedFrames;
 
@@ -105,17 +107,13 @@ public final class GBoyLinkSession {
             frameNo = frame;
             lastLocalKeys = localKeys;
             currentKeys[localSlot] = localKeys;
-            if (--sampleCountdown <= 0) {
+            // 发送时机 = 5 帧心跳 ∪ 按键边沿。纯 5 帧采样会把 2 帧的短按吞掉
+            // （命中率 2/5），对端镜像核的菜单推进因此一直落后一步，联机握手
+            // 时两边不在同一子状态（实测 pc=0、主核永远发 0xB9A0 等待字）。
+            boolean edge = localKeys != lastSentKeys;
+            if (--sampleCountdown <= 0 || edge) {
                 sampleCountdown = KEY_SEND_INTERVAL_FRAMES;
-                for (int slot = 1; slot <= playerCount; ++slot) {
-                    if (slot == localSlot) {
-                        continue;
-                    }
-                    ArrayDeque<Integer> queue = pending[slot];
-                    if (!queue.isEmpty()) {
-                        currentKeys[slot] = queue.poll();
-                    }
-                }
+                lastSentKeys = localKeys;
                 out = keyFrameForLocalSlot(localKeys);
                 ++sentFrames;
             }
@@ -289,28 +287,11 @@ public final class GBoyLinkSession {
         if (slot < 1 || slot > MAX_CONSOLES) {
             return;
         }
-        boolean report;
-        long total;
+        // 「最新即生效」而不是排队：镜像核每帧都读一次 keysForSlot()，直接覆盖
+        // 当前值既没有排队延迟，也不会漏掉任何按下沿（按下帧覆盖、松开帧再覆盖）。
+        // 原来的 5 帧队列会让对端的边沿帧积压，镜像核拿到几帧前的按键。
         synchronized (lock) {
-            ArrayDeque<Integer> queue = pending[slot];
-            queue.add(keys);
-            if (queue.size() > BACKLOG_LIMIT) {
-                queue.poll();
-                ++droppedFrames;
-                // Two emulators rarely run at the same frame rate, so the peer
-                // can be ahead on almost every key frame. Report the first few
-                // and then only occasionally; unbounded logging used to flood
-                // logcat and bury the TYPE_STATE / handshake events.
-                total = droppedFrames;
-                report = total <= 3 || (total & 0xFFL) == 0;
-            } else {
-                total = droppedFrames;
-                report = false;
-            }
-        }
-        if (report) {
-            events.onStatus("peer slot " + slot + " ahead, dropped oldest key frame"
-                    + " (total " + total + ")");
+            currentKeys[slot] = keys;
         }
     }
 

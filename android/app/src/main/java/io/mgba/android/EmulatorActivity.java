@@ -197,6 +197,15 @@ public class EmulatorActivity extends AppCompatActivity {
                 showLinkDialog();
                 return;
             }
+            /* 调试倒档：把隐藏镜像核存成 slotN.ss，PC 版 mGBA 载入就能看见
+             * 镜像核此刻停在哪一幕（镜像核没有画面输出，只能这么看）。 */
+            if (intent.getBooleanExtra("dump", false)) {
+                int stateSlot = intent.getIntExtra("state_slot", 1);
+                Log.i(TAG, "mirror dump slot=" + stateSlot + " -> "
+                        + (consoleSet == null ? "no console set"
+                                              : consoleSet.dumpMirrorStates(stateSlot)));
+                return;
+            }
             if (core == null || !core.isLoaded()) {
                 Log.i(TAG, "local link broadcast ignored: no rom loaded");
                 return;

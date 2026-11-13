@@ -24,18 +24,17 @@ QByteArray GBoyLinkSession::onLocalFrame(long frame, int localKeys) {
 		m_frameNo = frame;
 		m_lastLocalKeys = localKeys;
 		m_currentKeys[m_localSlot] = localKeys;
-		if (--m_sampleCountdown <= 0) {
+		/* 发送时机 = 5 帧心跳 ∪ 按键边沿。
+		 *
+		 * 官方 12Hz 纯采样会整块吞掉短按：一次 2 帧的 A 落在 5 帧网格里只有
+		 * 40% 概率被采到，实测菜单期的连按大量丢失，对端的镜像核因此一直慢
+		 * 一步——走到联机大厅时两边不在同一个子状态，multiboot 握手永远凑不
+		 * 齐玩家（pc=0、主核一直发 0xB9A0 等待字、镜像核 SIOMLT_SEND 还是 0）。
+		 * 边沿必须立刻发，采样网格只当保活心跳。 */
+		bool edge = localKeys != m_lastSentKeys;
+		if (--m_sampleCountdown <= 0 || edge) {
 			m_sampleCountdown = KEY_SEND_INTERVAL_FRAMES;
-			for (int slot = 1; slot <= m_playerCount; ++slot) {
-				if (slot == m_localSlot) {
-					continue;
-				}
-				std::deque<int>& queue = m_pending[slot];
-				if (!queue.empty()) {
-					m_currentKeys[slot] = queue.front();
-					queue.pop_front();
-				}
-			}
+			m_lastSentKeys = localKeys;
 			out = keyFrameForLocalSlot(localKeys);
 			++m_sentFrames;
 		}
@@ -198,26 +197,15 @@ void GBoyLinkSession::pushKeys(int slot, int keys) {
 	if (slot < 1 || slot > MAX_CONSOLES) {
 		return;
 	}
-	bool report = false;
-	long total = 0;
-	{
-		std::lock_guard<std::mutex> locker(m_mutex);
-		std::deque<int>& queue = m_pending[slot];
-		queue.push_back(keys);
-		if (queue.size() > BACKLOG_LIMIT) {
-			queue.pop_front();
-			++m_droppedFrames;
-			// Two emulators rarely run at the same frame rate, so the peer
-			// can be ahead on almost every key frame. Report the first few
-			// and then only occasionally, exactly like the Android port.
-			total = m_droppedFrames;
-			report = total <= 3 || (total & 0xFFL) == 0;
-		}
-	}
-	if (report && m_events.onStatus) {
-		m_events.onStatus(QStringLiteral("peer slot %1 ahead, dropped oldest key frame (total %2)")
-		                          .arg(slot).arg(total));
-	}
+	/* 「最新即生效」而不是排队。
+	 *
+	 * 原来按 5 帧一格的节拍排队消费，对端一发边沿帧队列就会积压，镜像核拿
+	 * 到的是几帧前的按键（延迟越积越大）；反过来队列被压到上限又会丢最新的
+	 * 按键。镜像核每帧都读一次 keysForSlot()，直接覆盖当前值既没有延迟、也
+	 * 不会漏掉任何一个按下沿：按下帧覆盖、松开帧再覆盖，中间持续多久镜像核
+	 * 就看到多久。 */
+	std::lock_guard<std::mutex> locker(m_mutex);
+	m_currentKeys[slot] = keys;
 }
 
 void GBoyLinkSession::sendRegistration(int baseStateCount) {

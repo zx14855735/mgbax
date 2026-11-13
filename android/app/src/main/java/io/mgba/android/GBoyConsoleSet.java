@@ -87,6 +87,9 @@ public final class GBoyConsoleSet {
     /* busgame 调试脚本：true 时镜像线程不再取会话按键，改走 native 判据脚本
      * （与可见核的 beginFrameKeys 接管同源），4 核各按各自序号跑同一份脚本。 */
     private volatile boolean busGame;
+    /* 调试用：置位时镜像线程在锁外暂停，好让别的线程安全地给镜像核存档
+     * （「隐藏镜像核到底走到哪一步」只能把它的状态倒出来在 PC 上回放看）。 */
+    private volatile boolean mirrorHold;
     /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
      * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
      * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
@@ -428,9 +431,39 @@ public final class GBoyConsoleSet {
         return rel < 0 ? 0 : rel;
     }
 
+    /** 调试倒档：暂停所有镜像线程，把每个镜像核存进它自己的 slot{slot}.ss，
+     *  然后把它们的状态目录路径回给调用方（root 下 adb pull 出来，丢进 PC 版
+     *  mGBA 就能看见隐藏镜像核此刻到底停在哪一幕）。 */
+    public String dumpMirrorStates(int slot) {
+        if (mirrors == null || mirrors.length == 0) {
+            return "no mirrors";
+        }
+        mirrorHold = true;
+        try {
+            Thread.sleep(300);   // 等线程跑完手头那一帧停在 hold 上
+            StringBuilder result = new StringBuilder();
+            for (int i = 0; i < mirrors.length; ++i) {
+                MgbaCore core = mirrors[i];
+                if (core == null) {
+                    continue;
+                }
+                boolean ok = core.saveState(slot);
+                result.append("mirror").append(i + 1)
+                      .append('=').append(ok ? "ok" : "fail")
+                      .append('@').append(new File(stateDir, MIRROR_DIR_PREFIX + (i + 1)).getAbsolutePath())
+                      .append(' ');
+            }
+            return result.toString();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            mirrorHold = false;
+        }
+    }
+
     /** 把镜像核的帧钟基线拉到当前天花板（=可见核已发布的帧位）。用于快照
-     *  同步后：镜像从可见核的「现在」起步，不追历史帧。 */
-    public void syncMirrorFramesToVisible() {
+     *  同步后：镜像从可见核的「现在」起步，不追历史帧。 */    public void syncMirrorFramesToVisible() {
         synchronized (lock) {
             if (mirrorFrames == null) {
                 return;
@@ -559,6 +592,20 @@ public final class GBoyConsoleSet {
          *    4 家——实测 pc=3、lt=1133 卡死）。
          *  native 锁步照旧在 SIO 传输轮次上会合各核；这层只对齐帧钟。 */
         while (state == State.READY) {
+            /* 调试倒档：镜像线程在进核之前停住，别让 runFrames 和存档撞车。 */
+            while (state == State.READY && mirrorHold) {
+                synchronized (lock) {
+                    try {
+                        lock.wait(40);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+            if (state != State.READY) {
+                return;
+            }
             long ceiling;
             synchronized (lock) {
                 while (state == State.READY && mirrorFrames[index] >= targetFrame) {
