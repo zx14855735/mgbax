@@ -206,13 +206,12 @@ public class EmulatorActivity extends AppCompatActivity {
                                               : consoleSet.dumpMirrorStates(stateSlot)));
                 return;
             }
-            /* 调试看画面：把隐藏镜像核的当前画面搬到可见核，直接在屏幕上看见
-             * 它停在哪一幕（镜像核只跑 SIO 回合、没有画面输出）。 */
+            /* 调试看画面：把隐藏镜像核的当前画面搬到可见核——注意这条路
+             * 会崩（跨线程 saveStateToMemory 在核被 park 时取存档不安全，
+             * 实测 tombstone 落在 showMirrorOnVisible）。看镜像核请用
+             * dump 落盘再到 PC 上载入，别在设备上搬。 */
             if (intent.getBooleanExtra("peek_mirror", false)) {
-                int idx = intent.getIntExtra("mirror_index", 0);
-                Log.i(TAG, "peek mirror " + idx + " -> "
-                        + (consoleSet == null ? "no console set"
-                                              : consoleSet.showMirrorOnVisible(idx)));
+                Log.w(TAG, "peek_mirror is unsafe (cross-thread savestate); use dump instead");
                 return;
             }
             if (core == null || !core.isLoaded()) {
@@ -427,6 +426,12 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile int pendingBusGameMenuAt = -1;
     /** 云端连上后排队的一次重载：重载完把可见核按原槽位重挂回锁步房间。 */
     private volatile boolean pendingCloudRearm;
+    /** 云端建锁步房间期间的闸门：可见核必须停在第 0 帧上，和镜像核一起入房。
+     *  让一个已经跑了几万帧的核中途挂进房间，会让协调器在一场 SIO 回合里
+     *  永远等不齐这个核（它停在自己的回合号上），核被 park、模拟线程停摆、
+     *  画面整块白掉（实测）。所以建核期间锁住帧循环，重载复位到第 0 帧后
+     *  再放开。 */
+    private volatile boolean linkArmHold;
     private int pendingBusGameModeDowns;
     /** busgame 期间禁用 auto_load_state：镜像核从电池存档冷启动，可见核若读旧
      * 即时存档，游戏上下文会与镜像错位（实测可见核 var8004=0 卡 lt=1133）。 */
@@ -2312,6 +2317,11 @@ public class EmulatorActivity extends AppCompatActivity {
                             Log.i(TAG, "cloud reload: visible lockstep re-armed slot="
                                     + set.visibleSlotIdx());
                         }
+                        /* 可见核已被复位到第 0 帧，和镜像核起点一致；放开帧闸门，
+                         * 两核从现在开始同步起跑。 */
+                        suppressAutoState = false;
+                        linkArmHold = false;
+                        Log.i(TAG, "cloud arm released: frames unlocked");
                     }
                 }
                 int cmd = command.getAndSet(0);
@@ -2321,7 +2331,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     slices = 0;
                     fpsStamp = nextSlice;
                 }
-                if (!surfaceReady || paused || !core.isLoaded()) {
+                if (!surfaceReady || paused || linkArmHold || !core.isLoaded()) {
                     // Do not carry stale pacing across a paused stretch: a
                     // resumed game would otherwise be reported as a slow front
                     // end for one window.
@@ -4714,7 +4724,16 @@ public class EmulatorActivity extends AppCompatActivity {
                                 ? defaultSaveDir : getFilesDir();
                         File state = defaultStateDir != null
                                 ? defaultStateDir : new File(getFilesDir(), "state");
+                        /* 先锁住帧循环再建 2 核：镜像核与可见核必须都在第 0 帧
+                         * 入房，否则协调器会卡在一场补不齐的 SIO 回合上（核被
+                         * park、模拟线程停摆、画面白掉）。 */
+                        linkArmHold = true;
+                        /* 两边都从电池存档冷启动：可见核若读即时存档、镜像核
+                         * 冷链，两核的游戏上下文一开局就错位，联机永远 pc=0。 */
+                        suppressAutoState = true;
                         if (!startGBoyLink(new File(path), save, state, 18781)) {
+                            linkArmHold = false;
+                            suppressAutoState = false;
                             toast("多核心联机启动失败：" + gboyLinkFailure());
                             return;
                         }
