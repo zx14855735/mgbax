@@ -2780,7 +2780,19 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		 * 里轮次数就会忽多忽少。 */
 		if (emu->sioPeerCyclesValid) {
 			uint32_t delta = peerCycles - emu->sioPeerCycles;
-			if (delta > 4000 && delta < 400000) {
+			/* 【周期学习只取最小值】
+			 *
+			 * 握手阶段主机每帧只推 1 轮，相邻两轮的时间戳差就是整一帧
+			 * 280896 cycles。若照单全收，sioSlavePeriod 会从 18363 被抬到
+			 * 280896，从机从此每帧只消费 1 轮；而进入战斗后主机每帧推约
+			 * 9 轮，队列无限积压（实测 mis 每轮 +1），主机严格匹配取从机
+			 * 回字全部超时，两边一起饿死在「请稍候」。
+			 *
+			 * 只取更小的轮距：学到的值永远不会超过初值 18363（真实战斗
+			 * 轮距 12608~18363）。轮距偏小不会凭空多收一轮——队列空时
+			 * netLinkTakePeerWordAny 会阻塞等主机下一个字，双方轮次仍然
+			 * 一一对应；偏大才会永久落后。 */
+			if (delta > 4000 && delta < 400000 && delta < emu->sioSlavePeriod) {
 				emu->sioSlavePeriod = delta;
 			}
 		}
@@ -2817,9 +2829,16 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X reply=1",
 		            emu->hsPushDbg, me, (unsigned) emu->sioIndex, own);
 	}
-	/* 挂上下一轮：正好在 K 个模拟周期之后。 */
+	/* 挂上下一轮。
+	 *
+	 * 对端队列里还有字 = 主机本帧推的轮次没被消费完（gen8 每帧约 9 轮）。
+	 * 这时必须紧接着排空，不能等一整个轮距：否则从机每帧只处理 1 轮，
+	 * 落后量逐帧累积，主机取从机回字永远超时。队列空了才回到学到的轮距。
+	 * 2048 cycles ≈ 0.12ms 模拟时间，远小于一轮，不会插进额外的传输。 */
 	if (timing) {
-		mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+		uint32_t nextPeriod = netLinkPeerPending(emu->link) > 0
+		                      ? 2048u : emu->sioSlavePeriod;
+		mTimingSchedule(timing, &emu->sioSlaveDone, nextPeriod);
 		emu->sioSlaveArmed = true;
 	}
 }
