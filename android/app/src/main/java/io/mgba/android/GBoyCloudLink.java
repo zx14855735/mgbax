@@ -58,7 +58,7 @@ public final class GBoyCloudLink {
      */
     // 与 PC 侧同理：加入方 15~25 秒才能连上节点，12 秒窗口太短，一方先放弃
     // 就会永远退到高延迟的 WS 隧道。
-    private static final long RELAY_WINDOW_MS = 120000;
+    private static final long RELAY_WINDOW_MS = 15000;
     /** How long to wait for the peer's first key state before starting anyway. */
     private static final long PEER_KEY_WAIT_MS = 4000;
     private static final long KEY_INTERVAL_MS = 50;
@@ -908,6 +908,13 @@ public final class GBoyCloudLink {
     private void runTunnel(GbCloud.Session sig, String token, String uuid, Room room,
                            boolean asHost) throws IOException {
         String tag = room.roomId == null ? "" : room.roomId;
+        // 中继广告到此为止：隧道模式不需要节点，而它每 2 秒在全大厅广播一次，
+        // 一直发会被服务器当成刷屏（实测 3 分钟后信令被 reset，房主掉线 →
+        // 房间被解散，对方再也 join 不进来）。
+        if (advertiser != null) {
+            advertiser.interrupt();
+            advertiser = null;
+        }
         status("正在通过服务器隧道等待对方进入（跨网可联）…");
         WsLink link = new WsLink(sig, token, uuid, tag);
         wsLink = link;
