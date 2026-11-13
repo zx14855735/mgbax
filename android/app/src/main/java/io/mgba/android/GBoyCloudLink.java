@@ -118,6 +118,11 @@ public final class GBoyCloudLink {
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
     private volatile Thread advertiser;
+    /** 中继广告间隔。建房阶段 2 秒一次够用；进了隧道等待也不要停——加入方
+     *  正是靠这条广播拿到中继地址的（停掉它就永远只能退回 100 字符的聊天
+     *  隧道，实测两端 ±200ms 抖动、锁步互相 park 死）。改成 8 秒一次：
+     *  既能被对方拿到，又不会被服务器判刷屏（2 秒连发 3 分钟会被 reset）。 */
+    private volatile long advertiseIntervalMs = 2000;
     /** 会话信息：「重新连接中继」按钮复用它，不重建房间。 */
     private volatile String authToken;
     private volatile Room currentRoom;
@@ -910,13 +915,10 @@ public final class GBoyCloudLink {
     private void runTunnel(GbCloud.Session sig, String token, String uuid, Room room,
                            boolean asHost) throws IOException {
         String tag = room.roomId == null ? "" : room.roomId;
-        // 中继广告到此为止：隧道模式不需要节点，而它每 2 秒在全大厅广播一次，
-        // 一直发会被服务器当成刷屏（实测 3 分钟后信令被 reset，房主掉线 →
-        // 房间被解散，对方再也 join 不进来）。
-        if (advertiser != null) {
-            advertiser.interrupt();
-            advertiser = null;
-        }
+        // 中继广告不能停：加入方靠这条广播拿中继地址，停掉就只能退回聊天
+        // 隧道（单条 ≤100 字符，按键只能 20 字节切片发，延迟抖动 ±200ms，
+        // 进程内锁步会互相 park 死）。这里只降频，避免被服务器判刷屏。
+        advertiseIntervalMs = 8000;
         status("正在通过服务器隧道等待对方进入（跨网可联）…");
         WsLink link = new WsLink(sig, token, uuid, tag);
         wsLink = link;
@@ -2158,7 +2160,7 @@ public final class GBoyCloudLink {
                     break;
                 }
                 long now = System.currentTimeMillis();
-                if (now - last < 2000) {
+                if (now - last < advertiseIntervalMs) {
                     continue;
                 }
                 last = now;

@@ -1,0 +1,34 @@
+﻿2026-11-13T19:13:12.6458880Z Current runner version: '2.338.2'
+2026-11-13T19:13:12.6493810Z ##[group]Runner Image Provisioner
+2026-11-13T19:13:12.6494580Z Hosted Compute Agent
+2026-11-13T19:13:12.6495040Z Version: 20261103.629
+2026-11-13T19:13:12.6495480Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+2026-11-13T19:13:12.6495970Z Build Date: 2026-11-03T17:26:59Z
+2026-11-13T19:13:12.6497660Z Worker ID: {4ad3a0d3-bbef-47e6-80cb-497f162e7710}
+2026-11-13T19:13:12.6499060Z Region: westus
+2026-11-13T19:13:12.6500020Z Cloud: MacCloud
+2026-11-13T19:13:12.6501030Z ##[endgroup]
+2026-11-13T19:13:12.6504350Z ##[group]Operating System
+2026-11-13T19:13:12.6505520Z macOS
+2026-11-13T19:13:12.6506500Z 15.8.2
+2026-11-13T19:13:12.6507470Z 24H232
+2026-11-13T19:13:12.6508320Z ##[endgroup]
+2026-11-13T19:13:12.6509240Z ##[group]Runner Image
+2026-11-13T19:13:12.6510230Z Image: macos-15-arm64
+2026-11-13T19:13:12.6511230Z Version: 20261104.0514.1
+2026-11-13T19:13:12.6513290Z Included Software: https://github.com/actions/runner-images/blob/macos-15-arm64/20261104.0514/images/macos/macos-15-arm64-Readme.md
+2026-11-13T19:13:12.6516470Z Image Release: https://github.com/actions/runner-images/releases/tag/macos-15-arm64%2F20261104.0514
+2026-11-13T19:13:12.6518300Z ##[endgroup]
+2026-11-13T19:13:12.6520690Z ##[group]GITHUB_TOKEN Permissions
+2026-11-13T19:13:12.6524680Z Contents: read
+2026-11-13T19:13:12.6525940Z Metadata: read
+2026-11-13T19:13:12.6526630Z Packages: read
+2026-11-13T19:13:12.6527550Z ##[endgroup]
+2026-11-13T19:13:12.6529530Z Secret source: Actions
+2026-11-13T19:13:12.6530140Z Cache mode: write
+2026-11-13T19:13:12.6530630Z Prepare workflow directory
+2026-11-13T19:13:12.6898580Z Prepare all required actions
+2026-11-13T19:13:12.6939020Z Getting action download info
+2026-11-13T19:13:13.0280580Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+2026-11-13T19:13:13.2649850Z Download action repository 'actions/upload-artifact@v4' (SHA:ea165f8d65b6e75b540449e92b4886f43607fa02)
+2026-11-13T19:13:13.5123990Z Complete job name: build
