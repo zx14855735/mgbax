@@ -38,6 +38,11 @@ final class GBoyConsoleSet {
     private var visibleCore: OpaquePointer?
     private var running = false
     private let lock = NSLock()
+    /// 镜像帧钟：targetFrame=可见核已发布帧位，mirrorFrames=各镜像已跑帧。
+    private let frameCond = NSCondition()
+    private var targetFrame: Int = -1
+    private var frameEpoch: Int = -1
+    private var mirrorFrames: [Int] = []
 
     init?(romPath: String, saveDir: String, stateDir: String,
           players: Int, localSlot: Int, roomKey: Int32 = 0x4C53) {
@@ -133,6 +138,15 @@ final class GBoyConsoleSet {
         lock.lock()
         running = true
         lock.unlock()
+        // 镜像帧钟：可见核每帧 beginFrame 推高 targetFrame（天花板），镜像
+        // 追平即等、来了就一口气追平。没有它镜像会在无 SIO 轮的菜单期以
+        // CPU 全速冲到比可见核多几万帧——四核游戏时钟错位，联机握手永远
+        // 凑不齐 4 家（Android 侧同坑实测 pc=3 卡死）。
+        frameCond.lock()
+        mirrorFrames = [Int](repeating: -1, count: count)
+        targetFrame = -1
+        frameEpoch = -1
+        frameCond.unlock()
         for i in 1...count {
             let sem = DispatchSemaphore(value: 0)
             finished.append(sem)
@@ -140,16 +154,28 @@ final class GBoyConsoleSet {
             let thread = Thread { [weak self] in
                 defer { sem.signal() }
                 while let self = self, self.isRunning {
+                    // 等天花板：追平即等（250ms 超时兜底，isRunning 翻转可退）。
+                    self.frameCond.lock()
+                    while self.isRunning && self.mirrorFrames[index] >= self.targetFrame {
+                        self.frameCond.wait(until: Date().addingTimeInterval(0.25))
+                    }
+                    let ceiling = self.targetFrame
+                    self.frameCond.unlock()
+                    guard self.isRunning else { break }
                     guard let core = self.cores[index] else { break }
-                    let slot = self.slotOfCore[index]
-                    self.lock.lock()
-                    let keys = self.remoteKeys[slot]
-                    self.lock.unlock()
-                    mgbaMobileSetKeys(core, keys)
-                    _ = mgbaMobileRunFrames(core, 1)
-                    // 不 sleep：与 Android 修复后一致，自由推进，跑太快会在
-                    // 下一个 SIO 轮被协调器 park 住等可见核（正是锁步语义）。
-                    // 每帧硬睡 1/60 会叠加固定延迟、拖慢整个房间。
+                    var done = self.mirrorFrames[index]
+                    while self.isRunning && done < ceiling {
+                        let slot = self.slotOfCore[index]
+                        self.lock.lock()
+                        let keys = self.remoteKeys[slot]
+                        self.lock.unlock()
+                        mgbaMobileSetKeys(core, keys)
+                        _ = mgbaMobileRunFrames(core, 1)
+                        done += 1
+                        self.frameCond.lock()
+                        self.mirrorFrames[index] = done
+                        self.frameCond.unlock()
+                    }
                 }
             }
             thread.name = "mGBA-ios-console-\(i + 1)"
@@ -158,6 +184,31 @@ final class GBoyConsoleSet {
             thread.start()
         }
         return nil
+    }
+
+    /// 可见核每帧调用：推高镜像帧钟天花板（frame 作全局帧号，首次调用定纪元）。
+    func beginFrame(_ frame: Int) {
+        lock.lock()
+        let wasRunning = running
+        lock.unlock()
+        guard wasRunning else { return }
+        frameCond.lock()
+        if frameEpoch < 0 {
+            frameEpoch = frame
+        }
+        let rel = max(0, frame - frameEpoch)
+        if rel > targetFrame {
+            targetFrame = rel
+            frameCond.broadcast()
+        }
+        frameCond.unlock()
+    }
+
+    /// 镜像帧钟是否已在推进（可见核循环据此决定是否发布 beginFrame）。
+    var isReady: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
     }
 
     /// 把某个全局槽位的远端按键掩码喂给对应的镜像核（网络只传按键）。
@@ -175,6 +226,10 @@ final class GBoyConsoleSet {
         lock.unlock()
         guard wasRunning else { return }
 
+        // 唤醒帧钟等待者（镜像线程在等天花板时能感知 isRunning 翻转退出）。
+        frameCond.lock()
+        frameCond.broadcast()
+        frameCond.unlock()
         // 唤醒仍 park 在等 SIO 事件的核，避免 stop() 卡死在线程收尾上。
         mgbaLockstepSetAbort(1)
         for sem in finished {
