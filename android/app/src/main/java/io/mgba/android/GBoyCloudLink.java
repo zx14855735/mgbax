@@ -532,7 +532,9 @@ public final class GBoyCloudLink {
         send(sig, createJson(token), 2500);
         waitForRoom(sig, room, null, ROOM_WAIT_MS, true);
         if (room.nodeAddress == null || room.nodePort <= 0) {
-            throw new IOException("服务器没有返回中继节点");
+            // 节点拿不到不再中断建房：公共节点池经常不回包，隧道模式不需要节点。
+            // 以前这里直接抛异常，一次没拿到就得从头再建一次房（连房号都变了）。
+            status("未获取到中继节点，改用服务器隧道模式");
         }
     }
 
