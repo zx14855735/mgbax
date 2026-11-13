@@ -105,8 +105,11 @@ jobs:
           CONTAINER=$(xcrun simctl get_app_container "$UDID" io.mgba.ios data)
           cp lockstep.gba "$CONTAINER/Documents/lockstep.gba"
           xcrun simctl terminate "$UDID" io.mgba.ios 2>/dev/null || true
-          (xcrun simctl launch --console-pty "$UDID" io.mgba.ios -gboyAutoRom lockstep.gba -gboyLockstepPlayers 4 > lockstep.log 2>&1 &)
+          (xcrun simctl launch --console-pty "$UDID" io.mgba.ios -gboyAutoRom lockstep.gba -gboyLockstepPlayers 4 -gboySilent > lockstep.log 2>&1 &)
           sleep 45
+          if ! pgrep -f 'mGBAx.app' > /dev/null; then
+            echo "::error::APP DIED during lockstep check"
+          fi
           echo "===== GBOY_RT markers ====="
           grep 'GBOY_RT' lockstep.log | tail -20 || true
           grep -q 'GBOY_RT lockstep started players=4' lockstep.log

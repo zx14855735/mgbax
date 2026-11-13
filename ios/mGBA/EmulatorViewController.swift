@@ -14,6 +14,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var consoleSet: GBoyConsoleSet?
     /// 镜像帧钟的全局帧号（跨 ROM 重载累计，GBoyConsoleSet 内部定纪元）。
     private var netFrameNo: Int = 0
+    /// CI/无音频环境：-gboySilent 时跳过 audio.start（CI runner 常无音频设备）。
+    private var silentMode = false
     private let gameView = GameView()
     private let controls = ControlsView()
     private let shellStage = ShellStageView()
@@ -251,6 +253,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         for (i, a) in argv.enumerated() where a == "-gboyLockstepPlayers" && i + 1 < argv.count {
             lockstepPlayers = Int(argv[i + 1]) ?? 0
+        }
+        if argv.contains("-gboySilent") {
+            silentMode = true
         }
         if let romName = autoRom {
             let players = lockstepPlayers
@@ -1379,8 +1384,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let name = String(cString: title).trimmingCharacters(in: .whitespaces)
         // The core converts its own stream to the rate the device runs at; the
         // queue level then steers that resampler (see AudioOut.rateDrift).
-        audio.start()
-        _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
+        if !silentMode {
+            audio.start()
+            _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
+        }
         // Do not let the previous game's overrides colour the global pass; the
         // per-game pass below loads this ROM's own overrides.
         perRomFilter = nil
