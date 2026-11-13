@@ -912,10 +912,12 @@ QString CloudLink::currentNode(GbCloud::Session* sig, const QString& token, Room
 			// The host asks the server directly for the current node.
 			sig->sendText(wsText(createJson(token, gameName())));
 			waitAndProcess(2000);
-			waitForRoom(sig, &probe, room->roomId, 8000);
+			waitForRoom(sig, &probe, room->roomId, 10000);
 		} else {
-			// The joiner listens to the host's broadcast and follows along.
-			waitForRoom(sig, &probe, room->roomId, 4000);
+			/* 加入方只能等房主的广播：房主进隧道等待后仍会每 8 秒广播一次
+			 * 中继地址（降到 8 秒是为了不被判刷屏），所以窗口必须盖住它，
+			 * 否则永远拿不到节点、只能退回 100 字符的聊天隧道。 */
+			waitForRoom(sig, &probe, room->roomId, 14000);
 		}
 	} catch (...) {
 		return QString();
@@ -2167,11 +2169,10 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
 			return;
 		}
-		// The peer is already waiting on the websocket tunnel; no node is
-		// coming, so stop listening and let the data stage use the tunnel.
-		if (m_tunnelPeerSeen) {
-			return;
-		}
+		/* 以前看到对端的隧道 hello 就直接放弃等 node——但 hello 只说明它
+		 * 先起了隧道，房主进隧道等待后仍会每 8 秒广播中继地址。提前退出
+		 * 的结果是永远退回 100 字符的聊天隧道（延迟抖动 ±200ms，锁步会
+		 * 互相 park 死）。现在只要没拿到 node 就等满窗口。 */
 	}
 }
 
