@@ -238,6 +238,34 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         if let core { mgbaMobileSetRewind(core, true) }
         applyCoreOptions()
+        // CI/自动化入口：launch args 驱动 ROM 加载与本地 N 核锁步启动。
+        //   -gboyAutoRom <name>      加载 Documents/<name>
+        //   -gboyLockstepPlayers N   加载完成后启动 N 核锁步（busgame 脚本由
+        //                            共用 C 层承载；这里只验帧钟与房间）。
+        // 里程碑以 GBOY_RT 前缀写 stderr，CI 的 simctl launch --console-pty 抓取。
+        let argv = ProcessInfo.processInfo.arguments
+        var autoRom: String?
+        var lockstepPlayers = 0
+        for (i, a) in argv.enumerated() where a == "-gboyAutoRom" && i + 1 < argv.count {
+            autoRom = argv[i + 1]
+        }
+        for (i, a) in argv.enumerated() where a == "-gboyLockstepPlayers" && i + 1 < argv.count {
+            lockstepPlayers = Int(argv[i + 1]) ?? 0
+        }
+        if let romName = autoRom {
+            let players = lockstepPlayers
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                let path = self.docs.appendingPathComponent(romName).path
+                NSLog("GBOY_RT loading %@", path)
+                self.loadRom(path)
+                NSLog("GBOY_RT rom loaded")
+                if players >= 2 {
+                    self.startLocalLockstep(players: players, port: 18781, status: UILabel())
+                    NSLog("GBOY_RT lockstep started players=%d", players)
+                }
+            }
+        }
         muted = defaults.bool(forKey: "muted")
         applyVolume()
         audio.lowLatency = defaults.bool(forKey: "low_latency")
