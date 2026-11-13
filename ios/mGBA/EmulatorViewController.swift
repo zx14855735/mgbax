@@ -12,6 +12,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var core: OpaquePointer?
     /// 3/4 人显式启用进程内锁步时的 N 核集合（默认 nil，保持原单核路径）。
     private var consoleSet: GBoyConsoleSet?
+    /// 镜像帧钟的全局帧号（跨 ROM 重载累计，GBoyConsoleSet 内部定纪元）。
+    private var netFrameNo: Int = 0
     private let gameView = GameView()
     private let controls = ControlsView()
     private let shellStage = ShellStageView()
@@ -1061,6 +1063,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 var done = 0
                 while done < framesToRun {
                     let n = min(step, framesToRun - done)
+                    // 镜像帧钟：跑这一批前推高天花板，镜像追平即等（与
+                    // Android 的 beginFrame/endFrame 同构）。
+                    if let set = consoleSet, set.isReady {
+                        netFrameNo += n
+                        set.beginFrame(netFrameNo)
+                    }
                     _ = mgbaMobileRunFrames(core, Int32(n))
                     pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
                     done += n
