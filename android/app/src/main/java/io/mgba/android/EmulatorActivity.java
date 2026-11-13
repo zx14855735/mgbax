@@ -416,6 +416,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
     /** busgame 调试脚本：>=0 表示重载完成后由模拟线程以该 menuAt 武装可见核。 */
     private volatile int pendingBusGameMenuAt = -1;
+    /** 云端连上后排队的一次重载：重载完把可见核按原槽位重挂回锁步房间。 */
+    private volatile boolean pendingCloudRearm;
     private int pendingBusGameModeDowns;
     /** busgame 期间禁用 auto_load_state：镜像核从电池存档冷启动，可见核若读旧
      * 即时存档，游戏上下文会与镜像错位（实测可见核 var8004=0 卡 lt=1133）。 */
@@ -2291,6 +2293,14 @@ public class EmulatorActivity extends AppCompatActivity {
                         Log.i(TAG, "busgame visible core armed menuAt="
                                 + pendingBusGameMenuAt + " modeDowns=" + pendingBusGameModeDowns);
                         pendingBusGameMenuAt = -1;
+                    } else if (pendingCloudRearm) {
+                        pendingCloudRearm = false;
+                        GBoyConsoleSet set = consoleSet;
+                        if (set != null) {
+                            set.rearmLockstepVisible();
+                            Log.i(TAG, "cloud reload: visible lockstep re-armed slot="
+                                    + set.visibleSlotIdx());
+                        }
                     }
                 }
                 int cmd = command.getAndSet(0);
@@ -4697,15 +4707,14 @@ public class EmulatorActivity extends AppCompatActivity {
                             toast("多核心联机启动失败：" + gboyLinkFailure());
                             return;
                         }
-                        // The host publishes its starting state so both devices
-                        // advance from the same deterministic snapshot.
-                        if (asHost && cloudLink != null && cloudLink.linkSession() != null) {
-                            GBoyConsoleSet set = consoleSet;
-                            byte[] snapshot = set == null ? null : set.snapshotState();
-                            if (snapshot != null) {
-                                cloudLink.linkSession().sendState(snapshot);
-                            }
-                        }
+                        /* 关键：可见核此刻已经在跑，直接把锁步房间挂上去会死锁——
+                         * 实测可见核停在 mgbaLockstepRunFrame 的 cond_wait、镜像核
+                         * 停在 mirrorLoop 的 Object.wait，两边互等（FRM 从此不再
+                         * 输出）。本机 busgame 路径能跑通是因为它随后重载了 ROM：
+                         * 复位把可见核的锁步驱动卸掉，再从帧边界按原槽位重挂回去。
+                         * 云端这里照同一套做，只是不武装 busgame 脚本。 */
+                        pendingCloudRearm = true;
+                        pendingPath.set(path);
                     });
                 }
 
