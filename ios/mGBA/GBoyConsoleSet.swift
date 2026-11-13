@@ -143,7 +143,9 @@ final class GBoyConsoleSet {
         // CPU 全速冲到比可见核多几万帧——四核游戏时钟错位，联机握手永远
         // 凑不齐 4 家（Android 侧同坑实测 pc=3 卡死）。
         frameCond.lock()
-        mirrorFrames = [Int](repeating: -1, count: count)
+        // 按 players 建数组：镜像线程沿用 cores 的下标（1..players-1），
+        // 按 count 建会让 idx=3 越界 abort（实测 CI 崩在这）。
+        mirrorFrames = [Int](repeating: -1, count: players)
         targetFrame = -1
         frameEpoch = -1
         frameCond.unlock()
