@@ -42,6 +42,13 @@ public final class GBoyConsoleSet {
     public enum State { NEW, LINKING, READY, STOPPED, FAILED }
 
     private static final long FRAME_WAIT_MS = 250L;
+    /* 可见核在 endFrame 等镜像追平的预算，只用于这层 Java 帧栅栏。
+     * 云端官方镜像模式里两核已经由 native 在 SIO 传输轮次会合，这里只需
+     * 吸收一帧内的线程调度抖动；沿用 250ms 会在镜像偶发落后时把每帧
+     * 钉成 250ms —— 实测联机握手阶段 st=4 pc=2 已建立、sic=9，帧率却
+     * 只有 2~4fps。锁步模式不走 endFrame（lockstepActive 早退），不受影响。
+     * FRAME_WAIT_MS 仍用于镜像 wait 与 thread.join，保持原值。 */
+    private static final long FRAME_FENCE_WAIT_MS = 20L;
     private static final int JOIN_ATTEMPTS = 50;
     private static final int JOIN_RETRY_MS = 20;
     private static final int CONNECT_TIMEOUT_MS = 3000;
@@ -392,7 +399,7 @@ public final class GBoyConsoleSet {
         }
         long rel = relativeFrame(frame);
         synchronized (lock) {
-            long deadline = System.currentTimeMillis() + FRAME_WAIT_MS;
+            long deadline = System.currentTimeMillis() + FRAME_FENCE_WAIT_MS;
             while (slowestMirror() < rel && state == State.READY
                     && System.currentTimeMillis() < deadline) {
                 long left = deadline - System.currentTimeMillis();
