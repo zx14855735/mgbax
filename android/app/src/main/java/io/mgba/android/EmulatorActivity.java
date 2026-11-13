@@ -1987,8 +1987,14 @@ public class EmulatorActivity extends AppCompatActivity {
          * 可供协调器会合时，模拟线程从房间建立那一刻起完全停止输出 FRM，
          * 画面冻结、按键无效。本机锁步的 59.7fps 实测是 GBOY_LOCAL_LINK +
          * busgame 帧脚本驱动的组合，云端路径缺这套帧驱动，不能直接套用。 */
-        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
+        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port, 2, 1, true);
         boolean ok = set.start(core, session);
+        if (!ok) {
+            /* 锁步房间起不来就退回旧的环回 TCP 布局，至少还能单核+镜像跑起来。 */
+            Log.w(TAG, "cloud lockstep start failed (" + set.failure() + "), falling back to loopback");
+            set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
+            ok = set.start(core, session);
+        }
         consoleSet = set;
         return ok;
     }
