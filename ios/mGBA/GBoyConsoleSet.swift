@@ -172,6 +172,10 @@ final class GBoyConsoleSet {
                         mgbaMobileSetKeys(core, keys)
                         _ = mgbaMobileRunFrames(core, 1)
                         done += 1
+                        if done == 600 {
+                            // 运行时验证标记：镜像核稳定推进 600 帧（CI 检查点）。
+                            NSLog("GBOY_RT mirror idx=%d frames=600 ok", index)
+                        }
                         self.frameCond.lock()
                         self.mirrorFrames[index] = done
                         self.frameCond.unlock()
