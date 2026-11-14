@@ -49,7 +49,7 @@ final class LobbyLink {
     /// Local key bitmask, GBA style.
     var localKeys: () -> Int32 = { 0 }
     /// Save-state snapshot for the host to seed the joiner (TYPE_STATE).
-    /// Unused since the 4-core cloud layout: both devices cold-start from the
+    /// Unused since the 2-core cloud layout: both devices cold-start from the
     /// same battery save, and a host-side seed would diverge the joiner's
     /// mirrors. Kept as API surface for the legacy single-core path.
     /// Called from the link thread; return nil until a core is loaded.
@@ -702,7 +702,7 @@ final class LobbyLink {
         onRemoteKeysForSlot(slot, keys)
     }
 
-    /// Mirrors GBoyLinkSession.defaultSenderSlot(): in the 4-core cloud room
+    /// Mirrors GBoyLinkSession.defaultSenderSlot(): in the cloud 2-core room
     /// both devices keep localSlot=1, so a bare TYPE_KEYS frame means「对面
     /// 那台设备」and must land on slot 2 — the mirror core that represents
     /// the opponent. Delivering slot 1 would overwrite our own visible

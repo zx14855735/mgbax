@@ -44,8 +44,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var turboB = false
     private var slot = 1
     private var pendingPath: String?
-    /// 云端 4 核对战武装（Android pendingCloudRearm 同构）：emu 线程在
-    /// pendingPath 消费时重建 4 核房间。gate 保护。
+    /// 云端 2P 对战武装（Android pendingCloudRearm 同构）：emu 线程在
+    /// pendingPath 消费时重建 2 核房间（可见核 + 对手镜像核）。gate 保护。
     private var pendingCloudRearm = false
     /// 云重载期间跳过 auto_load_state：四核必须从同一份电池存档冷启动，
     /// 可见核读即时存档、镜像核冷链会让游戏上下文开局就错位（Android
@@ -5843,10 +5843,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return nil
     }
 
-    /// 云端 4 核对战武装（Android officialMode onReady 同构，注释逐句对应）。
+    /// 云端 2P 对战武装（Android officialMode onReady 同构，注释逐句对应）。
     /// 两端都从电池存档冷启动：可见核若读即时存档、镜像核冷链，两样的游戏
     /// 上下文一开局就错位，联机永远 pc=0。重载在 emu 线程完成（pendingPath），
-    /// 重载完成后重建 4 核房间——重挂走 Join 语义会排到镜像核后面，必须
+    /// 重载完成后重建 2 核房间——重挂走 Join 语义会排到镜像核后面，必须
     /// 整房间重建、可见核重新当 host（Android 实测）。
     private func armCloudMulticore(asHost: Bool) {
         guard let core, mgbaMobileIsLoaded(core), let path = currentRomPath,
@@ -5863,7 +5863,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
     }
 
-    /// 云重挂：重载完成后在 emu 线程重建 4 核房间。可见核刚复位到帧 0、
+    /// 云端 2P：每端 2 核（1 可见核 + 1 镜像核）——4 核布局里 slot3/4 永无
+    /// 发送者，2 真人 + 2 空镜像的对战形态不成立；2 核时两端各跑一个 2 人
+    /// 本地 SIO，干净 1v1、pc=2 两端玩家都活跃（Android 同款决策）。
+    /// 云重挂：重载完成后在 emu 线程重建房间。可见核刚复位到帧 0、
     /// 锁步驱动已被复位卸掉，此刻整房间重建干净无死锁（Android 同款）。
     /// 失败时保持单核旧路径（consoleSet 为空，远端按键回落可见核）。
     private func rebuildCloudConsoleSet(romPath: String, visible: OpaquePointer) {
@@ -5872,7 +5875,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         guard let set = GBoyConsoleSet(romPath: romPath, saveDir: saves, stateDir: states,
-                                       players: 4, localSlot: 1, roomKey: 18781) else {
+                                       players: 2, localSlot: 1, roomKey: 18781) else {
             NSLog("GBOY_RT cloud arm rebuild failed: invalid params")
             gate.lock()
             suppressAutoLoadState = false
@@ -5881,10 +5884,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         if let error = set.start(visible: visible) {
             NSLog("GBOY_RT cloud arm rebuild failed: %@", error)
-            toast("四核联机启动失败：\(error)")
+            toast("双核联机启动失败：\(error)")
         } else {
             consoleSet = set
-            NSLog("GBOY_RT cloud arm rebuilt players=4 visible slot=1")
+            NSLog("GBOY_RT cloud arm rebuilt players=2 visible slot=1")
         }
         gate.lock()
         suppressAutoLoadState = false
@@ -5967,9 +5970,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     self.toast(note)
                 }
                 self.toast(asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P")
-                // 云端 4 核对战武装（Android officialMode onReady 同构）：
+                // 云端 2P 对战武装（Android officialMode onReady 同构）：
                 // 抑制自动读档、标记重挂并触发可见核重载；重载完成后
-                // emulationLoop 在帧 0 重建 4 核房间。ROM 未加载时保持
+                // emulationLoop 在帧 0 重建 2 核房间。ROM 未加载时保持
                 // 旧的单核路径。
                 self.armCloudMulticore(asHost: asHost)
             }
