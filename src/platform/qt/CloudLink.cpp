@@ -764,6 +764,13 @@ void CloudLink::runLobby() {
 	m_session = nullptr;
 }
 
+void CloudLink::injectNpcKeys(int keys) {
+	if (m_gboySession) {
+		m_gboySession->injectKeysForSlot(3, keys);
+		m_gboySession->injectKeysForSlot(4, keys);
+	}
+}
+
 void CloudLink::hostCreateRoom(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room) {
 	// The room is bound to the account, so any stale room has to be dissolved
 	// first: its relay node is a recycled port from the public pool and simply

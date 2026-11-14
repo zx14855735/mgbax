@@ -60,6 +60,9 @@ public:
 	void stopLink();
 	void sendReset();
 	void setLocalKeys(int keys) { m_localKeys.store(keys, std::memory_order_relaxed); }
+	/** 4 核/设备：把本机真人掩码同步灌进 NPC 槽位 3/4（不碰对端 slot2）。
+	 *  与 Android 的 GBoyLinkSession.injectKeysForSlot(3/4) 对称。 */
+	void injectNpcKeys(int keys);
 	/** The running game's SIO driver surface (分开控制模式). */
 	void setController(SioLinkHost* controller) { m_controller = controller; }
 	/**

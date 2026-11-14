@@ -2629,6 +2629,10 @@ void Window::startAutoCloudLink() {
 			}
 		}
 		link->setLocalKeys(keys);
+		/* 4 核/设备：本机 slot3/4 是 NPC 队位，没有独立按键源。把可见核
+		 * （含脚本注入）的掩码同步灌进去，让 NPC 跟着走完柜台对话；否则
+		 * 它们停在柜台大厅，大竞技场不放开走位（要求 4 人就位）。 */
+		link->injectNpcKeys(keys);
 	});
 	keyFeed->start(16);
 	qInfo().noquote() << "[AUTOLINK] 启动云端联机，房号" << (config.roomId.isEmpty() ? QStringLiteral("(建房)") : config.roomId);
