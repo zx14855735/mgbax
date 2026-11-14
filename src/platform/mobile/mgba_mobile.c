@@ -1577,7 +1577,12 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 		            (int) GBAView16(g->cpu, 0x0202196Cu),
 		            (unsigned) GBAView16(g->cpu, 0x02027B82u),
 		            px, py, emu->busGameMenuMax, cb2,
-		            cb2 == 0x0809AFCDu ? " BATTLE=YES" : "");
+		            /* 按区间判，不要只认 0x0809AFCD：4 核走完 4 座位 + 选怪
+		             * 注入后，实测 cb2 稳定在 0x0809C089（battle_main.o 里的
+		             * 战斗初始化回调，也是 ROM 中引用最多的该区间指针），
+		             * 旧精确值判据会把「已进对战区」误报成 0。 */
+		            (cb2 >= 0x08099848u && cb2 <= 0x080A30FCu)
+		                ? " BATTLE=YES" : "");
 	}
 	return keys;
 }
