@@ -37,6 +37,7 @@ version.c
 # ===== 本地工具 / 逆向产物 / 测试抓图（不进仓库）=====
 /.workbuddy/
 /.zcode-tmp/
+/tmp_handover/
 /.clj-kondo/
 /.lsp/
 
