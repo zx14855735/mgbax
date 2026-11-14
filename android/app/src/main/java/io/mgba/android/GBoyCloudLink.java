@@ -1974,12 +1974,32 @@ public final class GBoyCloudLink {
 
     /** The onConnected callback is posted to the UI thread, so the session has
      * to exist before it runs or the mirror console would see no keys. */
-    private void ensureSession(Link link) {
-        if (linkSession == null) {
+    private void ensureSession(Link link) {        if (linkSession == null) {
             linkSession = newSession(link);
         } else {
             servingLink = link;
         }
+    }
+
+    /**
+     * 官方 type 6：把本机可见核的即时存档推给对端，让对端「代表本机这个玩家」
+     * 的镜像核停在同一幕。**双向**（GBoy 的客户端和服务端各发一次），而且必须
+     * 发生在联机线开始跑之前。
+     *
+     * <p>云端模式原来只有 PC 一侧会发（Android 只在本地 GBoySocketLink 那条
+     * 路径发过），于是 PC 的镜像核永远停在电池存档上，两边核心从第一帧起就
+     * 不在同一幕。这里补上 Android 侧的发送入口。</p>
+     */
+    public void sendInitialState(byte[] snapshot) {
+        GBoyLinkSession session = linkSession;
+        Link link = servingLink;
+        if (session == null || link == null || snapshot == null || snapshot.length == 0) {
+            Log.w(TAG, "initial state skipped (session=" + (session != null)
+                    + " link=" + (link != null)
+                    + " bytes=" + (snapshot == null ? 0 : snapshot.length) + ")");
+            return;
+        }
+        link.send(GBoyFrames.frame(GBoyFrames.TYPE_STATE, session.stateFrame(snapshot)));
     }
 
     private void serve(Link link) {
