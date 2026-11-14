@@ -109,6 +109,8 @@ jobs:
           sleep 45
           if ! pgrep -f 'mGBAx.app' > /dev/null; then
             echo "::error::APP DIED during lockstep check"
+            echo "===== sim system log (mGBAx last 3m) ====="
+            xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "mGBAx"' --style compact 2>/dev/null | tail -50 || true
             CRASH=$(ls -t ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
             if [ -n "$CRASH" ]; then
               echo "===== sim crash report ====="
