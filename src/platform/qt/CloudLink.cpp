@@ -15,6 +15,10 @@
 #include "DirectLink.h"
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
+#include "TcpDirectLink.h"
+#ifdef _WIN32
+#include "BtLink.h"
+#endif
 
 #include <QDir>
 #include <QFileInfo>
