@@ -185,6 +185,7 @@ final class LobbyLink {
         current?.close()
         open?.close()
         onRemoteKeys(0)
+        onRemotePacing(0)   // 会话结束撤销对端的帧率上限（0 = 无上限）
     }
 
     // MARK: - Session
@@ -1052,6 +1053,7 @@ final class LobbyLink {
         closedFlag = true
         lock.unlock()
         onRemoteKeys(0)
+        onRemotePacing(0)   // 同上：链路没了就别再按对端要求的上限慢放
         status(text)
     }
 

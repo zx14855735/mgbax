@@ -166,6 +166,7 @@ final class GBoyLink {
             Darwin.close(fd)
         }
         onRemoteKeys(0)
+        onRemotePacing(0)   // 断开就撤销对端的帧率上限（同 drop）
     }
 
     private func run(asHost: Bool, ip: String?, port: Int) {
@@ -375,6 +376,9 @@ final class GBoyLink {
             Darwin.close(fd)
         }
         onRemoteKeys(0)
+        // 会话结束：撤销对端的帧率上限（0 = 无上限），否则本机会一直按
+        // 对端最后要求的 30fps 慢放。onRemotePacing 的 0 与「没收到」等价。
+        onRemotePacing(0)
         status(text)
     }
 
