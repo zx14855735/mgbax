@@ -1645,11 +1645,13 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		fail(QStringLiteral("模拟核心未就绪"));
 		return;
 	}
-	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），镜像核连进来。
+	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），3 个镜像核
+	// 连进来凑满 4 人。players 必须与镜像核的 linkJoin 一致，否则两边包格式
+	// 不同（星型总线 BusPacket vs 两人直连 Packet），TCP 连上也解不出字。
 	quint16 port = 0;
 	for (int t = 0; t < 8; ++t) {
 		quint16 candidate = quint16(18781 + t);
-		if (m_controller->sioHost(candidate)) {
+		if (m_controller->sioHostPlayers(candidate, MIRROR_COUNT + 1)) {
 			port = candidate;
 			break;
 		}
@@ -1664,7 +1666,13 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	events.onState = [this](const QByteArray& state) {
 		// 官方语义：TYPE_STATE 只灌进镜像核（对方的控制台在本机的映像），
 		// 绝不能灌进可见核——后者是玩家自己的进度。
-		if (!m_mirror || !m_mirror->applyRemoteState(state)) {
+		bool applied = false;
+		for (int i = 0; i < MIRROR_COUNT && !applied; ++i) {
+			if (m_mirrors[i]) {
+				applied = m_mirrors[i]->applyRemoteState(state);
+			}
+		}
+		if (!applied) {
 			GbCloud::debugLog(QStringLiteral("TYPE_STATE not applied (no mirror console)"));
 		}
 	};
@@ -1678,9 +1686,11 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 			        link->send(frame);
 		        }
 	        },
-	        events, 1, 2);
+	        /* 4 槽位：本机可见核占 slot 1，3 个镜像占 slot 2/3/4。会话只把
+	         * 真人按键跨网络送出去（对端按键进 slot 2），slot 3/4 恒 0 作为
+	         * NPC 陪位；keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
+	        events, 1, 4);
 	emit connected(asHost);
-	m_mirror = new GBoyMirror(this);
 	QString savePath = m_config.savePath;
 	{
 		// savePath 可能是目录（核心存档路径尚未定型）或为空：一律退化成
@@ -1691,14 +1701,65 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 			        QFileInfo(m_config.romPath).completeBaseName() + QStringLiteral(".sav"));
 		}
 	}
-	QString mirrorRoot = QFileInfo(savePath).dir().filePath(QStringLiteral("mirror1"));
-	QString error;
-	if (!m_mirror->start(m_config.romPath, savePath, mirrorRoot, port, m_gboySession, &error)) {
-		stopOfficialMatch();
-		fail(error);
-		return;
+	/* 无人值守回归钩子：MGBAX_SCRIPT_DIR + MGBAX_NAV_AT 同时给出时，四个核
+	 * 一起跑 busgame 闭环导航。正常玩家联机没有这两个变量，navIdx=-1，
+	 * 镜像核从第一帧起就只用网络按键，绝不被脚本接管。 */
+	const QString scriptDir = QString::fromLocal8Bit(qgetenv("MGBAX_SCRIPT_DIR"));
+	int navMenuAt = -1;
+	int navModeDowns = 2;
+	if (!scriptDir.isEmpty()) {
+		bool ok = false;
+		const int v = qgetenv("MGBAX_NAV_AT").toInt(&ok);
+		if (ok && v > 0) {
+			navMenuAt = v;
+		}
+		ok = false;
+		const int d = qgetenv("MGBAX_NAV_DOWNS").toInt(&ok);
+		if (ok && d >= 0) {
+			navModeDowns = d;
+		}
 	}
-	status(QStringLiteral("SIO 链路已建立（官方镜像，环回 %1）\n").arg(port)
+	/* 三个镜像核必须拿到同一份电池存档字节：逐个 QFile::copy 会碰到已存在的
+	 * 目标（沿用上一轮残留），也可能在循环期间读到可见核写回的新版本。先读
+	 * 一次快照再分发，四核冷启动起点才一致。 */
+	QByteArray saveSnapshot;
+	if (!savePath.isEmpty() && QFileInfo(savePath).isFile()) {
+		QFile src(savePath);
+		if (src.open(QIODevice::ReadOnly)) {
+			saveSnapshot = src.readAll();
+			src.close();
+		}
+	}
+	QString error;
+	for (int i = 0; i < MIRROR_COUNT; ++i) {
+		QDir mirrorDir(QFileInfo(savePath).dir().filePath(
+		    QStringLiteral("mirror%1").arg(i + 1)));
+		GBoyMirror* mirror = new GBoyMirror(this);
+		if (!mirror->start(m_config.romPath, savePath, mirrorDir.path(), port,
+		                   m_gboySession, i + 2, MIRROR_COUNT + 1,
+		                   navMenuAt > 0 ? i + 1 : -1, navMenuAt, navModeDowns,
+		                   saveSnapshot, &error)) {
+			mirror->stopMirror();
+			delete mirror;
+			stopOfficialMatch();
+			fail(QStringLiteral("镜像核 %1 启动失败：").arg(i + 2) + error);
+			return;
+		}
+		m_mirrors[i] = mirror;
+	}
+	if (navMenuAt > 0) {
+		/* 三个镜像核已经在 start() 里各自武装好脚本；此刻才写 nav_at，让
+		 * 可见核（ScriptedControl 每 16ms 探测该文件）在同一瞬间起跑，四核
+		 * 相位一致。提前写会让可见核独自先跑几十秒，SIO 握手时四核状态
+		 * 完全不同。文件内容 "menuAt modeDowns" 与 Android 广播参数一致。 */
+		QFile navAt(scriptDir + QStringLiteral("/nav_at"));
+		if (navAt.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+			navAt.write(QByteArray::number(navMenuAt) + " "
+			            + QByteArray::number(navModeDowns));
+			navAt.close();
+		}
+	}
+	status(QStringLiteral("SIO 链路已建立（4 核本机房间，环回 %1）\n").arg(port)
 	       + QStringLiteral("各自操作各自的画面，游戏内联机（交换/对战）走本机联机线\n")
 	       + QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	serveOfficial(link, room);
@@ -1797,10 +1858,18 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 }
 
 void CloudLink::stopOfficialMatch() {
-	if (m_mirror) {
-		m_mirror->stopMirror();
-		delete m_mirror;
-		m_mirror = nullptr;
+	/* 下一次连接必须重新走「镜像就绪 → 写文件 → 四核同时起跑」；残留的
+	 * nav_at 会让可见核在镜像核创建之前就独自开跑，四核相位错开。 */
+	const QString scriptDir = QString::fromLocal8Bit(qgetenv("MGBAX_SCRIPT_DIR"));
+	if (!scriptDir.isEmpty()) {
+		QFile::remove(scriptDir + QStringLiteral("/nav_at"));
+	}
+	for (int i = 0; i < MIRROR_COUNT; ++i) {
+		if (m_mirrors[i]) {
+			m_mirrors[i]->stopMirror();
+			delete m_mirrors[i];
+			m_mirrors[i] = nullptr;
+		}
 	}
 	if (m_gboySession) {
 		delete m_gboySession;

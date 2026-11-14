@@ -164,7 +164,11 @@ private:
 	/** Official GBoy layout (MGBAX_OFFICIAL_LINK=1): mirror console + keys. */
 	bool m_officialMode = false;
 	GBoyLinkSession* m_gboySession = nullptr;
-	GBoyMirror* m_mirror = nullptr;
+	/* 与 Android GBoyConsoleSet 对称：1 可见核 + 3 镜像核凑满 4 人多人对战。
+	 * 游戏要求 4 名玩家才放开球场走位并进入 battle_main.o，2 核会把角色
+	 * 锁在原地（实测 cb2 恒为 08170A81）。网络仍然只传按键。 */
+	static constexpr int MIRROR_COUNT = 3;
+	GBoyMirror* m_mirrors[MIRROR_COUNT] = {nullptr, nullptr, nullptr};
 	quint16 m_mirrorSioPort = 0;
 	long m_officialFrame = 0;
 

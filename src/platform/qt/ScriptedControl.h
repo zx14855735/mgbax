@@ -9,6 +9,8 @@
 #include <QString>
 #include <QTimer>
 
+#include "platform/mobile/mgba_mobile.h"
+
 namespace QGBA {
 
 class CoreController;
@@ -68,6 +70,19 @@ private:
 	QString m_dir;
 	int m_mask = 0;
 	bool m_maskApplied = false;
+
+	/* 云端 4P 对局：可见核与 Android 四核共用 mgbaMobileBusGameNavKeys()。
+	 * <dir>/nav_at 存在时从开机起跑闭环导航（menuAt 由文件内容给出），
+	 * callback2 连续命中战斗区后自动释放，此后回落到 <dir>/keys 的真人按键。 */
+	struct BusGameNavState m_nav;
+	bool m_navArmed = false;
+	bool m_navDone = false;
+	/* 导航帧号必须锚定核心实际跑过的帧数：QTimer 的 16ms 与 59.7fps 并不
+	 * 严格对齐，逐次 poll 自增会让可见核与三个帧精确镜像核相位漂移，
+	 * 四人 SIO 握手时按出不同选项。m_navBaseFrame 是武装瞬间的帧计数。 */
+	uint64_t m_navBaseFrame = 0;
+	uint64_t m_lastNavFrame = 0;
+	bool m_navBaseSet = false;
 };
 
 }

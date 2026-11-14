@@ -241,6 +241,7 @@ public slots:
 	// SioLinkHost: the cloud bridge drives the same driver through this
 	// interface so it does not have to link CoreController.
 	bool sioHost(quint16 port) override { return lanLinkHost(port); }
+	bool sioHostPlayers(quint16 port, int players) override { return lanLinkHostPlayers(port, players); }
 	bool sioJoin(const QString& host, quint16 port) override { return lanLinkJoin(host, port); }
 	void sioClose() override { lanLinkClose(); }
 #endif

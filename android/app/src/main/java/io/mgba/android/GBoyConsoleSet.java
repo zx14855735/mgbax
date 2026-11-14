@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -42,6 +43,13 @@ public final class GBoyConsoleSet {
     public enum State { NEW, LINKING, READY, STOPPED, FAILED }
 
     private static final long FRAME_WAIT_MS = 250L;
+    /* 可见核在 endFrame 等镜像追平的预算，只用于这层 Java 帧栅栏。
+     * 云端官方镜像模式里两核已经由 native 在 SIO 传输轮次会合，这里只需
+     * 吸收一帧内的线程调度抖动；沿用 250ms 会在镜像偶发落后时把每帧
+     * 钉成 250ms —— 实测联机握手阶段 st=4 pc=2 已建立、sic=9，帧率却
+     * 只有 2~4fps。锁步模式不走 endFrame（lockstepActive 早退），不受影响。
+     * FRAME_WAIT_MS 仍用于镜像 wait 与 thread.join，保持原值。 */
+    private static final long FRAME_FENCE_WAIT_MS = 20L;
     private static final int JOIN_ATTEMPTS = 50;
     private static final int JOIN_RETRY_MS = 20;
     private static final int CONNECT_TIMEOUT_MS = 3000;
@@ -80,6 +88,9 @@ public final class GBoyConsoleSet {
     /* busgame 调试脚本：true 时镜像线程不再取会话按键，改走 native 判据脚本
      * （与可见核的 beginFrameKeys 接管同源），4 核各按各自序号跑同一份脚本。 */
     private volatile boolean busGame;
+    /* 调试用：置位时镜像线程在锁外暂停，好让别的线程安全地给镜像核存档
+     * （「隐藏镜像核到底走到哪一步」只能把它的状态倒出来在 PC 上回放看）。 */
+    private volatile boolean mirrorHold;
     /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
      * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
      * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
@@ -153,6 +164,35 @@ public final class GBoyConsoleSet {
         mirrors = new MgbaCore[count];
         mirrorThreads = new Thread[count];
         mirrorFrames = new long[count];
+
+        /* 先把可见核的电池存档一次性读成快照，再分发给所有镜像目录。
+         * 旧实现在循环里每轮重新打开同一个源文件：云连接重建房间时可见核
+         * 会在循环期间写回存档，实测四个存档 md5 各不相同（mirror1 与
+         * mirror2/3 内容不同），四核从不同的游戏进度冷启动，SIO 握手永远
+         * 凑不齐 playerCount、cb2 也随之分裂。同一份字节数组保证起点一致。 */
+        byte[] saveSnapshot = null;
+        String saveSnapshotName = null;
+        String primarySavePath = primary.saveFile();
+        if (primarySavePath != null && !primarySavePath.isEmpty()) {
+            File primarySaveFile = new File(primarySavePath);
+            if (primarySaveFile.isFile()) {
+                saveSnapshotName = primarySaveFile.getName();
+                try (InputStream in = new FileInputStream(primarySaveFile)) {
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[8192];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) {
+                        bos.write(buffer, 0, n);
+                    }
+                    saveSnapshot = bos.toByteArray();
+                } catch (IOException e) {
+                    return fail("读取初始存档失败: " + e.getMessage());
+                }
+            }
+        }
+        final byte[] snapshot = saveSnapshot;
+        final String snapshotName = saveSnapshotName;
+
         for (int i = 0; i < count; ++i) {
             String dir = MIRROR_DIR_PREFIX + (i + 1);
             File mirrorSave = new File(saveDir, dir);
@@ -160,9 +200,11 @@ public final class GBoyConsoleSet {
             if (!mkdirs(mirrorSave) || !mkdirs(mirrorState)) {
                 return fail("无法创建镜像存档目录 " + dir);
             }
-            String saveError = copyPrimarySave(primary.saveFile(), mirrorSave);
-            if (saveError != null) {
-                return fail(saveError);
+            if (snapshot != null && snapshotName != null) {
+                String saveError = writeSaveSnapshot(snapshot, snapshotName, mirrorSave);
+                if (saveError != null) {
+                    return fail(saveError);
+                }
             }
             MgbaCore core = new MgbaCore(mirrorSave, mirrorState);
             if (!core.load(rom.getAbsolutePath())) {
@@ -392,7 +434,7 @@ public final class GBoyConsoleSet {
         }
         long rel = relativeFrame(frame);
         synchronized (lock) {
-            long deadline = System.currentTimeMillis() + FRAME_WAIT_MS;
+            long deadline = System.currentTimeMillis() + FRAME_FENCE_WAIT_MS;
             while (slowestMirror() < rel && state == State.READY
                     && System.currentTimeMillis() < deadline) {
                 long left = deadline - System.currentTimeMillis();
@@ -421,9 +463,39 @@ public final class GBoyConsoleSet {
         return rel < 0 ? 0 : rel;
     }
 
+    /** 调试倒档：暂停所有镜像线程，把每个镜像核存进它自己的 slot{slot}.ss，
+     *  然后把它们的状态目录路径回给调用方（root 下 adb pull 出来，丢进 PC 版
+     *  mGBA 就能看见隐藏镜像核此刻到底停在哪一幕）。 */
+    public String dumpMirrorStates(int slot) {
+        if (mirrors == null || mirrors.length == 0) {
+            return "no mirrors";
+        }
+        mirrorHold = true;
+        try {
+            Thread.sleep(300);   // 等线程跑完手头那一帧停在 hold 上
+            StringBuilder result = new StringBuilder();
+            for (int i = 0; i < mirrors.length; ++i) {
+                MgbaCore core = mirrors[i];
+                if (core == null) {
+                    continue;
+                }
+                boolean ok = core.saveState(slot);
+                result.append("mirror").append(i + 1)
+                      .append('=').append(ok ? "ok" : "fail")
+                      .append('@').append(new File(stateDir, MIRROR_DIR_PREFIX + (i + 1)).getAbsolutePath())
+                      .append(' ');
+            }
+            return result.toString();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            mirrorHold = false;
+        }
+    }
+
     /** 把镜像核的帧钟基线拉到当前天花板（=可见核已发布的帧位）。用于快照
-     *  同步后：镜像从可见核的「现在」起步，不追历史帧。 */
-    public void syncMirrorFramesToVisible() {
+     *  同步后：镜像从可见核的「现在」起步，不追历史帧。 */    public void syncMirrorFramesToVisible() {
         synchronized (lock) {
             if (mirrorFrames == null) {
                 return;
@@ -496,6 +568,34 @@ public final class GBoyConsoleSet {
         return state;
     }
 
+    /** 调试：把某个镜像核此刻的画面搬到可见核上（镜像核没有画面输出，联机时
+     *  只能这么"看见"它停在哪一幕）。先 hold 住镜像线程再取内存存档，避免和
+     *  正在跑的 runFrames 撞车；可见核的状态被覆盖，看完重载 ROM 即恢复。 */
+    public String showMirrorOnVisible(int index) {
+        if (mirrors == null || index < 0 || index >= mirrors.length || mirrors[index] == null) {
+            return "no mirror " + index;
+        }
+        MgbaCore visible = primary;
+        if (visible == null) {
+            return "no visible";
+        }
+        mirrorHold = true;
+        try {
+            Thread.sleep(300);
+            byte[] blob = mirrors[index].saveStateToMemory();
+            if (blob == null || blob.length == 0) {
+                return "mirror save failed";
+            }
+            boolean ok = visible.loadStateFromMemory(blob);
+            return (ok ? "ok " : "apply failed ") + blob.length;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            mirrorHold = false;
+        }
+    }
+
     public String failure() {
         return failure;
     }
@@ -552,6 +652,20 @@ public final class GBoyConsoleSet {
          *    4 家——实测 pc=3、lt=1133 卡死）。
          *  native 锁步照旧在 SIO 传输轮次上会合各核；这层只对齐帧钟。 */
         while (state == State.READY) {
+            /* 调试倒档：镜像线程在进核之前停住，别让 runFrames 和存档撞车。 */
+            while (state == State.READY && mirrorHold) {
+                synchronized (lock) {
+                    try {
+                        lock.wait(40);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                }
+            }
+            if (state != State.READY) {
+                return;
+            }
             long ceiling;
             synchronized (lock) {
                 while (state == State.READY && mirrorFrames[index] >= targetFrame) {
@@ -576,20 +690,43 @@ public final class GBoyConsoleSet {
             synchronized (lock) {
                 done = mirrorFrames[index];
             }
-            while (state == State.READY && done < ceiling) {
-                int keys = 0;
-                if (!busGame) {
-                    keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
+            /* 天花板与镜像帧钟失配时（快照重载、可见核被 SIO 等待窗拖慢），
+             * 一次追平几百帧会让镜像核在极短时间内推完上百轮 MULTI 传输，
+             * 主机侧轮次队列瞬时积压、训练家卡片块被喂进错轮次，游戏报
+             * LINK_ERR ck=1（校验和失败）并断开。实测可见核 10fps 时镜像
+             * 冲到 152fps。正常 60fps 下 ceiling - done 只有 1，这个预算
+             * 不改变行为；失配时分多次追，给 native SIO 会合留出节拍。 */
+            int budget = 4;
+            while (state == State.READY && done < ceiling && budget-- > 0) {
+                /* 无论脚本是否接管都写入网络按键。native 脚本激活时
+                 * beginFrameKeys 完全忽略这份 keys；一旦 callback2 连续 120 帧
+                 * 落在 battle_main.o，native 会自动释放脚本，此后 loadHeld()
+                 * 立刻拿到这里写入的网络按键 —— 交还控制权不需要额外广播或 JNI。 */
+                int keys = net != null
+                        ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
+                /* 绝不能在 Java 层调 busGameTick——那会一帧 tick 两次
+                 * （实测镜像 2 倍速冲出天花板）。 */
+                if (done % 120 == 0) {
+                    android.util.Log.i("mGBA-App", "mirror keys=" + keys + " net="
+                            + (net != null) + " slot="
+                            + mirrorSlotFor(localSlot, players, index));
                 }
-                /* busgame 时 keys 传 0 即可：镜像核的脚本由它自己 runFrames 里的
-                 * beginFrameKeys 接管（native 每帧 tick 一次）。绝不能再在 Java 层
-                 * 调 busGameTick——那会一帧 tick 两次（实测镜像 2 倍速冲出天花板）。 */
                 core.setKeys(keys);
                 core.pumpLink();
                 core.runFrames(keys, 1);
                 ++done;
                 synchronized (lock) {
                     mirrorFrames[index] = done;
+                }
+            }
+            if (done < ceiling) {
+                synchronized (lock) {
+                    try {
+                        lock.wait(2);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
                 }
             }
             synchronized (lock) {
@@ -626,22 +763,11 @@ public final class GBoyConsoleSet {
         return dir.isDirectory() || dir.mkdirs();
     }
 
-    private static String copyPrimarySave(String savePath, File mirrorSave) {
-        if (savePath == null || savePath.isEmpty()) {
-            return null;
-        }
-        File source = new File(savePath);
-        if (!source.isFile()) {
-            return null;
-        }
-        File target = new File(mirrorSave, source.getName());
-        try (InputStream in = new FileInputStream(source);
-             OutputStream out = new FileOutputStream(target)) {
-            byte[] buffer = new byte[8192];
-            int n;
-            while ((n = in.read(buffer)) > 0) {
-                out.write(buffer, 0, n);
-            }
+    /** 把 start() 里读到的同一份快照写进一个镜像目录（覆盖任何残留）。 */
+    private static String writeSaveSnapshot(byte[] snapshot, String name, File mirrorSave) {
+        File target = new File(mirrorSave, name);
+        try (OutputStream out = new FileOutputStream(target)) {
+            out.write(snapshot);
             return null;
         } catch (IOException e) {
             return "复制初始存档失败: " + e.getMessage();

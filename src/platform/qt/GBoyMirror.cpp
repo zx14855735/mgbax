@@ -38,7 +38,9 @@ GBoyMirror::GBoyMirror(QObject* parent)
 
 bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
                        const QString& mirrorRoot, quint16 primaryPort,
-                       GBoyLinkSession* session, QString* error) {
+                       GBoyLinkSession* session, int slot, int players,
+                       int navIdx, int navMenuAt, int navModeDowns,
+                       const QByteArray& saveSnapshot, QString* error) {
 	if (m_running.load(std::memory_order_relaxed)) {
 		if (error) {
 			*error = QStringLiteral("镜像控制台已在运行");
@@ -60,14 +62,29 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
 	}
 	QString stateRoot = root.filePath(QStringLiteral("state"));
 	QDir().mkpath(stateRoot);
-	// Determinism: the mirror boots from a copy of the local save, the same
-	// trick the Android GBoyConsoleSet uses (copyPrimarySave).
+	// Determinism: every mirror boots from the SAME byte-for-byte snapshot of
+	// the local save. The old code called QFile::copy() per mirror: it fails
+	// when the target already exists (so a stale save from the previous session
+	// was silently reused), and re-reads a source that the visible core may
+	// have rewritten between iterations. Four cores with different starting
+	// progress never complete the SIO handshake (Android showed this too).
 	QString saveTarget = root.filePath(saveNameFor(romPath));
-	QFile saveSource(primarySavePath);
-	if (!primarySavePath.isEmpty() && saveSource.exists()) {
-		if (!saveSource.copy(saveTarget)) {
-			// A copy from a previous session is still a usable starting point.
-			if (!QFileInfo::exists(saveTarget)) {
+	if (!saveSnapshot.isEmpty()) {
+		QFile::remove(saveTarget);
+		QFile out(saveTarget);
+		if (!out.open(QIODevice::WriteOnly)
+		    || out.write(saveSnapshot) != saveSnapshot.size()) {
+			if (error) {
+				*error = QStringLiteral("无法把存档快照写入镜像目录：")
+				         + out.errorString();
+			}
+			return false;
+		}
+	} else {
+		QFile saveSource(primarySavePath);
+		if (!primarySavePath.isEmpty() && saveSource.exists()) {
+			QFile::remove(saveTarget);
+			if (!saveSource.copy(saveTarget)) {
 				if (error) {
 					*error = QStringLiteral("无法复制本机存档到镜像目录：")
 					         + saveSource.errorString();
@@ -77,6 +94,8 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
 		}
 	}
 	m_session = session;
+	m_slot = slot;
+	m_players = players;
 	m_emu = mgbaMobileCreate(root.path().toUtf8().constData(),
 	                         stateRoot.toUtf8().constData(), "pcmirror");
 	if (!m_emu) {
@@ -93,11 +112,19 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
 		}
 		return false;
 	}
+	if (navIdx >= 0) {
+		/* 与 Android GBoyConsoleSet.setBusGame() 对称：四个核各自从 ROM 加载
+		 * 后的第 0 帧起跑同一份 busgame 导航，navIdx 决定 4P 座位。native 的
+		 * beginFrameKeys 在脚本激活时完全覆盖 mgbaMobileSetKeys 的值；连续
+		 * 120 帧命中 battle_main.o 后脚本自释放，此后 loadHeld() 立刻拿到
+		 * 这里每帧写入的网络按键，不再需要外部广播或额外 JNI。 */
+		mgbaMobileBusGameStart(m_emu, navIdx, navMenuAt, navModeDowns);
+	}
 	// The primary listens (SioLinkHost::sioHost, pumped by the core thread's
 	// finishFrame); the mirror connects out to it, same as the Android set.
 	bool joined = false;
 	for (int attempt = 0; attempt < 50 && !joined; ++attempt) {
-		joined = mgbaMobileLinkJoin(m_emu, "127.0.0.1", int(primaryPort), 2);
+		joined = mgbaMobileLinkJoin(m_emu, "127.0.0.1", int(primaryPort), m_players);
 		if (!joined) {
 			QThread::msleep(20);
 		}
@@ -148,7 +175,7 @@ void GBoyMirror::run() {
 	auto nextFrame = QDateTime::currentMSecsSinceEpoch();
 	while (m_running.load(std::memory_order_relaxed) && m_emu) {
 		GBoyLinkSession* session = m_session;
-		int keys = session ? session->keysForSlot(2) : 0;
+		int keys = session ? session->keysForSlot(m_slot) : 0;
 		mgbaMobileSetKeys(m_emu, quint32(keys));
 		mgbaMobilePumpLink(m_emu);
 		mgbaMobileRunFrames(m_emu, 1);

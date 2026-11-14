@@ -1,4 +1,4 @@
-/* This Source Code Form is subject to the terms of the Mozilla Public
+﻿/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "mgba_mobile.h"
@@ -129,6 +129,8 @@ struct MgbaMobile {
 	int busGameModeDowns;
 	uint32_t busGameFrame;
 	int busGameMenuMax;
+	/* 进战斗区后自动释放按键：连续命中的帧数由共享导航状态累计。 */
+	uint32_t busGameBattleHits;
 	/* 一次 MULTI 传输的挂起状态：发起时把本帧数据发出去，传输应当结束的时刻
 	 * 再取回对端应答。中途不阻塞模拟线程，否则每次传输都要吃掉半帧到几十
 	 * 毫秒，游戏内的联机握手会直接超时。 */
@@ -1096,7 +1098,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	{
 		static struct mLogger s_iosDefaultLogger;
 		s_iosDefaultLogger.log = iosDefaultLog;
-		s_iosDefaultLogger.context = NULL;
+		s_iosDefaultLogger.filter = NULL;
 		mLogSetDefaultLogger(&s_iosDefaultLogger);
 	}
 #endif
@@ -1418,6 +1420,7 @@ void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int mod
 	emu->busGameModeDowns = modeDowns;
 	emu->busGameFrame = 0;
 	emu->busGameMenuMax = 0;
+	emu->busGameBattleHits = 0;
 	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d navOnly=%d",
 	            idx, menuAt, modeDowns, emu->busGameNavOnly);
 }
@@ -1430,13 +1433,52 @@ void mgbaMobileBusGameStop(struct MgbaMobile* emu) {
 	MOBILE_LOGI("BUSGAME stop");
 }
 
-static uint32_t busGameKeys(struct MgbaMobile* emu) {
-	struct mCore* core = emu->core;
-	struct GBA* g = (struct GBA*) core->board;
-	const int idx = emu->busGameIdx;
-	const int menuAt = emu->busGameMenuAt;
-	const int modeDowns = emu->busGameModeDowns;
-	const uint32_t f = emu->busGameFrame++;
+void mgbaMobileBusGameNavInit(struct BusGameNavState* st, int idx, int menuAt, int modeDowns) {
+	if (!st) {
+		return;
+	}
+	memset(st, 0, sizeof(*st));
+	st->idx = idx;
+	/* 负 menuAt = 「只跑导航」：用于已经手工走到 st=4/球场图的云端 2P，
+	 * 补最后一环（ready2 走位、选怪内存注入、战斗菜单钳位），不再重放开场按键。
+	 * 同时必须把 menuAt 归零：导航分支 `f >= menuAt + 240` 里 f 是 uint32_t，
+	 * 负 int 会被提升成巨大的 unsigned，条件永远不成立。 */
+	st->navOnly = (menuAt < 0);
+	st->menuAt = st->navOnly ? 0 : menuAt;
+	st->modeDowns = modeDowns;
+}
+
+bool mgbaMobileBusGameInBattle(struct GBA* g) {
+	if (!g || !g->cpu) {
+		return false;
+	}
+	uint32_t cb2 = GBAView32(g->cpu, 0x020290E8u);
+	/* 按区间判，不要只认 0x0809AFCD：4 核走完 4 座位 + 选怪注入后，实测
+	 * cb2 稳定在 0x0809C089（battle_main.o 里的战斗初始化回调，也是 ROM 中
+	 * 引用最多的该区间指针），旧精确值判据会把「已进对战区」误报成 0。 */
+	return cb2 >= 0x08099848u && cb2 <= 0x080A30FCu;
+}
+
+uint32_t mgbaMobileBusGamePeek32(struct GBA* g, uint32_t addr) {
+	return (g && g->cpu) ? GBAView32(g->cpu, addr) : 0u;
+}
+
+uint8_t mgbaMobileBusGamePeek8(struct GBA* g, uint32_t addr) {
+	return (g && g->cpu) ? GBAView8(g->cpu, addr) : 0u;
+}
+
+/* == 两端共用的 busgame 导航核心 ==
+ * Android 的 MgbaMobile 四核走下面的 busGameKeys() 薄包装；PC Qt 的
+ * CoreController 可见核从 ScriptedControl::poll() 直接调用本函数，传自己的
+ * board。地址、相位、内存判据只有这一份，杜绝两端逻辑漂移。 */
+uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g) {
+	if (!st || !g || !g->cpu) {
+		return 0;
+	}
+	const int idx = st->idx;
+	const int menuAt = st->menuAt;
+	const int modeDowns = st->modeDowns;
+	const uint32_t f = st->frame++;
 	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手（f≈1365）就会出现，
 	 * 远早于菜单导航（menuAt=1500）。一旦那时停手，导航到 multi-battle 的
 	 * DOWN/A/UP/LEFT/modeDowns 按键全被跳过，游戏永远进不了对战。 */
@@ -1445,7 +1487,7 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	uint32_t keys = 0;
 	/* nav-only：跳过开场 START/A/DOWN/UP/LEFT 盲按，直接落到导航分支。
 	 * 这里的 goto 只跨过一串纯赋值，标签后紧跟空语句以保证 C99 合法。 */
-	if (emu->busGameNavOnly) {
+	if (st->navOnly) {
 		goto busgame_navigate;
 	}
 	if (f >= boot && f < boot + 6) {
@@ -1505,6 +1547,14 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 						if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
 					}
 					keys = ((f % 12) < 2) ? A : 0u;
+				} else if (ready2 && !ready4) {
+					/* 2P 单打：进了球场图之后角色被游戏锁住，不能走位
+					 * （实测 BUSGAME f=1800→4800 两核 pos 恒为 5,6 / 6,6）。
+					 * 此时游戏等的是 sMenu 的双项确认（cur=0/1、pt=0），
+					 * 4P 那套「走到座位再按 A」永远到不了座位，于是永远
+					 * 不发 A，画面就冻在球场图上。2P 直接脉冲 A 推进，
+					 * 等 ptype==4 弹出队伍菜单后再由上面的分支注入选怪。 */
+					keys = ((f % 40) < 25) ? A : 0u;
 				} else {
 					/* 队伍菜单未弹出：闭环走位到 4P 座位。 */
 					static const int seatX[4] = {3, 10, 3, 10};
@@ -1536,8 +1586,8 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	 * （多人/4P）。联机服务菜单 4 项不能钳。 */
 	if (f >= menuAt) {
 		int mx = (int) GBAView8(g->cpu, 0x020296C4u);
-		if (mx > emu->busGameMenuMax) {
-			emu->busGameMenuMax = mx;
+		if (mx > st->menuMax) {
+			st->menuMax = mx;
 		}
 		if (mx == 4) {
 			int cur = (int) GBAView8(g->cpu, 0x020296C2u);
@@ -1551,10 +1601,44 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	if (idx == 0) {
 		g->sio.siocnt |= 0x0008u;
 	}
+	/* 进战斗区后把按键控制权交还网络/真人。用连续 120 帧（约 2 秒）命中
+	 * 才释放，避免队伍菜单/战斗初始化时 cb2 短暂落在同一区间导致提前放手。 */
+	if (mgbaMobileBusGameInBattle(g)) {
+		if (st->battleHits < 120) {
+			++st->battleHits;
+		}
+		if (st->battleHits >= 120) {
+			st->released = true;
+		}
+	} else {
+		st->battleHits = 0;
+	}
+	return keys;
+}
+
+static uint32_t busGameKeys(struct MgbaMobile* emu) {
+	struct mCore* core = emu->core;
+	struct GBA* g = (struct GBA*) core->board;
+	struct BusGameNavState st = {
+		emu->busGameIdx, emu->busGameMenuAt, emu->busGameModeDowns,
+		emu->busGameMenuMax, emu->busGameFrame, emu->busGameBattleHits,
+		emu->busGameNavOnly != 0, false
+	};
+	uint32_t keys = mgbaMobileBusGameNavKeys(&st, g);
+	const uint32_t f = st.frame - 1;
+	emu->busGameFrame = st.frame;
+	emu->busGameMenuMax = st.menuMax;
+	emu->busGameBattleHits = st.battleHits;
+	if (st.released && emu->busGameIdx >= 0) {
+		/* 自动释放：导航到对战区后停掉脚本，GBoyConsoleSet 的镜像帧循环
+		 * 会因为 !busGame 自动改从 GBoyLinkSession.keysForSlot() 取按键，
+		 * 可见核则由正常输入/网络按键接管。不需要外部广播关脚本。 */
+		emu->busGameIdx = -1;
+		MOBILE_LOGI("BUSGAME battle reached, keys released to network");
+	}
 	if ((f % 600) == 0) {
-		/* 进对战判据：callback2 @0x020290E8 落 battle_main.o
-		 * （BattleMainCB2+1=0x0809AFCD）。0x03002AD4 是 gLinkCallback，
-		 * 不是 callback2，别读错（与 PC 判据一致）。 */
+		/* 进对战判据：callback2 @0x020290E8 落 battle_main.o。
+		 * 0x03002AD4 是 gLinkCallback，不是 callback2，别读错。 */
 		uint32_t cb2 = GBAView32(g->cpu, 0x020290E8u);
 		uint32_t sb1 = GBAView32(g->cpu, 0x03004964u);
 		int px = -1, py = -1;
@@ -1563,13 +1647,13 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 			py = (int16_t) GBAView16(g->cpu, sb1 + 2u);
 		}
 		MOBILE_LOGI("BUSGAME f=%u idx=%d pc=%d st=%d var8004=%d lt=%04X pos=%d,%d mm=%d cb2=%08X%s",
-		            f, idx,
+		            f, st.idx,
 		            (int) GBAView8(g->cpu, 0x03004A39u),
 		            (int) GBAView8(g->cpu, 0x020219D0u),
 		            (int) GBAView16(g->cpu, 0x0202196Cu),
 		            (unsigned) GBAView16(g->cpu, 0x02027B82u),
-		            px, py, emu->busGameMenuMax, cb2,
-		            cb2 == 0x0809AFCDu ? " BATTLE=YES" : "");
+		            px, py, st.menuMax, cb2,
+		            mgbaMobileBusGameInBattle(g) ? " BATTLE=YES" : "");
 	}
 	return keys;
 }

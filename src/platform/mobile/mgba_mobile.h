@@ -13,6 +13,41 @@ extern "C" {
 #endif
 
 struct MgbaMobile;
+struct GBA;
+
+/**
+ * 与载体无关的 busgame 导航状态。Android 的 MgbaMobile 四核和 PC Qt 的
+ * CoreController 可见核都调用 mgbaMobileBusGameNavKeys()，共用同一套地址、
+ * 相位与判据，避免两端各维护一份逻辑而漂移。
+ */
+struct BusGameNavState {
+	int idx;            /* 本机核在 4P 房间里的编号 0..3（决定座位） */
+	int menuAt;         /* 联机菜单出现的帧号；负数 = 只跑导航 */
+	int modeDowns;      /* 选模式时补几个 DOWN */
+	int menuMax;        /* 见过的 maxCursorPos 峰值 */
+	uint32_t frame;     /* 导航帧号 */
+	uint32_t battleHits;/* callback2 连续落在战斗区的帧数 */
+	bool navOnly;
+	bool released;      /* 已进对战区：应把按键控制权交还网络/真人 */
+};
+
+/** 初始化一份导航状态；menuAt<0 会转成 nav-only 并把 menuAt 归零。 */
+void mgbaMobileBusGameNavInit(struct BusGameNavState* st, int idx, int menuAt, int modeDowns);
+
+/**
+ * 逐帧求按键掩码，并按需写游戏内存（选怪、菜单光标钳位、主机 SD 位）。
+ * 直接操作传入的 struct GBA*，因此既能挂在 MgbaMobile 的帧回调上，也能
+ * 挂在 Qt CoreController 的 board 上。callback2 连续 120 帧落在
+ * battle_main.o 区间时把 released 置位，调用方据此关闭脚本、交还按键。
+ */
+uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g);
+
+/** callback2 是否落在 battle_main.o（真·进对战判据，按区间不按精确值）。 */
+bool mgbaMobileBusGameInBattle(struct GBA* g);
+
+/* Qt 侧的诊断读数：这样 C++ 编译单元不必 include GBA 内部结构也能打日志。 */
+uint32_t mgbaMobileBusGamePeek32(struct GBA* g, uint32_t addr);
+uint8_t mgbaMobileBusGamePeek8(struct GBA* g, uint32_t addr);
 
 struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port);
 void mgbaMobileDestroy(struct MgbaMobile* emu);

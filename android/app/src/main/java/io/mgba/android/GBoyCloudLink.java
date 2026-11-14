@@ -58,7 +58,7 @@ public final class GBoyCloudLink {
      */
     // 与 PC 侧同理：加入方 15~25 秒才能连上节点，12 秒窗口太短，一方先放弃
     // 就会永远退到高延迟的 WS 隧道。
-    private static final long RELAY_WINDOW_MS = 120000;
+    private static final long RELAY_WINDOW_MS = 15000;
     /** How long to wait for the peer's first key state before starting anyway. */
     private static final long PEER_KEY_WAIT_MS = 4000;
     private static final long KEY_INTERVAL_MS = 50;
@@ -118,6 +118,11 @@ public final class GBoyCloudLink {
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
     private volatile Thread advertiser;
+    /** 中继广告间隔。建房阶段 2 秒一次够用；进了隧道等待也不要停——加入方
+     *  正是靠这条广播拿到中继地址的（停掉它就永远只能退回 100 字符的聊天
+     *  隧道，实测两端 ±200ms 抖动、锁步互相 park 死）。改成 8 秒一次：
+     *  既能被对方拿到，又不会被服务器判刷屏（2 秒连发 3 分钟会被 reset）。 */
+    private volatile long advertiseIntervalMs = 2000;
     /** 会话信息：「重新连接中继」按钮复用它，不重建房间。 */
     private volatile String authToken;
     private volatile Room currentRoom;
@@ -530,9 +535,11 @@ public final class GBoyCloudLink {
         send(sig, settingsJson(token, room.roomId), 1500);
         // 4) 再问一次：这时服务器会连同中继节点一起返回
         send(sig, createJson(token), 2500);
-        waitForRoom(sig, room, null, ROOM_WAIT_MS);
+        waitForRoom(sig, room, null, ROOM_WAIT_MS, true);
         if (room.nodeAddress == null || room.nodePort <= 0) {
-            throw new IOException("服务器没有返回中继节点");
+            // 节点拿不到不再中断建房：公共节点池经常不回包，隧道模式不需要节点。
+            // 以前这里直接抛异常，一次没拿到就得从头再建一次房（连房号都变了）。
+            status("未获取到中继节点，改用服务器隧道模式");
         }
     }
 
@@ -908,6 +915,10 @@ public final class GBoyCloudLink {
     private void runTunnel(GbCloud.Session sig, String token, String uuid, Room room,
                            boolean asHost) throws IOException {
         String tag = room.roomId == null ? "" : room.roomId;
+        // 中继广告不能停：加入方靠这条广播拿中继地址，停掉就只能退回聊天
+        // 隧道（单条 ≤100 字符，按键只能 20 字节切片发，延迟抖动 ±200ms，
+        // 进程内锁步会互相 park 死）。这里只降频，避免被服务器判刷屏。
+        advertiseIntervalMs = 8000;
         status("正在通过服务器隧道等待对方进入（跨网可联）…");
         WsLink link = new WsLink(sig, token, uuid, tag);
         wsLink = link;
@@ -1896,7 +1907,9 @@ public final class GBoyCloudLink {
                     current.send(frame);
                 }
             }
-        }, sessionEvents, 1, 2);
+        /* 4 槽位会话：本机可见核 slot 1，3 个镜像核 slot 2/3/4。网络只传
+         * 真人按键，对端按键进 slot 2，slot 3/4 恒 0 作为 NPC 陪位。 */
+        }, sessionEvents, 1, 4);
     }
 
     /** The onConnected callback is posted to the UI thread, so the session has
@@ -2002,6 +2015,17 @@ public final class GBoyCloudLink {
      * {@code player_joined} pushes.
      */
     private void waitForRoom(GbCloud.Session sig, Room room, String roomId, long timeoutMs) throws IOException {
+        waitForRoom(sig, room, roomId, timeoutMs, false);
+    }
+
+    /**
+     * @param nodeRequired 房主建房最后一步必须拿到中继节点：此时房间里可能还飘着
+     *     上一个（已经死掉的）客户端的隧道 hello 回显，如果照「见到对端 hello 就
+     *     提前返回」的老逻辑收工，nodeAddress 会是空的，接着就抛
+     *     「服务器没有返回中继节点」——实测就是这么翻车的。
+     */
+    private void waitForRoom(GbCloud.Session sig, Room room, String roomId, long timeoutMs,
+                            boolean nodeRequired) throws IOException {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() < deadline && !closed) {
             String text = sig.recv(1200);
@@ -2103,8 +2127,9 @@ public final class GBoyCloudLink {
             if (room.nodeAddress != null && room.nodePort > 0) {
                 return;
             }
-            // 对方已经在服务器隧道上等着了，节点不会再来，直接进入数据阶段
-            if (tunnelPeerSeen) {
+            // 对方已经在服务器隧道上等着了，节点不会再来，直接进入数据阶段。
+            // 房主取节点这一步例外：残留的对端 hello 不能当成「节点不会再来」。
+            if (tunnelPeerSeen && !nodeRequired) {
                 return;
             }
         }
@@ -2137,7 +2162,7 @@ public final class GBoyCloudLink {
                     break;
                 }
                 long now = System.currentTimeMillis();
-                if (now - last < 2000) {
+                if (now - last < advertiseIntervalMs) {
                     continue;
                 }
                 last = now;

@@ -37,9 +37,17 @@ public:
 	 * joins the primary's loopback listener. {@code session} supplies the peer
 	 * key masks (slot 2). Returns false with {@code error} set on failure.
 	 */
+	/**
+	 * @param slot       按键取自会话的哪个槽位（2/3/4）。
+	 * @param players    SIO 房间人数，必须与可见核的 sioHostPlayers 一致。
+	 * @param navIdx     busgame 导航的四人座位编号 1/2/3；负数 = 不启用脚本
+	 *                   （正常玩家联机绝不能被脚本接管）。
+	 */
 	bool start(const QString& romPath, const QString& primarySavePath,
 	           const QString& mirrorRoot, quint16 primaryPort,
-	           GBoyLinkSession* session, QString* error);
+	           GBoyLinkSession* session, int slot, int players,
+	           int navIdx, int navMenuAt, int navModeDowns,
+	           const QByteArray& saveSnapshot, QString* error);
 
 	/** Closes the loopback link, stops the pump thread and destroys the core. */
 	void stopMirror();
@@ -55,6 +63,8 @@ protected:
 private:
 	struct MgbaMobile* m_emu = nullptr;
 	GBoyLinkSession* m_session = nullptr;
+	int m_slot = 2;
+	int m_players = 2;
 	std::atomic<bool> m_running{false};
 };
 
