@@ -131,6 +131,8 @@ private:
 	void handle(const QByteArray& body);
 	/** One-shot host -> joiner TYPE_STATE, on whichever transport is live. */
 	bool maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost);
+	/** 官方 case 6 的周期性状态补发：把本机可见核快照推给对端镜像核。 */
+	bool sendStateSync(const std::function<void(const QByteArray&)>& send);
 	void pollSignaling(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
 
 	// websocket tunnel helpers

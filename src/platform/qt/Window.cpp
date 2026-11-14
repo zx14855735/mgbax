@@ -2605,9 +2605,30 @@ void Window::startAutoCloudLink() {
 	// 馈送，否则对端镜像核永远拿不到按键、停在开机画面，游戏内联机握不上手。
 	QTimer* keyFeed = new QTimer(link);
 	QObject::connect(keyFeed, &QTimer::timeout, link, [this, link]() {
-		if (m_controller) {
-			link->setLocalKeys(m_controller->localKeys());
+		if (!m_controller) {
+			return;
 		}
+		// 脚本注入走 addKey/clearKey，不会进 localKeys()（那份 m_lastKeys 由
+		// updateKeys() 从真实输入控制器写）。两路并起来再送，否则用脚本驱动
+		// 的 PC 端永远发「按键=0」，对端镜像核收不到任何操作。
+		int keys = m_controller->localKeys();
+		if (m_scripted) {
+			keys |= m_scripted->mask();
+		}
+		static int lastLogged = -1;
+		if (keys != lastLogged) {
+			lastLogged = keys;
+			QFile kf(QStringLiteral(
+			    "D:/mgba-android-version/.zcode-tmp/cloud2p/keyfeed.log"));
+			if (kf.open(QIODevice::Append | QIODevice::Text)) {
+				kf.write(QStringLiteral("keys=%1 ctrl=%2 scripted=%3\n")
+				             .arg(keys)
+				             .arg(m_controller->localKeys())
+				             .arg(m_scripted ? m_scripted->mask() : -1)
+				             .toUtf8());
+			}
+		}
+		link->setLocalKeys(keys);
 	});
 	keyFeed->start(16);
 	qInfo().noquote() << "[AUTOLINK] 启动云端联机，房号" << (config.roomId.isEmpty() ? QStringLiteral("(建房)") : config.roomId);

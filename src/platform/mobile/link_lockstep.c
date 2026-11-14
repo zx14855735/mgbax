@@ -21,6 +21,9 @@
 #define LOCKSTEP_MAX_PLAYERS 4
 /* 一帧内允许的 runLoop 小步上限：防止某核被永久 park 时把线程卡死。 */
 #define LOCKSTEP_RUN_GUARD 500000
+/** park 超过这个时长且本核不在 MULTI 模式时自行解除 park：对方在做连机、
+ *  本核还停在菜单/野外时，协调器不会再有回合来唤醒它（见 RunFrame 注释）。 */
+#define LOCKSTEP_PARK_IDLE_MS 600
 
 struct MgbaLockstepRoom {
 	int key;
@@ -170,6 +173,12 @@ void mgbaLockstepSetAbort(int abort) {
 	g_lockstepAbort = abort;
 }
 
+static int64_t _monoMs(void) {
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (int64_t) t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
 void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 	if (!slot || !core) {
 		return;
@@ -179,11 +188,16 @@ void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 	int guard = 0;
 	while (gba->video.frameCounter == startFc && guard++ < LOCKSTEP_RUN_GUARD) {
 		pthread_mutex_lock(&slot->mu);
-		int parkedMs = 0;
+		int64_t parkStart = 0;
+		int64_t lastReport = 0;
 		while (slot->pauseRequested) {
 			if (g_lockstepAbort) {
 				pthread_mutex_unlock(&slot->mu);
 				return;
+			}
+			if (!parkStart) {
+				parkStart = _monoMs();
+				lastReport = parkStart;
 			}
 			/* 限时等待：既能让看门狗/abort 从 park 里脱身，也能在长时间
 			 * park（正常锁步会合）时周期性打印诊断，暴露死锁所在核。 */
@@ -194,15 +208,38 @@ void mgbaLockstepRunFrame(struct MgbaLockstepSlot* slot, struct mCore* core) {
 				ts.tv_nsec -= 1000000000;
 				++ts.tv_sec;
 			}
-			int rc = pthread_cond_timedwait(&slot->cv, &slot->mu, &ts);
-			if (rc == ETIMEDOUT) {
-				parkedMs += 200;
-				if (parkedMs >= 2000) {
-					fprintf(stderr,
-					        "LOCKSTEP: slot %d PARKED >2s (abort=%d, guard=%d)\n",
-					        slot->slotId, g_lockstepAbort, guard);
-					parkedMs = 0;
-				}
+			pthread_cond_timedwait(&slot->cv, &slot->mu, &ts);
+			if (!slot->pauseRequested) {
+				break;
+			}
+			/* 自愈：本核不在 MULTI 模式时不该被卷进锁步回合。
+			 * 协调器每个回合结束只会把「非 runner」park 掉，等主核下一次
+			 * MULTI 传输才唤醒；若对方正在连机、本核还停在菜单/野外（不做
+			 * MULTI），就再也没有下一个回合来唤醒它——核永久 park、按键
+			 * 全丢（实测镜像核 32 秒只跑 1 帧）。按墙钟时长判断（cond_wait
+			 * 被信号唤醒时返回 0，按次数累加永远到不了阈值），不是 MULTI
+			 * 就自行解除 park，让本核按自己的游戏节奏继续跑。 */
+			int64_t nowMs = _monoMs();
+			/* 只在「本核不在 MULTI 模式」时才允许自愈。进入 MULTI 之后，
+			 * park 是协调器回合同步的正常节拍：强行放行会让本核在没有对端字的
+			 * 情况下推进 SIO 状态机，训练家卡片/队伍数据块被喂进错误轮次，
+			 * 游戏直接报 LINK_ERR（实测：球场图后「通信错误…请检查所有的连接」）。
+			 * 那种情况的死锁要靠「重建 2 核房间、保证可见核是 runner」来解决，
+			 * 不能靠这里放行。 */
+			if (nowMs - parkStart >= LOCKSTEP_PARK_IDLE_MS
+			        && (gba->sio.siocnt & 0x3000) != 0x2000) {
+				fprintf(stderr,
+				        "LOCKSTEP: slot %d park self-heal after %lldms (siocnt=%04X, not MULTI)\n",
+				        slot->slotId, (long long) (nowMs - parkStart), gba->sio.siocnt);
+				slot->pauseRequested = false;
+				break;
+			}
+			if (nowMs - lastReport >= 2000) {
+				lastReport = nowMs;
+				fprintf(stderr,
+				        "LOCKSTEP: slot %d PARKED %lldms (abort=%d, guard=%d, siocnt=%04X)\n",
+				        slot->slotId, (long long) (nowMs - parkStart),
+				        g_lockstepAbort, guard, gba->sio.siocnt);
 			}
 		}
 		pthread_mutex_unlock(&slot->mu);

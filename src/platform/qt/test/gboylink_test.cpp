@@ -1027,8 +1027,10 @@ static int dualTest(const QString& rom, const QString& sav) {
 			uint16_t lidcnt = GBAView16(gba[0]->cpu, 0x03004A38u);
 			uint16_t ts = GBAView16(gba[0]->cpu, 0x03004A10u);
 			uint16_t brs = GBAView16(gba[0]->cpu, 0x03002A40u);
-			uint32_t cb2 = (uint32_t) GBAView16(gba[0]->cpu, 0x03002AD4u) |
-			               ((uint32_t) GBAView16(gba[0]->cpu, 0x03002AD6u) << 16);
+			/* gMain.callback2 在 0x020290E8；0x03002AD4 是 gLinkCallback，
+			 * 不是 callback2。旧判据 0x0809A241 也已作废（BattleMainCB2+1
+			 * = 0x0809AFCD，battle_main.o .text = 0x08099848..0x080A30FC）。 */
+			uint32_t cb2 = GBAView32(gba[0]->cpu, 0x020290E8u);
 			uint32_t sb1 = GBAView32(gba[0]->cpu, 0x03004964u);
 			int px = 0, py = 0;
 			if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
@@ -1058,7 +1060,7 @@ static int dualTest(const QString& rom, const QString& sav) {
 			if (((lidcnt >> 8) & 0xFF) >= 2) {
 				cntSeen = 1;
 			}
-			if (cb2 == 0x0809A241u) {
+			if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
 				battleSeen = 1;
 			}
 		}
@@ -1074,9 +1076,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 			cntSeen = 1;
 		}
 	}
-	uint32_t cb2 = (uint32_t) GBAView16(gba[0]->cpu, 0x03002AD4u) |
-	               ((uint32_t) GBAView16(gba[0]->cpu, 0x03002AD6u) << 16);
-	if (cb2 == 0x0809A241u) {
+	uint32_t cb2 = GBAView32(gba[0]->cpu, 0x020290E8u);
+	if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
 		battleSeen = 1;
 	}
 	qInfo().noquote() << QString("DUAL TEST: cnt=%1 battle=%2 final cb2=%3")

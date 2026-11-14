@@ -1044,6 +1044,13 @@ void _lockstepEvent(struct mTiming* timing, void* context, uint32_t cyclesLate) 
 	}
 	MutexUnlock(&coordinator->mutex);
 
+	/* 重载 ROM / 重新挂回房间之后，队列里可能还留着上一条时间线的戳，
+	 * 算出来的 nextEvent 会是负数或 0。断言在这里只会让整机 abort
+	 * （Android 实测 lockstep.c:1047，busgame 重载路径必崩）；语义上
+	 * 「已经到期」的事件下一个锁步周期处理即可，夹到 1 再调度。 */
+	if (nextEvent <= 0) {
+		nextEvent = 1;
+	}
 	mASSERT_DEBUG(nextEvent > 0);
 	mTimingSchedule(timing, &lockstep->event, nextEvent);
 }

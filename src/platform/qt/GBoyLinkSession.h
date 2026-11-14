@@ -132,6 +132,8 @@ private:
 	int m_remoteCounter = -1;
 	int m_remoteFps = -1;
 	int m_lastLocalKeys = 0;
+	/** 上一次真正发出去的按键掩码；边沿立即发送靠它判变化（-1 = 强制首帧）。 */
+	int m_lastSentKeys = -1;
 	int m_sentFrames = 0;
 	long m_droppedFrames = 0;
 };

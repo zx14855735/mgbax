@@ -9,6 +9,8 @@
 #include "GbCloud.h"
 #include "GBoyFrames.h"
 #include "GBoyLinkSession.h"
+
+#include "ScriptedControl.h"
 #include "GBoyMirror.h"
 #include "DirectLink.h"
 #include "KcpChannel.h"
@@ -910,10 +912,12 @@ QString CloudLink::currentNode(GbCloud::Session* sig, const QString& token, Room
 			// The host asks the server directly for the current node.
 			sig->sendText(wsText(createJson(token, gameName())));
 			waitAndProcess(2000);
-			waitForRoom(sig, &probe, room->roomId, 8000);
+			waitForRoom(sig, &probe, room->roomId, 10000);
 		} else {
-			// The joiner listens to the host's broadcast and follows along.
-			waitForRoom(sig, &probe, room->roomId, 4000);
+			/* 加入方只能等房主的广播：房主进隧道等待后仍会每 8 秒广播一次
+			 * 中继地址（降到 8 秒是为了不被判刷屏），所以窗口必须盖住它，
+			 * 否则永远拿不到节点、只能退回 100 字符的聊天隧道。 */
+			waitForRoom(sig, &probe, room->roomId, 14000);
 		}
 	} catch (...) {
 		return QString();
@@ -1710,13 +1714,50 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	qint64 lastAdvertise = 0;
 	// 每分钟一次的会话自检：对端按键积压/掉帧从会话里捞出来打日志。
 	qint64 lastDiag = 0;
+	/* 状态补发节奏：官方镜像模式下两端各自跑两个核，镜像核只靠对端按键复现
+	 * 对方的进度，一旦某一方在菜单/连机里多走一步，两核就再也不会回到同一
+	 * 子状态（实测 pc 恒 0）。官方客户端用 case 6 周期纠偏，这里照做。 */
+	qint64 lastStateSync = 0;
+	qint64 lastStatePoll = 0;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
+		/* 状态补发走「按需触发」而不是定时：整份存档几百 KB，经大厅 WS 隧道
+		 * 传一次就会把本循环拖到 0.6fps（实测），周期发不可行。测试脚本在
+		 * MGBAX_SCRIPT_DIR 下放 sync_state 文件即触发一次，发完删掉。 */
+		if (now - lastStatePoll >= 250) {
+			lastStatePoll = now;
+			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
+			if (!dir.isEmpty()) {
+				QFile trigger(dir + QStringLiteral("/sync_state"));
+				if (trigger.exists()) {
+					trigger.remove();
+					if (sendStateSync([link](const QByteArray& frame) { link->send(frame); })) {
+						GbCloud::debugLog(QStringLiteral("[gboy] state sync sent"));
+					}
+				}
+			}
+		}
 		if (now - lastTick >= 16) {
 			lastTick = now;
-			m_gboySession->onLocalFrame(++m_officialFrame,
-			                            m_localKeys.load(std::memory_order_relaxed));
+			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
+			 * addKey/clearKey，不进本对象的 m_localKeys（GUI 的 keyFeed 喂的
+			 * 可能是另一个实例）。这里并进进程级掩码，保证线上帧带着真实按键。 */
+			int keys = m_localKeys.load(std::memory_order_relaxed)
+			         | ScriptedControl::globalMask();
+			{
+				static qint64 lastDiagKeys = 0;
+				if (now - lastDiagKeys >= 500) {
+					lastDiagKeys = now;
+					QFile f(QStringLiteral("D:/mgba-android-version/.zcode-tmp/cloud2p/serve_keys.log"));
+					if (f.open(QIODevice::Append | QIODevice::Text)) {
+						f.write(QStringLiteral("frame=%1 local=%2 scripted=%3 keys=%4\n")
+						            .arg(m_officialFrame).arg(m_localKeys.load())
+						            .arg(ScriptedControl::globalMask()).arg(keys).toUtf8());
+					}
+				}
+			}
+			m_gboySession->onLocalFrame(++m_officialFrame, keys);
 		}
 		if (now - lastFps >= 1000) {
 			lastFps = now;
@@ -1958,8 +1999,7 @@ void CloudLink::handle(const QByteArray& body) {
 	}
 }
 
-bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
-	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
+bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
 		return false;
 	}
 	QByteArray state = m_stateSnapshot();
@@ -1967,6 +2007,22 @@ bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&
 		return false;   // core not ready yet; retry on the next tick
 	}
 	m_initialStateSent.store(true, std::memory_order_relaxed);
+	send(GBoyFrames::stateFrame(state));
+	return true;
+}
+
+/* 官方 case 6：把本机可见核的即时存档推给对端，让对端的镜像核（= 本机这个
+ * 玩家）停在同一幕。只在连接瞬间发一次时，对端镜像核会一直停在旧画面，
+ * 两台机的两个核永远进不到同一连机子状态（实测 pc 恒 0、握手字恒为等待字）。
+ * 这里供官方镜像模式按周期调用，host / joiner 都要发。 */
+bool CloudLink::sendStateSync(const std::function<void(const QByteArray&)>& send) {
+	if (!m_stateSnapshot) {
+		return false;
+	}
+	QByteArray state = m_stateSnapshot();
+	if (state.isEmpty()) {
+		return false;
+	}
 	send(GBoyFrames::stateFrame(state));
 	return true;
 }
@@ -2113,11 +2169,10 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 		if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
 			return;
 		}
-		// The peer is already waiting on the websocket tunnel; no node is
-		// coming, so stop listening and let the data stage use the tunnel.
-		if (m_tunnelPeerSeen) {
-			return;
-		}
+		/* 以前看到对端的隧道 hello 就直接放弃等 node——但 hello 只说明它
+		 * 先起了隧道，房主进隧道等待后仍会每 8 秒广播中继地址。提前退出
+		 * 的结果是永远退回 100 字符的聊天隧道（延迟抖动 ±200ms，锁步会
+		 * 互相 park 死）。现在只要没拿到 node 就等满窗口。 */
 	}
 }
 

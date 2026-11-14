@@ -10,7 +10,17 @@
 #include <QDir>
 #include <QFile>
 
+#include <atomic>
+
 using namespace QGBA;
+
+namespace {
+std::atomic<int> g_scriptedMask{0};
+}
+
+int ScriptedControl::globalMask() {
+	return g_scriptedMask.load(std::memory_order_relaxed);
+}
 
 ScriptedControl::ScriptedControl(CoreController* controller, QObject* parent)
 	: QObject(parent)
@@ -57,6 +67,7 @@ void ScriptedControl::poll() {
 			}
 			m_mask = mask;
 			m_maskApplied = true;
+			g_scriptedMask.store(mask, std::memory_order_relaxed);
 		}
 	}
 }

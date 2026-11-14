@@ -125,6 +125,7 @@ struct MgbaMobile {
 	 * GBoyConsoleSet 的镜像线程调 mgbaMobileBusGameTick 取掩码。 */
 	int busGameIdx;
 	int busGameMenuAt;
+	int busGameNavOnly;   /* menuAt<0：跳过开场盲按，直接跑 2P 导航+队伍注入 */
 	int busGameModeDowns;
 	uint32_t busGameFrame;
 	int busGameMenuMax;
@@ -1069,11 +1070,36 @@ static bool ensureVideo(struct MgbaMobile* emu) {
 	return true;
 }
 
-struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port) {
-	struct MgbaMobile* emu = (struct MgbaMobile*) calloc(1, sizeof(struct MgbaMobile));
+#ifdef __APPLE__
+/* iOS 默认 logger：核心日志直写 stderr（CI 经 simctl launch --console-pty
+ * 捕获）。含 INFO 级，用于诊断核心加载/锁步卡点。 */
+static void iosDefaultLog(struct mLogger* logger, int category, enum mLogLevel level,
+                          const char* format, va_list args) {
+	(void) logger;
+	(void) category;
+	(void) level;
+	vfprintf(stderr, format, args);
+	fputc('\n', stderr);
+	fflush(stderr);
+}
+static struct mLogger s_iosDefaultLogger = { iosDefaultLog, NULL };
+#endif
+
+struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port) {	struct MgbaMobile* emu = (struct MgbaMobile*) calloc(1, sizeof(struct MgbaMobile));
 	if (!emu) {
 		return NULL;
 	}
+#ifdef __APPLE__
+	/* iOS 没装 mLog 前端 logger，核心日志全部丢弃——CI 上核心加载卡死时
+	 * 无从诊断。装一个直写 stderr 的默认 logger（含 INFO），日志经
+	 * simctl launch --console-pty 可见。 */
+	{
+		static struct mLogger s_iosDefaultLogger;
+		s_iosDefaultLogger.log = iosDefaultLog;
+		s_iosDefaultLogger.context = NULL;
+		mLogSetDefaultLogger(&s_iosDefaultLogger);
+	}
+#endif
 	/* 递归锁：加锁点既在 C 层的 mgbaMobileRunFrames / SaveStateToMemory /
 	 * LoadStateToMemory 内部（这样 iOS 直接调用 C 函数也受保护，它不经过
 	 * JNI），也在 JNI 的入口（安卓侧的历史做法）。同一线程沿途二次加锁必须
@@ -1383,11 +1409,17 @@ void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int mod
 		return;
 	}
 	emu->busGameIdx = idx;
-	emu->busGameMenuAt = menuAt;
+	/* 负 menuAt = 「只跑导航」：用于已经手工走到 st=4/球场图的云端 2P，
+	 * 补最后一环（ready2 走位、选怪内存注入、战斗菜单钳位），不再重放开场按键。
+	 * 同时必须把 menuAt 归零：导航分支 `f >= menuAt + 240` 里 f 是 uint32_t，
+	 * 负 int 会被提升成巨大的 unsigned，条件永远不成立。 */
+	emu->busGameNavOnly = (menuAt < 0);
+	emu->busGameMenuAt = emu->busGameNavOnly ? 0 : menuAt;
 	emu->busGameModeDowns = modeDowns;
 	emu->busGameFrame = 0;
 	emu->busGameMenuMax = 0;
-	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d", idx, menuAt, modeDowns);
+	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d navOnly=%d",
+	            idx, menuAt, modeDowns, emu->busGameNavOnly);
 }
 
 void mgbaMobileBusGameStop(struct MgbaMobile* emu) {
@@ -1411,6 +1443,11 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
 	const int boot = 240;
 	uint32_t keys = 0;
+	/* nav-only：跳过开场 START/A/DOWN/UP/LEFT 盲按，直接落到导航分支。
+	 * 这里的 goto 只跨过一串纯赋值，标签后紧跟空语句以保证 C99 合法。 */
+	if (emu->busGameNavOnly) {
+		goto busgame_navigate;
+	}
 	if (f >= boot && f < boot + 6) {
 		keys = START;
 	} else if (f >= boot + 10 && f < boot + 16) {
@@ -1432,12 +1469,21 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	           && f < menuAt + 92 + modeDowns * 14) {
 		keys = A;
 	} else if (f >= menuAt + 240) {
+	busgame_navigate:
+		;
 		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
 		 * 开始走位。菜单/握手阶段继续按 A。 */
 		int v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
 		int lt = (int) GBAView16(g->cpu, 0x02027B82u);
 		int fpc = (int) GBAView8(g->cpu, 0x03004A39u);
-		if (v8 != 5 || (lt != 0x2255 && lt != 0x2211) || fpc < 4) {
+		int lst = (int) GBAView8(g->cpu, 0x03002AF5u);   /* gLink.state */
+		/* 4 人多人对战：var8004=5 且 gLinkType=0x2255/0x2211。
+		 * 2 人单打（云端 2P 的目标）：实测 gLinkType=0x046D、var8004=3，
+		 * 用那套常量永远进不了走位分支，所以 2 人改成「房间握手完成
+		 * （gLink.state>=4）且 fieldCount==2」就放行。 */
+		bool ready4 = (v8 == 5 && (lt == 0x2255 || lt == 0x2211) && fpc >= 4);
+		bool ready2 = (fpc == 2 && lst >= 4);
+		if (!ready4 && !ready2) {
 			keys = ((f % 40) < 25) ? A : 0u;
 		} else {
 			int mb = (int) GBAView8(g->cpu, 0x020219D0u);
@@ -2147,6 +2193,10 @@ static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals
 #define PEEK_LINK_ERROCC 0x03002A30u
 #define PEEK_LINK_RECVPL 0x03002AC1u
 #define PEEK_LINK_BLOCKS 0x03002A40u
+/* gSaveBlock1Ptr：玩家坐标 x/y（+0/+2）和所在地图 group/num（+4/+5）。
+ * 镜像核没有画面输出，只有这三个量能判断它和可见核是不是在同一张图的
+ * 同一格上——联机时两边走散就是从这里看出来的。 */
+#define PEEK_SAVEBLOCK1  0x03004964u
 /* struct Link 内部偏移 */
 #define PEEK_LK_ISMASTER 0x00
 #define PEEK_LK_STATE    0x01
@@ -2608,7 +2658,19 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	 * 这里只认 gLink.isMaster：不是主机就必须走从机路径。 */
 	int me = netLinkPlayer(emu->link);
 	int gameMaster = GBAView8(gba->cpu, 0x03002AF4u + 0x00u);
-	if (gameMaster == 8) {
+	int localId = GBAView8(gba->cpu, 0x03002AF4u + 0x02u);
+	/* 【不能只看 isMaster】
+	 *
+	 * 云端官方镜像模式的隐藏镜像核是用房主推来的 TYPE_STATE 快照起步的，
+	 * 快照里 gLink.isMaster 已经是 8。若照单全收，镜像核会认定「我是主机」
+	 * 而直接 return，从不做从机收尾、也从不回推本轮的字；主机侧
+	 * netLinkTakePeerWord 就永久 peer-timeout。现场实测：主机轮次 idx=113
+	 * 且 to=3491 次超时，镜像核的 idx 一直卡在 38，两核一起掉到 1fps。
+	 *
+	 * gLink.localId(+2) 才是本局身份：房主为 0，镜像核为 1（PEEK 实测
+	 * 可见核 m=8 id=0、镜像核 m=0 id=1）。只有「isMaster==8 且
+	 * localId==0」才是真正驱动轮次的主机。 */
+	if (gameMaster == 8 && localId == 0) {
 		/* 游戏认定自己是主机：轮次由它驱动，这里不管。 */
 		return;
 	}
@@ -2755,6 +2817,23 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 			MOBILE_LOGI("SIO slave wait-me me=%d last=%u synced=%d",
 			            me, (unsigned) emu->sioIndex, emu->sioPeerCyclesValid ? 1 : 0);
 		}
+		/* 【事件链必须能熄灭】
+		 *
+		 * 从机轮次事件一旦挂上，这个分支每 2048 cycles（≈0.12ms 模拟时间）
+		 * 就会重挂一次；而每次进来都先按跨网等待窗（300~1200ms）阻塞模拟
+		 * 线程。对端没在跑联机时（标题画面、柜台，或房间已散但云端隧道仍
+		 * 在发按键帧），链路上没有 PKT_PUSH（SIO 字推送包）、peerQ 恒空，
+		 * 于是形成「每 0.12ms 模拟时间阻塞近 1 秒墙钟」的循环：实测标题
+		 * 画面 1.29fps、单帧 15 秒，与 1.4fps 假死同一病理。
+		 *
+		 * 判据只认 SIO 字本身：peerQ 空且 ≥800ms 没收到过 PKT_PUSH，就
+		 * 认定这一轮不存在，熄灭事件链，模拟线程恢复满速。下一次
+		 * serviceLink 看到 peerQ 有字会重新挂上，真正开始联机不受影响。 */
+		if (netLinkPeerPending(emu->link) == 0 &&
+		    netLinkPushAgeMs(emu->link) >= 800u) {
+			emu->sioSlaveArmed = false;
+			return;
+		}
 		if (timing) {
 			/* 重试周期取 2048（≈0.12ms 模拟时间）：主机推字之后从机几乎
 			 * 立刻就能取到，回推的延迟远小于一轮（18363 cycles）。 */
@@ -2780,7 +2859,19 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		 * 里轮次数就会忽多忽少。 */
 		if (emu->sioPeerCyclesValid) {
 			uint32_t delta = peerCycles - emu->sioPeerCycles;
-			if (delta > 4000 && delta < 400000) {
+			/* 【周期学习只取最小值】
+			 *
+			 * 握手阶段主机每帧只推 1 轮，相邻两轮的时间戳差就是整一帧
+			 * 280896 cycles。若照单全收，sioSlavePeriod 会从 18363 被抬到
+			 * 280896，从机从此每帧只消费 1 轮；而进入战斗后主机每帧推约
+			 * 9 轮，队列无限积压（实测 mis 每轮 +1），主机严格匹配取从机
+			 * 回字全部超时，两边一起饿死在「请稍候」。
+			 *
+			 * 只取更小的轮距：学到的值永远不会超过初值 18363（真实战斗
+			 * 轮距 12608~18363）。轮距偏小不会凭空多收一轮——队列空时
+			 * netLinkTakePeerWordAny 会阻塞等主机下一个字，双方轮次仍然
+			 * 一一对应；偏大才会永久落后。 */
+			if (delta > 4000 && delta < 400000 && delta < emu->sioSlavePeriod) {
 				emu->sioSlavePeriod = delta;
 			}
 		}
@@ -2817,9 +2908,16 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 		MOBILE_LOGI("HSP #%u me=%d idx=%u val=%04X reply=1",
 		            emu->hsPushDbg, me, (unsigned) emu->sioIndex, own);
 	}
-	/* 挂上下一轮：正好在 K 个模拟周期之后。 */
+	/* 挂上下一轮。
+	 *
+	 * 对端队列里还有字 = 主机本帧推的轮次没被消费完（gen8 每帧约 9 轮）。
+	 * 这时必须紧接着排空，不能等一整个轮距：否则从机每帧只处理 1 轮，
+	 * 落后量逐帧累积，主机取从机回字永远超时。队列空了才回到学到的轮距。
+	 * 2048 cycles ≈ 0.12ms 模拟时间，远小于一轮，不会插进额外的传输。 */
 	if (timing) {
-		mTimingSchedule(timing, &emu->sioSlaveDone, emu->sioSlavePeriod);
+		uint32_t nextPeriod = netLinkPeerPending(emu->link) > 0
+		                      ? 2048u : emu->sioSlavePeriod;
+		mTimingSchedule(timing, &emu->sioSlaveDone, nextPeriod);
 		emu->sioSlaveArmed = true;
 	}
 }
@@ -2847,6 +2945,29 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	if (!emu->link || netLinkState(emu->link) != 2) {
 		return 0;
 	}
+	/* 【本机环回必须走短窗】
+	 *
+	 * 云端官方镜像模式里，可见核与隐藏镜像核是通过 127.0.0.1 环回 SIO
+	 * 连起来的（EmulatorActivity.startGBoyLink），实测 RTT 只有几十微秒；
+	 * 公网只传按键帧和状态快照，SIO 字从不过公网。原来的 300~1200ms
+	 * 跨网等待窗是给「SIO 字真的过公网」准备的，套在本机环回上时，只要
+	 * 某一轮两核互等就各自等满 300ms：gen8 每帧 9 轮 → 2.7 秒一帧，
+	 * 现场进入握手后掉到 3.5fps、POLL rate 从 2000/s 掉到 130/s。
+	 *
+	 * 只有确实测到 <5ms 的 RTT 才启用 12ms 短窗；RTT 未测出（0）或偏大
+	 * 时一律保持原跨网窗口，避免第一轮公网 RTT 被误判成超时。 */
+	uint32_t rttUs = netLinkRttUs(emu->link);
+	bool loopback = rttUs != 0u && rttUs < 5000u;
+	/* 本机环回保持 12ms 快窗。
+	 *
+	 * 曾按实测 RTT 尖峰（均值 1.678ms / 尖峰 35.085ms）把窗口抬到
+	 * 40~80ms 以避免 ahead 恢复路径被误触发，结果每轮等待付出的墙钟
+	 * 时间过多：握手只到 st=2 pc=0、帧率掉到 0.26~5fps，比 12ms 版本
+	 * 更差。12ms 版本能稳定到 st=4 pc=2 并走进卡片交换。
+	 *
+	 * 误超时本身已由主机路径的 `sioIndex = got` 兜住（见
+	 * completeMultiTransfer 前的轮次错位分支），不需要靠放大窗口规避。 */
+	int shortWaitMs = 12;
 	if (netLinkBusActive(emu->link)) {
 		/* 星型总线只跑局域网/本机环回。两人跨公网隧道的 300~1200ms 下限会
 		 * 把每轮锁步钉在半秒以上：轮次一旦错配，主机等从机字、从机等广播，
@@ -2867,10 +2988,10 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 		/* 队列里有字：阻塞是安全的，但窗口没必要开到 RTT×20（实测会到 3s，
 		 * 一轮 3s × 9 轮/帧 = 27s 一帧，画面看起来就是彻底冻结）。1200ms 已经
 		 * 覆盖实测 150ms 均值 / 441ms 尖峰的隧道 RTT。 */
-		return 1200;
+		return loopback ? shortWaitMs : 1200;
 	}
 	if (netLinkPushAgeMs(emu->link) < 800) {
-		return 900;                 /* 对端仍在活跃交换，这一轮只是晚到 */
+		return loopback ? shortWaitMs : 900;  /* 对端仍在活跃交换，这一轮只是晚到 */
 	}
 	/* 与 Qt 侧同一条修正：链路刚建立时两端都还没推过字，pushSeenAt=0
 	 * 会让上面两条全部落空，于是最需要等一个公网 RTT 的第一轮反而零等待，
@@ -2878,14 +2999,17 @@ static int sioPeerWaitMs(struct MgbaMobile* emu) {
 	 * 前 8 轮、头 3 次重试给 900ms 预算；之后恢复 0，避免对端根本没进
 	 * 联机时把模拟线程按死（11-08 的假死）。 */
 	if (emu->sioWaiting && emu->sioIndex <= 8 && emu->sioRetries < 3) {
-		return 900;
+		return loopback ? shortWaitMs : 900;
 	}
 	/* 与 Qt 侧同一条修正：隧道抖动会让「对端 800ms 内推过字」间歇失效，
 	 * 零等待 + 100 cycles 重试间隔会在极短时间内耗尽 40 次重试并按空槽
 	 * 收尾，破坏玩家数据块校验（隧道轮 brs 全 0 / cnt 恒 0）。游戏确实
 	 * 发起了本轮 MULTI 且链路还连着时，给一个跟随实测 RTT 的最小预算。 */
 	if (emu->sioWaiting) {
-		uint32_t ms = (netLinkRttUs(emu->link) / 1000u) * 3u;
+		if (loopback) {
+			return shortWaitMs;
+		}
+		uint32_t ms = rttUs / 1000u * 3u;
 		if (ms < 300u) {
 			ms = 300u;
 		}
@@ -3041,6 +3165,17 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 				MOBILE_LOGI("SIO 轮次错位 me=%d want=%u got=%u n=%u",
 				            0, (unsigned) emu->sioIndex, (unsigned) got, emu->sioMisorder);
 			}
+			/* 【主机必须对齐到实际收到的轮次号】
+			 *
+			 * takePeerWord 等待窗耗尽且队首是后续轮次时，会把队首交出来
+			 * 并记一次 misorder。这里若只记日志、不更新 sioIndex，主机
+			 * 就把「轮次 got 的数据片段」当作「本轮 want 的数据」喂给
+			 * 游戏，而下一轮仍从 want+1 推字：训练家卡片块是跨多轮的
+			 * 连续数据，整体错一格后校验和必然失败（LINK_ERR ck=1，
+			 * 游戏报「通信错误……请检查所有的连接」）。
+			 * 从机路径早就有 emu->sioIndex = got 的跟随逻辑，主机路径
+			 * 缺这一句。只在错位时生效，正常轮次行为不变。 */
+			emu->sioIndex = got;
 		}
 		emu->sioWaiting = false;
 		emu->sioHasRemote = true;
@@ -3778,9 +3913,16 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (int) g->sio.mode, g->sio.siocnt, g->sio.rcnt,
 		            g->sio.driver != NULL, emu->sioWaiting);
 #if MGBA_LINK_PEEK
-		MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
+			{
+				uint32_t sb1 = (uint32_t) GBAView32(g->cpu, PEEK_SAVEBLOCK1);
+				int posX = sb1 ? (int) GBAView16(g->cpu, sb1 + 0) : -1;
+				int posY = sb1 ? (int) GBAView16(g->cpu, sb1 + 2) : -1;
+				int mapG = sb1 ? (int) GBAView8(g->cpu, sb1 + 4) : -1;
+				int mapN = sb1 ? (int) GBAView8(g->cpu, sb1 + 5) : -1;
+				MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
 		            "link[m=%d st=%d id=%d pc=%d sic=%d hs=%d fF=%d hw=%d ck=%d lag=%d "
-		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u]",
+		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u pos=%d,%d map=%d.%d "
+		            "cb2=%08X mm=%d pt=%d s01=%d/%d slot=%d cur=%d/%d]",
 		            stNow,
 		            (int) GBAView8(g->cpu, PEEK_LINK_STATE),
 		            (int) GBAView8(g->cpu, PEEK_LINK_OPEN),
@@ -3804,7 +3946,17 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_POS),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_CNT),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_POS),
-		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT));
+		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT),
+		            posX, posY, mapG, mapN,
+		            (uint32_t) GBAView32(g->cpu, 0x020290E8u),
+		            (int) GBAView8(g->cpu, 0x020219D0u),
+		            (int) (GBAView8(g->cpu, 0x02032A90u) & 0x0Fu),
+		            (int) GBAView8(g->cpu, 0x02032AD0u),
+		            (int) GBAView8(g->cpu, 0x02032AD1u),
+		            (int) (int8_t) GBAView8(g->cpu, 0x02032A91u),
+		            (int) GBAView8(g->cpu, 0x020296C2u),
+		            (int) GBAView8(g->cpu, 0x020296C4u));
+			}
 #endif
 		}
 		/* 命令队列探针：每 30 帧打一行，看游戏自己有没有在入队/出队。
