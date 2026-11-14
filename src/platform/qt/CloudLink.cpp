@@ -1302,6 +1302,103 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 	return direct;
 }
 
+/**
+ * 官方 WiFi 直连的 TCP 版（KpHwm4.A2egSU.java / AmA8tU.java）：一端
+ * accept、一端 connect，字节流上就是「4B 大端长度 + u16 type + payload」。
+ *
+ * 只有显式给了环境变量才启用，默认行为与以前完全一致：
+ *   MGBAX_TCP_PEER=1.2.3.4:5678   作为客户端连过去
+ *   MGBAX_TCP_LISTEN=5678         作为服务端监听
+ * 两个都设时 PEER 优先（客户端场景更多：只有一边有公网/端口映射）。
+ */
+ILink* CloudLink::tryEnvTcpLink(QString* error) {
+	const QString peer = qEnvironmentVariable("MGBAX_TCP_PEER").trimmed();
+	const QString listenSpec = qEnvironmentVariable("MGBAX_TCP_LISTEN").trimmed();
+	if (peer.isEmpty() && listenSpec.isEmpty()) {
+		return nullptr;
+	}
+	TcpDirectLink* link = new TcpDirectLink();
+	if (!peer.isEmpty()) {
+		const int colon = peer.lastIndexOf(QLatin1Char(':'));
+		bool ok = false;
+		const int port = colon > 0 ? peer.mid(colon + 1).toInt(&ok) : 0;
+		if (colon <= 0 || !ok || port <= 0 || port > 65535) {
+			if (error) {
+				*error = QStringLiteral("MGBAX_TCP_PEER 格式应为 host:port");
+			}
+			delete link;
+			return nullptr;
+		}
+		status(QStringLiteral("正在直连 TCP 对端 %1…").arg(peer));
+		if (!link->connectTo(peer.left(colon), quint16(port), 10000, error)) {
+			delete link;
+			return nullptr;
+		}
+		status(QStringLiteral("TCP 直连已建立（%1 → %2，本机端口 %3）\n")
+		               .arg(QString::number(link->localPort()), peer)
+		               .arg(link->localPort()));
+		return link;
+	}
+	bool ok = false;
+	const int port = listenSpec.toInt(&ok);
+	if (!ok || port <= 0 || port > 65535) {
+		if (error) {
+			*error = QStringLiteral("MGBAX_TCP_LISTEN 应为 1-65535 的端口号");
+		}
+		delete link;
+		return nullptr;
+	}
+	status(QStringLiteral("正在监听 TCP 端口 %1 等待对端…").arg(port));
+	if (!link->listenAndAccept(quint16(port), 20000, error)) {
+		delete link;
+		return nullptr;
+	}
+	status(QStringLiteral("TCP 直连已建立（监听 %1，对端 %2）")
+	               .arg(link->localPort())
+	               .arg(link->peerText()));
+	return link;
+}
+
+/**
+ * 蓝牙 RFCOMM（官方 KpHwm4.A2egSU(str) 客户端 / A4TApA 服务端，服务名
+ * `GBoy`、UUID 3a1f7b2e-8d45-4c92-bf60-5e3c21a98d47）。只在 Windows 上
+ * 编译；没设 MGBAX_BT 时连对象都不创建。
+ */
+ILink* CloudLink::tryBtLink(QString* error) {
+#ifdef _WIN32
+	const QString spec = qEnvironmentVariable("MGBAX_BT").trimmed();
+	if (spec.isEmpty()) {
+		return nullptr;
+	}
+	if (!BtLink::supported()) {
+		if (error) {
+			*error = QStringLiteral("本机 SDK 未提供蓝牙 RFCOMM 支持");
+		}
+		return nullptr;
+	}
+	BtLink* link = new BtLink();
+	const bool host = spec.compare(QStringLiteral("host"), Qt::CaseInsensitive) == 0;
+	if (host) {
+		status(QStringLiteral("正在以蓝牙服务端启动（服务名 GBoy）…"));
+		if (!link->openHost(20000, error)) {
+			delete link;
+			return nullptr;
+		}
+	} else {
+		status(QStringLiteral("正在连接蓝牙对端 %1…").arg(spec));
+		if (!link->openClient(spec, 20000, error)) {
+			delete link;
+			return nullptr;
+		}
+	}
+	status(QStringLiteral("蓝牙 RFCOMM 已连通（%1）").arg(link->peerText()));
+	return link;
+#else
+	Q_UNUSED(error);
+	return nullptr;
+#endif
+}
+
 void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
 	const QString tag = room->roomId;
 	status(QStringLiteral("正在通过服务器隧道等待对方进入（跨网可联）…"));

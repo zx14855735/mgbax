@@ -226,7 +226,13 @@ final class GBoyLink {
         if !asHost {
             try send(fd, Self.helloFrame())
         }
-        try expectHello(fd, asHost: asHost)
+        let resumed = try expectHello(fd, asHost: asHost)
+        /* 官方断线重连（AmA8tU.ARc23Z(Socket):263-272）：对端直接发裸 10 字节
+         * `int32 6 + int16 100 + int32 rtt` 就进入按键转发，不再走 2/3/6 ——
+         * 存档早在第一次握手时就灌进镜像核了，重放反而会把两边拉回旧进度。 */
+        if resumed {
+            return Self.appendNote(note, "已恢复联机（重连握手）")
+        }
 
         let info = try romInfo()
         try send(fd, info)
@@ -248,9 +254,12 @@ final class GBoyLink {
         /* type 6 双向交换，而且是**照抄官方**的用法：收到的存档要灌进
          * 「代表对端那个玩家」的镜像核，不是收下就扔。以前这里把对端存档
          * 丢掉并写"本机继续用本机进度"，两端的镜像核因此停在不同的一幕。 */
+        var exchanged = true
         if asHost {
             if let peer = try readState(fd) {
                 onRemoteState(peer)
+            } else {
+                exchanged = false
             }
             if let mine = try stateFrame() {
                 try send(fd, mine)
@@ -261,9 +270,11 @@ final class GBoyLink {
             }
             if let peer = try readState(fd) {
                 onRemoteState(peer)
+            } else {
+                exchanged = false
             }
         }
-        return Self.appendNote(note, "已交换即时存档")
+        return Self.appendNote(note, exchanged ? "已交换即时存档" : "对方没有发即时存档")
     }
 
     private static func appendNote(_ note: String, _ extra: String) -> String {
