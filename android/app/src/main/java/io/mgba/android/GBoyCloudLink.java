@@ -194,8 +194,7 @@ public final class GBoyCloudLink {
     }
 
     /** {@code roomId} empty or null creates a room, otherwise joins it. */
-    public void start(final String user, final String password, final String roomId) {
-        closed = false;
+    public void start(final String user, final String password, final String roomId) {        closed = false;
         Thread thread = new Thread(() -> {
             try {
                 run(user, password, roomId);
@@ -205,6 +204,44 @@ public final class GBoyCloudLink {
                 }
             }
         }, "lobby-cloud");
+        thread.setDaemon(true);
+        thread.start();
+        worker = thread;
+    }
+
+    /**
+     * 蓝牙直连（照抄官方 {@code KpHwm4.A2egSU} / {@code KpHwm4.A4TApA}）：
+     * 不碰任何服务器，两端配对后直接跑同一套镜像会话 —— RFCOMM 上仍然是
+     * {@code 4B 大端长度 + u16 type} 的 GBoy 帧，所以 {@link #serve} 一个字不改。
+     *
+     * @param mac 空 = 当服务端（注册 {@code "GBoy"} 的 SDP 记录并等对端）；
+     *            非空 = 当客户端连这个 MAC。
+     */
+    public void startBluetooth(final String mac) {
+        closed = false;
+        Thread thread = new Thread(() -> {
+            GBoyBluetoothLink link = null;
+            try {
+                boolean asHost = mac == null || mac.isEmpty();
+                status(asHost ? "蓝牙联机：等待对方连接…" : "蓝牙联机：正在连接 " + mac);
+                android.bluetooth.BluetoothAdapter adapter =
+                        android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+                link = asHost ? GBoyBluetoothLink.host(adapter)
+                              : GBoyBluetoothLink.join(adapter, mac);
+                ensureSession(link);
+                hooks.onConnected(asHost, null);
+                status("蓝牙联机已连接，你是 " + (asHost ? "1P" : "2P"));
+                serve(link);
+            } catch (Exception e) {
+                if (!closed) {
+                    fail(message(e));
+                }
+            } finally {
+                if (link != null) {
+                    link.close();
+                }
+            }
+        }, "lobby-bt");
         thread.setDaemon(true);
         thread.start();
         worker = thread;
