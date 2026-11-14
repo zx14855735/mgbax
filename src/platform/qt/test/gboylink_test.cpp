@@ -1223,6 +1223,34 @@ static int gboySessionSlotTest(void) {
 		check(peer.keysForSlot(2) == 0x3C,
 		      "cloud 4-core layout (localSlot=1) routes bare keys to slot 2");
 	}
+	/* 直连 / TCP / 蓝牙在官方模式下只靠 type 1 互置 ready（B25kr6:122/128）。
+	 * 两会话互喂 sendSocketHandshake 后必须都 ready，且键帧能落进按键表；
+	 * 这条路径不会被 frames/buslocal 的其它用例覆盖。 */
+	{
+		QByteArray fromA;
+		QByteArray fromB;
+		GBoyLinkSession::Events ev;
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession a([&fromA](const QByteArray& f) { fromA = f; }, ev, 1, 2);
+		GBoyLinkSession b([&fromB](const QByteArray& f) { fromB = f; }, ev, 2, 2);
+		a.sendSocketHandshake();
+		b.sendSocketHandshake();
+		check(!fromA.isEmpty() && !fromB.isEmpty(),
+		      "both ends emit the type 1 handshake");
+		check(GBoyFrames::typeOf(fromA.mid(4)) == GBoyFrames::TYPE_REGISTER
+		      && GBoyFrames::intOf(fromA.mid(4)) == 6,
+		      "the handshake is type 1 carrying int 6");
+		a.onWireFrame(fromB);
+		b.onWireFrame(fromA);
+		check(a.isReady() && b.isReady(),
+		      "type 1 handshake marks both peers ready");
+		a.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x21));
+		check(a.keysForSlot(2) == 0x21,
+		      "keys flow after the type 1 handshake on the direct path");
+	}
 	/* 官方 9 = 倍速、5 = 复位（NETPLAY_AUDIT.md C1/C3）。 */
 	{
 		bool reset = false;

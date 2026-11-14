@@ -1897,6 +1897,12 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	 * 「对面是谁」。我们以前整条消息没发过，对端只能当作未知类型丢掉。 */
 	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
 	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
+	/* 官方 WiFi 握手第一步：`ARc23Z((short)1, 4).putInt(6)`（B25kr6:122/128）。
+	 * 直连 / TCP / 蓝牙这条路以前一次 type 1 都没发过，而对端要收到 1/3/100
+	 * 才会把会话置 ready；少了它，`case TYPE_KEYS` 的握手期门控会把每一帧
+	 * type 0 都当「节奏信号」丢掉 —— 现象就是「对端按键全无响应」。
+	 * 两端都发，互为对方的 ready 来源。 */
+	m_gboySession->sendSocketHandshake();
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{

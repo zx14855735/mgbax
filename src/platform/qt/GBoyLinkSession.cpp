@@ -107,22 +107,27 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 	switch (type) {
 	case GBoyFrames::TYPE_KEYS:
 	case GBoyFrames::TYPE_KEYS_LOCAL:
+	case GBoyFrames::TYPE_INPUT_2:
+	case GBoyFrames::TYPE_INPUT_3:
+	case GBoyFrames::TYPE_INPUT_4: {
 		/* 官方 type 0 分两阶段：握手期那条是「初始节奏/速度信号」，稳态才是
 		 * 按键掩码。没有 ready 门控时，对端开局那条 0 会凭空按下 1/2/4 号键，
-		 * 于是两边在菜单里各多走一步。 */
+		 * 于是两边在菜单里各多走一步。槽位键（11/12/17）是同一语义的扩展，
+		 * 走同一道门，避免「槽位键能进、裸键进不去」的不对称。 */
 		if (!isReady()) {
 			if (m_events.onStatus) {
 				m_events.onStatus(QStringLiteral("pre-ready key frame ignored"));
 			}
 			break;
 		}
-		pushKeys(senderSlot, GBoyFrames::intOf(body));
-		break;
-	case GBoyFrames::TYPE_INPUT_2:
-	case GBoyFrames::TYPE_INPUT_3:
-	case GBoyFrames::TYPE_INPUT_4: {
-		int target = type == GBoyFrames::TYPE_INPUT_2 ? 2
-		           : type == GBoyFrames::TYPE_INPUT_3 ? 3 : 4;
+		int target = senderSlot;
+		if (type == GBoyFrames::TYPE_INPUT_2) {
+			target = 2;
+		} else if (type == GBoyFrames::TYPE_INPUT_3) {
+			target = 3;
+		} else if (type == GBoyFrames::TYPE_INPUT_4) {
+			target = 4;
+		}
 		pushKeys(target, GBoyFrames::intOf(body));
 		break;
 	}
