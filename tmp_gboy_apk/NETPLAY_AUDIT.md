@@ -593,7 +593,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 36 | 自动槽位：同 ROM 取最低空闲 0..3，slot>0 存档名加 `slot+1`（`Console.java:68-92`） | 镜像核用独立目录 `mirrorN/`（`CloudLink.cpp:1904-1910`） | 按 slot 建核 | 同 | ⚠️等价（换了一种隔离方式） |
 | 37 | 建核时机 = 握手第 5 步（阻塞）（`B25kr6:132-138`） | 启动期一次性建 3 镜像（`CloudLink.cpp:1904`） | 启动期 | 启动期 | ⚠️等价（提前建，握手不再阻塞） |
 | 38 | 帧节奏 `1e9/(speed*60)` + 追帧预算（`KpHwm4/A5SV6n:21,45-85`） | 16ms / fps 上限（`CloudLink.cpp:1978-1982`） | 16ms | 16ms | ⚠️等价（无追帧预算） |
-| 39 | 速度倍率生效（`AaHO0E.AYUAbz(float)` 220-231） | 无 | 无 | 无 | ❌缺失 |
+| 39 | 速度倍率生效（`AaHO0E.AYUAbz(float)` 220-231：重算帧闸，音频随之） | **半实现**：`effectiveSpeed/tickMsForSpeed`（`GBoyLinkSession.cpp:334-349`）只驱动 `serveOfficial:2057` 的**按键采样节拍**；镜像核 pacing 仍是常量 `FRAME_INTERVAL_US=16667`（`GBoyMirror.cpp:22/248`），无音频重采样 | **半实现**：`linkSpeedPaceNanos` 只改**可见核**帧闸（`EmulatorActivity:2690`），镜像核/音频未接 | **已实现**：`typeSpeed` → `onRemoteSpeed` → `setLinkSpeed`（`LobbyLink.swift:873-880`、`EmulatorViewController.swift:6069/6206`）→ `linkRate` 写进 `sliceNanos`（`:1203-1204`，唯一消费点）+ `playRate = mult * linkRate`（`:1008`，**音频按乘积联动**），倍率换算集中在 `GBoySpeed`（`LobbyFrames.swift:283-315`，用核心实际帧长而非 60fps 标称），断开复位 1x（`:5842/6168`） | ⚠️等价（iOS 完整可作参考；PC=仅采样节拍、Android=仅可见核，见 C11） |
 | 40 | 稳态按键频率：房间模式每帧、直连模式 5 帧（`p1.txt:348210/348362`） | 5 帧 + 边沿（`GBoyLinkSession.cpp:20-46`） | 同（`GBoyLinkSession.java:106-128`） | 同 | ⚠️等价（少发，靠边沿补） |
 | 41 | 断开清理：速度归 1 / 存 slot9 / 关全部镜像核（`EmulatorActivity.C2rE4F:1349-1400`） | 部分（`CloudLink` 停镜像） | 部分 | 部分 | ⚠️等价 |
 | 42 | WSS 四动作 `create_game_room/join_room/send_message/update_room_settings`（+`leave_room`） | 全有（`CloudLink.cpp:92/103/112/741/799`） | 全有 | 全有 | ✅一致 |
@@ -640,9 +640,9 @@ PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"�
 与**接收端字节码**（`AYUAbz` case 0 = `setKeys`、case 9 = 改帧闸）。两种读法只在「握手期 vs 稳态」分阶段时才自洽，
 见 §0.4；判定性实验见同节。在实验做完之前，5/6/9/10 行按 ❌不一致 计。
 
-**统计：`✅一致` 20 条，`⚠️等价` 27 条，`❌缺失` 3 条，`❌不一致` 4 条，共 54 条。**
+**统计：`✅一致` 20 条，`⚠️等价` 28 条，`❌缺失` 2 条，`❌不一致` 4 条，共 54 条。**
 
-按"一致 + 等价"计，照抄率 **47/54 ≈ 87%**；若只算"逐字节可互通"的条目（✅），**20/54 ≈ 37%**。
+按"一致 + 等价"计，照抄率 **48/54 ≈ 89%**；若只算"逐字节可互通"的条目（✅），**20/54 ≈ 37%**。
 
 ---
 
@@ -773,11 +773,21 @@ PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"�
 - **风险**：低。
 - **验证**：拔网线 5-10 秒内两端都提示"连接已断开"，而不是挂着假连接。
 
-### C11. 速度倍率（type 9）真正生效（P2，三端）
-- **缺什么**：收到 type9 后改本机帧节奏（官方 `AaHO0E.AYUAbz(float)`）。
-- **改哪**：三端帧循环 + 帧闸；PC `CloudLink.cpp:1978-1982` 的 `fpsLimit` 改为 `speed*60`。
-- **风险**：低-中（影响所有核的节奏，跑不稳会抖）。
-- **验证**：一端切 2x，另一端核也跑 2x（画面/音频同步加速）。
+### C11. 速度倍率（type 9）真正生效（P2，三端都只做了一半）
+- **官方**：收到 9 后 `AaHO0E.AYUAbz(float)` 重算帧闸（`1e9/(speed*60)`），音频写入随之调整。
+- **现状（2026-11-15 02:0x）**：
+  - **PC**：值域与公式都对（`effectiveSpeed/tickMsForSpeed`），但只驱动 `serveOfficial:2057` 的**按键采样节拍**；
+    镜像核 pacing 是常量 `FRAME_INTERVAL_US=16667`（`GBoyMirror.cpp:22/248`），可见核走 Qt 主循环，无音频重采样。
+    收到的 2x 只会让采样从 16.7ms 变 8.3ms，**游戏本身不变快**。
+  - **Android**：`linkSpeedPaceNanos` 改的是**可见核**节拍（`EmulatorActivity:2690`），镜像核与音频未接。
+  - **iOS：已完整**（可作参考实现）：`typeSpeed` → `onRemoteSpeed` → `setLinkSpeed`（`LobbyLink.swift:873-880`、`EmulatorViewController.swift:6069/6206`），
+    帧循环里 `sliceNanos = GBoySpeed.sliceNanos(rate: linkRate)`（`:1203-1204`）+ `playRate = mult * linkRate`（`:1008`，音频按两者之积），倍率表在 `GBoySpeed`（`LobbyFrames.swift:283-315`），断开时复位 1x（`:5842/6168`）。
+- **要接的是三处，必须同时改**（g1 提醒）：
+  1. **镜像核 pacing**（PC `GBoyMirror.cpp:248`、Android 镜像线程、iOS 镜像线程）；
+  2. **可见核帧闸**（PC Qt 主循环 / Android `EmulatorActivity:2690` 已有 / iOS 主循环）；
+  3. **音频重采样率**（只改帧闸不改音频会把 AudioTrack 积压）。
+- **风险**：中（三处不同步会表现为"画面快了但声音糊/延迟"）。建议照 iOS 的写法（一个 `linkRate` 乘进 `playRate`，音频用乘积），别只改 serve 循环。
+- **验证**：一端切 2x，另一端画面与音频都同步加速；连续跑 60s 无音频积压。
 
 ### C12. TCP 服务端参数对齐 6374/backlog1/0.0.0.0（P3，PC + Android）
 - **改哪**：`TcpDirectLink.cpp:205-208`（backlog 1，UI 默认 6374）；`GBoySocketLink.java:107`（显式 `bind`）。
@@ -824,8 +834,8 @@ PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"�
 - 直连/蓝牙路径的**握手 `type 1(6)`** 此前从未发出，导致 ready 恒 false、按键被门控丢弃（第 53 行）；g5 已补。
 - **握手序列**：PC 已补齐 `1→2→3(4)→6`、iOS 本来完整，**只剩 Android 缺第三帧 3**——这是目前唯一还会挡住与官方互连的项（第 54 行 / C13-A1）。
 
-**照抄率（54 条）**：`✅20 / ⚠️27 / ❌缺失 3 / ❌不一致 4`；
-"逐字节互通"口径 **37%**，"行为等价"口径 **87%**。
+**照抄率（54 条）**：`✅20 / ⚠️28 / ❌缺失 2 / ❌不一致 4`；
+"逐字节互通"口径 **37%**，"行为等价"口径 **89%**。
 
 **验证边界（对外表述请带上）**：iOS 只过 `swiftc -parse`，未编译未真机；PC/Android 蓝牙只有编译验证（无适配器）；
 PC 的 `dual` 同一二进制 5 跑 3 次无诊断退出、`bus test.gba 4` 失败（SIOMULTI0=ffff），属 harness/4P 既有状态，
@@ -841,7 +851,7 @@ PC 的 `dual` 同一二进制 5 跑 3 次无诊断退出、`bus test.gba 4` 失�
 | 34 | 槽位映射：官方 `A2egSU(pc,index)` 表 vs 我们"除本机升序" | 3/4 人房会 | C9，改动小但要回归 4 核 |
 | 46 | `type 7`（本机可见核按键）我们用自研 14 号 | 不会（APK 内无发送方） | 可不动 |
 | 20 | `type 1` 空体（=断开）我们不发，直接关 socket | 不会（对端看 EOF，等价） | 可不动 |
-| 39 | `type 9` 倍速只记录、未改帧闸 | 不会（只影响倍速同步） | C11，锦上添花 |
+| 39 | `type 9` 倍速：iOS 已完整（帧闸+音频），PC 只到按键采样、Android 只到可见核 | 不会（不影响按键/互通） | C11，照 iOS 的 `playRate = mult * linkRate` 补 PC/Android |
 | 45 | `type 8`（每帧推进次数）未实现 | 不会（中继/多对端场景） | 可不动 |
 
 **下一步**：**先做 C13**（握手顺序 + 补空体 3），这是目前唯一还会挡住"与官方客户端互连"的项；

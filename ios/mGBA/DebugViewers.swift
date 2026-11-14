@@ -735,8 +735,7 @@ enum DebugViewers {
 
     /// PC `ioViewer` + `frameWindow` 的等价物：寄存器/帧状态，外加粗粒度图层开关
     /// （`onLayerMask` 把要**强制关闭**的 DISPCNT 位交给帧循环每帧重写）。
-    static func showIo(core: OpaquePointer?, presenter: UIViewController,
-                       onLayerMask: ((UInt32) -> Void)? = nil) {
+    static func showIo(core: OpaquePointer?, presenter: UIViewController) {
         guard let core, mgbaMobileIsLoaded(core), mgbaMobileWidth(core) == 240 else {
             alert(title: "I/O 与帧状态", message: "仅 GBA 游戏可用", presenter: presenter)
             return
@@ -776,49 +775,59 @@ enum DebugViewers {
             lines.append("MOSAIC \(hex(read(0x0400004C)))  BLDCNT \(hex(read(0x04000050)))  BLDY \(read(0x04000054) & 0x1F)")
             dump.text = lines.joined(separator: "\n")
         }
-        var mask: UInt32 = 0
-        func toggle(_ title: String, _ bit: UInt32) -> UIStackView {
-            let name = UILabel()
-            name.text = title
-            name.font = .systemFont(ofSize: 11)
-            let control = UISwitch()
-            control.isOn = true
-            control.transform = CGAffineTransform(scaleX: 0.7, y: 0.7)
-            control.addAction(UIAction { _ in
-                if control.isOn {
-                    mask &= ~bit
+        // 视频层：直接走 core 的 listVideoLayers / enableVideoLayer。
+        // id 必须用 info[i].id（数组下标≠id），文案用 visibleName。
+        var layers: UIStackView!
+        var list: UnsafePointer<mCoreChannelInfo>?
+        let layerCount = mgbaMobileListVideoLayers(core, &list)
+        if let list, layerCount > 0 {
+            let stack = UIStackView()
+            stack.axis = .vertical
+            stack.spacing = 4
+            for index in 0..<layerCount {
+                let item = list[index]
+                let nameText: String
+                if let visible = item.visibleName {
+                    nameText = String(cString: visible)
+                } else if let internalName = item.internalName {
+                    nameText = String(cString: internalName)
                 } else {
-                    mask |= bit
+                    nameText = "层 \(item.id)"
                 }
-                onLayerMask?(mask)
-                refresh()
-            }, for: .valueChanged)
-            let row = UIStackView(arrangedSubviews: [name, control])
-            row.axis = .horizontal
-            row.spacing = 2
-            return row
-        }
-        let layers = UIStackView()
-        layers.axis = .horizontal
-        layers.spacing = 4
-        for (name, bit) in [("BG0", UInt32(0x100)), ("BG1", UInt32(0x200)), ("BG2", UInt32(0x400)),
-                            ("BG3", UInt32(0x800)), ("OBJ", UInt32(0x1000))] {
-            layers.addArrangedSubview(toggle(name, bit))
+                let row = UIStackView()
+                row.axis = .horizontal
+                row.spacing = 6
+                let name = UILabel()
+                name.text = nameText
+                name.font = .systemFont(ofSize: 12)
+                let control = UISwitch()
+                control.isOn = true
+                control.transform = CGAffineTransform(scaleX: 0.75, y: 0.75)
+                let layerId = item.id
+                control.addAction(UIAction { _ in
+                    mgbaMobileSetVideoLayer(core, layerId, control.isOn)
+                }, for: .valueChanged)
+                row.addArrangedSubview(name)
+                row.addArrangedSubview(control)
+                stack.addArrangedSubview(row)
+            }
+            layers = stack
+        } else {
+            let empty = UILabel()
+            empty.text = "当前游戏没有可枚举的视频层"
+            empty.font = .systemFont(ofSize: 11)
+            empty.textColor = UIColor(white: 0.4, alpha: 1)
+            layers = UIStackView(arrangedSubviews: [empty])
         }
         let actions = UIStackView()
         actions.axis = .horizontal
         actions.spacing = 8
         actions.addArrangedSubview(button("刷新") { refresh() })
-        actions.addArrangedSubview(button("全部恢复") {
-            mask = 0
-            onLayerMask?(0)
-            refresh()
-        })
         let note = UILabel()
         note.numberOfLines = 0
         note.font = .systemFont(ofSize: 11)
         note.textColor = UIColor(white: 0.35, alpha: 1)
-        note.text = "图层开关会在每帧重写 DISPCNT（游戏自己改也会被覆盖）；关掉后画面下一帧生效。"
+        note.text = "图层开关直接调用 core 的 enableVideoLayer（不是 DISPCNT 位），下一帧生效；layer id 取自 listVideoLayers。"
         sheet.add(layers)
         sheet.add(actions)
         sheet.add(note)

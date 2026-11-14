@@ -235,15 +235,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var stepFrameWanted = false
     /** 逐帧倒带：暂停时由帧循环消费一次（gate 保护）。 */
     private var rewindFrameWanted = false
-    /** 调试页「I/O 与帧状态」要求强制关闭的图层位（gate 保护，见 applyForcedLayers）。 */
-    private var forcedLayerMask: UInt32 = 0
     /** 软件断点（GDB 的替代）：地址 + 期望值，变化即记录并暂停（gate 保护）。 */
     private var watchAddress: UInt32 = 0
     private var watchValue: UInt32 = 0
     private var watchArmed = false
-    /** 逐帧倒带回放用的本地按键历史（环形，emu 线程读写）。 */
-    private static let keyHistorySize = 240
-    private var keyHistory = [UInt32](repeating: 0, count: 240)
     /**
      * 硬件键盘映射（PC Settings → Keyboard 页的等价物）：物理键名 → GBA 键名，
      * 存 `UserDefaults["key_map"]`；默认表与改造前的 `mapKey` 逐键等价。
@@ -1159,7 +1154,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     present(core, &video, &videoCap)
                 }
                 if back && !loading && mgbaMobileIsLoaded(core) {
-                    replayBackOneFrame(core: core)
+                    rewindOneFrame(core: core)
                     present(core, &video, &videoCap)
                 }
                 gate.lock()
@@ -1287,20 +1282,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                         netFrameNo += n
                         set.beginFrame(netFrameNo)
                     }
-                    // 逐帧倒带用：记下这批帧的本地按键掩码（环 240 帧，1 KB）。
-                    let frameMask = UInt32(truncatingIfNeeded: userKeys())
-                    let frameIndex = Int(mgbaMobileFrameCounter(core))
-                    for k in 0..<n {
-                        keyHistory[(frameIndex + k) % Self.keyHistorySize] = frameMask
-                    }
-                    // 调试页关掉的图层：每帧重写，游戏自己改 DISPCNT 也压回去。
-                    applyForcedLayers(core)
                     _ = mgbaMobileRunFrames(core, Int32(n))
                     pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
                     done += n
                 }
                 pollRumble(core: core)
-                checkMemoryWatch(core)
             } else {
                 pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: false)
             }
@@ -1817,40 +1803,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         DispatchQueue.main.async { self.refreshSlotButton() }
     }
 
-    /// 调试页的图层开关：每帧把要关闭的位从 DISPCNT 清掉（PC Video layers 的粗粒度等价）。
-    private func applyForcedLayers(_ core: OpaquePointer) {
-        gate.lock()
-        let mask = forcedLayerMask
-        gate.unlock()
-        guard mask != 0 else { return }
-        let dispcnt = mgbaMobileBusRead(core, 16, 0x04000000)
-        _ = mgbaMobileBusWrite(core, 16, 0x04000000, dispcnt & ~mask)
-    }
-
-    /**
-     * 逐帧倒带（PC 的 Step backwards）：先倒带 1 秒，再按 `keyHistory` 里记录的
-     * 本地按键掩码逐帧重放到「上一帧」。暂停状态没有新输入，所以这段回放的
-     * 输入与当时完全一致（记录环 240 帧 > 1 秒 60 帧，不会读到被覆盖的旧条目）。
-     */
-    private func replayBackOneFrame(core: OpaquePointer) {
-        let now = Int(mgbaMobileFrameCounter(core))
-        guard now > 0 else {
+    /// 逐帧倒带（PC 的 Step backwards）：直接调 core 的精确回退（帧号正好少 1）。
+    /// 前置条件：开过 rewind 且历史里有快照；没有历史时降级提示。
+    private func rewindOneFrame(core: OpaquePointer) {
+        mgbaMobileSetRewind(core, true)
+        guard mgbaMobileRewindFrames(core, 1) else {
             toast("没有可倒带的历史")
             return
         }
-        let target = now - 1
-        guard mgbaMobileRewind(core, 1) else {
-            toast("没有可倒带的历史")
-            return
-        }
-        var steps = 0
-        while Int(mgbaMobileFrameCounter(core)) < target && steps < 600 {
-            let index = Int(mgbaMobileFrameCounter(core)) % Self.keyHistorySize
-            mgbaMobileSetKeys(core, keyHistory[index])
-            _ = mgbaMobileRunFrames(core, 1)
-            steps += 1
-        }
-        // 回到暂停时的按键状态（通常为 0，避免回放里按下的键粘住）。
         mgbaMobileSetKeys(core, UInt32(truncatingIfNeeded: userKeys()))
         mgbaMobileClearAudio(core)
     }
@@ -3367,28 +3327,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         toast("已暂存相机图；核心导出注入接口后即可生效")
     }
 
-    /// 软件断点（GDB 的替代）：每帧比较监视地址，值变了就记录并暂停。
-    /// 命中一次后自动解除，等用户重新设置，避免暂停后继续刷屏。
-    private func checkMemoryWatch(_ core: OpaquePointer) {
+    /// C 回调落点（RunFrames 线程）：解除监视、暂停、写日志，UI 更新切主线程。
+    fileprivate func memoryWatchFired(address: UInt32, length: UInt32) {
         gate.lock()
-        let armed = watchArmed
-        let address = watchAddress
-        let expected = watchValue
-        gate.unlock()
-        guard armed, address != 0 else { return }
-        let current = mgbaMobileBusRead(core, 16, address)
-        guard current != expected else { return }
-        gate.lock()
-        watchValue = current
         watchArmed = false
         paused = true
+        let current = core.map { mgbaMobileBusRead($0, 16, address) } ?? 0
         gate.unlock()
-        RunLog.shared.add(String(format: "断点命中：%08X %04X → %04X", address, expected, current))
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            if let core = self.core {
+                _ = mgbaMobileSetMemoryWatch(core, 0, 0, nil, nil)
+            }
             self.audio.setPaused(true)
             self.pauseButton?.setTitle("继续", for: .normal)
-            self.toast(String(format: "断点命中 0x%08X：%04X → %04X", address, expected, current))
+            RunLog.shared.add(String(format: "断点命中：%08X (%d 字节) → %04X", address, length, current))
+            self.toast(String(format: "断点命中 0x%08X → %04X", address, current))
         }
     }
 
@@ -3443,15 +3397,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 return
             }
             let current = mgbaMobileBusRead(core, 16, addr)
+            let ok = mgbaMobileSetMemoryWatch(core, addr, 2, mgbaMemoryWatchCallback,
+                                              Unmanaged.passUnretained(self).toOpaque())
             self.gate.lock()
             self.watchAddress = addr
             self.watchValue = current
-            self.watchArmed = true
+            self.watchArmed = ok
             self.gate.unlock()
-            RunLog.shared.add(String(format: "断点设置 %08X 当前 %04X", addr, current))
-            self.toast(String(format: "断点已设：0x%08X 当前 %04X", addr, current))
+            RunLog.shared.add(String(format: "断点设置 %08X 当前 %04X %@", addr, current, ok ? "ok" : "fail"))
+            self.toast(ok ? String(format: "断点已设：0x%08X 当前 %04X", addr, current) : "断点设置失败")
         }, linkButton("解除断点") { [weak self] in
             guard let self else { return }
+            if let core = self.core {
+                _ = mgbaMobileSetMemoryWatch(core, 0, 0, nil, nil)
+            }
             self.gate.lock()
             self.watchArmed = false
             self.watchAddress = 0
@@ -6471,12 +6430,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("请先打开一个游戏")
             return
         }
-        DebugViewers.showHub(core: core, presenter: topmostPresenter) { [weak self] mask in
-            guard let self else { return }
-            self.gate.lock()
-            self.forcedLayerMask = mask & 0x1F00
-            self.gate.unlock()
-        }
+        DebugViewers.showHub(core: core, presenter: topmostPresenter)
     }
 
     /// WebDAV 云同步的账号设置。
@@ -7978,4 +7932,13 @@ final class RunLog {
         entries.removeAll()
         lock.unlock()
     }
+}
+
+/// `mgbaMobileSetMemoryWatch` 的 C 回调（在 RunFrames 调用线程执行）；
+/// ctx 是控制器自身，回调里只做标记/日志，UI 更新由控制器切主线程。
+private func mgbaMemoryWatchCallback(_ address: UInt32, _ length: UInt32,
+                                     _ context: UnsafeMutableRawPointer?) {
+    guard let context else { return }
+    let controller = Unmanaged<EmulatorViewController>.fromOpaque(context).takeUnretainedValue()
+    controller.memoryWatchFired(address: address, length: length)
 }

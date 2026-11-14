@@ -168,7 +168,7 @@ void AiOverlay::paintEvent(QPaintEvent*) {
 	QFont font = painter.font();
 	font.setPointSizeF(std::max(8.0, height() / 40.0));
 	painter.setFont(font);
-	for (const Block& block : m_blocks) {
+	for (const AiTranslate::Block& block : m_blocks) {
 		QRectF box(block.rect.x() * width(), block.rect.y() * height(),
 		           block.rect.width() * width(), block.rect.height() * height());
 		box = box.intersected(QRectF(rect()));

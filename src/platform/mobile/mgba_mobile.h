@@ -8,13 +8,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* mCoreChannelInfo 以核心头为准（id / internalName / visibleName /
+ * visibleType 四个字段）。这里真 include 而不是前向声明，避免前端各自
+ * 手抄一份同布局结构体、core 改字段时静默错位。 */
+#include <mgba/core/interface.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct MgbaMobile;
 struct GBA;
-struct mCoreChannelInfo;
 
 /**
  * 与载体无关的 busgame 导航状态。Android 的 MgbaMobile 四核和 PC Qt 的
