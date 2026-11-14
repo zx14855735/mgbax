@@ -8160,6 +8160,10 @@ public class EmulatorActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         try {
+            unregisterReceiver(noRelayReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
             unregisterReceiver(stateReceiver);
         } catch (Exception ignored) {
         }
