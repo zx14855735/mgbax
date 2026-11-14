@@ -30,12 +30,18 @@ final class GBoyLink {
         let message: String
     }
 
+    // 消息号必须与官方客户端（KpHwm4.B25kr6 的 ARc23Z 调用）以及 PC/Android
+    // 两端的 GBoyFrames 完全一致：0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT /
+    // 5 就绪确认 / 6 状态 / 9 按键。自家扩展一律用 11 以上的号。
+    private static let msgPacing = 0
     private static let msgHello = 1
     private static let msgRomInfo = 2
     private static let msgReady = 3
-    private static let msgKeys = 4
-    private static let msgReset = 5
+    private static let msgReadyAck = 5
     private static let msgState = 6
+    private static let msgKeys = 9
+    /// 复位是我们自己的扩展（官方没有这条消息），放在 11 以上避免撞号。
+    private static let msgReset = 13
 
     /// Zero-filled body appended to the synthesized state image, in bytes.
     private static let statePad = 900 * 1024
