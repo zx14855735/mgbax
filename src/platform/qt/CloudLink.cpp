@@ -2025,9 +2025,9 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 		}
-		/* 节拍固定 60fps：官方**没有**帧率下发消息（type 0 是按键掩码，
-		 * type 9 才是倍速），所以这里不能按网络值改节拍。 */
-		const qint64 tickMs = 16;
+	/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
+	 * 1x=16.7ms、0.5x=33.3ms、2x=8.3ms、4x=4.2ms；没收到时按 1x。 */
+		const double tickMs = GBoyLinkSession::tickMsForSpeed(m_gboySession->remoteSpeed());
 		if (now - lastTick >= tickMs) {
 			lastTick = now;
 			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的

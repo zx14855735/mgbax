@@ -342,6 +342,14 @@ public final class GBoyCloudLink {
         worker = thread;
     }
 
+    /** 官方 type 9：把本地速度倍率（1 / -1=0.5x / 2 / 4）同步给对端。 */
+    public void sendSpeed(int value) {
+        GBoyLinkSession session = linkSession;
+        if (session != null && !closed) {
+            session.sendSpeed(value);
+        }
+    }
+
     /** Asks the peer to reset its game (official type 5, int32 0 payload). */
     public void sendReset() {
         KcpChannel current = channel;

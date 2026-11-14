@@ -428,9 +428,55 @@ public final class GBoyLinkSession {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_RESET, 0));
     }
 
+    /** 官方 type 9 的速度值 → 倍率；{@code -1} = 0.5x，其它/未收到 = 1x。 */
+    public static float speedFactor(int speed) {
+        return speed == -1 ? 0.5f : (speed == 2 || speed == 4) ? speed : 1.0f;
+    }
+
+    /** 官方 type 9 值域 {@code {1, -1, 2, 4}}；未收到或其它值一律视为未知。 */
+    public static boolean isKnownSpeed(int speed) {
+        return speed == 1 || speed == -1 || speed == 2 || speed == 4;
+    }
+
+    /**
+     * 官方 {@code AaHO0E.AYUAbz(float)} 的帧闸：{@code nanos = 1e9/(speed*60)}。
+     * 1x = 16.67ms、2x = 8.33ms、4x = 4.17ms、0.5x = 33.33ms。
+     */
+    public static long speedToNanos(int speed) {
+        return (long) (1_000_000_000.0 / (speedFactor(speed) * 60.0));
+    }
+
     /** 官方 9：请求对端切换模拟速度（1 / -1=0.5x / 2 / 4）。 */
     public void sendSpeed(int speed) {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_SPEED, speed));
+    }
+
+    /**
+     * 官方 {@code AaHO0E.AYUAbz(float)} 的帧闸换算：{@code 1e9 / (speed*60)}。
+     *
+     * <p>payload 值域 {@code {1, -1, 2, 4}}，其中 {@code -1} 代表 0.5x
+     * （{@code AYUAbz} 的 {@code if i <= 0 → 0.5f}）。其它值返回 0，调用方保持
+     * 本地原始节拍（约 16.74ms），等价「未收到」。</p>
+     */
+    public static long paceNanosForSpeed(int value) {
+        float factor;
+        switch (value) {
+            case 1:
+                factor = 1f;
+                break;
+            case -1:
+                factor = 0.5f;
+                break;
+            case 2:
+                factor = 2f;
+                break;
+            case 4:
+                factor = 4f;
+                break;
+            default:
+                return 0L;
+        }
+        return (long) (1_000_000_000.0 / (factor * 60.0));
     }
 
     /** Slot of the console owned by this device (1..4). */

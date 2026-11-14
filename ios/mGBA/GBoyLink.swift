@@ -187,8 +187,24 @@ final class GBoyLink {
         let dead = userClosedFlag || sessionClosedFlag
         lock.unlock()
         if fd >= 0 && !dead {
-            try? Self.sendAll(fd, Self.intFrame(Self.msgReset, 0))
+            // send() 负责补 4 字节大端长度头；intFrame 只有 type + int32。
+            try? send(fd, Self.intFrame(Self.msgReset, 0))
         }
+    }
+
+    /**
+     * 官方 type 9（倍速）：把本机选的倍速告诉对端（`B25kr6.AZOQYO:253-258`
+     * 是 `ARc23Z(9, 4).putInt(i)`）。对端收到后只改它自己的帧闸，不动游戏逻辑。
+     * 只发线上合法值 {1, -1, 2, 4}（见 GBoySpeed）。
+     */
+    func sendSpeed(_ wire: Int32) {
+        guard GBoySpeed.wireValues.contains(wire) else { return }
+        lock.lock()
+        let fd = currentFd
+        let dead = userClosedFlag || sessionClosedFlag
+        lock.unlock()
+        guard fd >= 0, !dead else { return }
+        try? send(fd, Self.intFrame(Self.msgSpeed, wire))
     }
 
     /// 对端上报的 RTT（官方 `A5SV6n.f5293B9tovu`），-1 = 还没收到。
