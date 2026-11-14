@@ -1471,48 +1471,42 @@ uint8_t mgbaMobileBusGamePeek8(struct GBA* g, uint32_t addr) {
  * Android 的 MgbaMobile 四核走下面的 busGameKeys() 薄包装；PC Qt 的
  * CoreController 可见核从 ScriptedControl::poll() 直接调用本函数，传自己的
  * board。地址、相位、内存判据只有这一份，杜绝两端逻辑漂移。 */
+/* 标题/开场阶段的 callback2 区间。读档进 overworld 后是 0x08170A81，
+ * 联机/菜单是 0x081CA8C1、battle_main.o 是 0x0809xxxx，都不在这些区间。 */
+static bool busGameTitleCb(uint32_t cb2) {
+	return (cb2 >= 0x08145000u && cb2 <= 0x08146FFFu)
+	    || (cb2 >= 0x081E0000u && cb2 <= 0x081E1FFFu)
+	    || (cb2 >= 0x08179000u && cb2 <= 0x08179FFFu)
+	    || cb2 == 0x0815BAEDu;
+}
+
 uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g) {
 	if (!st || !g || !g->cpu) {
 		return 0;
 	}
 	const int idx = st->idx;
 	const int menuAt = st->menuAt;
-	const int modeDowns = st->modeDowns;
 	const uint32_t f = st->frame++;
-	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手（f≈1365）就会出现，
-	 * 远早于菜单导航（menuAt=1500）。一旦那时停手，导航到 multi-battle 的
-	 * DOWN/A/UP/LEFT/modeDowns 按键全被跳过，游戏永远进不了对战。 */
+	/* 不要把「st>=4 后停手」加回来：st=4 在联机中心握手就会出现，远早于
+	 * 菜单导航，一停手后面的导航按键全被跳过。 */
 	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
-	const int boot = 240;
 	uint32_t keys = 0;
-	/* nav-only：跳过开场 START/A/DOWN/UP/LEFT 盲按，直接落到导航分支。
-	 * 这里的 goto 只跨过一串纯赋值，标签后紧跟空语句以保证 C99 合法。 */
-	if (st->navOnly) {
-		goto busgame_navigate;
+	const uint32_t cb2 = GBAView32(g->cpu, 0x020290E8u);
+	/* 开场阶段由游戏状态驱动，不再按帧号。四核进 SIO 前不锁步，游戏帧号
+	 * 各不相同：实测脚本 f=0 时 idx=1 已在标题菜单(081E04F1)、其余还在
+	 * 开场(08145A43)。固定帧 START@240 / A 脉冲必然有核落空，那个核永远
+	 * 不读档、不写 SIOCNT，另外三核的握手就死在 st=2 / pc=0。
+	 * 单端实测：START 把演示画面切到标题菜单，A 选「继续」读档；两者交替
+	 * 让每个核按自己的相位自主完成读档，之后四核自然收敛。 */
+	if (busGameTitleCb(cb2)) {
+		const uint32_t ph = f % 60u;
+		keys = (ph < 6u) ? START : ((ph >= 12u && ph < 32u) ? A : 0u);
+		goto busgame_tail;
 	}
-	if (f >= boot && f < boot + 6) {
-		keys = START;
-	} else if (f >= boot + 10 && f < boot + 16) {
-		keys = START;
-	} else if (f >= boot + 20 && f < menuAt) {
-		keys = ((f % 45) < 30) ? A : 0u;
-	} else if (f >= menuAt && f < menuAt + 8) {
-		keys = DOWN;
-	} else if (f >= menuAt + 30 && f < menuAt + 40) {
-		keys = A;
-	} else if (f >= menuAt + 40 && f < menuAt + 60) {
-		keys = UP;
-	} else if (f >= menuAt + 60 && f < menuAt + 80) {
-		keys = LEFT;
-	} else if (modeDowns > 0 && f >= menuAt + 80
-	           && f < menuAt + 80 + modeDowns * 14) {
-		keys = (((f - menuAt - 80) % 14) < 4) ? DOWN : 0u;
-	} else if (f >= menuAt + 80 + modeDowns * 14
-	           && f < menuAt + 92 + modeDowns * 14) {
-		keys = A;
-	} else if (f >= menuAt + 240) {
-	busgame_navigate:
-		;
+	/* 原本按帧号的 START/A/DOWN/UP/LEFT/modeDowns 盲按整体废弃：任何固定
+	 * 帧序列都会把相位不同的四核按到不同子状态。读档后一律走下面的内存
+	 * 驱动导航（菜单钳位、握手脉冲 A、走位、选怪注入）。 */
+	{
 		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
 		 * 开始走位。菜单/握手阶段继续按 A。 */
 		int v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
@@ -1582,6 +1576,8 @@ uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g) {
 			}
 		}
 	}
+busgame_tail:
+	;
 	/* 内存驱动的确定性导航：战斗模式菜单（maxCursorPos==4）把光标钳到 2
 	 * （多人/4P）。联机服务菜单 4 项不能钳。 */
 	if (f >= menuAt) {
