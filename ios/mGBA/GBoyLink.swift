@@ -326,12 +326,17 @@ final class GBoyLink {
     }
 
     /**
-     * 入房：第一次走完整握手（1→2→3→6），之后掉线按官方 AmA8tU 的节奏重连：
-     * 每 2 秒一次、总窗口 50 秒（AmA8tU 的 `System.currentTimeMillis() - BChYOn
-     * >= 50000` 判断），连上先发裸 10 字节 type 100 再进读循环。
+     * 入房：第一次走完整握手（1→2→3→6）；**首次连不上就立刻报错**，之后掉线
+     * 才按官方 AmA8tU 的节奏重连：每 2 秒一次、总窗口 50 秒
+     * （AmA8tU 的 `System.currentTimeMillis() - BChYOn >= 50000` 判断），
+     * 连上先发裸 10 字节 type 100 再进读循环。
+     *
+     * 首次与之后的分界就是官方那个 `f4332B9tovu`（握手成功才置 true）：
+     * AmA8tU.java:95-98 的 `catch (IOException e) { if (!B9tovu) throw e; }`
+     * —— 房主还没开房时应当立刻告诉用户，只有打到一半掉线才值得静默重试。
      */
     private func guestLoop(_ ip: String, _ port: Int) throws {
-        var resume = false                  // 已经完成过一次握手
+        var resume = false                  // 已经完成过一次握手（= f4332B9tovu）
         var reconnectUntil: Date?           // 重连窗口截止
         while !userClosed {
             var active: Session?
@@ -358,6 +363,8 @@ final class GBoyLink {
                     drop(session, Self.message(error))
                 }
                 if userClosed { throw error }
+                // 官方 AmA8tU:95-98：从未握手成功过就直接抛，不进 50 秒窗口。
+                if !resume { throw error }
                 if let until = reconnectUntil, Date() >= until {
                     throw LinkError(message: "对方已断开（50 秒内没能重连）")
                 }

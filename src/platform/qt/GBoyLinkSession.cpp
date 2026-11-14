@@ -192,10 +192,12 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		m_remoteCounter = GBoyFrames::intOf(body);
 		break;
 	}
-	case GBoyFrames::TYPE_FPS:
+	case GBoyFrames::TYPE_SPEED:
 	{
+		/* 官方 9 = 速度倍率（1 / -1 / 2 / 4）。收下备用，不改变本机节拍：
+		 * 我们的帧率由前端固定 60fps，倍速只在官方客户端 UI 里有意义。 */
 		std::lock_guard<std::mutex> locker(m_mutex);
-		m_remoteFps = GBoyFrames::intOf(body);
+		m_remoteSpeed = GBoyFrames::intOf(body);
 		break;
 	}
 	case GBoyFrames::TYPE_EVENT:
@@ -283,8 +285,8 @@ void GBoyLinkSession::sendReset() {
 	m_transport(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
 }
 
-void GBoyLinkSession::sendFps(int fps) {
-	m_transport(GBoyFrames::frame(GBoyFrames::TYPE_FPS, fps));
+void GBoyLinkSession::sendSpeed(int speed) {
+	m_transport(GBoyFrames::frame(GBoyFrames::TYPE_SPEED, speed));
 }
 
 long GBoyLinkSession::frameNo() {

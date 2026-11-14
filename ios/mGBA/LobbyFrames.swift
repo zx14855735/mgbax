@@ -31,38 +31,50 @@ enum LobbyFrames {
     static let maxFrameLength = 16 * 1024 * 1024
 
     /*
-     * 类型号与官方客户端逐条对齐（KpHwm4.B25kr6 的 ARc23Z 调用、
-     * KpHwm4/AmA8tU.java:167-221）：
-     *   0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 就绪确认 / 6 状态 / 9 按键。
-     * 官方没用到 4、7、8、10 之后的号，自家扩展（多槽位按键、复位、计数）
-     * 一律放到 11 以上 —— 早先这里 0 当按键、9 当 FPS、5 当复位、3 兼作
-     * 槽位 3 按键，全部与官方语义撞车（见 NETPLAY_SPEC.md 第 6 节第 3 行）。
-     * 这份表与 Android `GBoyFrames` 逐项相同，三端必须同时改。
+     * 类型号按官方**字节码**逐条核对（tmp_gboy_apk/NETPLAY_AUDIT.md §0、
+     * .workbuddy/gboy/dd/p1/p2.txt）：
+     *   0 按键 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 复位 / 6 状态 / 9 倍速。
+     *
+     * 关键更正（曾经的错表把 0 当帧率、9 当按键、5 当 ready-ack）：
+     *   - `KpHwm4/B25kr6.AYUAbz` 的 packed-switch：case 0 → `peer.BI9f7h.setKeys(getInt())`
+     *     （p2.txt:379f24-379f36，0x0138 目标），所以 **0 = 按键掩码**；
+     *     模拟线程 `ADYaiT/D8MqeW.run` 里 `const/4 v11,#0` + `ARc23Z(v11,4)` +
+     *     `putInt(keys)` 就是它的发送点（p1.txt:34821a / 348364）。
+     *   - case 9 → 写 `AaHO0E.AZkASS` 速度倍率并重算帧闸（p2.txt:379d5a），
+     *     唯一发送点 `B25kr6.AZOQYO` 的四个调用者紧挨着 "0.5x"/"2x"/"4x" 菜单
+     *     （p2.txt:63c94e-63c9de），所以 **9 = 倍速**（值 1/-1/2/4）。
+     *   - case 5 → 可见核 + 全部镜像核 `reset(false)`（p2.txt:379e76），发送点
+     *     `EmulatorActivity.BmvVmW:1333` 的 "重置游戏" 菜单，所以 **5 = 复位**。
+     *
+     * 官方没有 fps/pacing 帧，也没有 ready-ack。自家扩展（多槽位按键、计数器）
+     * 一律 11 起；13 保留为旧版复位号，收到同样执行复位。
+     * 这份表与 PC `GBoyFrames.h` / Android `GBoyFrames.java` 必须逐项相同。
      */
 
-    /// 官方 0：节奏 / 帧率上限（int32），接收方据此设本机帧率上限。
-    static let typeFps = 0
+    /// 官方 0：本帧按键掩码（int32）。稳态每帧/每对端一条；握手阶段中继也用它
+    /// 下发节奏值（见 LobbyLink.handle 的 steady 参数，两个阶段语义不同）。
+    static let typeKeys = 0
     /// 官方 1：握手（int32 playerCount；长度 0 的 1 = 断开/结束）。
     static let typeRegister = 1
     /// 官方 2：名字（32 字节定长 + int16 长度 + 描述串）。
     static let typeName = 2
     /// 官方 3：就绪 + RTT（int32）。云端注册阶段中继也用 3 回玩家数。
     static let typeReady = 3
-    /// 官方 5：就绪确认（空体，只有客户端路径发）。
-    static let typeReadyAck = 5
+    /// 官方 5：复位全部核（int32 0）。以前当成 ready-ack 吃掉。
+    static let typeReset = 5
     /// 官方 6：整份 savestate（int32 长度 + blob）。
     static let typeState = 6
-    /// 官方 9：按键掩码（int32）。
-    static let typeKeys = 9
+    /// 官方 9：模拟速度倍率（int32：1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
+    static let typeSpeed = 9
 
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
 
-    /// 槽位 2 的按键掩码（官方没有「带槽位的按键」，两人会话用 9 即可）。
+    /// 槽位 2 的按键掩码（官方没有「带槽位的按键」，两人会话用 0 即可）。
     static let typeInput2 = 11
     /// 槽位 4 的按键掩码。
     static let typeInput4 = 12
-    /// 复位请求，body 是 int(0)。
-    static let typeReset = 13
+    /// 旧版复位号（自家扩展）。新版发官方 5，收到 13 也当复位处理。
+    static let typeResetLegacy = 13
     /// 本机可见核自己的按键掩码（兼容旧对端）。
     static let typeKeysLocal = 14
     /// 自由计数器。

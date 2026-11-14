@@ -2099,7 +2099,6 @@ public final class GBoyCloudLink {
     private void serve(Link link) {
         ensureSession(link);
         long lastKey = 0;
-        long lastFps = 0;
         int sentKeys = Integer.MIN_VALUE;
         while (!closed && !link.isClosed()) {
             long now = System.currentTimeMillis();
@@ -2114,10 +2113,6 @@ public final class GBoyCloudLink {
                         Log.i(TAG, "tx keys=0x" + Integer.toHexString(keys));
                     }
                 }
-            }
-            if (now - lastFps >= 1000) {
-                lastFps = now;
-                link.send(GBoyFrames.frame(GBoyFrames.TYPE_FPS, 60));
             }
             byte[] message = link.recv(50);
             if (message == null) {

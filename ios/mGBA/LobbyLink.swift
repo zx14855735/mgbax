@@ -61,9 +61,10 @@ final class LobbyLink {
     /// N-core lockstep uses this to feed the right mirror core instead of
     /// dumping every peer's keys into one fixed slot.
     var onRemoteKeysForSlot: (Int, Int32) -> Void = { _, _ in }
-    /// 官方 type 0（节奏）：对端下发的帧率上限。0 或越界值表示「没有上限」，
-    /// 由上层按 1000/fps 调整帧循环的目标间隔。Called from the reader thread.
-    var onRemotePacing: (Int) -> Void = { _ in }
+    /// 官方 type 9（倍速）：对端切换了模拟速度（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
+    /// 上层按这个倍率调整帧循环（官方收到后直接写 AaHO0E.AZkASS 并重算帧闸）。
+    /// Called from the reader thread.
+    var onRemoteSpeed: (Int) -> Void = { _ in }
     /// Slot owned by this device's visible console (1...4). Devices in a
     /// 3/4-player session must use distinct slots so key frames reach the
     /// right mirror console; slot 1 keeps the two-player TYPE_KEYS behaviour.
@@ -89,10 +90,13 @@ final class LobbyLink {
     private let reader = LobbyFrames.Reader()
     /// Last key state received from the peer; only transitions are logged.
     private var lastRxKeys = Int32.min
-    /// 对端 type 0 下发的帧率上限（-1 = 还没收到）。
-    private(set) var remoteFps: Int = -1
+    /// 对端 type 9 下发的倍速原值（-1 = 还没收到；1 表示 1x）。
+    private(set) var remoteSpeed: Int = -1
     /// 对端在 type 3 里上报的 RTT（官方 A5SV6n.f5293B9tovu），-1 = 未知。
     private(set) var remoteRtt: Int32 = -1
+    /// 本次连接是否已经发过 type 6（连接级去重）。每连一条新通道在
+    /// `onConnected` 之前清零：一次会话最多发一份初始存档，重连后可以再发一份。
+    private var stateSentThisConnection = false
     /// 会话信息：「重新连接中继」复用它，不重建房间。
     private var authToken: String?
     private var currentRoom: Room?
@@ -151,27 +155,51 @@ final class LobbyLink {
      * 官方 type 6：把本机可见核的即时存档整包推给对端，让对端「代表本机这个
      * 玩家」的镜像核停在同一幕（B25kr6:144-152、AmA8tU:199）。
      *
-     * 云端这条路径原来只有接收（handle 里的 typeState）没有发送，于是对端的
-     * 镜像核永远停在电池存档上。发送时机必须在**四核房间重建完成之后**：
-     * onConnected 会重载可见核，若趁重载前发，发出去的是上一局的进度，
-     * 对端镜像核与本机可见核立刻分叉（Android GBoyCloudLink.sendInitialState
-     * 同样由外部在建好房间后调用）。
+     * **触发点**：`onConnected` → 设备层 `armCloudMulticore`（重载 ROM）→
+     * `rebuildCloudConsoleSet` 成功**或失败**后各调一次。也就是每建立一条云端
+     * 通道、四核房间定稿（或放弃建立）的那个瞬间发一次；重连成功后链路恢复、
+     * 房间重建，会自然再发一份**当前**快照。
+     *
+     * **不能**在这里随手取快照就发：`onConnected` 之后可见核会被重载，重载前
+     * 取到的是上一局的进度，重载后发出去会把对端镜像核拉到旧状态。
+     *
+     * `stateSentThisConnection` 做连接级去重：同一条通道上重复调用只发第一份
+     * （防止重建路径被触发两次时刷包）；新通道在 `onConnected` 前已清零，所以
+     * 「掉线 → 重连」一定会补发一次。
      */
     func sendInitialState() {
         lock.lock()
         let current = channel
         let dead = closedFlag
+        let already = stateSentThisConnection
         lock.unlock()
         guard let current, !dead else {
             status("初始状态未发送：联机通道还没就绪")
+            return
+        }
+        guard !already else {
+            status("本次连接已发过即时存档，跳过重复发送")
             return
         }
         guard let snapshot = stateSnapshot(), !snapshot.isEmpty else {
             status("初始状态未发送：本机还没有可用的即时存档")
             return
         }
+        // 抢占标记：万一两条线程同时走到这里，只让一个真正发出去。
+        lock.lock()
+        let claimed = !stateSentThisConnection
+        stateSentThisConnection = true
+        lock.unlock()
+        guard claimed else { return }
         current.send(LobbyFrames.stateFrame(snapshot))
         status("已把本机即时存档 \(snapshot.count) 字节发给对端")
+    }
+
+    /// 每建立一条新通道、调 onConnected 之前清掉「本次连接已发」标记。
+    private func beginConnection() {
+        lock.lock()
+        stateSentThisConnection = false
+        lock.unlock()
     }
 
     func close() {
@@ -295,6 +323,7 @@ final class LobbyLink {
         }
         let text = asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P"
         status("房号 \(room.roomId ?? "")\n中继 \(room.nodeAddress ?? ""):\(room.nodePort)\n\(text)")
+        beginConnection()
         onConnected(asHost, nil)
         serve(link)
         onDisconnected()
@@ -506,6 +535,7 @@ final class LobbyLink {
             }
         }
         status("云端联机已连接，你是 \(asHost ? "1P" : "2P")（手动中继）")
+        beginConnection()
         onConnected(asHost, nil)
         serve(link)
         onDisconnected()
@@ -616,8 +646,12 @@ final class LobbyLink {
      *     -> type 1, body: int playerCount, short 0, int baseStateCount
      *     <- type 3, body: int playerCount
      *     -> type 3, body: empty            (the base states are loaded now)
-     *     <- type 0, body: int              (帧率上限，AmA8tU:213-221)
+     *     <- type 0, body: int              (握手期节奏值，AmA8tU:213-221)
      *     -> type 1, body: empty            (acknowledgement)
+     *
+     * 注意 type 0 在这个阶段是「节奏值」（AmA8tU 把它写进 AZkASS），稳态才是
+     * 按键掩码（B25kr6.AYUAbz case 0）。所以握手期的 type 0 不能往镜像核喂键，
+     * 由 `handle(_:steady:false)` 单独消化。
      */
     private func handshake(link: LobbyKcpChannel, room: Room) throws {
         let count = try expect(link: link, type: LobbyFrames.typeReady, timeoutMs: LobbyLink.stepWaitMs)
@@ -628,14 +662,12 @@ final class LobbyLink {
         status("已注册到中继，等待对方…")
 
         link.send(LobbyFrames.frame(LobbyFrames.typeReady))
-        // AmA8tU:213-221：客户端发完空的 type 3 就等 type 0（帧率上限），等到
-        // 才发空 type 1 收尾。中继要等第二个玩家注册才推帧率包，房主在等人时
-        // 不能因此超时，所以这里按可选处理。
-        // expect 会把命中的那一帧直接返回、不经 handle()，所以这里补一次，
-        // 否则握手阶段收到的上限不生效（官方在 AaHO0E 里同一处赋值）。
-        if let pacing = try? expect(link: link, type: LobbyFrames.typeFps,
+        // AmA8tU:213-221：发完空的 type 3 等一帧 type 0 再发空 type 1 收尾。
+        // 中继要等第二个玩家注册才会推，房主在等人时不能因此超时 → 可选。
+        // expect 命中后不会经 handle()，所以这里补一次（只是记账，不喂按键）。
+        if let pacing = try? expect(link: link, type: LobbyFrames.typeKeys,
                                     timeoutMs: LobbyLink.peerKeyWaitMs) {
-            handle(pacing)
+            handle(pacing, steady: false)
         }
         link.send(LobbyFrames.frame(LobbyFrames.typeRegister))
     }
@@ -648,9 +680,8 @@ final class LobbyLink {
     }
 
     /**
-     * Reads frames until one of `type` shows up. The room server pushes the
-     * 节奏包（type 0）与握手残留（type 3）在 handshake 完成前就到，所以
-     * 不匹配的帧交给 handle() 消化而不是丢掉。
+     * Reads frames until one of `type` shows up. 握手期还会收到中继的 type 0
+     * （节奏值）与残留 type 3，交给 `handle(_:steady:false)` 消化而不是丢掉。
      */
     private func expect(link: LobbyKcpChannel, type: Int, timeoutMs: Int64) throws -> Data {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
@@ -659,7 +690,7 @@ final class LobbyLink {
                 if LobbyFrames.type(of: body) == type {
                     return body
                 }
-                handle(body)
+                handle(body, steady: false)
                 continue
             }
             let remaining = max(50, Int(deadline.timeIntervalSinceNow * 1000))
@@ -677,7 +708,6 @@ final class LobbyLink {
 
     private func serve(_ link: LobbyKcpChannel) {
         var lastKey: Int64 = 0
-        var lastFps: Int64 = 0
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -689,19 +719,18 @@ final class LobbyLink {
                 if keys != sentKeys || now - lastKey >= 500 {
                     sentKeys = keys
                     lastKey = now
+                    // 官方稳态按键是 type 0（B25kr6.AYUAbz case 0），不再是 9。
                     link.send(LobbyFrames.frame(keyFrameType(), keys))
                 }
             }
-            if now - lastFps >= 1000 {
-                lastFps = now
-                link.send(LobbyFrames.frame(LobbyFrames.typeFps, 60))
-            }
+            // 官方没有任何 fps/pacing 帧：以前每秒一条 `0 + int 60` 在官方眼里
+            // 等于「按键掩码 60」，会把对端镜像核的按键黏住（AUDIT C2）。
             guard let message = link.recv(timeoutMs: 50) else {
                 continue
             }
             reader.append(message)
             while let body = reader.next() {
-                handle(body)
+                handle(body, steady: true)
             }
         }
     }

@@ -36,26 +36,29 @@ final class GBoyFrames {
     static final int MAX_FRAME_LENGTH = 16 * 1024 * 1024;
 
     /*
-     * 类型号与官方客户端逐条对齐（KpHwm4.B25kr6 里的 ARc23Z 调用）：
-     * 0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 就绪确认 / 6 状态 / 9 按键。
-     * 官方没用到 4、7、8、10 之后的号，我们自家的「多槽位按键」扩展一律放
-     * 到 11 以上，避免再把 0 当按键、9 当 FPS 那样和官方语义错位。
+     * 类型号以官方稳态（msg1 之后，B25kr6.AYUAbz 的 packed-switch）为准：
+     * 0 按键 / 1..4 分槽按键 / 5 复位 / 6 状态 / 7 本机键 / 8 每帧推进次数 /
+     * 9 速度倍率。握手期另有 1 注册 / 2 名字 / 3 就绪+RTT —— 「同一个号、两个
+     * 阶段」是官方自己的分裂，接收侧必须按阶段解释（见各方法注释）。
+     *
+     * 依据：tmp_gboy_apk/NETPLAY_AUDIT.md §0；字节码 p2.txt:379f2c（case 0 =
+     * setKeys）、p2.txt:379d5a（case 9 = 速度）、p2.txt:379e76（case 5 = reset）。
      */
 
-    /** 官方 0：节奏 / 帧率上限（int32）。 */
-    static final int TYPE_FPS = 0;
-    /** 官方 1：握手（int32 playerCount；长度 0 = 断开）。 */
+    /** 官方 0：按键掩码（int32），稳态每帧/每对端一条。 */
+    static final int TYPE_KEYS = 0;
+    /** 官方 1：握手注册（int32 playerCount；payload 固定 10 字节）。 */
     static final int TYPE_REGISTER = 1;
     /** 官方 2：名字（32 字节定长 + int16 长度 + 描述串）。 */
     static final int TYPE_NAME = 2;
-    /** 官方 3：就绪 + RTT（int32）。 */
+    /** 官方 3：握手期就绪 + RTT（int32）；稳态官方用它做 3 号槽按键。 */
     static final int TYPE_READY = 3;
-    /** 官方 5：就绪确认（空体，只有客户端路径发）。 */
-    static final int TYPE_READY_ACK = 5;
+    /** 官方 5：复位（int32 忽略），官方 EmulatorActivity.BmvVmW 发出。 */
+    static final int TYPE_RESET = 5;
     /** 官方 6：整份 savestate（u32 长度 + blob）。 */
     static final int TYPE_STATE = 6;
-    /** 官方 9：按键掩码（int32）。 */
-    static final int TYPE_KEYS = 9;
+    /** 官方 9：模拟速度倍率（int32：1 / -1(0.5x) / 2 / 4）。 */
+    static final int TYPE_SPEED = 9;
 
     /**
      * 官方断线重连握手（{@code KpHwm4/AmA8tU.java:263-272 ARc23Z(Socket)}）。
@@ -71,11 +74,12 @@ final class GBoyFrames {
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
     static final int TYPE_INPUT_2 = 11;
     static final int TYPE_INPUT_4 = 12;
-    static final int TYPE_RESET = 13;
+    /** 旧版复位号（已并入官方 5）；仅接收侧兼容一段时间，发送一律用 5。 */
+    static final int TYPE_RESET_LEGACY = 13;
     static final int TYPE_KEYS_LOCAL = 14;
     static final int TYPE_COUNTER = 15;
     static final int TYPE_EVENT = 16;
-    /** 槽位 3 的按键掩码（早先借 TYPE_READY 夹带，与官方「3 = RTT」冲突）。 */
+    /** 槽位 3 的按键掩码（官方稳态用 3，但 3 在握手期是 RTT，这里保留 17）。 */
     static final int TYPE_INPUT_3 = 17;
 
     private GBoyFrames() {

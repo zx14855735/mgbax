@@ -5947,6 +5947,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         if let error = set.start(visible: visible) {
             NSLog("GBOY_RT cloud arm rebuild failed: %@", error)
             toast("四核联机启动失败：\(error)")
+            /* 房间没建起来也要发本机即时存档：链路是好的，对端那颗「代表本机」
+             * 的镜像核不能停在电池存档上。此时可见核已经是重载后的帧 0，快照
+             * 就是「当前」状态；LobbyLink 的连接级去重保证一次会话只发一份。 */
+            lobbyLink?.sendInitialState()
         } else {
             consoleSet = set
             gate.lock()

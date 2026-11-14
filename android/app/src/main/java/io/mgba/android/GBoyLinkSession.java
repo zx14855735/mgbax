@@ -66,7 +66,8 @@ public final class GBoyLinkSession {
     private int sampleCountdown = 1;
     private boolean ready;
     private int remoteCounter = -1;
-    private int remoteFps = -1;
+    /** 官方 type 9 下发的速度倍率（1 / 2 / 4；-1 表示 0.5x）。-99 = 未收到。 */
+    private int remoteSpeed = -99;
     /** 官方 type 3 带回的对端 RTT（毫秒），-1 = 还没收到。 */
     private int remoteRtt = -1;
     private int lastLocalKeys;
@@ -219,15 +220,13 @@ public final class GBoyLinkSession {
                 pushKeys(target, GBoyFrames.intOf(body));
                 break;
             }
-            case GBoyFrames.TYPE_READY:
-            case GBoyFrames.TYPE_READY_ACK: {
-                // 官方语义：3 = 就绪 + RTT（int32），5 = 就绪确认（空体）。
+            case GBoyFrames.TYPE_READY: {
+                // 官方语义（握手期）：3 = 就绪 + RTT（int32）。
                 boolean first;
                 synchronized (lock) {
                     first = !ready;
                     ready = true;
-                    if (type == GBoyFrames.TYPE_READY
-                            && GBoyFrames.payloadOf(body).length >= 4) {
+                    if (GBoyFrames.payloadOf(body).length >= 4) {
                         remoteRtt = GBoyFrames.intOf(body);
                     }
                 }
@@ -278,6 +277,8 @@ public final class GBoyLinkSession {
                 break;
             }
             case GBoyFrames.TYPE_RESET:
+            case GBoyFrames.TYPE_RESET_LEGACY:
+                // 官方 5 = 复位（EmulatorActivity.BmvVmW 发送）；13 是我们旧号，兼容接收。
                 events.onReset();
                 break;
             case GBoyFrames.TYPE_STATE:
@@ -288,9 +289,11 @@ public final class GBoyLinkSession {
                     remoteCounter = GBoyFrames.intOf(body);
                 }
                 break;
-            case GBoyFrames.TYPE_FPS:
+            case GBoyFrames.TYPE_SPEED:
+                /* 官方 9：模拟速度倍率（1 / -1=0.5x / 2 / 4），接收侧写
+                 * AaHO0E.AZkASS 并重算帧闸。我们只记录，节拍仍由本机决定。 */
                 synchronized (lock) {
-                    remoteFps = GBoyFrames.intOf(body);
+                    remoteSpeed = GBoyFrames.intOf(body);
                 }
                 break;
             case GBoyFrames.TYPE_EVENT:
@@ -390,8 +393,9 @@ public final class GBoyLinkSession {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_RESET, 0));
     }
 
-    public void sendFps(int fps) {
-        transport.send(GBoyFrames.frame(GBoyFrames.TYPE_FPS, fps));
+    /** 官方 9：请求对端切换模拟速度（1 / -1=0.5x / 2 / 4）。 */
+    public void sendSpeed(int speed) {
+        transport.send(GBoyFrames.frame(GBoyFrames.TYPE_SPEED, speed));
     }
 
     /** Slot of the console owned by this device (1..4). */
@@ -422,9 +426,9 @@ public final class GBoyLinkSession {
         }
     }
 
-    public int remoteFps() {
+    public int remoteSpeed() {
         synchronized (lock) {
-            return remoteFps;
+            return remoteSpeed;
         }
     }
 

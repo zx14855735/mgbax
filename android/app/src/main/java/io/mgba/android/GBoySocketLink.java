@@ -173,8 +173,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         running.set(true);
         peerHost = host;
         peerPort = port;
-        final long deadline = System.currentTimeMillis()
-                + (retryFirstConnect ? RECONNECT_WINDOW_MS : 0);
+        // 官方的 50 秒窗口从「第一次失败」开始算（f4333BChYOn 在 catch 里赋值）。
+        final long[] windowDeadline = {0L};
         final Socket[] connected = new Socket[1];
         final IOException[] failure = new IOException[1];
         Thread connector = new Thread(() -> {
@@ -202,7 +202,13 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                     } catch (IOException ignored) {
                     }
                     long now = System.currentTimeMillis();
-                    if (!retryFirstConnect || now + RECONNECT_DELAY_MS >= deadline) {
+                    if (!retryFirstConnect) {
+                        return;
+                    }
+                    if (windowDeadline[0] == 0L) {
+                        windowDeadline[0] = now + RECONNECT_WINDOW_MS;
+                    }
+                    if (now + RECONNECT_DELAY_MS >= windowDeadline[0]) {
                         return;
                     }
                     Log.i(TAG, "connect failed (" + e.getMessage() + "), retry in 2s");
@@ -217,7 +223,10 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         }, "gboy-socket-connect");
         connector.setDaemon(true);
         connector.start();
-        long waitMs = (retryFirstConnect ? RECONNECT_WINDOW_MS : CONNECT_TIMEOUT_MS) + 1000L;
+        // 窗口从首次失败起算 50s，最后一次尝试自己还可能再耗时 10s。
+        long waitMs = retryFirstConnect
+                ? RECONNECT_WINDOW_MS + CONNECT_TIMEOUT_MS + 2000L
+                : CONNECT_TIMEOUT_MS + 1000L;
         try {
             connector.join(waitMs);
         } catch (InterruptedException e) {

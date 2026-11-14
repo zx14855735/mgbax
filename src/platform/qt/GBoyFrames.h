@@ -45,18 +45,25 @@ static constexpr quint32 maxFrameLength = 16u * 1024u * 1024u;
  * 现在：0..9 严格照抄官方；我们自己的多槽位扩展一律放到 11 以上。
  */
 enum Type {
-	TYPE_FPS = 0,         // 官方 0：节奏/帧率上限（int32）
+	/* 0 = 按键掩码。字节码依据：模拟循环 AaHO0E 每帧 `ARc23Z(0,4)` +
+	 * putInt(本帧按键) （p1.txt 0x348364），接收侧 dispatch `case 0` 直接
+	 * `Link.A2egSU.setKeys(getInt())`（p2.txt 0x379e44）。早先按旧文档把它
+	 * 当成"帧率"是错的 —— 那样官方房间模式里就没有任何一条消息承载按键。 */
+	TYPE_KEYS = 0,
 	TYPE_REGISTER = 1,    // 官方 1：握手（int32 playerCount；长度 0 = 断开）
 	TYPE_NAME = 2,        // 官方 2：名字（32B name + int16 n + n 字节）
 	TYPE_READY = 3,       // 官方 3：就绪 + RTT（int32）
-	TYPE_READY_ACK = 5,   // 官方 5：就绪确认（空体，仅客户端路径发）
+	TYPE_RESET = 5,       // 官方 5：复位（int32 0），可见核 + 所有镜像核一起 reset
 	TYPE_STATE = 6,       // 官方 6：整份 savestate（u32 长度 + blob）
-	TYPE_KEYS = 9,        // 官方 9：按键掩码（int32）
+	/* 9 = 模拟速度倍率（1 / -1 / 2 / 4 = 1x / 0.5x / 2x / 4x）。唯一发送点是
+	 * 倍速菜单 B25kr6.AZOQYO(int)（B25kr6.java:253-258），接收侧写
+	 * AaHO0E.f4302AZkASS 并重算帧闸。官方**没有**帧率下发消息。 */
+	TYPE_SPEED = 9,
 
 	// ---- 以下是我们自己的扩展，编号从 11 起，绝不与官方撞号 ----
 	TYPE_INPUT_2 = 11,    // 指向全局槽位 2 的按键掩码
 	TYPE_INPUT_4 = 12,    // 指向全局槽位 4 的按键掩码
-	TYPE_RESET = 13,      // 复位请求（官方没有这条消息）
+	TYPE_RESET_LEGACY = 13, // 旧版我们的复位号，仅接收兼容用
 	TYPE_KEYS_LOCAL = 14, // 本机可见核的按键（用于本地回放/诊断）
 	TYPE_COUNTER = 15,    // 对端帧计数（诊断）
 	TYPE_EVENT = 16,      // 事件通知（诊断）

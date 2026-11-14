@@ -52,9 +52,10 @@
 
 ### 0.3 官方**没有**「帧率下发」消息，也没有「ready ack」
 
-- 全 APK 只有 12 处 `B25kr6.ARc23Z(short,int)` 调用点（`.workbuddy/gboy/dd` 里
-  `method@1ca7/0494` 的 invoke-static 全量枚举），构造出的类型号只有
-  **0、1、2、3、5、6、9**。没有一条 fps/pacing 帧。
+- 全 APK 的 `B25kr6.ARc23Z(short,int)` 调用点共 **16 处**（Java 层 14 处字面常量 + 字节码里 2 处
+  用寄存器传 type 的 `D8MqeW.run`；`AmA8tU`/`AzWtSf` 两个方法的 dexdump 有损坏，以 Java 源码为准），
+  穷举见 A.13.1。构造出的类型号只有 **0、1、2、3、5、6、9**。没有一条 fps/pacing 帧：
+  `9` 的唯一调用者是倍速菜单，`0` 的调用者在模拟线程里（按键）。
 - `type 5` 不是 ready-ack，是 **reset**：发送点
   `com/game/boy/activity/EmulatorActivity.BmvVmW`（`EmulatorActivity.java:1333`，
   `ARc23Z((short) 5, 4).putInt(0)`），由"重置游戏"菜单触发；接收侧 `case 5`
@@ -65,6 +66,24 @@
 > 会被当成 1x/2x 倍速；(b) 官方客户端每帧发来的 `type 0`（按键），我们当成 fps 丢掉，
 > 对端永远不动；(c) 我们每秒发的 `TYPE_FPS(60)`，官方会当成"按键掩码 60"写进镜像核。
 > 这不是"编号偏移一条"，是整条输入通道语义反了。
+
+### 0.4 两种读法的调和：按「阶段」分开，不是二选一
+
+`type 0` 在官方代码里确实出现了两种处理，容易各执一词。按调用链拆开就没有矛盾：
+
+| 阶段 | 谁在读 | 读到 type 0 做什么 | 代码 |
+|---|---|---|---|
+| 握手期（msg1 之前） | `AmA8tU.A5SV6n` / `AzWtSf.A4TApA` 的读循环 | 把 int 写进 `AaHO0E.f4302AZkASS`（节奏/倍率字段），KCP 版写完就 `break` 出循环 | `AmA8tU:212-221`、`AzWtSf:169-180` |
+| 稳态（msg1 之后） | `B25kr6.AYUAbz`（由模拟线程每帧对每个 peer 调用） | `peer.BI9f7h.setKeys(getInt())` | `p2.txt:379f2c` |
+| 稳态发送侧 | `ADYaiT/D8MqeW.run` | 每帧/每 5 帧把本帧按键掩码打成 `type0 + int32` | `p1.txt:34821a/348364` |
+
+也就是说：`type 0` 在**握手期是节点下发的节奏信号**，在**稳态是按键**。同一个号、两个阶段。
+`type 9` 没有这种分裂——它**只有**"速度倍率"一个发送点（倍速菜单）和一个接收分支（改帧闸）。
+
+> 判定性实验（10 分钟）：官方客户端 ↔ 我们客户端，稳态下观察。
+> 若我们发 `type9=按键`，官方会按按键掩码改倍速（按「左」=0x20 → 32 倍速，画面立刻飞）；
+> 若官方发 `type0=按键`，我们的 `m_remoteFps` 会变成 0/1/64 之类的掩码值（帧率在 60 与 1 之间跳）。
+> 两个现象任意出现一个，就说明 0/9 的映射必须交换。
 
 ---
 
@@ -534,7 +553,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 1 | 线格式 `u32长度(含type)+u16 type+payload`（`B25kr6:91-96`、`BTvldC/ADYaiT:103-113`） | `GBoyFrames.cpp:13-35`；`Reader` 147-165 | `GBoyFrames.java` 同 | `LobbyFrames.swift:21-90` 同 | ✅一致 |
 | 2 | 帧长上限 8 MiB（`BTvldC/ADYaiT:107`） | 16 MiB（`GBoyFrames.h:36`） | 16 MiB（`GBoyFrames.java:36`） | 16 MiB（`LobbyFrames.swift:31`） | ⚠️等价（放宽一倍，仍能拒掉明显错位） |
 | 3 | 非法长度 → 抛 `IOException` 断链（`BTvldC/ADYaiT:107-109`） | 清空缓冲继续读（`GBoyFrames.cpp:152-156`）；TCP 层判 closed（`TcpDirectLink.cpp:409-412`） | 丢弃缓冲 | 丢弃缓冲 | ⚠️等价（不崩，但不像官方那样立刻断） |
-| 4 | 8×500ms 静默判对端不可达（`BTvldC/ADYaiT:85-92`） | `TcpDirectLink.cpp:371-404` 无静默计数（永远不因quiet断） | `GBoySocketLink.java:56-57/270-274` 有 8 次 | `GBoyLink.swift` 无静默计数 | ❌不一致（PC/iOS 缺） |
+| 4 | 8×500ms 静默判对端不可达（`BTvldC/ADYaiT:85-92`） | **有意偏离**：`SO_KEEPALIVE` 2s+1s / 2/1/3（`TcpDirectLink.cpp:57-80`），约 5s 判死 | `GBoySocketLink.java:56-57/270-274` 8 次 | `GBoyLink.swift` 无（靠 EOF/写失败） | ⚠️等价（PC 换成 keepalive，理由见 C10；iOS 仍是缺口） |
 | 5 | **type 0 = 按键掩码**（`p1.txt:34821a`） | `TYPE_FPS`（`GBoyFrames.h:48`），收下写 `m_remoteFps`（`GBoyLinkSession.cpp:195-200`） | `TYPE_FPS`（`GBoyFrames.java:46`） | `typeFps`（`LobbyFrames.swift:44`） | ❌不一致（**输入通道整条错位**） |
 | 6 | **type 9 = 速度倍率**（`B25kr6:253-258`） | `TYPE_KEYS`（`GBoyFrames.h:54`） | `TYPE_KEYS`（`GBoyFrames.java:58`） | `typeKeys`（`LobbyFrames.swift:56`） | ❌不一致（发给官方=改他倍速） |
 | 7 | type 2 自我介绍双向发送（`AZkASS:136`） | 仅 `startOfficialMatch` 发一次（`CloudLink.cpp:1861`） | 只解析不发送（`GBoyFrames.java:50` 无发送点） | 握手内发送（`GBoyLink.swift:391-395`） | ⚠️等价（Android 缺发送） |
@@ -577,12 +596,21 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 44 | `type 10` 断开通知 → UI msg2（`p2.txt:379d46`） | 无 | 无 | 无 | ❌缺失 |
 | 45 | `type 8` 每帧推进次数（`p2.txt:379e20`） | 无 | 无 | 无 | ❌缺失（官方只在多对端时用） |
 | 46 | `type 7` 本机可见核按键（`p2.txt:379e30`） | 用自研 14（`TYPE_KEYS_LOCAL`） | 同 | 同 | ❌不一致（无发送方，仅语义差异） |
-| 47 | 服务端 accept 单次（`A2egSU:64`） | 循环 accept（`TcpDirectLink.cpp:428-440`） | 循环 accept（`GBoySocketLink.java:111-147`） | 未知 | ⚠️等价（有意扩展） |
+| 47 | 服务端 accept 单次（`A2egSU:64`） | 循环 accept（`TcpDirectLink.cpp:428-440`） | 循环 accept（`GBoySocketLink.java:111-147`） | 每会话一次、掉线后重新 select+accept（`GBoyLink.swift:665-690`） | ⚠️等价（有意扩展） |
 | 48 | 大存档分片：TCP 靠流、KCP 靠 `frg`（`MdiDtx`） | `DirectLink` 加 `TYPE_FRAG`（1000B/48 窗） | 同 | 同 | ⚠️等价（官方原生分片，我们自研） |
+| 49 | 首次连接也走 2s×50s 重试窗（`AmA8tU:104-118`） | **有意偏离**：TCP 只是隧道连通后的加速候选（BT→UDP→TCP→WS），首连失败立即回落（`CloudLink` 通道编排） | 50s（`GBoySocketLink.java:59`） | 50s（`GBoyLink.swift:360-372`） | ⚠️等价（有意偏离，避免白等 50s；重连仍照抄） |
+| 50 | 帧循环阻塞收包不得压低帧率（官方帧闸与收包解耦，`KpHwm4/A5SV6n`+`AmA8tU`） | `recv` 超时按 `tickMs` 收窄（`CloudLink.cpp:2037-2039`），否则 60fps 被压到 33fps | 独立读线程 | 独立读线程+睡眠节拍 | ⚠️等价（PC 单线程结构导致，已修） |
+| 51 | `type 6` 与 SIO 中继桥共用 6 的判别（官方无此问题） | `GBoyFrames::stateOf` 用"u32 头是否放得下"区分（`GBoyFrames.cpp:72-84`） | 同 | 同 | ⚠️等价（我们自造的分层，官方没有桥） |
+| 52 | 交付实测状态 | 蓝牙仅编译验证（无适配器）；fps 上限无真机对端下发验证 | 蓝牙权限+通道已加，未真机验证 | 无 RFCOMM | ⚠️等价（**已实现未实测**，验收前需补） |
 
-**统计：`✅一致` 12 条，`⚠️等价` 21 条，`❌缺失` 6 条，`❌不一致` 9 条，共 48 条。**
+**争议行说明（5/6/9/10）**：PC 侧主张「0=帧率、9=按键、5=就绪确认」，依据是 `NETPLAY_SPEC.md`。
+本节坚持相反结论，依据是**发送端全量枚举**（12 处 `ARc23Z` 调用，类型只有 0/1/2/3/5/6/9，`type9` 的唯一调用者是倍速菜单）
+与**接收端字节码**（`AYUAbz` case 0 = `setKeys`、case 9 = 改帧闸）。两种读法只在「握手期 vs 稳态」分阶段时才自洽，
+见 §0.4；判定性实验见同节。在实验做完之前，5/6/9/10 行按 ❌不一致 计。
 
-按"一致 + 等价"计，照抄率 **33/48 ≈ 69%**；若只算"逐字节可互通"的条目（✅），**12/48 = 25%**。
+**统计：`✅一致` 12 条，`⚠️等价` 26 条，`❌缺失` 6 条，`❌不一致` 8 条，共 52 条。**
+
+按"一致 + 等价"计，照抄率 **38/52 ≈ 73%**；若只算"逐字节可互通"的条目（✅），**12/52 ≈ 23%**。
 
 ---
 
@@ -592,6 +620,9 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 > `Pn` = 优先级（P0 = 与官方客户端互通必须改）。
 
 ### C1. `type 0` / `type 9` 语义对调（P0，三端，1 行/端）
+> **先做 §0.4 的判定实验再动手**：PC 侧刚按「0=帧率、9=按键」落地并跑绿，
+> 改这一条要与 general-purpose-1 同步，避免边改边回退。
+
 - **缺什么**：官方 `0 = 按键`、`9 = 速度倍率`；我们反过来。
 - **改哪**：
   - PC `src/platform/qt/GBoyFrames.h:48,54` 交换常量值（`TYPE_KEYS = 0`、`TYPE_SPEED = 9`），
@@ -659,12 +690,17 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 - **风险**：中（会改变 3/4 人房谁控哪颗粒；需回归 4 核布局）。
 - **验证**：4 人房，1P 输入应落在 1P 的核、2P 落在 2P 的核（用 `dumpMirrorStates` 看）。
 
-### C10. 补静默判死与 `type 10` 断开（P2，PC + iOS）
-- **缺什么**：8×500ms 判死（`BTvldC/ADYaiT:85-92`）；`type 10 → msg2`。
-- **改哪**：`TcpDirectLink.cpp:371-404` 加计数器；`GBoyLink.swift` 读循环加同样的计数；
-  `GBoyLinkSession.cpp:206-210` 的 default 分支加 `case 10`。
+### C10. 补断线检测（PC 已用 keepalive 代替）+ `type 10`（P2，iOS 为主）
+- **缺什么**：官方 8×500ms 静默判死；`type 10 → UI msg2`。
+- **PC 现状**：**有意偏离且更合理**——`SO_KEEPALIVE` 2s+1s / 2/1/3（`TcpDirectLink.cpp:57-80`），
+  约 5s 判死。理由成立（我们的流每 5 帧有按键心跳，静默计数会被大存档传输误杀；
+  而无 FIN 的掉线只有 keepalive 能在大约 5-10s 发现，否则要等 tcp_retries2）。
+  **不要求 PC 回退**，只补 `case 10` 映射到 msg2。
+- **iOS 现状**：既无静默计数也无 keepalive，对端拔网线时可能长期挂着。
+  二选一：8×500ms 计数 或 同样的 keepalive 参数。
+- **改哪**：`GBoyLink.swift` 读循环；`GBoyLinkSession.cpp:206-210` 的 default 分支加 `case 10`。
 - **风险**：低。
-- **验证**：拔网线 4 秒内两端都提示"连接已断开"，而不是挂着假连接。
+- **验证**：拔网线 5-10 秒内两端都提示"连接已断开"，而不是挂着假连接。
 
 ### C11. 速度倍率（type 9）真正生效（P2，三端）
 - **缺什么**：收到 type9 后改本机帧节奏（官方 `AaHO0E.AYUAbz(float)`）。
@@ -685,7 +721,8 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 - **协议层还没有照抄**：`0/9` 语义反了、`5` 当成了 ack、`type 6` 后没有 reset、注册体长度不对、
   槽位表是另一套。这五条里任何一条都会让"与官方客户端互通"失败，其中 C1 会让官方客户端
   **行为异常**（倍速被按键掩码劫持），不只是"不同步"。
-- 照抄率（48 条）：**✅12 / ⚠️21 / ❌缺失 6 / ❌不一致 9**；
-  "逐字节互通"口径 **25%**，"行为等价"口径 **69%**。
+- 照抄率（52 条）：**✅12 / ⚠️26 / ❌缺失 6 / ❌不一致 8**；
+  "逐字节互通"口径 **23%**，"行为等价"口径 **73%**。
+- 与 PC 侧的分歧集中在 `0/9/5` 三行（见 §0.4 的判定实验）；**实验之前不要把这三行标成"已对齐"**。
 - 修复顺序建议：**C1 → C2 → C3 → C4 → C5**（半天量级、互相独立、都可抓包验证），
   再动 C8/C9（状态机与槽位，需回归 4 核）。
