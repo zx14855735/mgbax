@@ -259,10 +259,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         if let romName = autoRom {
             let players = lockstepPlayers
-            // 后台队列执行：loadRom+镜像创建是秒级长任务，主线程跑会被
-            // watchdog 击杀（CI 实测 app 静默死亡、无崩溃报告）。loadRom
-            // 的 UI 更新都在内部 runOnUiThread/main.async 跳回主线程。
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            // 专用大栈线程(16MB):loadRom 的原生加载路径在 Dispatch 默认
+            // 512KB 栈上疑似栈溢出(实测静默死亡、无崩溃报告);主线程跑
+            // 又会被 watchdog 击杀。loadRom 的 UI 更新都在内部跳回主线程。
+            let worker = Thread { [weak self] in
                 guard let self else { return }
                 let path = self.docs.appendingPathComponent(romName).path
                 NSLog("GBOY_RT loading %@", path)
@@ -282,6 +282,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     NSLog("GBOY_RT rom load FAILED")
                 }
             }
+            worker.stackSize = 16 << 20
+            worker.name = "gboy-autoload"
+            worker.start()
         }
         muted = defaults.bool(forKey: "muted")
         applyVolume()

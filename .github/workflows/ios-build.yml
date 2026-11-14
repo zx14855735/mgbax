@@ -109,15 +109,13 @@ jobs:
           sleep 45
           if ! pgrep -f 'mGBAx.app' > /dev/null; then
             echo "::error::APP DIED during lockstep check"
-            echo "===== sim system log (mGBAx last 3m) ====="
-            xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "mGBAx"' --style compact 2>/dev/null | tail -50 || true
-            CRASH=$(ls -t ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
+            CRASH=$(ls -t ~/Library/Logs/DiagnosticReports/mGBAx-* ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
             if [ -n "$CRASH" ]; then
-              echo "===== sim crash report ====="
+              echo "===== crash report: $CRASH ====="
               grep -E 'Exception Type|Exception Codes|Termination|Crashed|Thread [0-9]+ Crashed|GBoyConsoleSet|EmulatorView|mgba' "$CRASH" | head -40 || head -60 "$CRASH"
               cp "$CRASH" "$GITHUB_WORKSPACE/mgbax-crash.log" 2>/dev/null || cp "$CRASH" mgbax-crash.log
             else
-              echo "no sim DiagnosticReports found"
+              echo "no crash reports found (host or sim)"
             fi
           fi
           # 先落盘再断言：无论断言是否失败，lockstep.log 都进产物供诊断。
