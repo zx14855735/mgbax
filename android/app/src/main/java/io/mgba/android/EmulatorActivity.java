@@ -404,6 +404,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 return;
             }
             Log.i(TAG, "rom broadcast load " + path);
+            GBoyConsoleSet.resetInitialSaveSnapshot();
             pendingPath.set(path);
         }
     };
@@ -2295,6 +2296,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 String path = pendingPath.getAndSet(null);
                 if (path != null) {
                     Log.i(TAG, "emu loop reloading " + path);
+                    // 云重挂会在 reload 之后立刻重建 4 核房间；先把缓存的初始
+                    // 存档写回，否则可见核读到游戏写回的新进度、镜像核读缓存，
+                    // 四核起点分叉，SIO 永远凑不齐 playerCount。
+                    GBoyConsoleSet.restoreInitialSaveSnapshot(new File(path));
                     loadRom(path);
                     // Loading blocks for a while; start the pacing schedule
                     // and the feedback window fresh so the stall is not

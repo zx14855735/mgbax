@@ -174,50 +174,58 @@ public final class GBoyConsoleSet {
         mirrorThreads = new Thread[count];
         mirrorFrames = new long[count];
 
-        /* 先把可见核的电池存档一次性读成快照，再分发给所有镜像目录。
-         * 旧实现在循环里每轮重新打开同一个源文件：云连接重建房间时可见核
-         * 会在循环期间写回存档，实测四个存档 md5 各不相同（mirror1 与
-         * mirror2/3 内容不同），四核从不同的游戏进度冷启动，SIO 握手永远
-         * 凑不齐 playerCount、cb2 也随之分裂。同一份字节数组保证起点一致。 */
-        byte[] saveSnapshot = null;
-        String saveSnapshotName = null;
+        /* 整轮联机只取一次初始存档：两次 start() 之间游戏可能保存并写回
+         * 电池存档，重读会得到不同进度（实测 mirror1 与 mirror2/3 分叉，
+         * idx=1 卡在保存菜单、SIO 不启动、pc 恒 0）。缓存后每次 start()
+         * 都无条件回写主存档 + 所有镜像目录，可见核 reload 与镜像核冷启动
+         * 读到的字节完全相同。 */
         String primarySavePath = primary.saveFile();
         File primarySaveFile = (primarySavePath == null || primarySavePath.isEmpty())
                 ? null : new File(primarySavePath);
         if (primarySaveFile == null || !primarySaveFile.isFile()) {
-            // MgbaCore.nativeSaveFile() can still be empty right after a cloud
-            // rearm reloads the ROM. Fall back to the canonical <rom>.sav in
-            // saveDir (that is the file the visible core actually booted from).
-            String base = rom.getName();
-            int dot = base.lastIndexOf('.');
-            if (dot > 0) {
-                base = base.substring(0, dot);
-            }
-            File fallback = new File(saveDir, base + ".sav");
+            // nativeSaveFile() can be empty right after a cloud rearm reload.
+            File fallback = new File(saveDir, saveBaseName(rom) + ".sav");
             if (fallback.isFile()) {
                 primarySaveFile = fallback;
             }
         }
-        if (primarySaveFile != null && primarySaveFile.isFile()) {
-            saveSnapshotName = primarySaveFile.getName();
-            try (InputStream in = new FileInputStream(primarySaveFile)) {
-                ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                byte[] buffer = new byte[8192];
-                int n;
-                while ((n = in.read(buffer)) > 0) {
-                    bos.write(buffer, 0, n);
+        byte[] saveSnapshot;
+        String saveSnapshotName;
+        synchronized (SNAPSHOT_LOCK) {
+            if (s_initialSnapshot == null && primarySaveFile != null
+                    && primarySaveFile.isFile()) {
+                s_initialSnapshotName = primarySaveFile.getName();
+                try (InputStream in = new FileInputStream(primarySaveFile)) {
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[8192];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) {
+                        bos.write(buffer, 0, n);
+                    }
+                    s_initialSnapshot = bos.toByteArray();
+                } catch (IOException e) {
+                    return fail("读取初始存档失败: " + e.getMessage());
                 }
-                saveSnapshot = bos.toByteArray();
-            } catch (IOException e) {
-                return fail("读取初始存档失败: " + e.getMessage());
             }
+            saveSnapshot = s_initialSnapshot;
+            saveSnapshotName = s_initialSnapshotName;
         }
         android.util.Log.i("mGBA-App", "save snapshot path="
                 + (primarySaveFile == null ? "null" : primarySaveFile.getAbsolutePath())
                 + " bytes=" + (saveSnapshot == null ? -1 : saveSnapshot.length)
-                + " mirrors=" + count);
+                + " mirrors=" + count + " cached=yes");
         final byte[] snapshot = saveSnapshot;
         final String snapshotName = saveSnapshotName;
+        if (snapshot != null) {
+            if (primarySaveFile != null) {
+                writeBytes(primarySaveFile, snapshot);
+            }
+            File canonical = new File(rom.getParentFile(),
+                    saveBaseName(rom) + ".sav");
+            if (!canonical.equals(primarySaveFile)) {
+                writeBytes(canonical, snapshot);
+            }
+        }
 
         for (int i = 0; i < count; ++i) {
             String dir = MIRROR_DIR_PREFIX + (i + 1);
@@ -790,6 +798,46 @@ public final class GBoyConsoleSet {
     }
 
     /** 把 start() 里读到的同一份快照写进一个镜像目录（覆盖任何残留）。 */
+    /** 新一轮 ROM 加载时清掉上一轮的快照缓存，让缓存始终对应本轮存档。 */
+    public static void resetInitialSaveSnapshot() {
+        synchronized (SNAPSHOT_LOCK) {
+            s_initialSnapshot = null;
+            s_initialSnapshotName = null;
+        }
+    }
+
+    /** 可见核重载 ROM 前把缓存的初始存档写回，抹掉游戏期间写回的进度。
+     *  云重挂的 reload 与重建房间之间若不回写，可见核会读到新进度、镜像核
+     *  读缓存，四核相位立刻分叉。 */
+    public static void restoreInitialSaveSnapshot(File romFile) {
+        byte[] snap;
+        synchronized (SNAPSHOT_LOCK) {
+            snap = s_initialSnapshot;
+        }
+        if (snap == null || romFile == null || romFile.getParentFile() == null) {
+            return;
+        }
+        File target = new File(romFile.getParentFile(), saveBaseName(romFile) + ".sav");
+        writeBytes(target, snap);
+    }
+
+    private static String saveBaseName(File romFile) {
+        String base = romFile.getName();
+        int dot = base.lastIndexOf('.');
+        return dot > 0 ? base.substring(0, dot) : base;
+    }
+
+    private static boolean writeBytes(File target, byte[] data) {
+        try (OutputStream out = new FileOutputStream(target)) {
+            out.write(data);
+            return true;
+        } catch (IOException e) {
+            android.util.Log.w("mGBA-App", "write save snapshot failed: "
+                    + target.getAbsolutePath() + " " + e.getMessage());
+            return false;
+        }
+    }
+
     private static String writeSaveSnapshot(byte[] snapshot, String name, File mirrorSave) {
         File target = new File(mirrorSave, name);
         try (OutputStream out = new FileOutputStream(target)) {
