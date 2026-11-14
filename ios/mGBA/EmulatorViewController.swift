@@ -51,6 +51,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 可见核读即时存档、镜像核冷链会让游戏上下文开局就错位（Android
     /// suppressAutoState 同坑同修）。gate 保护。
     private var suppressAutoLoadState = false
+    /// loadRom 进行中（gate 保护）。mgbaMobileLoad 在 mCoreLoadFile 之前就
+    /// 置 emu->core（mgbaMobileIsLoaded 只判非空），emu 循环若在这窗口内
+    /// 跑帧会在 ARMStep 空指针崩（CI #40/#42/#43 崩溃报告实证：autoload
+    /// 线程还在 mCoreLoadConfig、emu 线程已进 ARMStep）——加载期间 emu
+    /// 循环必须留在未加载分支。
+    private var loadInFlight = false
     private var command = 0
     private let stopped = DispatchSemaphore(value: 0)
     private let audio = AudioOut()
@@ -981,6 +987,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let cmd = command
             command = 0
             let isPaused = paused
+            let loading = loadInFlight
             let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
@@ -1017,10 +1024,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 slices = 0
                 fpsStamp = UInt64(bitPattern: nextSlice)
             }
-            if isPaused || !mgbaMobileIsLoaded(core) {
-                // Do not carry stale pacing across a paused stretch: a resumed
-                // game would otherwise be reported as a slow front end for one
-                // window.
+            if isPaused || loading || !mgbaMobileIsLoaded(core) {
+                // Do not carry stale pacing across a paused stretch: a
+                // resumed game would otherwise be reported as a slow front
+                // end for one window.
                 slices = 0
                 fpsStamp = DispatchTime.now().uptimeNanoseconds
                 frameDebt = 0
@@ -1380,6 +1387,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private func loadRom(_ path: String) {
         guard let core else { return }
+        // 加载期间挡住 emu 循环跑帧（详见 loadInFlight 注释——emu->core 在
+        // mCoreLoadFile 之前就非空，仅靠 isLoaded 判据会跑进半初始化核）。
+        gate.lock()
+        loadInFlight = true
+        gate.unlock()
+        defer {
+            gate.lock()
+            loadInFlight = false
+            gate.unlock()
+        }
         currentRomPath = path
         // 新一轮 ROM 加载清掉上一轮的初始存档缓存（云端重挂路径已在重载
         // 前把缓存写回 canonical 路径，这里的清空让它重新读到的就是同一份
