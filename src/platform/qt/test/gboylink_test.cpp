@@ -1268,6 +1268,31 @@ static int gboySessionSlotTest(void) {
 		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_RESET_LEGACY, 0));
 		check(reset, "the legacy type 13 still resets old clients");
 	}
+	/* 会话层握手 → ready → 按键放行的最小闭环。
+	 *
+	 * 这条是为一类真实回归守门的：直连路径曾经一次 type 1 都不发，于是两端
+	 * m_ready 永远为 false，`case TYPE_KEYS` 的握手期门控把**每一帧** type 0
+	 * 都当「节奏信号」丢掉 —— 现象是对端按键全无响应，而 buslocal/frames
+	 * 都不跑 serveOfficial，测不出来。 */
+	{
+		QByteArray emitted;
+		bool ready = false;
+		GBoyLinkSession::Events ev;
+		ev.onReady = [&ready]() { ready = true; };
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession me([&emitted](const QByteArray& f) { emitted = f; }, ev, 1, 4);
+		me.sendSocketHandshake();
+		check(!emitted.isNull(), "socket handshake emits a frame");
+		check(!me.isReady(), "session is not ready before the peer answers");
+		me.onWireFrame(emitted);
+		check(me.isReady(), "type 1 handshake marks the session ready");
+		check(ready, "onReady fires once the handshake lands");
+		me.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 1));
+		check(me.keysForSlot(2) == 1, "keys pass through after ready");
+	}
+
 	/* 镜像核槽位映射必须与 Android / iOS 逐项一致。 */
 	const int expectedMap[4][3] = {
 		{2, 3, 4}, {1, 3, 4}, {1, 2, 4}, {1, 2, 3}

@@ -1895,14 +1895,24 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	        events, 1, 4);
 	/* 官方握手第二步是 type 2（32 字节名字 + 描述串），对端拿到后才知道
 	 * 「对面是谁」。我们以前整条消息没发过，对端只能当作未知类型丢掉。 */
-	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
-	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
 	/* 官方 WiFi 握手第一步：`ARc23Z((short)1, 4).putInt(6)`（B25kr6:122/128）。
 	 * 直连 / TCP / 蓝牙这条路以前一次 type 1 都没发过，而对端要收到 1/3/100
 	 * 才会把会话置 ready；少了它，`case TYPE_KEYS` 的握手期门控会把每一帧
 	 * type 0 都当「节奏信号」丢掉 —— 现象就是「对端按键全无响应」。
 	 * 两端都发，互为对方的 ready 来源。 */
 	m_gboySession->sendSocketHandshake();
+	/* 官方握手是严格顺序 1 → 2 →（3）→ 6（B25kr6:122-152 连续 getShort 校验），
+	 * 所以名字帧必须排在 type 1 之后：官方房主收到第一帧不是 1 会直接 return 2
+	 * 结束会话。自家客户端不校验顺序，但顺序照抄才能和官方互通。 */
+	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
+	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
+	/* 官方握手第三步：建好「对端核」后发 `ARc23Z((short)3, 4)`
+	 * （EmulatorActivity.B9tovu:1037）—— 10 字节，type 3 + int 0。
+	 * 官方房主 A4TApA:139 读完名字帧后严格等这一帧；缺了它，房主会把随后
+	 * 的 type 6 当成第三帧，`getShort() == 3` 不成立 → return 2 结束会话。
+	 * 注意与 6 字节的 `ARc23Z((short)3, 0)` 区分：后者是客户端「我灌完了」
+	 * 的 ack（AmA8tU:211），接收侧按 payload 长度区分两种形态。 */
+	link->send(GBoyFrames::frame(GBoyFrames::TYPE_READY, 0));
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{
