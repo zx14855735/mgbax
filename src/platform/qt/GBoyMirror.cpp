@@ -210,6 +210,20 @@ void GBoyMirror::run() {
 			}
 		}
 		GBoyLinkSession* session = m_session;
+		/* 对端存档：只在帧边界载入。GBoy 的 case 6 也是「载入 → reset(false)
+		 * → arm SIO」，载入点永远落在一帧结束后，不会与正在执行的指令流抢。 */
+		QByteArray incoming;
+		if (takePendingState(&incoming)) {
+			if (mgbaMobileLoadStateFromMemory(m_emu, incoming.constData(),
+			                                  size_t(incoming.size()))) {
+				m_appliedStates.fetch_add(1, std::memory_order_relaxed);
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] applied peer state %1 bytes slot %2")
+				                            .arg(incoming.size()).arg(m_slot);
+			} else {
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] peer state rejected (%1 bytes)")
+				                            .arg(incoming.size());
+			}
+		}
 		int keys = session ? session->keysForSlot(m_slot) : 0;
 		mgbaMobileSetKeys(m_emu, quint32(keys));
 		mgbaMobilePumpLink(m_emu);
@@ -229,5 +243,20 @@ bool GBoyMirror::applyRemoteState(const QByteArray& state) {
 	if (!m_emu || state.isEmpty()) {
 		return false;
 	}
-	return mgbaMobileLoadStateFromMemory(m_emu, state.constData(), size_t(state.size()));
+	// 只入队：真正的 load 在镜像线程的帧边界执行（见 run()）。
+	std::lock_guard<std::mutex> locker(m_stateMutex);
+	m_pendingState = state;
+	m_hasPendingState = true;
+	return true;
+}
+
+bool GBoyMirror::takePendingState(QByteArray* out) {
+	std::lock_guard<std::mutex> locker(m_stateMutex);
+	if (!m_hasPendingState) {
+		return false;
+	}
+	*out = m_pendingState;
+	m_pendingState.clear();
+	m_hasPendingState = false;
+	return true;
 }
