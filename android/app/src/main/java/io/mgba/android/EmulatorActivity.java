@@ -468,6 +468,9 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile int pendingBusGameMenuAt = -1;
     /** 云端连上后排队的一次重载：重载完把可见核按原槽位重挂回锁步房间。 */
     private volatile boolean pendingCloudRearm;
+    /* 对端最近一次 TYPE_STATE。云端会重建核房间，重建后要把它补灌进新的
+     * 镜像核 0，否则对端那把存档就白发了。 */
+    private volatile byte[] pendingPeerState;
     /** 云端建锁步房间期间的闸门：可见核必须停在第 0 帧上，和镜像核一起入房。
      *  让一个已经跑了几万帧的核中途挂进房间，会让协调器在一场 SIO 回合里
      *  永远等不齐这个核（它停在自己的回合号上），核被 park、模拟线程停摆、
@@ -2411,6 +2414,18 @@ public class EmulatorActivity extends AppCompatActivity {
                         suppressAutoState = false;
                         linkArmHold = false;
                         Log.i(TAG, "cloud arm released: frames unlocked");
+                        /* 此刻四核都在第 0 帧：先把对端那份存档灌进「代表对端」
+                         * 的镜像核（之前到达时可能还没有核可灌，或灌的是马上要
+                         * 被重建掉的那一套），再把本机可见核的存档推给对方。 */
+                        GBoyConsoleSet rebuiltSet = consoleSet;
+                        byte[] peerState = pendingPeerState;
+                        if (rebuiltSet != null && peerState != null
+                                && rebuiltSet.applyRemoteState(peerState)) {
+                            Log.i(TAG, "cloud arm: peer state re-queued " + peerState.length + " bytes");
+                        }
+                        if (cloudLink != null && rebuiltSet != null) {
+                            cloudLink.sendInitialState(rebuiltSet.snapshotState());
+                        }
                     }
                 }
                 int cmd = command.getAndSet(0);
@@ -4852,9 +4867,13 @@ public class EmulatorActivity extends AppCompatActivity {
                 @Override
                 public void onRemoteState(final byte[] state) {
                     runOnUiThread(() -> {
+                        /* 云端会重建一次核房间（reload → 4 核重挂），存档到达
+                         * 时目标核可能还不存在或马上就要被销毁，所以先缓存一份，
+                         * 重建完成后再补灌。 */
+                        pendingPeerState = state;
                         GBoyConsoleSet set = consoleSet;
                         if (set == null || !set.applyRemoteState(state)) {
-                            Log.w(TAG, "TYPE_STATE not applied (no mirror console)");
+                            Log.w(TAG, "TYPE_STATE not applied yet (consoles not ready)");
                         }
                     });
                 }

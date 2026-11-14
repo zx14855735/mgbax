@@ -1999,7 +1999,8 @@ public final class GBoyCloudLink {
                     + " bytes=" + (snapshot == null ? 0 : snapshot.length) + ")");
             return;
         }
-        link.send(GBoyFrames.frame(GBoyFrames.TYPE_STATE, session.stateFrame(snapshot)));
+        session.sendState(snapshot);
+        Log.i(TAG, "initial state sent " + snapshot.length + " bytes");
     }
 
     private void serve(Link link) {
