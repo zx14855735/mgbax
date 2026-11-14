@@ -1205,6 +1205,23 @@ static int gboySessionSlotTest(void) {
 		check(peer.keysForSlot(1) == 0x5A,
 		      "4-player default sender slot is 1 on the PC side");
 	}
+	/* 官方 9 = 倍速、5 = 复位（NETPLAY_AUDIT.md C1/C3）。 */
+	{
+		bool reset = false;
+		GBoyLinkSession::Events ev;
+		ev.onReset = [&reset]() { reset = true; };
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession peer([](const QByteArray&) {}, ev, 1, 4);
+		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_SPEED, 2));
+		check(peer.remoteSpeed() == 2, "type 9 records the peer speed multiplier");
+		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
+		check(reset, "type 5 is a reset, not a ready ack");
+		reset = false;
+		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_RESET_LEGACY, 0));
+		check(reset, "the legacy type 13 still resets old clients");
+	}
 	/* 镜像核槽位映射必须与 Android / iOS 逐项一致。 */
 	const int expectedMap[4][3] = {
 		{2, 3, 4}, {1, 3, 4}, {1, 2, 4}, {1, 2, 3}
@@ -2765,6 +2782,34 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
  */
 static int framesTest() {
 	int failures = 0;
+
+	/* 官方类型号（NETPLAY_AUDIT.md §0 / A.13 / C1–C3）：0 = 按键掩码、
+	 * 9 = 速度倍率、5 = 复位。早先 0/9 对调过一次，整条输入通道语义反了，
+	 * 这里把数值钉死，谁再换回来测试就先红。
+	 * 依据：按键发送点 p1.txt 0x348364（AaHO0E 模拟线程 ARc23Z(0,4)），
+	 * 倍速发送点 B25kr6.java:253-258（AZOQYO(int) → type 9），
+	 * 复位发送点 EmulatorActivity.java:1333（BmvVmW → type 5）。 */
+	if (int(GBoyFrames::TYPE_KEYS) != 0 || int(GBoyFrames::TYPE_SPEED) != 9
+	    || int(GBoyFrames::TYPE_RESET) != 5 || int(GBoyFrames::TYPE_REGISTER) != 1
+	    || int(GBoyFrames::TYPE_NAME) != 2 || int(GBoyFrames::TYPE_READY) != 3
+	    || int(GBoyFrames::TYPE_STATE) != 6) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (official type map drifted: "
+		                             "keys=%1 speed=%2 reset=%3)")
+		                         .arg(int(GBoyFrames::TYPE_KEYS))
+		                         .arg(int(GBoyFrames::TYPE_SPEED))
+		                         .arg(int(GBoyFrames::TYPE_RESET));
+		++failures;
+	}
+	/* 官方注册体（AmA8tU:173-178）：多人房只有 4 字节 int（整帧 10 字节），
+	 * 单人房才补 short 0 + int listSize（整帧 18 字节）。 */
+	if (GBoyFrames::registerFrame(2, 0).size() != 10
+	    || GBoyFrames::registerFrame(4, 0).size() != 10
+	    || GBoyFrames::registerFrame(1, 3).size() != 18) {
+		qInfo().noquote() << QString("FRAMES TEST: FAIL (register frame length: pc2=%1 pc1=%2)")
+		                         .arg(GBoyFrames::registerFrame(2, 0).size())
+		                         .arg(GBoyFrames::registerFrame(1, 3).size());
+		++failures;
+	}
 
 	// 256 KiB 的载荷，按 2048 字节一片喂进去（模拟真实 TCP/KCP 分片）。
 	const int blobSize = 256 * 1024;

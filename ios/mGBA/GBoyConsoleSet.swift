@@ -26,6 +26,20 @@ import Foundation
  * 按帧类型解析成全局槽位后调用 setRemoteKeys(slot:mask:)。
  */
 final class GBoyConsoleSet {
+    /// 官方 `loadStateFromMemory` 的返回码契约（KpHwm4.B25kr6:148-152）：
+    /// `0` = 载入成功，`-5` = 状态尺寸不符（会话里映射成错误码 3），其它非 0 → 1。
+    /// C helper `mgbaMobileLoadStateFromMemoryEx` 把这三个值原样透传上来，
+    /// `mgbaMobileLoadStateFromMemory`（Bool）只是它的 `== 0` 视图。
+    enum RemoteStateResult: Int {
+        case ok = 0
+        case failed = 1
+        case sizeMismatch = 3
+    }
+
+    /// type 6 的载入结果（在镜像线程上回调；owner 自己 hop 到主线程）。
+    /// 官方拿到非 0 会结束会话（B25kr6 的 `return i`），iOS 交给上层决定。
+    var onStateLoadResult: ((RemoteStateResult) -> Void)?
+
     private let romPath: String
     private let saveDir: String
     private let stateDir: String
@@ -42,6 +56,10 @@ final class GBoyConsoleSet {
     /// 待灌进镜像核 1（= 槽位 2，对端那个玩家）的整份存档。由网络线程入队，
     /// 镜像线程在帧边界取走 —— 在别的线程直接 loadState 会与 runFrames 抢核。
     private var pendingRemoteState: [UInt8]?
+    /// 每颗核的"待复位"标记（下标同 cores：0 = 可见核，1.. = 镜像核）。
+    /// 镜像核只在自己的线程、自己的帧边界执行 reset；可见核只由主线程在帧
+    /// 边界用 takeVisibleReset() 取走 —— 跨线程 reset 会与 runFrames 抢核。
+    private var resetFlags: [Bool] = []
     private var visibleCore: OpaquePointer?
     private var running = false
     private let lock = NSLock()
@@ -214,6 +232,9 @@ final class GBoyConsoleSet {
 
         lock.lock()
         running = true
+        // 新一轮会话：清掉上一局残留的复位/待载入标记，别让它漏进新房间。
+        resetFlags = [Bool](repeating: false, count: players)
+        pendingRemoteState = nil
         lock.unlock()
         // 镜像帧钟：可见核每帧 beginFrame 推高 targetFrame（天花板），镜像
         // 追平即等、来了就一口气追平。没有它镜像会在无 SIO 轮的菜单期以
@@ -242,6 +263,26 @@ final class GBoyConsoleSet {
                     self.frameCond.unlock()
                     guard self.isRunning else { break }
                     guard let core = self.cores[index] else { break }
+                    /* 官方 type 5 的复位（AYUAbz case 5 → 可见核 + 所有镜像核
+                     * reset(false)）：镜像核只能由**自己的线程**在帧边界做，跨线程
+                     * reset 会和这条线程上的 runFrames 抢核。可见核的标记由主线程
+                     * 用 takeVisibleReset() 取走。放在存档载入之前：同一轮里既有
+                     * 复位又有新存档时，先复位再载入，存档不会被复位冲掉。 */
+                    self.lock.lock()
+                    let needReset = self.resetFlags.indices.contains(index) && self.resetFlags[index]
+                    if needReset {
+                        self.resetFlags[index] = false
+                    }
+                    self.lock.unlock()
+                    if needReset {
+                        mgbaMobileReset(core)
+                        // 复位是时间轴上的断点：镜像不要为了追天花板把复位后的
+                        // 开机画面一口气跑几百帧（SIO 轮次会被挤爆）。追平即等。
+                        self.frameCond.lock()
+                        self.mirrorFrames[index] = self.targetFrame
+                        self.frameCond.unlock()
+                        NSLog("GBOY_RT mirror idx=\(index) reset (type 5)")
+                    }
                     /* 对端存档：只喂镜像核 1（= 全局槽位 2，代表对端玩家），
                      * 而且只在帧边界载入。与 Android GBoyConsoleSet.applyRemoteState
                      * / PC GBoyMirror.applyRemoteState 同一条规则：绝不喂可见核
@@ -252,13 +293,20 @@ final class GBoyConsoleSet {
                         self.pendingRemoteState = nil
                         self.lock.unlock()
                         if let state = pending, !state.isEmpty {
-                            let ok = state.withUnsafeBytes { raw in
-                                mgbaMobileLoadStateFromMemory(core, raw.baseAddress, raw.count)
+                            /* 官方 B25kr6:143-152 的返回码契约：0 成功、-5 尺寸不符
+                             * （会话错误 3）、其它非 0 → 1。旧实现用 Bool 版本，把
+                             * 「尺寸不符」和「其它失败」都吞成同一个 false。 */
+                            let raw = state.withUnsafeBytes { buf -> Int32 in
+                                Int32(mgbaMobileLoadStateFromMemoryEx(core, buf.baseAddress, buf.count))
                             }
+                            let result = Self.remoteStateResult(raw)
                             // %ld 而不是 %d：NSLog 的 Int 参数是 64 位，%d 只取低
                             // 32 位，字节数一过 2GB 就打印错值（varargs 未定义）。
-                            NSLog("GBOY_RT peer state applied bytes=%ld ok=%ld",
-                                  state.count, ok ? 1 : 0)
+                            NSLog("GBOY_RT peer state applied bytes=%ld code=%ld",
+                                  state.count, raw)
+                            if result != .ok {
+                                self.onStateLoadResult?(result)
+                            }
                         }
                     }
                     var done = self.mirrorFrames[index]
@@ -324,6 +372,18 @@ final class GBoyConsoleSet {
     /// 收到对端 type 6 的整份存档：入队，由镜像线程在帧边界载入。
     /// 只作用于镜像核 1（槽位 2 = 对端玩家）；可见核与 NPC 陪位都不碰。
     /// 与 Android `GBoyConsoleSet.applyRemoteState` 同一规则。
+    ///
+    /// 返回值只表示「入队成功」：真正的载入结果是异步的，按官方
+    /// 0 / 3（-5 尺寸不符）/ 1 通过 `onStateLoadResult` 回调。
+    ///
+    /// 与官方的一处**有意偏离**：`B25kr6:156-157` 在 load 成功后还会对
+    /// 「可见核 + 对端核」调一次 `reset(false)`。这里不跟：mGBA 的
+    /// `mgbaMobileReset` 是硬复位（`GBAReset` → `mTimingClear` +
+    /// `GBAMemoryReset`：WRAM/IWRAM 清零、`GBASavedataReset`），会把这颗
+    /// 刚载入的存档当场抹掉；而官方只复位两颗、把另外两颗镜像核留在原处，
+    /// 说明它的 `reset(false)` 不是硬重启（否则 3/4 人房的 NPC 核立刻分叉，
+    /// SIO 再也凑不齐）。要做成等价物需要「软复位 SIO/帧闸」的 native 接口，
+    /// 目前没有，所以这里只保留官方真正必需的语义：载入 + 返回码。
     @discardableResult
     func applyRemoteState(_ state: [UInt8]) -> Bool {
         guard !state.isEmpty, cores.count > 1 else { return false }
@@ -331,6 +391,43 @@ final class GBoyConsoleSet {
         pendingRemoteState = state
         lock.unlock()
         return true
+    }
+
+    /// 官方 type 5（`EmulatorActivity:1333` 发 int 0；`AYUAbz` case 5 收到后
+    /// `Link.reset(false)` + 遍历镜像核 `reset(false)`）：复位可见核 + 所有镜像核。
+    /// 这里只置标记：镜像核由各自线程在帧边界 reset，可见核由主线程在帧边界
+    /// 调 `takeVisibleReset()` 取走执行（`mgbaMobileReset` 不能跨线程调）。
+    func requestResetAll() {
+        lock.lock()
+        for i in resetFlags.indices {
+            resetFlags[i] = true
+        }
+        let active = running
+        lock.unlock()
+        guard active else { return }
+        frameCond.lock()
+        frameCond.broadcast()   // 叫醒等天花板的镜像线程，别让复位等到下一帧
+        frameCond.unlock()
+    }
+
+    /// 主线程帧边界取走可见核的复位请求（type 5）。返回 true 时调用方执行
+    /// `mgbaMobileReset` + `mgbaMobileClearAudio`。
+    func takeVisibleReset() -> Bool {
+        lock.lock()
+        let pending = resetFlags.indices.contains(0) ? resetFlags[0] : false
+        if pending {
+            resetFlags[0] = false
+        }
+        lock.unlock()
+        return pending
+    }
+
+    /// C 侧返回码 → 官方会话错误码：0 成功、-5 尺寸不符（3）、其它非 0 → 1。
+    private static func remoteStateResult(_ code: Int32) -> RemoteStateResult {
+        if code == 0 {
+            return .ok
+        }
+        return code == -5 ? .sizeMismatch : .failed
     }
 
     /// 可见核的即时存档快照（TYPE_STATE 来源，与 Android snapshotState()

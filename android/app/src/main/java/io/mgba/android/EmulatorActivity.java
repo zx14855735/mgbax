@@ -2257,6 +2257,12 @@ public class EmulatorActivity extends AppCompatActivity {
         GBoyLinkSession.Events events = new GBoyLinkSession.Events() {
             @Override
             public void onReset() {
+                /* 官方 type 5 = 复位：可见核 + 所有镜像核（p2.txt:379e76-379ec8）。
+                 * 以前这里只 reset 可见核，镜像核还停在原进度，四个核当场分叉。 */
+                GBoyConsoleSet set = consoleSet;
+                if (set != null) {
+                    set.requestMirrorResets();
+                }
                 runOnUiThread(() -> {
                     if (core != null && core.isLoaded()) {
                         core.reset();
@@ -2269,8 +2275,15 @@ public class EmulatorActivity extends AppCompatActivity {
             public void onState(byte[] state) {
                 Log.i(TAG, "local link TYPE_STATE " + state.length + " bytes");
                 GBoyConsoleSet set = consoleSet;
-                if (set == null || !set.applyRemoteState(state)) {
-                    Log.w(TAG, "local link TYPE_STATE not applied");
+                if (set == null) {
+                    Log.w(TAG, "local link TYPE_STATE not applied: consoles not ready");
+                    return;
+                }
+                int code = set.applyRemoteState(state);
+                if (code != GBoyConsoleSet.STATE_OK) {
+                    /* 官方 B25kr6:148-152：-5 → 3（尺寸不符），其它非 0 → 1，
+                     * 非 0 直接断链。这里至少把错误码打出来，别再静默继续跑。 */
+                    Log.w(TAG, "local link TYPE_STATE rejected code=" + code);
                 }
             }
 
@@ -2463,9 +2476,14 @@ public class EmulatorActivity extends AppCompatActivity {
                          * 被重建掉的那一套），再把本机可见核的存档推给对方。 */
                         GBoyConsoleSet rebuiltSet = consoleSet;
                         byte[] peerState = pendingPeerState;
-                        if (rebuiltSet != null && peerState != null
-                                && rebuiltSet.applyRemoteState(peerState)) {
-                            Log.i(TAG, "cloud arm: peer state re-queued " + peerState.length + " bytes");
+                        if (rebuiltSet != null && peerState != null) {
+                            int stateCode = rebuiltSet.applyRemoteState(peerState);
+                            if (stateCode == GBoyConsoleSet.STATE_OK) {
+                                Log.i(TAG, "cloud arm: peer state re-applied "
+                                        + peerState.length + " bytes");
+                            } else {
+                                Log.w(TAG, "cloud arm: peer state rejected code=" + stateCode);
+                            }
                         }
                         if (cloudLink != null && rebuiltSet != null) {
                             cloudLink.sendInitialState(rebuiltSet.snapshotState());
@@ -4916,8 +4934,13 @@ public class EmulatorActivity extends AppCompatActivity {
                          * 重建完成后再补灌。 */
                         pendingPeerState = state;
                         GBoyConsoleSet set = consoleSet;
-                        if (set == null || !set.applyRemoteState(state)) {
+                        if (set == null) {
                             Log.w(TAG, "TYPE_STATE not applied yet (consoles not ready)");
+                        } else {
+                            int stateCode = set.applyRemoteState(state);
+                            if (stateCode != GBoyConsoleSet.STATE_OK) {
+                                Log.w(TAG, "TYPE_STATE rejected code=" + stateCode);
+                            }
                         }
                     });
                 }

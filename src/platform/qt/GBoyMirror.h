@@ -93,6 +93,9 @@ private:
 	std::mutex m_stateMutex;
 	QByteArray m_pendingState;
 	bool m_hasPendingState = false;
+	std::function<void(int)> m_pendingResult;
+	/** 官方 type 5：帧边界上复位本核。 */
+	std::atomic<bool> m_resetRequested{false};
 	std::atomic<int> m_appliedStates{0};
 	/* 云端 4P 闭环导航的同步闸门：镜像核不再在 start() 里立即武装脚本，而是
 	 * 记下 navIdx，等到 <scriptDir>/nav_at 出现（CloudLink 在三个镜像核都就绪

@@ -4820,7 +4820,7 @@ int mgbaMobileLoadStateFromMemoryEx(struct MgbaMobile* emu, const void* data, si
 	mgbaMobileLock(emu);
 	ssize_t expected = emu->core->stateSize(emu->core);
 	int result;
-	if (!data || size == 0 || expected <= 0 || size_t(expected) > size) {
+	if (!data || size == 0 || expected <= 0 || (size_t) expected > size) {
 		result = -5;
 	} else {
 		result = mobileLoadStateLocked(emu, data, size) ? 0 : 1;
@@ -4834,7 +4834,7 @@ size_t mgbaMobileStateSize(const struct MgbaMobile* emu) {
 		return 0;
 	}
 	ssize_t size = emu->core->stateSize(emu->core);
-	return size > 0 ? size_t(size) : 0;
+	return size > 0 ? (size_t) size : 0;
 }
 
 void mgbaMobileFreeState(void* state) {

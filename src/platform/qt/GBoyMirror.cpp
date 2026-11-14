@@ -12,6 +12,8 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <utility>
+
 using namespace QGBA;
 
 namespace {
@@ -211,18 +213,32 @@ void GBoyMirror::run() {
 		}
 		GBoyLinkSession* session = m_session;
 		/* 对端存档：只在帧边界载入。GBoy 的 case 6 也是「载入 → reset(false)
-		 * → arm SIO」，载入点永远落在一帧结束后，不会与正在执行的指令流抢。 */
+		 * → arm SIO」，载入点永远落在一帧结束后，不会与正在执行的指令流抢。
+		 * 载入结果按官方错误码（0 / -5 / 1）回调给 CloudLink，失败要断链。 */
 		QByteArray incoming;
-		if (takePendingState(&incoming)) {
-			if (mgbaMobileLoadStateFromMemory(m_emu, incoming.constData(),
-			                                  size_t(incoming.size()))) {
+		std::function<void(int)> stateResult;
+		if (takePendingState(&incoming, &stateResult)) {
+			int result = mgbaMobileLoadStateFromMemoryEx(m_emu, incoming.constData(),
+			                                             size_t(incoming.size()));
+			if (result == 0) {
 				m_appliedStates.fetch_add(1, std::memory_order_relaxed);
-				qInfo().noquote() << QStringLiteral("[GBoyMirror] applied peer state %1 bytes slot %2")
+				/* 官方 B25kr6:156-157：load 成功后立刻 reset 本核，否则新
+				 * 载入的 CPU 状态会从半帧处继续跑，画面比可见核慢一步。 */
+				mgbaMobileReset(m_emu);
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] applied peer state %1 bytes slot %2 (reset)")
 				                            .arg(incoming.size()).arg(m_slot);
 			} else {
-				qInfo().noquote() << QStringLiteral("[GBoyMirror] peer state rejected (%1 bytes)")
-				                            .arg(incoming.size());
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] peer state rejected (%1 bytes, code %2)")
+				                            .arg(incoming.size()).arg(result);
 			}
+			if (stateResult) {
+				stateResult(result);
+			}
+		}
+		if (m_resetRequested.exchange(false, std::memory_order_relaxed)) {
+			/* 官方 type 5：reset(false)。落在 frame boundary，不打断指令流。 */
+			mgbaMobileReset(m_emu);
+			qInfo().noquote() << QStringLiteral("[GBoyMirror] peer reset, slot %1").arg(m_slot);
 		}
 		int keys = session ? session->keysForSlot(m_slot) : 0;
 		mgbaMobileSetKeys(m_emu, quint32(keys));
@@ -239,23 +255,36 @@ void GBoyMirror::run() {
 	}
 }
 
-bool GBoyMirror::applyRemoteState(const QByteArray& state) {
+int GBoyMirror::applyRemoteState(const QByteArray& state, std::function<void(int)> result) {
 	if (!m_emu || state.isEmpty()) {
-		return false;
+		return 1;
+	}
+	/* 官方 type 6 的 -5 = 状态尺寸不符。这里在入队前先按本核的 stateSize
+	 * 做一次同步判定，坏包不占队列，CloudLink 可以立刻按官方语义断链。 */
+	const size_t expected = mgbaMobileStateSize(m_emu);
+	if (expected && size_t(state.size()) < expected) {
+		return -5;
 	}
 	// 只入队：真正的 load 在镜像线程的帧边界执行（见 run()）。
 	std::lock_guard<std::mutex> locker(m_stateMutex);
 	m_pendingState = state;
+	m_pendingResult = std::move(result);
 	m_hasPendingState = true;
-	return true;
+	return 0;
 }
 
-bool GBoyMirror::takePendingState(QByteArray* out) {
+void GBoyMirror::requestReset() {
+	m_resetRequested.store(true, std::memory_order_relaxed);
+}
+
+bool GBoyMirror::takePendingState(QByteArray* out, std::function<void(int)>* result) {
 	std::lock_guard<std::mutex> locker(m_stateMutex);
 	if (!m_hasPendingState) {
 		return false;
 	}
 	*out = m_pendingState;
+	*result = std::move(m_pendingResult);
+	m_pendingResult = nullptr;
 	m_pendingState.clear();
 	m_hasPendingState = false;
 	return true;

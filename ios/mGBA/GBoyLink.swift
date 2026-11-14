@@ -787,6 +787,14 @@ final class GBoyLink {
         [UInt8((messageType >> 8) & 0xFF), UInt8(messageType & 0xFF)]
     }
 
+    /// type + 一个大端 int32（复位 5、按键 0、倍速 9 都是这个形状，
+    /// 官方接收侧要求 `remaining >= 6`，空体会被直接丢掉）。
+    private static func intFrame(_ messageType: Int, _ value: Int32) -> [UInt8] {
+        [UInt8((messageType >> 8) & 0xFF), UInt8(messageType & 0xFF),
+         UInt8(truncatingIfNeeded: value >> 24), UInt8(truncatingIfNeeded: value >> 16),
+         UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
+    }
+
     private static func keysFrame(_ keys: Int32) -> [UInt8] {
         [0, UInt8(msgKeys),
          UInt8(truncatingIfNeeded: keys >> 24), UInt8(truncatingIfNeeded: keys >> 16),

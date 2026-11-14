@@ -173,7 +173,11 @@ public final class GBoyCloudLink {
     private final GBoyLinkSession.Events sessionEvents = new GBoyLinkSession.Events() {
         @Override
         public void onReset() {
+            /* 官方 5 = 复位全部核（EmulatorActivity.BmvVmW 发送；收端 case 5
+             * 可见核 + 每颗镜像核 reset(false)）。TCP 直连没有 serve() 的
+             * handle() 兼容分支，所以必须由会话事件转发给 UI。 */
             Log.i(TAG, "rx TYPE_RESET (session)");
+            hooks.onRemoteReset();
         }
 
         @Override
@@ -291,6 +295,10 @@ public final class GBoyCloudLink {
                 link = new GBoySocketLink(1, 4, sessionEvents);
                 socketLink = link;
                 linkSession = link.session();
+                /* 官方 WiFi 直连也是 1 → 2 → 3 → 6：把自我介绍绑进会话，
+                 * sendSocketHandshake() 会在 type 1 之后自动补发 type 2
+                 * （服务端回声、客户端首发两条路都走它）。 */
+                link.session().setIdentity(nameFrame());
                 if (asHost) {
                     int actual = link.startHost(port);
                     status("TCP 联机：本机监听 " + actual + "，等待对方连接…");
@@ -1908,6 +1916,15 @@ public final class GBoyCloudLink {
     private void sendRegister(Link link, Room room) {
         int players = Math.max(1, room.playerCount);
         link.send(GBoyFrames.registerFrame(players, room.baseStateCount));
+        /* 官方握手顺序 1 → 2 → 3 → 6：注册帧之后紧跟自我介绍（AZkASS:136，
+         * ByteBuffer 里 32 字节 romHash + int16 长度 + romName）。官方双向都发，
+         * 我们原来只解析不发送，对端 UI 永远看不到名字。 */
+        link.send(nameFrame());
+    }
+
+    /** 官方 type 2 的 payload：32 字节 ROM 哈希 + ROM 名。 */
+    private byte[] nameFrame() {
+        return GBoyFrames.nameFrame(gameUuid(), gameName());
     }
 
     /**
@@ -2146,7 +2163,9 @@ public final class GBoyCloudLink {
                 break;
             }
             case GBoyFrames.TYPE_RESET:
-                hooks.onRemoteReset();
+                /* 会话事件 onReset() 已经把复位转发给 UI；这里只留日志，
+                 * 避免同一条 type 5 复位两次（第二次会把刚启动的游戏再打回开机）。 */
+                Log.i(TAG, "rx TYPE_RESET");
                 break;
             case GBoyFrames.TYPE_RECONNECT:
                 /* 官方断线重连包（AmA8tU:263-272）。session 已按握手处理；
