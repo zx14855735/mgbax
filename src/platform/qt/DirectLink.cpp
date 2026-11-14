@@ -511,7 +511,7 @@ void DirectLink::flushRetransmits(qint64 now) {
 			m_closed = true;
 			return;
 		}
-		sendPacket(TYPE_DATA, out.seq, out.payload, m_peer);
+		sendPacket(Type(out.kind), out.seq, out.payload, m_peer);
 		out.lastSent = now;
 		if (!out.firstSent) {
 			out.firstSent = now;
