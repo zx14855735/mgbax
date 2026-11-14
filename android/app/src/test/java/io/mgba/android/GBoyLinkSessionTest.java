@@ -66,6 +66,7 @@ public final class GBoyLinkSessionTest {
         counterAndSpeed();
         backPressureDropsOldest();
         registrationAndSocketHandshake();
+        speedPaceTable();
         rejectsBadConfiguration();
         System.out.println("GBoyLinkSessionTest ok");
     }
@@ -304,8 +305,17 @@ public final class GBoyLinkSessionTest {
         check(session.keysForSlot(2) == 9, "newest surviving mask applied first");
     }
 
-    private static void registrationAndSocketHandshake() {
-        fresh();
+    /** 官方 type 9：{@code 1e9/(speed*60)}，-1 = 0.5x；非法值返回 0（回落原节拍）。 */
+    private static void speedPaceTable() {
+        check(GBoyLinkSession.paceNanosForSpeed(1) == 16_666_666L, "1x -> 16.7ms");
+        check(GBoyLinkSession.paceNanosForSpeed(-1) == 33_333_333L, "0.5x -> 33.3ms");
+        check(GBoyLinkSession.paceNanosForSpeed(2) == 8_333_333L, "2x -> 8.3ms");
+        check(GBoyLinkSession.paceNanosForSpeed(4) == 4_166_666L, "4x -> 4.2ms");
+        check(GBoyLinkSession.paceNanosForSpeed(0) == 0L, "unset/invalid -> local pace");
+        check(GBoyLinkSession.paceNanosForSpeed(3) == 0L, "3 is not an official speed");
+    }
+
+    private static void registrationAndSocketHandshake() {        fresh();
         session.sendRegistration(3);
         byte[] reg = sink.frames.get(sink.frames.size() - 1);
         check(reg.length == 16, "cloud registration frame is 16 bytes");

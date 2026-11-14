@@ -6014,6 +6014,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
+    /// 官方 type 9 的**发送侧**：本机倍速菜单选中 0.5x / 1x / 2x / 4x 时告诉对端
+    /// （`B25kr6.AZOQYO` 的四个调用点就是倍速菜单的四个分支）。自定义倍速
+    /// （0.05x~16x 里的其它值）不广播：官方帧闸表达不了，硬发只会把对端拖进
+    /// 一个它自己都算不出的节奏。链路没建好时两个 sendSpeed 都是 no-op。
+    private func broadcastLinkSpeed(_ value: Double) {
+        guard let wire = GBoySpeed.wireValue(forRate: value) else { return }
+        gboyLink?.sendSpeed(wire)
+        lobbyLink?.sendSpeed(wire)
+    }
+
     private func ensureGboy() -> GBoyLink {
         if let gboyLink { return gboyLink }
         let link = GBoyLink()

@@ -2034,6 +2034,22 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 						GbCloud::debugLog(QStringLiteral("[gboy] state sync sent"));
 					}
 				}
+				if (speedHook) {
+					QFile speedFile(dir + QStringLiteral("/speed"));
+					if (speedFile.exists() && speedFile.open(QIODevice::ReadOnly)) {
+						bool ok = false;
+						const int speed = QString::fromLatin1(speedFile.readAll()).trimmed().toInt(&ok);
+						speedFile.close();
+						speedFile.remove();
+						if (ok && (speed == 1 || speed == -1 || speed == 2 || speed == 4)) {
+							sendSpeed(speed);
+							GbCloud::debugLog(QStringLiteral("[gboy] speed hook: %1").arg(speed));
+						} else {
+							GbCloud::debugLog(QStringLiteral("[gboy] speed hook ignored: %1")
+							                          .arg(speed));
+						}
+					}
+				}
 			}
 		}
 		/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
@@ -2121,6 +2137,8 @@ void CloudLink::stopOfficialMatch() {
 	/* 下一次连接必须重新走「镜像就绪 → 写文件 → 四核同时起跑」；残留的
 	 * nav_at 会让可见核在镜像核创建之前就独自开跑，四核相位错开。 */
 	m_mirrorStateError.store(0, std::memory_order_relaxed);
+	/* 倍速复位：新会话的 type 9 是 0（未收到）→ 1x，避免上一局的 4x 带进来。 */
+	m_sendSpeed.store(0, std::memory_order_relaxed);
 	const QString scriptDir = QString::fromLocal8Bit(qgetenv("MGBAX_SCRIPT_DIR"));
 	if (!scriptDir.isEmpty()) {
 		QFile::remove(scriptDir + QStringLiteral("/nav_at"));

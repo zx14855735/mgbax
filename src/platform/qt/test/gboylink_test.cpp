@@ -1264,8 +1264,21 @@ static int gboySessionSlotTest(void) {
 		ev.onReady = []() {};
 		ev.onStatus = [](const QString&) {};
 		GBoyLinkSession peer([](const QByteArray&) {}, ev, 1, 4);
+		check(peer.remoteSpeed() == 0, "type 9 is unset (1x) before the peer sends one");
 		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_SPEED, 2));
 		check(peer.remoteSpeed() == 2, "type 9 records the peer speed multiplier");
+		/* 官方帧闸 nanos = 1e9/(speed*60)：1x/0.5x/2x/4x。 */
+		check(qAbs(GBoyLinkSession::tickMsForSpeed(1) - 16.667) < 0.05,
+		      "1x frame gate is 16.7 ms");
+		check(qAbs(GBoyLinkSession::tickMsForSpeed(-1) - 33.333) < 0.05,
+		      "-1 (0.5x) frame gate is 33.3 ms");
+		check(qAbs(GBoyLinkSession::tickMsForSpeed(2) - 8.333) < 0.05,
+		      "2x frame gate is 8.3 ms");
+		check(qAbs(GBoyLinkSession::tickMsForSpeed(4) - 4.167) < 0.05,
+		      "4x frame gate is 4.2 ms");
+		check(GBoyLinkSession::effectiveSpeed(0) == 1.0
+		      && GBoyLinkSession::effectiveSpeed(7) == 1.0,
+		      "an unset or invalid speed falls back to 1x");
 		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
 		check(reset, "type 5 is a reset, not a ready ack");
 		reset = false;
