@@ -16,11 +16,13 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 typedef SOCKET socket_t;
 #else
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -45,6 +47,39 @@ int lastSocketError() {
 	return WSAGetLastError();
 #else
 	return errno;
+#endif
+}
+
+/**
+ * 一条已建立连接的公共选项：
+ *   - TCP_NODELAY（官方 setTcpNoDelay(true)）
+ *   - SO_RCVTIMEO 500ms（官方 setSoTimeout(500)）
+ *   - SO_KEEPALIVE：对端 Wi-Fi 直接消失（没有 FIN）时，TCP 默认要等系统
+ *     tcp_retries2 十几分钟才报错，那我们的 2s/50s 重连根本不会被触发。
+ *     Windows 用 SIO_KEEPALIVE_VALS（2s 空闲 + 1s 间隔），POSIX 用
+ *     TCP_KEEPIDLE/KEEPINTVL/KEEPCNT（2s / 1s / 3 次），大约 5 秒判死。
+ */
+void tuneSocket(socket_t fd) {
+	int one = 1;
+	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
+	int rcvTimeout = 500;
+	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rcvTimeout),
+	           sizeof(rcvTimeout));
+	setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&one), sizeof(one));
+#ifdef _WIN32
+	tcp_keepalive keep;
+	keep.onoff = 1;
+	keep.keepalivetime = 2000;
+	keep.keepaliveinterval = 1000;
+	DWORD returned = 0;
+	WSAIoctl(fd, SIO_KEEPALIVE_VALS, &keep, sizeof(keep), nullptr, 0, &returned, nullptr, nullptr);
+#else
+	int idle = 2;
+	int interval = 1;
+	int count = 3;
+	setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+	setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+	setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
 #endif
 }
 
@@ -151,17 +186,10 @@ intptr_t connectSocketNow(const QString& host, quint16 port, int timeoutMs, QStr
 #ifdef _WIN32
 	mode = 0;
 	ioctlsocket(fd, FIONBIO, &mode);
-	int one = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&one), sizeof(one));
-	int timeout = 500;
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 #else
 	fcntl(fd, F_SETFL, flags);
-	int one = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-	timeval rcv{0, 500 * 1000};
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof(rcv));
 #endif
+	tuneSocket(fd);
 	return intptr_t(fd);
 }
 
@@ -249,10 +277,7 @@ bool TcpDirectLink::listenAndAccept(quint16 port, int timeoutMs, QString* error)
 		return false;
 	}
 	// 官方 accept 之后 setSoTimeout(500) + setTcpNoDelay(true)（A2egSU:64-67）。
-	int timeout = 500;
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-	int nodelay = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+	tuneSocket(fd);
 	adoptSocket(intptr_t(fd), peerTextOf(peer), false);
 	m_thread = std::thread([this]() { readerLoop(); });
 	m_threadStarted = true;
@@ -332,10 +357,7 @@ bool TcpDirectLink::acceptOnce() {
 	if (fd == socket_t(-1)) {
 		return false;
 	}
-	int timeout = 500;
-	setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-	int nodelay = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+	tuneSocket(fd);
 	adoptSocket(intptr_t(fd), peerTextOf(peer), false);
 	return true;
 }

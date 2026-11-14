@@ -60,6 +60,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     /** 官方 {@code AmA8tU.java:114}：两次重试之间睡 2 秒。 */
     private static final long RECONNECT_DELAY_MS = 2000;
     private static final int READ_BUFFER = 2048;
+    /** 键帧/控制帧的最大长度；超过它的帧（type 6 状态包）断线时不能丢。 */
+    private static final int CONTROL_FRAME_MAX = 64;
 
     private final GBoyLinkSession session;
     private final GBoyFrames.Reader reader = new GBoyFrames.Reader();
@@ -256,6 +258,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                     }
                 } else {
                     if (!reconnect()) {
+                        // 重连窗口耗尽：置 closed，让上层生命周期循环能收尾。
+                        running.set(false);
                         break;
                     }
                 }
@@ -267,16 +271,15 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 n = in.read(buffer);
                 silent = 0;
             } catch (SocketTimeoutException e) {
-                // 官方 ADYaiT.A5SV6n:85-92：500ms 静默累计 8 次判对端不可达。
-                // 服务端继续等（掉线后 accept 线程会接新连接），客户端按官方判死
-                // 并进入重连窗口。
+                /* 官方 ADYaiT.A5SV6n:85-92：500ms 静默累计 8 次判对端不可达。
+                 * 两端都要判死：服务端若不判死，半开连接（Wi-Fi 直接消失、没有
+                 * FIN）会永远占着 socket，accept 循环就会一直把重连挡在门外。
+                 * 判死后服务端回到等待新 socket，客户端进入 2s/50s 重连窗口。 */
                 if (++silent >= SILENT_TIMEOUT_LIMIT) {
                     silent = 0;
-                    if (peerHost != null) {
-                        lastError = "连续 " + SILENT_TIMEOUT_LIMIT + " 次静默超时，判定对端不可达";
-                        Log.w(TAG, lastError);
-                        drop(peer);
-                    }
+                    lastError = "连续 " + SILENT_TIMEOUT_LIMIT + " 次静默超时，判定对端不可达";
+                    Log.w(TAG, lastError);
+                    drop(peer);
                 }
                 continue;
             } catch (IOException e) {
@@ -286,6 +289,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 lastError = String.valueOf(e.getMessage());
                 drop(peer);
                 if (server == null && !reconnect()) {
+                    running.set(false);
                     break;
                 }
                 silent = 0;
@@ -294,6 +298,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             if (n <= 0) {
                 drop(peer);
                 if (server == null && !reconnect()) {
+                    running.set(false);
                     break;
                 }
                 silent = 0;
@@ -338,8 +343,17 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                     peer = socket;
                 }
                 if (out == null || peer == null || peer.isClosed()) {
-                    // 断线期间产生的按键帧直接丢弃：官方发送线程同样是写失败
-                    // 就丢，重连后不重放旧帧（重放会让镜像核倒着走）。
+                    /* 断线期间的按键帧直接丢（官方发送线程同样是写失败就丢，
+                     * 重放旧按键会让镜像核倒着走）。但整份 savestate（type 6，
+                     * 几百 KiB）绝不能在断线窗口里丢：4 核房间重建后那头
+                     * sendInitialState 可能正好落在断线重连的几秒里，丢了就
+                     * 回到「两核不在同一幕」的老 bug。这里把它放回队列等重连。 */
+                    if (frame.length > CONTROL_FRAME_MAX) {
+                        if (!outbox.offer(frame)) {
+                            outbox.poll();
+                            outbox.offer(frame);
+                        }
+                    }
                     continue;
                 }
                 out.write(frame);

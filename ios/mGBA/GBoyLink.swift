@@ -143,6 +143,13 @@ final class GBoyLink {
         return userClosedFlag
     }
 
+    /// 这条监听 fd 是否仍归本线程所有（run()/close() 会把它收走）。
+    private func listenCurrent(_ fd: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return currentListenFd == fd
+    }
+
     /** Starts hosting on the given port; the peer connects to this device. */
     func host(_ port: Int) {
         run(asHost: true, ip: nil, port: port)
@@ -294,6 +301,13 @@ final class GBoyLink {
                 // 监听口已被 run()/close() 收走（用户重开或断开）：安静退出。
                 if !listenCurrent(listenFd) { return }
                 throw error
+            }
+            // accept 与「用户按断开」可能赛跑：这时刚接到的连接要立刻扔掉，
+            // 否则 store() 会把它重新变成一条活会话。
+            if userClosed {
+                shutdown(accepted, SHUT_RDWR)
+                Darwin.close(accepted)
+                return
             }
             let session = store(fd: accepted)
             Self.tune(accepted)
@@ -556,6 +570,24 @@ final class GBoyLink {
         var tv = timeval(tv_sec: 15, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        /* 对端「不可达」检测（两端都要有：房主不判死，半开 socket 会一直占着
+         * 会话，对端的重连只能躺在 backlog 里）。
+         *
+         * 官方 BTvldC.ADYaiT 用「8 次静默读超时」判死；iOS 不照抄这个计数：
+         * 读超时发生时 readFully 已经吃掉半帧头，继续读会把后续字节错位成帧头。
+         * 改用内核 keepalive —— 只有在整条连接判死时才返回错误，不会破坏帧边界。
+         *
+         * 参数取 2s 起探 / 1s 间隔 / 3 次 ≈ 5 秒判死，对齐 Android 的
+         * 500ms×8=4s 量级（而不是 macOS 默认的 2 小时）。正常对局里按键帧每
+         * 83ms 双向流动，keepalive 探针根本不会触发，所以激进设置在健康链路上
+         * 零开销；对端只是应用卡住时内核依然会 ACK，也不会误判。 */
+        setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
+        var idle: Int32 = 2
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
+        var count: Int32 = 3
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, socklen_t(MemoryLayout<Int32>.size))
+        var interval: Int32 = 1
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, socklen_t(MemoryLayout<Int32>.size))
     }
 
     private static func clearTimeouts(_ fd: Int32) {
@@ -590,7 +622,10 @@ final class GBoyLink {
         let bound = withUnsafePointer(to: &addr) { pointer -> Int32 in
             bind(fd, UnsafePointer<sockaddr>(OpaquePointer(pointer)), socklen_t(MemoryLayout<sockaddr_in>.size))
         }
-        guard bound == 0, listen(fd, 1) == 0 else {
+        // backlog 放到 4（官方 ServerSocket 实际是 50）：房主同一时刻只跑一条
+        // 会话，但对端判死重连时可能先连上几条短命连接，队列大一点能让它重连
+        // 到的那一条排在队里等 accept，而不是 SYN 被丢、connect 一直等到超时。
+        guard bound == 0, listen(fd, 4) == 0 else {
             Darwin.close(fd)
             throw LinkError(message: "端口 \(port) 被占用")
         }
@@ -629,7 +664,13 @@ final class GBoyLink {
             Self.fdSet(listenFd, &readSet)
             var tv = timeval(tv_sec: 0, tv_usec: 250_000)
             let ready = select(listenFd + 1, &readSet, nil, nil, &tv)
-            guard ready > 0 else { continue }
+            if ready < 0 {
+                if errno == EINTR { continue }
+                // 监听口被 run()/close() 关掉后这里会是 EBADF：交给调用方按
+                // 「所有权已失去」安静退出，别让 select 在死 fd 上空转。
+                throw LinkError(message: "联机大厅连接失败")
+            }
+            if ready == 0 { continue }
             let fd = accept(listenFd, nil, nil)
             if fd >= 0 {
                 Self.setBlocking(fd)
