@@ -1,0 +1,23 @@
+﻿2026-11-14T03:46:08.5307760Z ##[group]Run actions/upload-artifact@v4
+2026-11-14T03:46:08.5308390Z with:
+2026-11-14T03:46:08.5308630Z   name: lockstep-runtime-log
+2026-11-14T03:46:08.5309260Z   path: lockstep-runtime.log
+2026-11-14T03:46:08.5309670Z   if-no-files-found: ignore
+2026-11-14T03:46:08.5310390Z   compression-level: 6
+2026-11-14T03:46:08.5310680Z   overwrite: false
+2026-11-14T03:46:08.5311180Z   include-hidden-files: false
+2026-11-14T03:46:08.5311510Z ##[endgroup]
+2026-11-14T03:46:09.6402180Z (node:28413) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-14T03:46:09.6509770Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-14T03:46:09.8225010Z With the provided path, there will be 1 file uploaded
+2026-11-14T03:46:09.8429800Z Artifact name is valid!
+2026-11-14T03:46:09.8534310Z Root directory input is valid!
+2026-11-14T03:46:10.1042270Z (node:28413) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-11-14T03:46:10.1718760Z Beginning upload of artifact content to blob storage
+2026-11-14T03:46:10.1977490Z Uploaded bytes 391
+2026-11-14T03:46:10.2000280Z Finished uploading artifact content to blob storage!
+2026-11-14T03:46:10.2027590Z SHA256 digest of uploaded artifact zip is 86a55524c7118e1bd29ef8c7f3538212b70fde085242a9297a2dabe4616d362b
+2026-11-14T03:46:10.2038320Z Finalizing artifact upload
+2026-11-14T03:46:10.4913290Z Artifact lockstep-runtime-log.zip successfully finalized. Artifact ID 14096268858
+2026-11-14T03:46:10.4914100Z Artifact lockstep-runtime-log has been successfully uploaded! Final size is 391 bytes. Artifact ID is 14096268858
+2026-11-14T03:46:10.4917120Z Artifact download URL: https://github.com/zx14855735/mgbax/actions/runs/43552355987/artifacts/14096268858

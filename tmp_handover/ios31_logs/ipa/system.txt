@@ -1,0 +1,8 @@
+2026-11-14T03:19:07.3270000Z Requested labels: macos-15
+2026-11-14T03:19:07.3270000Z Job defined at: zx14855735/mgbax/.github/workflows/ios-build.yml@refs/heads/main
+2026-11-14T03:19:07.3270000Z Waiting for a runner to pick up this job...
+2026-11-14T03:19:07.3240000Z Evaluating ipa.if
+2026-11-14T03:19:07.3240000Z Evaluating: success()
+2026-11-14T03:19:07.3240000Z Result: true
+2026-11-14T03:19:07.6400000Z Job is waiting for a hosted runner to come online.
+2026-11-14T03:19:07.6400000Z Job is about to start running on the hosted runner: GitHub Actions 1000000108

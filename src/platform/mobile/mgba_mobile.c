@@ -3882,7 +3882,8 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 				int mapN = sb1 ? (int) GBAView8(g->cpu, sb1 + 5) : -1;
 				MOBILE_LOGI("PEEK st=%08X adv=%d open=%d wless=%d err=%d rcvpl=%d blk=%02X "
 		            "link[m=%d st=%d id=%d pc=%d sic=%d hs=%d fF=%d hw=%d ck=%d lag=%d "
-		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u pos=%d,%d map=%d.%d]",
+		            "sum=%04X sidx=%d ridx=%d sq=%u/%u rq=%u/%u pos=%d,%d map=%d.%d "
+		            "cb2=%08X mm=%d pt=%d s01=%d/%d slot=%d cur=%d/%d]",
 		            stNow,
 		            (int) GBAView8(g->cpu, PEEK_LINK_STATE),
 		            (int) GBAView8(g->cpu, PEEK_LINK_OPEN),
@@ -3907,7 +3908,15 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_SENDQ_CNT),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_POS),
 		            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_RECVQ_CNT),
-		            posX, posY, mapG, mapN);
+		            posX, posY, mapG, mapN,
+		            (uint32_t) GBAView32(g->cpu, 0x020290E8u),
+		            (int) GBAView8(g->cpu, 0x020219D0u),
+		            (int) (GBAView8(g->cpu, 0x02032A90u) & 0x0Fu),
+		            (int) GBAView8(g->cpu, 0x02032AD0u),
+		            (int) GBAView8(g->cpu, 0x02032AD1u),
+		            (int) (int8_t) GBAView8(g->cpu, 0x02032A91u),
+		            (int) GBAView8(g->cpu, 0x020296C2u),
+		            (int) GBAView8(g->cpu, 0x020296C4u));
 			}
 #endif
 		}

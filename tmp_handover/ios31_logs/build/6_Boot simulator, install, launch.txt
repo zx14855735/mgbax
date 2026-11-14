@@ -1,0 +1,49 @@
+﻿2026-11-14T03:20:52.6454740Z ##[group]Run UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+2026-11-14T03:20:52.6456340Z [36;1mUDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')[0m
+2026-11-14T03:20:52.6457090Z [36;1mecho "Using simulator $UDID"[0m
+2026-11-14T03:20:52.6457440Z [36;1mxcrun simctl boot "$UDID"[0m
+2026-11-14T03:20:52.6458010Z [36;1mxcrun simctl bootstatus "$UDID" -b[0m
+2026-11-14T03:20:52.6458910Z [36;1mAPP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)[0m
+2026-11-14T03:20:52.6459470Z [36;1mecho "Installing $APP"[0m
+2026-11-14T03:20:52.6459790Z [36;1mxcrun simctl install "$UDID" "$APP"[0m
+2026-11-14T03:20:52.6460150Z [36;1mxcrun simctl launch "$UDID" io.mgba.ios[0m
+2026-11-14T03:20:52.9676840Z shell: /bin/bash -e {0}
+2026-11-14T03:20:52.9677560Z ##[endgroup]
+2026-11-14T03:20:59.0960400Z Using simulator 4A57FB15-6E7C-49CC-BE93-450B18BD286E
+2026-11-14T03:22:07.3191190Z Monitoring boot status for iPhone 16 Pro (4A57FB15-6E7C-49CC-BE93-450B18BD286E).
+2026-11-14T03:22:07.3201920Z [2026-11-14 03:22:07 +0000] Status=2, isTerminal=NO, Elapsed=01:05.
+2026-11-14T03:22:07.3988470Z 	Waiting on Data Migration
+2026-11-14T03:22:07.4824460Z 		Reason:Running plugin com.apple.securityd.KeychainMigrator (KeychainMigrator.migrator, user-agnostic)
+2026-11-14T03:22:07.6455080Z 		Migration Elapsed:00:54 seconds
+2026-11-14T03:22:07.7269680Z 
+2026-11-14T03:22:09.3747920Z [2026-11-14 03:22:09 +0000] Status=2, isTerminal=NO, Elapsed=01:07.
+2026-11-14T03:22:09.4556030Z 	Waiting on Data Migration
+2026-11-14T03:22:09.4559280Z 		Reason:Running plugin com.apple.managedconfiguration.migrator (MCProfile.migrator, user-agnostic)
+2026-11-14T03:22:09.5350680Z 		Migration Elapsed:00:57 seconds
+2026-11-14T03:22:09.7004170Z 
+2026-11-14T03:22:10.3562320Z [2026-11-14 03:22:10 +0000] Status=2, isTerminal=NO, Elapsed=01:08.
+2026-11-14T03:22:10.4375570Z 	Waiting on Data Migration
+2026-11-14T03:22:10.5188250Z 		Reason:Running plugin com.apple.managedconfiguration.migrator (MCProfile.migrator, user-agnostic)
+2026-11-14T03:22:10.6010520Z 		Migration Elapsed:00:59 seconds
+2026-11-14T03:22:10.6811620Z 
+2026-11-14T03:22:11.3352330Z [2026-11-14 03:22:11 +0000] Status=2, isTerminal=NO, Elapsed=01:09.
+2026-11-14T03:22:11.4158520Z 	Waiting on Data Migration
+2026-11-14T03:22:11.4981030Z 		Reason:Running plugin com.apple.MobileSafari.migrator (MobileSafari.migrator)
+2026-11-14T03:22:11.5783720Z 		Migration Elapsed:01:00 seconds
+2026-11-14T03:22:11.6590120Z 
+2026-11-14T03:22:14.7713150Z [2026-11-14 03:22:14 +0000] Status=2, isTerminal=NO, Elapsed=01:13.
+2026-11-14T03:22:14.9331080Z 	Waiting on Data Migration
+2026-11-14T03:22:14.9331950Z 		Reason:Running plugin com.apple.locationd.migrator (CoreLocationMigrator.migrator)
+2026-11-14T03:22:15.1829340Z 		Migration Elapsed:01:01 seconds
+2026-11-14T03:22:15.2662060Z 
+2026-11-14T03:22:18.1279890Z [2026-11-14 03:22:17 +0000] Status=4, isTerminal=NO, Elapsed=01:16.
+2026-11-14T03:22:18.3724640Z 	Waiting on System App
+2026-11-14T03:22:18.4551290Z 
+2026-11-14T03:22:19.4331900Z [2026-11-14 03:22:19 +0000] Status=4, isTerminal=NO, Elapsed=01:17.
+2026-11-14T03:22:19.5142870Z 	Waiting on System App
+2026-11-14T03:22:19.5144150Z 
+2026-11-14T03:22:22.6905710Z [2026-11-14 03:22:22 +0000] Status=4294967295, isTerminal=YES, Elapsed=01:20.
+2026-11-14T03:22:22.6907310Z 	Finished
+2026-11-14T03:22:22.7715560Z 
+2026-11-14T03:22:24.6019080Z Installing build/Build/Products/Debug-iphonesimulator/mGBAx.app
+2026-11-14T03:23:07.4330730Z io.mgba.ios: 8779
