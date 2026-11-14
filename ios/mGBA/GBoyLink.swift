@@ -31,6 +31,11 @@ import Foundation
  * (~83 ms) and applies the mask it receives, so a GBoy handset drives the
  * remote player here the same way it would drive its own second console.
  *
+ * 掉线与重连（照抄官方）：建房侧的监听口不随会话结束而关闭（A2egSU 是「每
+ * socket 一个服务线程」），对端掉线后回到 accept 等它回来；入房侧按 AmA8tU 的
+ * 节奏每 2 秒重试、总窗口 50 秒，连上先发裸 10 字节 type 100 再进读循环。
+ * 每一代会话带 `(fd, generation)`，旧读/写线程晚到时不会误关新连接的 socket。
+ *
  * 蓝牙：官方还有一条经典蓝牙 RFCOMM 通道（`KpHwm4/A4TApA`、服务名 `GBoy`、
  * UUID 3a1f7b2e-8d45-4c92-bf60-5e3c21a98d47），字节流上跑的就是上面这套
  * 「4B 大端长度 + u16 type」帧。**iOS 上这条路不存在**：Apple 只对 MFi
@@ -101,6 +106,9 @@ final class GBoyLink {
     /// 本代会话已经结束（对端掉线 / 读写出错）。每次 store() 开新会话时清掉。
     private var sessionClosedFlag = false
     private var currentFd: Int32 = -1
+    /// 建房时正在监听的 socket（-1 = 没在监听）。run()/close() 要能把它收掉，
+    /// 否则用户「再点一次创建」会撞上上一轮遗留的监听口（端口被占用）。
+    private var currentListenFd: Int32 = -1
     /// 会话代号：每 store() 一次 +1。
     /// fd 是 Int32 且 close 之后会被内核复用，光比数值无法判断「这条 fd 还是不是
     /// 我这代会话的」（旧读线程醒来时可能已经撞上新会话复用的同一个 fd）。Android
@@ -135,7 +143,7 @@ final class GBoyLink {
         return userClosedFlag
     }
 
-    /// Starts hosting on the given port; the peer connects to this device. */
+    /** Starts hosting on the given port; the peer connects to this device. */
     func host(_ port: Int) {
         run(asHost: true, ip: nil, port: port)
     }
@@ -196,6 +204,8 @@ final class GBoyLink {
         sessionClosedFlag = true
         let fd = currentFd
         currentFd = -1
+        let listenFd = currentListenFd
+        currentListenFd = -1
         // 代号 +1 让所有在飞的读/写线程立刻变成「上一代」，它们晚到的 drop()
         // 不会再碰到后续会话的 socket。
         currentGeneration += 1
@@ -203,6 +213,10 @@ final class GBoyLink {
         if fd >= 0 {
             shutdown(fd, SHUT_RDWR)
             Darwin.close(fd)
+        }
+        if listenFd >= 0 {
+            shutdown(listenFd, SHUT_RDWR)
+            Darwin.close(listenFd)
         }
         onRemoteKeys(0)
         onRemotePacing(0)   // 断开就撤销对端的帧率上限（同 drop）
@@ -216,11 +230,17 @@ final class GBoyLink {
         sessionClosedFlag = false
         let stale = currentFd
         currentFd = -1
+        let staleListen = currentListenFd
+        currentListenFd = -1
         currentGeneration += 1
         lock.unlock()
         if stale >= 0 {
             shutdown(stale, SHUT_RDWR)
             Darwin.close(stale)
+        }
+        if staleListen >= 0 {
+            shutdown(staleListen, SHUT_RDWR)
+            Darwin.close(staleListen)
         }
         let thread = Thread { [weak self] in
             guard let self else { return }
@@ -250,9 +270,31 @@ final class GBoyLink {
     private func hostLoop(_ port: Int) throws {
         status("联机大厅等待连接…\n端口 \(port)，你是 1P")
         let listenFd = try listenSocket(port)
-        defer { Darwin.close(listenFd) }
+        lock.lock()
+        currentListenFd = listenFd
+        lock.unlock()
+        // 监听口的关闭也必须做「所有权」判断：run()/close() 可能已经把它收走
+        // 并让内核把这个 fd 号复用给新连接的 socket，这里再 close 一次就会关掉
+        // 别人的连接。
+        defer {
+            lock.lock()
+            let mine = currentListenFd == listenFd
+            if mine { currentListenFd = -1 }
+            lock.unlock()
+            if mine {
+                shutdown(listenFd, SHUT_RDWR)
+                Darwin.close(listenFd)
+            }
+        }
         while !userClosed {
-            let accepted = try acceptLoop(listenFd)
+            let accepted: Int32
+            do {
+                accepted = try acceptLoop(listenFd)
+            } catch {
+                // 监听口已被 run()/close() 收走（用户重开或断开）：安静退出。
+                if !listenCurrent(listenFd) { return }
+                throw error
+            }
             let session = store(fd: accepted)
             Self.tune(accepted)
             status("对方已接入，正在同步…")
@@ -400,7 +442,7 @@ final class GBoyLink {
     private func readLoop(_ session: Session) {
         let fd = session.fd
         do {
-            while !stopRequested {
+            while isCurrent(session) {
                 let frame = try readFrame(fd)
                 let messageType = Self.type(frame)
                 if messageType == Self.msgKeys, frame.count >= 6 {
@@ -450,7 +492,7 @@ final class GBoyLink {
 
     private func pump(_ session: Session) {
         let fd = session.fd
-        while !stopRequested {
+        while isCurrent(session) {
             do {
                 try send(fd, Self.keysFrame(localKeys()))
             } catch {
