@@ -125,6 +125,7 @@ struct MgbaMobile {
 	 * GBoyConsoleSet 的镜像线程调 mgbaMobileBusGameTick 取掩码。 */
 	int busGameIdx;
 	int busGameMenuAt;
+	int busGameNavOnly;   /* menuAt<0：跳过开场盲按，直接跑 2P 导航+队伍注入 */
 	int busGameModeDowns;
 	uint32_t busGameFrame;
 	int busGameMenuMax;
@@ -1069,11 +1070,36 @@ static bool ensureVideo(struct MgbaMobile* emu) {
 	return true;
 }
 
-struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port) {
-	struct MgbaMobile* emu = (struct MgbaMobile*) calloc(1, sizeof(struct MgbaMobile));
+#ifdef __APPLE__
+/* iOS 默认 logger：核心日志直写 stderr（CI 经 simctl launch --console-pty
+ * 捕获）。含 INFO 级，用于诊断核心加载/锁步卡点。 */
+static void iosDefaultLog(struct mLogger* logger, int category, enum mLogLevel level,
+                          const char* format, va_list args) {
+	(void) logger;
+	(void) category;
+	(void) level;
+	vfprintf(stderr, format, args);
+	fputc('\n', stderr);
+	fflush(stderr);
+}
+static struct mLogger s_iosDefaultLogger = { iosDefaultLog, NULL };
+#endif
+
+struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, const char* port) {	struct MgbaMobile* emu = (struct MgbaMobile*) calloc(1, sizeof(struct MgbaMobile));
 	if (!emu) {
 		return NULL;
 	}
+#ifdef __APPLE__
+	/* iOS 没装 mLog 前端 logger，核心日志全部丢弃——CI 上核心加载卡死时
+	 * 无从诊断。装一个直写 stderr 的默认 logger（含 INFO），日志经
+	 * simctl launch --console-pty 可见。 */
+	{
+		static struct mLogger s_iosDefaultLogger;
+		s_iosDefaultLogger.log = iosDefaultLog;
+		s_iosDefaultLogger.context = NULL;
+		mLogSetDefaultLogger(&s_iosDefaultLogger);
+	}
+#endif
 	/* 递归锁：加锁点既在 C 层的 mgbaMobileRunFrames / SaveStateToMemory /
 	 * LoadStateToMemory 内部（这样 iOS 直接调用 C 函数也受保护，它不经过
 	 * JNI），也在 JNI 的入口（安卓侧的历史做法）。同一线程沿途二次加锁必须
@@ -1383,11 +1409,17 @@ void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int mod
 		return;
 	}
 	emu->busGameIdx = idx;
-	emu->busGameMenuAt = menuAt;
+	/* 负 menuAt = 「只跑导航」：用于已经手工走到 st=4/球场图的云端 2P，
+	 * 补最后一环（ready2 走位、选怪内存注入、战斗菜单钳位），不再重放开场按键。
+	 * 同时必须把 menuAt 归零：导航分支 `f >= menuAt + 240` 里 f 是 uint32_t，
+	 * 负 int 会被提升成巨大的 unsigned，条件永远不成立。 */
+	emu->busGameNavOnly = (menuAt < 0);
+	emu->busGameMenuAt = emu->busGameNavOnly ? 0 : menuAt;
 	emu->busGameModeDowns = modeDowns;
 	emu->busGameFrame = 0;
 	emu->busGameMenuMax = 0;
-	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d", idx, menuAt, modeDowns);
+	MOBILE_LOGI("BUSGAME start idx=%d menuAt=%d modeDowns=%d navOnly=%d",
+	            idx, menuAt, modeDowns, emu->busGameNavOnly);
 }
 
 void mgbaMobileBusGameStop(struct MgbaMobile* emu) {
@@ -1411,6 +1443,11 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	const uint32_t A = 1, START = 8, RIGHT = 16, LEFT = 32, UP = 64, DOWN = 128;
 	const int boot = 240;
 	uint32_t keys = 0;
+	/* nav-only：跳过开场 START/A/DOWN/UP/LEFT 盲按，直接落到导航分支。
+	 * 这里的 goto 只跨过一串纯赋值，标签后紧跟空语句以保证 C99 合法。 */
+	if (emu->busGameNavOnly) {
+		goto busgame_navigate;
+	}
 	if (f >= boot && f < boot + 6) {
 		keys = START;
 	} else if (f >= boot + 10 && f < boot + 16) {
@@ -1432,6 +1469,8 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 	           && f < menuAt + 92 + modeDowns * 14) {
 		keys = A;
 	} else if (f >= menuAt + 240) {
+	busgame_navigate:
+		;
 		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
 		 * 开始走位。菜单/握手阶段继续按 A。 */
 		int v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
