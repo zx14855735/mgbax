@@ -412,19 +412,50 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
         if (closed || socket == null || payload == null || payload.length == 0) {
             return;
         }
-        int seq;
-        Candidate target;
         // 与 recv→pump→flushRetransmits/noteAck 串行化，避免并发改 outgoing。
         synchronized (lock) {
-            seq = nextSeq;
-            nextSeq = (nextSeq + 1) & 0xFFFF;
-            outgoing.addLast(new Outgoing(seq, payload, now()));
-            target = havePeer ? peer : null;
+            enqueueLocked(payload);
         }
-        // 真正的 UDP 发送放到锁外：socket 发送本身线程安全，且不让 IO 阻塞
-        // 接收线程的重传/确认节奏。
-        if (target != null) {
-            sendPacket(TYPE_DATA, seq, payload, target);
+    }
+
+    /**
+     * 拆片入队并放行窗口。单包消息（按键、节奏、联机线 20 字节包）仍走
+     * TYPE_DATA，延迟特性与旧版本一致；超过 FRAG_CHUNK 的（整份 savestate）
+     * 拆成「首片带总长 + 续片」，由对端按序拼回。
+     */
+    private void enqueueLocked(byte[] payload) {
+        if (payload.length <= FRAG_CHUNK) {
+            pending.addLast(new Outgoing(nextSeq, TYPE_DATA, payload, now()));
+            nextSeq = (nextSeq + 1) & 0xFFFF;
+            pumpSendLocked();
+            return;
+        }
+        int offset = 0;
+        boolean first = true;
+        while (offset < payload.length) {
+            int head = first ? FRAG_HEAD : FRAG_HEAD_CONT;
+            int take = Math.min(FRAG_CHUNK, payload.length - offset);
+            byte[] chunk = new byte[head + take];
+            chunk[0] = (byte) (first ? FRAG_START : FRAG_CONT);
+            if (first) {
+                put32(chunk, 1, payload.length);
+            }
+            System.arraycopy(payload, offset, chunk, head, take);
+            pending.addLast(new Outgoing(nextSeq, TYPE_FRAG, chunk, now()));
+            nextSeq = (nextSeq + 1) & 0xFFFF;
+            offset += take;
+            first = false;
+        }
+        pumpSendLocked();
+    }
+
+    /** 窗口放行：只在锁内调用（发送本身是 UDP 非阻塞写）。 */
+    private void pumpSendLocked() {
+        Candidate target = havePeer ? peer : null;
+        while (target != null && !pending.isEmpty() && outgoing.size() < SEND_WINDOW) {
+            Outgoing out = pending.pollFirst();
+            outgoing.addLast(out);
+            sendPacket(out.kind, out.seq, out.payload, target);
         }
     }
 
@@ -560,12 +591,18 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
             sendPacket(TYPE_RESP, seq, payload, from);
             return;
         }
-        if (!connected && (type == TYPE_RESP || type == TYPE_DATA || type == TYPE_CTRL)) {
+        if (!connected
+                && (type == TYPE_RESP || type == TYPE_DATA || type == TYPE_CTRL
+                    || type == TYPE_FRAG)) {
             connected = true;
             punching = false;
             peer = from;
             peerText = from.text();
             havePeer = true;
+            // 打通前攒下的消息（含整份存档的分片）立刻放行。
+            synchronized (lock) {
+                pumpSendLocked();
+            }
         }
         peer = from;
         havePeer = true;
@@ -585,7 +622,7 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
 
         noteAck(ackSeq, ackBits);
 
-        if (type == TYPE_DATA) {
+        if (type == TYPE_DATA || type == TYPE_FRAG) {
             noteReceived(seq);
             if (!rcvStarted) {
                 rcvStarted = true;
@@ -593,15 +630,52 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
             }
             int delta = (short) (seq - rcvNext);
             if (delta >= 0 && !incoming.containsKey(seq)) {
-                incoming.put(seq, payload);
+                incoming.put(seq, new Incoming(type, payload));
             }
             while (incoming.containsKey(rcvNext)) {
-                inbox.addLast(incoming.remove(rcvNext));
+                Incoming item = incoming.remove(rcvNext);
+                deliverFrame(item.kind, item.payload);
                 rcvNext = (rcvNext + 1) & 0xFFFF;
             }
             // 立刻单独回一个控制包：联机线是一问一答，这个 ACK 直接决定
             // 下一回合多快能开始。
             sendControl(from);
+        }
+    }
+
+    /** 按序交付：小消息直接进 inbox，分片拼齐后才交付。 */
+    private void deliverFrame(int kind, byte[] payload) {
+        if (kind != TYPE_FRAG) {
+            inbox.addLast(payload);
+            return;
+        }
+        if (payload.length == 0) {
+            return;
+        }
+        int flag = payload[0] & 0xFF;
+        if (flag == FRAG_START) {
+            if (payload.length < FRAG_HEAD) {
+                return;
+            }
+            fragTotal = get32(payload, 1);
+            fragBuf = new byte[payload.length - FRAG_HEAD];
+            System.arraycopy(payload, FRAG_HEAD, fragBuf, 0, fragBuf.length);
+        } else {
+            if (fragBuf == null) {
+                return;
+            }
+            int extra = payload.length - FRAG_HEAD_CONT;
+            byte[] merged = new byte[fragBuf.length + extra];
+            System.arraycopy(fragBuf, 0, merged, 0, fragBuf.length);
+            System.arraycopy(payload, FRAG_HEAD_CONT, merged, fragBuf.length, extra);
+            fragBuf = merged;
+        }
+        if (fragTotal > 0 && fragBuf != null && fragBuf.length >= fragTotal) {
+            byte[] whole = new byte[fragTotal];
+            System.arraycopy(fragBuf, 0, whole, 0, fragTotal);
+            fragBuf = null;
+            fragTotal = 0;
+            inbox.addLast(whole);
         }
     }
 
@@ -649,6 +723,7 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
             }
             outgoing.clear();
             outgoing.addAll(keep);
+            pumpSendLocked(); // 腾出的窗口立刻给压着的分片
         }
     }
 
