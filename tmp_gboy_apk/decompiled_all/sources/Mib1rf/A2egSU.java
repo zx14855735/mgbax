@@ -1,0 +1,7 @@
+package Mib1rf;
+
+import android.os.Binder;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes2.dex */
+public final class A2egSU extends Binder {
+}

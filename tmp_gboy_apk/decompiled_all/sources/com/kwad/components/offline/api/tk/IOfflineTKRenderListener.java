@@ -1,0 +1,8 @@
+package com.kwad.components.offline.api.tk;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes.dex */
+public interface IOfflineTKRenderListener {
+    void onFailed(Throwable th);
+
+    void onSuccess();
+}

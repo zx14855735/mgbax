@@ -1,0 +1,5 @@
+package QmCR4D;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes3.dex */
+public abstract class ASJ6gh extends ARc23Z {
+}

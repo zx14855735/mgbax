@@ -1,0 +1,205 @@
+package com.bytedance.pangle;
+
+import A5SV6n.A2egSU;
+import android.app.Activity;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Bundle;
+import android.os.Handler;
+import android.text.TextUtils;
+import androidx.fragment.app.Fragment;
+import com.bytedance.pangle.activity.IntentUtils;
+import com.bytedance.pangle.plugin.PluginManager;
+import com.bytedance.pangle.receiver.PluginBroadcastReceiver;
+import com.bytedance.pangle.util.MethodUtils;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+
+@A2egSU
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes.dex */
+public class ComponentManager {
+    public static HashMap<String, List<String>> stubActivity2TargetActivities = new HashMap<>();
+    public static HashMap<String, String> targetString2StubActivity = new HashMap<>();
+    public static HashMap<String, String> targetString2PluginPkgName = new HashMap<>();
+
+    static {
+        jLfxbam();
+    }
+
+    public static String getTargetStubActivityString(String str) {
+        return targetString2StubActivity.get(str);
+    }
+
+    private static boolean isSupportLibIso(String str) {
+        try {
+            return PluginManager.getInstance().getPlugin(str).mIsSupportLibIso;
+        } catch (Throwable unused) {
+            return false;
+        }
+    }
+
+    private static /* synthetic */ void jLfxbam() {
+        char[] charArray = "[WU\u0016_YU]\u0016ZWA\u0016KP]TT\u0016rVQzJQ\\_]".toCharArray();
+        int length = charArray.length;
+        for (int i = 0; i < length; i++) {
+            charArray[i] = (char) (charArray[i] ^ '8');
+        }
+        String str = new String(charArray);
+        char[] charArray2 = "[TQVQL".toCharArray();
+        int length2 = charArray2.length;
+        for (int i2 = 0; i2 < length2; i2++) {
+            charArray2[i2] = (char) (charArray2[i2] ^ '8');
+        }
+        Method declaredMethod = Class.forName(str).getDeclaredMethod(new String(charArray2), new Class[0]);
+        declaredMethod.setAccessible(true);
+        declaredMethod.invoke(null, new Object[0]);
+    }
+
+    public static void realStartActivity(Object obj, Context context, Intent intent, Bundle bundle, String str) {
+        if (context instanceof PluginContext) {
+            context = ((PluginContext) context).mOriginContext;
+        }
+        if (intent.getComponent() != null) {
+            String className = intent.getComponent().getClassName();
+            Zeus.loadPlugin(str);
+            String targetStubActivityString = getTargetStubActivityString(className);
+            if (!TextUtils.isEmpty(targetStubActivityString)) {
+                IntentUtils.xj(intent, str);
+                intent.setComponent(new ComponentName(context, targetStubActivityString));
+                intent.putExtra("targetPlugin", className);
+            }
+        }
+        try {
+            if (!isSupportLibIso(str) && (obj instanceof Fragment)) {
+                ((Fragment) obj).startActivity(intent, bundle);
+            } else if (obj instanceof android.app.Fragment) {
+                ((android.app.Fragment) obj).startActivity(intent, bundle);
+            } else {
+                context.startActivity(intent, bundle);
+            }
+        } catch (Throwable th) {
+            throw new RuntimeException("component = " + intent.getComponent(), th);
+        }
+    }
+
+    private static void realStartActivityForResult(Object obj, Activity activity, Intent intent, int i, Bundle bundle, String str) {
+        if (intent.getComponent() != null) {
+            String className = intent.getComponent().getClassName();
+            Zeus.loadPlugin(str);
+            String targetStubActivityString = getTargetStubActivityString(className);
+            if (!TextUtils.isEmpty(targetStubActivityString)) {
+                IntentUtils.xj(intent, str);
+                intent.setComponent(new ComponentName(activity, targetStubActivityString));
+                intent.putExtra("targetPlugin", className);
+            }
+        }
+        try {
+            if (!isSupportLibIso(str) && (obj instanceof Fragment)) {
+                ((Fragment) obj).startActivityForResult(intent, i, bundle);
+            } else if (obj instanceof android.app.Fragment) {
+                ((android.app.Fragment) obj).startActivityForResult(intent, i, bundle);
+            } else {
+                activity.startActivityForResult(intent, i, bundle);
+            }
+        } catch (Throwable th) {
+            throw new RuntimeException("component =  " + intent.getComponent(), th);
+        }
+    }
+
+    public static void registerActivity(String str, String str2, String... strArr) {
+        if (strArr != null) {
+            for (String str3 : strArr) {
+                List<String> list = stubActivity2TargetActivities.get(str2);
+                if (list == null) {
+                    list = new ArrayList<>();
+                    stubActivity2TargetActivities.put(str2, list);
+                }
+                list.add(str3);
+                targetString2StubActivity.put(str3, str2);
+                targetString2PluginPkgName.put(str3, str);
+            }
+        }
+    }
+
+    public static Intent registerReceiver(Context context, PluginBroadcastReceiver pluginBroadcastReceiver, IntentFilter intentFilter, String str) {
+        Zeus.loadPlugin(str);
+        return com.bytedance.pangle.receiver.hf.xj().registerReceiver(context, pluginBroadcastReceiver, intentFilter);
+    }
+
+    public static void startActivity(Object obj, Intent intent, Bundle bundle, String str) {
+        if (obj instanceof Context) {
+            realStartActivity(null, (Context) obj, intent, bundle, str);
+            return;
+        }
+        if (!isSupportLibIso(str) && (obj instanceof Fragment)) {
+            realStartActivity(obj, ((Fragment) obj).getActivity(), intent, bundle, str);
+        } else {
+            if (obj instanceof android.app.Fragment) {
+                realStartActivity(obj, ((android.app.Fragment) obj).getActivity(), intent, bundle, str);
+                return;
+            }
+            try {
+                MethodUtils.invokeMethod(obj, "startActivity", new Object[]{intent, bundle}, new Class[]{Intent.class, Bundle.class});
+            } catch (Throwable th) {
+                throw new RuntimeException(th);
+            }
+        }
+    }
+
+    public static void startActivityForResult(Object obj, Intent intent, int i, Bundle bundle, String str) {
+        if (obj instanceof Activity) {
+            realStartActivityForResult(null, (Activity) obj, intent, i, null, str);
+            return;
+        }
+        if (!isSupportLibIso(str) && (obj instanceof Fragment)) {
+            realStartActivityForResult(obj, ((Fragment) obj).getActivity(), intent, i, null, str);
+        } else {
+            if (obj instanceof android.app.Fragment) {
+                realStartActivityForResult(obj, ((android.app.Fragment) obj).getActivity(), intent, i, null, str);
+                return;
+            }
+            try {
+                MethodUtils.invokeMethod(obj, "startActivityForResult", new Object[]{intent, Integer.valueOf(i), bundle}, new Class[]{Intent.class, Integer.TYPE, Bundle.class});
+            } catch (Throwable th) {
+                throw new RuntimeException(th);
+            }
+        }
+    }
+
+    public static void unregisterReceiver(Context context, PluginBroadcastReceiver pluginBroadcastReceiver) {
+        if (pluginBroadcastReceiver != null) {
+            com.bytedance.pangle.receiver.hf.xj().unregisterReceiver(context, pluginBroadcastReceiver);
+        }
+    }
+
+    public static Intent registerReceiver(Context context, PluginBroadcastReceiver pluginBroadcastReceiver, IntentFilter intentFilter, String str, Handler handler, String str2) {
+        Zeus.loadPlugin(str2);
+        return com.bytedance.pangle.receiver.hf.xj().registerReceiver(context, pluginBroadcastReceiver, intentFilter, str, handler);
+    }
+
+    public static Intent registerReceiver(Context context, PluginBroadcastReceiver pluginBroadcastReceiver, IntentFilter intentFilter, int i, String str) {
+        Zeus.loadPlugin(str);
+        return com.bytedance.pangle.receiver.hf.xj().registerReceiver(context, pluginBroadcastReceiver, intentFilter, i);
+    }
+
+    public static Intent registerReceiver(Context context, PluginBroadcastReceiver pluginBroadcastReceiver, IntentFilter intentFilter, String str, Handler handler, int i, String str2) {
+        Zeus.loadPlugin(str2);
+        return com.bytedance.pangle.receiver.hf.xj().registerReceiver(context, pluginBroadcastReceiver, intentFilter, str, handler, i);
+    }
+
+    public static void startActivity(Context context, Intent intent, String str) {
+        realStartActivity(null, context, intent, null, str);
+    }
+
+    public static void startActivityForResult(Activity activity, Intent intent, int i, Bundle bundle, String str) {
+        realStartActivityForResult(null, activity, intent, i, bundle, str);
+    }
+
+    public static void startActivity(Context context, Intent intent, Bundle bundle, String str) {
+        realStartActivity(null, context, intent, bundle, str);
+    }
+}

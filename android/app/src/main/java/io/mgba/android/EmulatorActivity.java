@@ -2211,7 +2211,12 @@ public class EmulatorActivity extends AppCompatActivity {
                 Log.i(TAG, "local link handshake complete");
                 // saveStateToMemory() touches the running core, so hop back to
                 // the UI thread before taking the snapshot.
-                if (asHost && initialStateSent.compareAndSet(false, true)) {
+                /* GBoy 的 type 6 是双向的：房主和入房方各自把本机可见核的即时
+                 * 存档推给对端，对端灌进「代表这个玩家的镜像核」。老代码用
+                 * asHost 门控，入房方一个字节都不发，于是房主的镜像核永远停在
+                 * 自己的电池存档上，两边核心从第一帧起就不在同一幕 —— 实测
+                 * 「对方在推、本机一帧收不到」「pc 恒 0」的直接原因。 */
+                if (initialStateSent.compareAndSet(false, true)) {
                     runOnUiThread(() -> {
                         GBoyConsoleSet set = consoleSet;
                         GBoySocketLink link = localLink;

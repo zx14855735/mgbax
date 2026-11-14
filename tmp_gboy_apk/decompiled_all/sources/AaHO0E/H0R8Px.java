@@ -1,0 +1,8 @@
+package AaHO0E;
+
+import android.view.MenuItem;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes.dex */
+public interface H0R8Px {
+    boolean onMenuItemClick(MenuItem menuItem);
+}

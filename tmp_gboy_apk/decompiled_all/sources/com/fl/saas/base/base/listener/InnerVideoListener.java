@@ -1,0 +1,18 @@
+package com.fl.saas.base.base.listener;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes2.dex */
+public interface InnerVideoListener {
+    void onAdClick(String str);
+
+    void onAdClose();
+
+    void onAdShow();
+
+    void onSkipVideo();
+
+    void onVideoCompleted();
+
+    void onVideoPrepared();
+
+    void onVideoReward(double d);
+}

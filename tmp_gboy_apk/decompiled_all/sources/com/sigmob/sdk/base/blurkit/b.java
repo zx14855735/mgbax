@@ -1,0 +1,8 @@
+package com.sigmob.sdk.base.blurkit;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes3.dex */
+public class b extends Exception {
+    public b(String str) {
+        super(str);
+    }
+}

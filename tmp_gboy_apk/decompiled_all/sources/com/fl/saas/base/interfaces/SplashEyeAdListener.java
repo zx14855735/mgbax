@@ -1,0 +1,10 @@
+package com.fl.saas.base.interfaces;
+
+import android.view.View;
+
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes2.dex */
+public interface SplashEyeAdListener {
+    void onAdDismiss(boolean z, String str);
+
+    void onAnimationStart(View view);
+}

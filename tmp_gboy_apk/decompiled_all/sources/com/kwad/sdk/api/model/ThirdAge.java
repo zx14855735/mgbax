@@ -1,0 +1,17 @@
+package com.kwad.sdk.api.model;
+
+import A5SV6n.A2egSU;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
+@A2egSU
+@Retention(RetentionPolicy.SOURCE)
+/* loaded from: D:\mgba-android-version\tmp_gboy_apk\decoded\classes2.dex */
+public @interface ThirdAge {
+    public static final int AGE_BELOW_FIFTY = 4;
+    public static final int AGE_BELOW_THIRTY = 2;
+    public static final int AGE_MIDDLE = 3;
+    public static final int AGE_UNKNOW = 0;
+    public static final int AGE_UP_FIFTY = 5;
+    public static final int AGE_YOUNG = 1;
+}

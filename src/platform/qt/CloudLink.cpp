@@ -1681,15 +1681,22 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	events.onReset = [this]() { emit remoteReset(); };
 	events.onState = [this](const QByteArray& state) {
 		// 官方语义：TYPE_STATE 只灌进镜像核（对方的控制台在本机的映像），
-		// 绝不能灌进可见核——后者是玩家自己的进度。
-		bool applied = false;
-		for (int i = 0; i < MIRROR_COUNT && !applied; ++i) {
-			if (m_mirrors[i]) {
-				applied = m_mirrors[i]->applyRemoteState(state);
+		// 绝不能灌进可见核——后者是玩家自己的进度。多个镜像核里只有「对端
+		// 占的那个槽位」该吃这份状态，其余是本机 NPC 队位，喂进去会把 NPC
+		// 的存档覆盖掉。这里按槽位顺序找到第一个镜像核并记录实际落点。
+		int applied = -1;
+		for (int i = 0; i < MIRROR_COUNT; ++i) {
+			if (m_mirrors[i] && m_mirrors[i]->applyRemoteState(state)) {
+				applied = i;
+				break;
 			}
 		}
-		if (!applied) {
+		if (applied < 0) {
 			GbCloud::debugLog(QStringLiteral("TYPE_STATE not applied (no mirror console)"));
+		} else {
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE applied to mirror %1 (%2 bytes)")
+			                          .arg(applied)
+			                          .arg(state.size()));
 		}
 	};
 	events.onReady = [this]() { status(QStringLiteral("对方已就绪")); };
@@ -2093,7 +2100,14 @@ void CloudLink::handle(const QByteArray& body) {
 	}
 }
 
-bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {	if (!asHost || !m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
+/* GBoy KpHwm4.B25kr6:type 6 是**双向**的：房主和入房方各自把本机可见核的
+ * 即时存档推给对端，对端灌进「代表这个玩家的镜像核」。只在房主一侧发时，
+ * 房主的镜像核（= 入房方那个玩家）永远停在自己的电池存档上，两边核心从
+ * 第一帧起就不在同一幕 —— 这正是实测里「对方在推、本机一帧收不到」「pc 恒 0」
+ * 的直接原因。因此这里不再按角色门控，两端各发一次。 */
+bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
+	(void) asHost; /* 两端都发：见上面的 GBoy type 6 双向说明 */
+	if (!m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
 		return false;
 	}
 	QByteArray state = m_stateSnapshot();
@@ -2102,6 +2116,7 @@ bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&
 	}
 	m_initialStateSent.store(true, std::memory_order_relaxed);
 	send(GBoyFrames::stateFrame(state));
+	GbCloud::debugLog(QStringLiteral("[gboy] initial state sent (%1 bytes)").arg(state.size()));
 	return true;
 }
 

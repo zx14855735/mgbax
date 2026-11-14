@@ -1,6 +1,6 @@
 import os, re, sys, urllib.request
 
-BASE = "https://repo1.maven.org/maven2/"
+BASE = "https://maven.aliyun.com/repository/public/"
 OUT = "jadxlibs"
 os.makedirs(OUT, exist_ok=True)
 
