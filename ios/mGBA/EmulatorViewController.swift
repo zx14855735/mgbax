@@ -1369,6 +1369,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             romCrc = nil
         }
         NSLog("GBOY_RT load: crc ok")
+        // 小 ROM 原地补零到 32MB：iOS 的 VFile 以只读 mmap 映射文件，
+        // GBALoadROM 会向映射内 memset 补零（gba.c:513），小于 32MB 会在
+        // 映射外写 → Translation fault（CI 崩溃栈实证）。PC 的 VFile 实现
+        // 无此问题。对真 32MB ROM 是空操作。
+        let romURL = URL(fileURLWithPath: path)
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let size = attrs[.size] as? UInt64, size < 33_554_432,
+           let fh = try? FileHandle(forWritingTo: romURL) {
+            fh.seekToEndOfFile()
+            fh.write(Data(count: 33_554_432 - Int(size)))
+            try? fh.close()
+            NSLog("GBOY_RT rom padded to 32MB (was %llu)", size)
+        }
         let ok = mgbaMobileLoad(core, path)
         // 进出游戏时自动同步（设置里可关）
         if defaults.bool(forKey: "sync_auto") {
