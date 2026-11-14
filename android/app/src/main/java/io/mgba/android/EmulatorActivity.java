@@ -367,8 +367,7 @@ public class EmulatorActivity extends AppCompatActivity {
             Log.i(TAG, "NO_RELAY broadcast: forcing server tunnel (skip public relay)");
         }
     };
-    /** Lets `adb shell am broadcast -a io.mgba.android.action.SIGNAL --es mode host|join
-     *  --es user U --es pass P --es room R --es probes a,b,c` drive the gboy.top room
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.SIGNAL --es mode host|join     *  --es user U --es pass P --es room R --es probes a,b,c` drive the gboy.top room
      *  signalling directly and log every server reply, so the room protocol can be
      *  mapped (which action hands the joiner the relay node) without guessing. */
     private final BroadcastReceiver signalReceiver = new BroadcastReceiver() {
