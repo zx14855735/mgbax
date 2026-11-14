@@ -1,0 +1,302 @@
+name: iOS Simulator
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: '归档签名包并上传 TestFlight（需已配置 secrets）'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build core + app (iphonesimulator)
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project ios/mGBA.xcodeproj
+          set -o pipefail
+          xcodebuild -project ios/mGBA.xcodeproj -scheme mGBA -configuration Debug -sdk iphonesimulator -derivedDataPath build CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log
+
+      - name: Error tail as annotations
+        if: failure()
+        run: |
+          if [ -f build.log ]; then
+            echo "===== matching lines ====="
+            grep -nEi 'error|fatal|usage|FAILED' build.log | tail -20 | while IFS= read -r line; do echo "::error::$line"; done
+            echo "===== last 25 lines ====="
+            tail -25 build.log | while IFS= read -r line; do echo "::error::$line"; done
+          else
+            echo "::error::build.log missing - xcodebuild did not run"
+          fi
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Boot simulator, install, launch
+        run: |
+          UDID=$(xcrun simctl list devices available | grep -m1 "iPhone" | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          echo "Using simulator $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          echo "Installing $APP"
+          xcrun simctl install "$UDID" "$APP"
+          xcrun simctl launch "$UDID" io.mgba.ios
+
+      - name: Verify alive + screenshots
+        run: |
+          sleep 20
+          if pgrep -f 'mGBAx.app' > /dev/null; then
+            echo "APP ALIVE after 20s"
+          else
+            echo "::error::App process not found 20s after launch"
+            exit 1
+          fi
+          mkdir -p shots
+          xcrun simctl io booted screenshot shots/launch.png
+          sleep 5
+          xcrun simctl io booted screenshot shots/launch5s.png
+          xcrun simctl spawn booted log show --last 3m --style compact 2>/dev/null | grep -iE 'mGBAx|crash' | tail -60 || true
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-simulator-shots
+          path: shots/
+          if-no-files-found: error
+
+      - name: Lockstep runtime check (4 mirrors, frame clock)
+        run: |
+          UDID=$(xcrun simctl list devices booted | grep -m1 "iPhone" | grep -oE '[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}')
+          echo "Lockstep check on $UDID"
+          python3 - <<'PY'
+          logo = bytes([
+              0x24,0xFF,0xAE,0x51,0x69,0x9B,0xA2,0x21,0x3D,0x0F,0x68,0x2A,0xB2,0x10,0x6D,0x0E,
+              0x8F,0x74,0xC7,0x95,0x54,0x28,0xA1,0x66,0x18,0x81,0xC1,0x07,0x11,0x22,0x90,0xCA,
+              0xF9,0x4E,0xD4,0xA4,0x81,0x28,0x4C,0x11,0xD9,0x9A,0xD0,0x82,0x73,0x2C,0x07,0x3A,
+              0x93,0x5C,0x1B,0x93,0x37,0x9E,0x2D,0x5F,0x3F,0x8F,0x22,0xB9,0x4C,0xA4,0x55,0xFA,
+              0x28,0x0F,0x92,0x0E,0x8E,0x86,0x17,0x0E,0x67,0x38,0x67,0x0F,0x0E,0x72,0x3C,0x84,
+              0x98,0x97,0x69,0x57,0x37,0x65,0x58,0x1B,0x0C,0x4B,0x3F,0x0C,0x5E,0x0B,0x67,0x9B,
+              0x62,0x25,0x25,0x1E,0x2E,0x0A,0x76,0x2C,0x3F,0xC7,0x0D,0x55,0x0F,0xB8,0x72,0xA1,
+              0xEC,0x52,0x4D,0x98,0x71,0xA1,0x71,0x49,0x22,0x19,0x7A,0x2A,0x4D,0x66,0x34,0x9F,
+              0x93,0x1B,0x23,0x50,0x25,0x6A,0x0F,0x66,0x29,0x60,0x28,0x16,0x8B,0x93,0x66,0x86,
+              0x23,0x29])
+          rom = bytearray(192 * 1024)
+          rom[0:4] = bytes([0xFE, 0xFF, 0xFF, 0xEA])   # rom[3] == 0xEA（GBA_ROM_MAGIC）
+          rom[4:4+len(logo)] = logo
+          rom[0xA0:0xA0+12] = b'LOCKSTEPTEST'
+          rom[0xB2] = 0x96                              # 设备码（GBA_ROM_MAGIC2，必须）
+          rom[0xBC] = 0
+          rom[0xBD] = (-(sum(rom[0xA0:0xBD])) - 0x19) & 0xFF   # 头部校验和
+          open('lockstep.gba', 'wb').write(rom)
+          print('lockstep.gba bytes:', len(rom), 'checksum:', hex(rom[0xBD]))
+          PY
+          CONTAINER=$(xcrun simctl get_app_container "$UDID" io.mgba.ios data)
+          cp lockstep.gba "$CONTAINER/Documents/lockstep.gba"
+          xcrun simctl terminate "$UDID" io.mgba.ios 2>/dev/null || true
+          # --terminate-running-process：terminate 偶发失败时 launch 会只激活
+          # 旧实例（参数全不生效、lockstep.log 里一个标记都没有）——实测坑。
+          (xcrun simctl launch --terminate-running-process --console-pty "$UDID" io.mgba.ios -gboyAutoRom lockstep.gba -gboyLockstepPlayers 4 -gboySilent > lockstep.log 2>&1 &)
+          sleep 45
+          # 崩溃检查无条件先跑：带参实例可能在加载中崩溃，SpringBoard 会
+          # 立即重拉一个无参实例（#42 实测 100ms 内），pgrep 看到它存活会
+          # 误判"没崩"，.ips 就永远抓不到。
+          CRASH=$(ls -t ~/Library/Logs/DiagnosticReports/mGBAx-* ~/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/Logs/DiagnosticReports/mGBAx-* 2>/dev/null | head -1)
+          if [ -n "$CRASH" ]; then
+            echo "===== crash report: $CRASH ====="
+            grep -E 'Exception Type|Exception Codes|Termination|Crashed|Thread [0-9]+ Crashed|GBoyConsoleSet|EmulatorView|mgba' "$CRASH" | head -40 || head -60 "$CRASH"
+            cp "$CRASH" mgbax-crash.log 2>/dev/null || true
+          fi
+          if ! pgrep -f 'mGBAx.app' > /dev/null; then
+            echo "::error::APP DIED during lockstep check"
+          else
+            # App alive but markers missing = load/lockstep thread stuck or
+            # the args instance crashed and a relaunched no-args instance
+            # survived. Sample the pid the launch itself reported.
+            if ! grep -q 'GBOY_RT lockstep started' lockstep.log 2>/dev/null; then
+              APPPID=$(sed -n 's/^io\.mgba\.ios: //p' lockstep.log 2>/dev/null | tail -1)
+              if [ -z "$APPPID" ] || ! kill -0 "$APPPID" 2>/dev/null; then
+                APPPID=$(pgrep -f 'mGBAx.app' | head -1)
+              fi
+              echo "===== app alive but markers missing (pid=$APPPID): sampling threads ====="
+              sample "$APPPID" 3 -file thread-sample.txt 2>&1 | head -5 || true
+              echo "===== autoload/load thread stack ====="
+              grep -B 2 -A 15 'gboy-autoload\|loadRom\|mCoreLoad\|mgbaMobileLoad' thread-sample.txt | head -100 || true
+              # 工作目录就是 workspace 根：cp 同名文件会报 identical 并在
+              # bash -e 下杀掉整个步骤（实测 #41 乌龙）——目标换名 + 兜底 true。
+              cp thread-sample.txt mgbax-thread-sample.txt 2>/dev/null || true
+              echo "===== sim system log (2m window) ====="
+              xcrun simctl spawn booted log show --last 2m --style compact 2>/dev/null | grep -iE 'mGBAx|jetsam|memorystatus' | tail -40 || true
+            fi
+          fi
+          # 先落盘再断言：无论断言是否失败，lockstep.log 都进产物供诊断。
+          cp lockstep.log "$GITHUB_WORKSPACE/lockstep-runtime.log" 2>/dev/null || cp lockstep.log lockstep-runtime.log
+          echo "===== GBOY_RT markers ====="
+          grep 'GBOY_RT' lockstep.log | tail -30 || true
+          echo "===== assertions ====="
+          grep -q 'GBOY_RT lockstep started players=4' lockstep.log
+          grep -q 'GBOY_RT mirror idx=1 frames=600 ok' lockstep.log
+          grep -q 'GBOY_RT mirror idx=2 frames=600 ok' lockstep.log
+          grep -q 'GBOY_RT mirror idx=3 frames=600 ok' lockstep.log
+          echo "LOCKSTEP RUNTIME OK (4 mirrors advanced 600+ frames under frame clock)"
+
+      - name: Upload lockstep runtime log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lockstep-runtime-log
+          path: |
+            lockstep-runtime.log
+            mgbax-thread-sample.txt
+            mgbax-crash.log
+          if-no-files-found: ignore
+
+  ipa:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build unsigned device IPA
+        run: |
+          set -o pipefail
+          xcodebuild archive -project ios/mGBA.xcodeproj -scheme mGBA -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/mGBAx.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO 2>&1 | tee ipa-build.log
+          APP=$(find build/mGBAx.xcarchive/Products/Applications -maxdepth 1 -name '*.app' | head -1)
+          echo "Packaging $APP"
+          rm -rf Payload && mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry mGBAx-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgbax-unsigned-ipa
+          path: mGBAx-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload ipa build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa-build-log
+          path: ipa-build.log
+          if-no-files-found: ignore
+
+  release:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight secrets
+        id: pre
+        env:
+          P12: ${{ secrets.BUILD_CERT_P12 }}
+          P8: ${{ secrets.APPSTORE_P8 }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$P12" ] || [ -z "$P8" ] || [ -z "$TEAM" ]; then
+            echo "::error::缺少 secrets：BUILD_CERT_P12 / APPSTORE_P8 / APPLE_TEAM_ID（还需 APPSTORE_KEY_ID、APPSTORE_ISSUER_ID、BUILD_CERT_PASSWORD）"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import signing certificate
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          P12: ${{ secrets.BUILD_CERT_P12 }}
+          P12PASS: ${{ secrets.BUILD_CERT_PASSWORD }}
+          KEYCHAINPASS: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$KEYCHAINPASS" ]; then KEYCHAINPASS=ci-default-keychain-pass; fi
+          if [ -z "$P12PASS" ]; then P12PASS=; fi
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          KC="$RUNNER_TEMP/build.keychain"
+          security create-keychain -p "$KEYCHAINPASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KEYCHAINPASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12PASS" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAINPASS" "$KC"
+          security list-keychain -d user -s "$KC" $(security list-keychains | tr -d '"' | tr '\n' ' ')
+
+      - name: Prepare App Store Connect API key
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          P8: ${{ secrets.APPSTORE_P8 }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+        run: |
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          echo "$P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_$KEYID.p8"
+          cp "$RUNNER_TEMP/AuthKey_$KEYID.p8" "$HOME/.appstoreconnect/private_keys/AuthKey_$KEYID.p8"
+
+      - name: Archive (Release, iOS device)
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive -project ios/mGBA.xcodeproj -scheme mGBA -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath build/mGBAx.xcarchive \
+            DEVELOPMENT_TEAM="$TEAM" CODE_SIGN_STYLE=Automatic \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$KEYID.p8" \
+            -authenticationKeyID "$KEYID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee archive.log
+
+      - name: Export IPA
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          cat > ExportOptions.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>teamID</key><string>$TEAM</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive -archivePath build/mGBAx.xcarchive \
+            -exportOptionsPlist ExportOptions.plist -exportPath build/ipa \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$KEYID.p8" \
+            -authenticationKeyID "$KEYID" -authenticationKeyIssuerID "$ISSUER" 2>&1 | tee export.log
+
+      - name: Upload to TestFlight
+        if: steps.pre.outputs.ok == 'true'
+        env:
+          KEYID: ${{ secrets.APPSTORE_KEY_ID }}
+          ISSUER: ${{ secrets.APPSTORE_ISSUER_ID }}
+        run: |
+          IPA=$(find build/ipa -name '*.ipa' | head -1)
+          echo "Uploading $IPA"
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$KEYID" --apiIssuer "$ISSUER" 2>&1 | tee upload.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-logs
+          path: |
+            archive.log
+            export.log
+            upload.log
+          if-no-files-found: ignore
