@@ -289,6 +289,16 @@ public final class GBoyLinkSession {
         onWireFrame(wire, defaultSenderSlot());
     }
 
+    /** 测试钩子：把同一按键掩码灌进指定槽位。
+     *
+     * 4 核/设备时本机只有可见核（slot1）有真人按键源，slot3/4 作 NPC 队位恒 0，
+     * 于是它们永远停在柜台大厅、游戏也不放开走位（大竞技场要求 4 人就位）。
+     * 广播 KEYS 时把掩码同步灌进 3/4，让 NPC 核跟着可见核走同一段对话。
+     * 不灌 slot2：那是跨网对端真人，覆盖会吞掉对方的操作。 */
+    public void injectKeysForSlot(int slot, int keys) {
+        pushKeys(slot, keys);
+    }
+
     private void pushKeys(int slot, int keys) {
         if (slot < 1 || slot > MAX_CONSOLES) {
             return;

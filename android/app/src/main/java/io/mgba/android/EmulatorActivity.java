@@ -159,6 +159,17 @@ public class EmulatorActivity extends AppCompatActivity {
             int prev = hwKeys;
             hwKeys = mask;
             Log.i(TAG, "keys broadcast mask=" + mask + " prev=" + prev);
+            /* 4 核/设备：本机只有可见核有真人按键源，slot3/4 的 NPC 核恒 0 会一直
+             * 停在柜台大厅，大竞技场就不放开走位（要求 4 人就位）。广播按键时把
+             * 同一掩码灌进 3/4，让 NPC 跟着可见核走完同一段对话/菜单。slot2 是
+             * 跨网对端真人，不能覆盖。 */
+            if (cloudLink != null) {
+                GBoyLinkSession s = cloudLink.linkSession();
+                if (s != null) {
+                    s.injectKeysForSlot(3, mask);
+                    s.injectKeysForSlot(4, mask);
+                }
+            }
             // noteUserKeys() publishes the merged mask itself.
             noteUserKeys(touchKeys, prev);
         }
