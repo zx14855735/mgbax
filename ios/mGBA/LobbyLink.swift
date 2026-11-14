@@ -153,6 +153,19 @@ final class LobbyLink {
         }
     }
 
+    /// 官方 type 9（倍速）：只发线上合法值 {1, -1, 2, 4}（见 `GBoySpeed`）。
+    /// 对端收到后只缩放它自己的帧闸 —— 两端必须同速，否则 SIO 子状态会拉开。
+    func sendSpeed(_ wire: Int32) {
+        guard GBoySpeed.wireValues.contains(wire) else { return }
+        lock.lock()
+        let current = channel
+        let dead = closedFlag
+        lock.unlock()
+        if let current, !dead {
+            current.send(LobbyFrames.frame(LobbyFrames.typeSpeed, wire))
+        }
+    }
+
     /**
      * 官方 type 6：把本机可见核的即时存档整包推给对端，让对端「代表本机这个
      * 玩家」的镜像核停在同一幕（B25kr6:144-152、AmA8tU:199）。

@@ -642,6 +642,13 @@ void CloudLink::sendReset() {
 	m_sendReset.store(true, std::memory_order_relaxed);
 }
 
+void CloudLink::sendSpeed(int speed) {
+	/* 只接受官方倍速菜单的值域；0 保留给「无待发送」。 */
+	if (speed == 1 || speed == -1 || speed == 2 || speed == 4) {
+		m_sendSpeed.store(speed, std::memory_order_relaxed);
+	}
+}
+
 void CloudLink::cleanupChannel() {
 	if (m_channel) {
 		m_channel->close();
@@ -2025,8 +2032,8 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 		}
-	/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
-	 * 1x=16.7ms、0.5x=33.3ms、2x=8.3ms、4x=4.2ms；没收到时按 1x。 */
+		/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
+		 * 1x=16.7ms、0.5x=33.3ms、2x=8.3ms、4x=4.2ms；没收到时按 1x。 */
 		const double tickMs = GBoyLinkSession::tickMsForSpeed(m_gboySession->remoteSpeed());
 		if (now - lastTick >= tickMs) {
 			lastTick = now;
@@ -2060,6 +2067,10 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
 			m_gboySession->sendReset();
 		}
+		if (int speed = m_sendSpeed.exchange(0, std::memory_order_relaxed)) {
+			m_gboySession->sendSpeed(speed);
+			GbCloud::debugLog(QStringLiteral("[gboy] type 9 speed sent: %1").arg(speed));
+		}
 		/* 官方 type 6 失败即断链：-5（尺寸不符）对应错误码 3，其它对应 1。
 		 * 镜像核在帧边界载入后写标记，这里在主循环收口。 */
 		if (int stateError = m_mirrorStateError.exchange(0, std::memory_order_relaxed)) {
@@ -2085,8 +2096,8 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		}
 		QByteArray message;
 		/* 收包等待不能超过「到下一帧还剩多久」，否则 recv 的固定 30ms 会变成
-		 * 真正的节拍上限（帧率上限再高也跑不出来，60fps 会被压到 33fps）。 */
-		const qint64 remaining = tickMs - (now - lastTick);
+		 * 真正的节拍上限（倍速再高也跑不出来）。tickMs 是 double，先取整。 */
+		const qint64 remaining = qint64(tickMs) - (now - lastTick);
 		const int waitMs = int(qBound<qint64>(qint64(0), remaining, qint64(30)));
 		if (!link->recv(&message, waitMs)) {
 			continue;

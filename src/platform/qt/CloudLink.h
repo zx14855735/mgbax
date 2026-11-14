@@ -59,6 +59,8 @@ public:
 	void startLink(const Config& config);
 	void stopLink();
 	void sendReset();
+	/** 官方 type 9：把本机倍速广播给对端（1 / -1 / 2 / 4，-1 = 0.5x）。 */
+	void sendSpeed(int speed);
 	void setLocalKeys(int keys) { m_localKeys.store(keys, std::memory_order_relaxed); }
 	/** 4 核/设备：把本机真人掩码同步灌进 NPC 槽位 3/4（不碰对端 slot2）。
 	 *  与 Android 的 GBoyLinkSession.injectKeysForSlot(3/4) 对称。 */
@@ -171,6 +173,8 @@ private:
 	Config m_config;
 	std::atomic<bool> m_closed{false};
 	std::atomic<bool> m_sendReset{false};
+	/** 待发送的倍速（0 = 无；1 / -1 / 2 / 4 见 type 9）。 */
+	std::atomic<int> m_sendSpeed{0};
 	std::atomic<int> m_localKeys{0};
 	std::function<QByteArray()> m_stateSnapshot;
 	std::atomic<bool> m_initialStateSent{false};

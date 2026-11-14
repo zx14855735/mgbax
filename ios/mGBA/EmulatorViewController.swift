@@ -1197,7 +1197,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // AaHO0E.AZkASS 并重算 1e9/(speed*60)，两端速度必须一致，否则
             // 子状态会越走越开）。1x 时这里等于不缩放。
             if linkRate > 0.01, abs(linkRate - 1) > 0.01 {
-                sliceNanos = Int64(Double(sliceNanos) / linkRate)
+                sliceNanos = GBoySpeed.sliceNanos(base: sliceNanos, rate: linkRate)
             }
             // Schedule slices against an absolute next start. A gate wait that
             // oversleeps then cannot accumulate into a loop that runs (and
@@ -5999,15 +5999,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     /// 官方 type 9（倍速）：对端菜单选了 1x / 0.5x / 2x / 4x，线上值是 1 / -1 / 2 / 4。
     /// 官方收到后直接写 AaHO0E.AZkASS 并重算帧闸；iOS 存成倍率给帧循环缩放。
-    /// 非法值当 1x。gate 保护，帧循环每轮读一次。
+    /// 倍率→数值的映射走 `GBoySpeed`（三端同一张表），非法值当 1x。
+    /// gate 保护，帧循环每轮读一次。
     private func setLinkSpeed(_ raw: Int) {
-        let rate: Double
-        switch raw {
-        case -1: rate = 0.5
-        case 2: rate = 2
-        case 4: rate = 4
-        default: rate = 1
-        }
+        let rate = GBoySpeed.rate(Int32(truncatingIfNeeded: raw))
         gate.lock()
         let changed = abs(linkSpeed - rate) > 0.001
         linkSpeed = rate

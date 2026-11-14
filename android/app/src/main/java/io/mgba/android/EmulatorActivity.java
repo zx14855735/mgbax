@@ -423,6 +423,28 @@ public class EmulatorActivity extends AppCompatActivity {
             link.startTcp(peer == null ? "" : peer);
         }
     };
+    /** 联机倍速（官方 type 9）：{@code --ei value 1|-1|2|4}，-1 = 0.5x。 */
+    private final BroadcastReceiver speedReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int official = intent.getIntExtra("value", 1);
+            float local;
+            if (official == -1) {
+                local = 0.5f;
+            } else if (official == 1) {
+                local = 1f;
+            } else if (official == 2) {
+                local = 2f;
+            } else if (official == 4) {
+                local = 4f;
+            } else {
+                Log.i(TAG, "speed broadcast ignored: " + official);
+                return;
+            }
+            Log.i(TAG, "speed broadcast value=" + official);
+            runOnUiThread(() -> setSpeed(local));
+        }
+    };
     private final BroadcastReceiver signalReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -786,6 +808,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(tcpReceiver, tcpFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(tcpReceiver, tcpFilter);
+        }
+        IntentFilter speedFilter = new IntentFilter("io.mgba.android.action.SPEED");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(speedReceiver, speedFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(speedReceiver, speedFilter);
         }
         IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");        if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(signalReceiver, signalFilter, Context.RECEIVER_EXPORTED);
@@ -2394,6 +2422,25 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    /** 对端下发的官方 type 9 倍速 → 本机帧闸；0 = 未收到/非法，保持原节拍。 */
+    private long linkSpeedPaceNanos() {
+        GBoyLinkSession session = null;
+        GBoyCloudLink cloud = cloudLink;
+        if (cloud != null) {
+            session = cloud.linkSession();
+        }
+        if (session == null) {
+            GBoySocketLink local = localLink;
+            if (local != null) {
+                session = local.session();
+            }
+        }
+        if (session == null) {
+            return 0L;
+        }
+        return GBoyLinkSession.paceNanosForSpeed(session.remoteSpeed());
+    }
+
     /** Empty on success, otherwise the setup error of the last start. */
     public String gboyLinkFailure() {
         GBoyConsoleSet set = consoleSet;
@@ -2630,6 +2677,14 @@ public class EmulatorActivity extends AppCompatActivity {
                 // both.
                 boolean fastPacing = factor > 1.5f && fastSliceNanos > 0;
                 long paceNanos = fastPacing ? fastSliceNanos : sliceNanos;
+                /* 官方 type 9 倍速：只改本机帧闸（1e9/(speed*60)）。
+                 * 快进/高速时不动，避免把用户的 fast-forward 拖回 1x。 */
+                if (!fastPacing && factor <= 1.5f) {
+                    long netPace = linkSpeedPaceNanos();
+                    if (netPace > 0) {
+                        paceNanos = netPace;
+                    }
+                }
                 nextSlice += paceNanos;
                 if (System.nanoTime() - nextSlice > 2 * paceNanos) {
                     nextSlice = System.nanoTime();
@@ -5420,6 +5475,41 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         speed = value;
         refreshSpeedButtons();
+        sendLinkSpeed(value);
+    }
+
+    /**
+     * 本地切倍速时按官方 type 9 通知对端：1x→1、0.5x→-1、2x→2、4x→4。
+     * 其它自定义倍速官方没有对应值，只在本地生效。
+     */
+    private void sendLinkSpeed(float value) {
+        int official;
+        if (value == 0.5f) {
+            official = -1;
+        } else if (value == 1f) {
+            official = 1;
+        } else if (value == 2f) {
+            official = 2;
+        } else if (value == 4f) {
+            official = 4;
+        } else {
+            return;
+        }
+        GBoyLinkSession session = null;
+        GBoyCloudLink cloud = cloudLink;
+        if (cloud != null) {
+            session = cloud.linkSession();
+        }
+        if (session == null) {
+            GBoySocketLink local = localLink;
+            if (local != null) {
+                session = local.session();
+            }
+        }
+        if (session != null) {
+            session.sendSpeed(official);
+            Log.i(TAG, "tx link speed " + official);
+        }
     }
 
     private void refreshSpeedButtons() {
