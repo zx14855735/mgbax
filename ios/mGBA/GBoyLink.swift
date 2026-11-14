@@ -115,11 +115,17 @@ final class GBoyLink {
         let generation: Int
     }
 
-    /// 线程该不该退：用户断开，或者本代会话已死。
-    private var stopRequested: Bool {
+    /// 线程该不该退：这条会话还是不是「当前会话」。用户断开、对端掉线、
+    /// 或者已经开了新会话（代号变了），三者都会让它变 false。
+    ///
+    /// 不用「全局 closed 标志」的原因：run() 重新 join 时会清掉标志，旧线程
+    /// 可能还睡在 83ms 的发送间隔里，醒来后去写一个**已被内核复用**的 fd 号，
+    /// 把旧按键混进新连接（两个线程交错 send 还会撕开帧）。代次校验能保证
+    /// 旧线程在新会话建立后一个字节都不写。
+    private func isCurrent(_ session: Session) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return userClosedFlag || sessionClosedFlag
+        return currentFd == session.fd && currentGeneration == session.generation
     }
 
     /// 用户是否按了「断开」。accept / connect 循环只认这个。
