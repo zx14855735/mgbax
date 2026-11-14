@@ -82,6 +82,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var remote: RemoteLink?
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
     private var gboyLink: GBoyLink?
+    /** 蓝牙（BLE）直连：无 Wi-Fi 时的 2 人联机，协议与 GBoyLink 一致。 */
+    private var bleLink: GBoyBLELink?
     private var gboyRemoteKeys = 0
     /** Cloud lobby room link (signalling over HTTPS/WebSocket, KCP over UDP). */
     private var lobbyLink: LobbyLink?
@@ -1702,6 +1704,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             // The peer resets its own console to stay in sync.
             gboyLink?.sendReset()
+            bleLink?.sendReset()
             toast("已复位")
         } else if cmd == cmdAutoSave {
             // Silent save into the reserved slot on the way to the background.
@@ -6415,6 +6418,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.defaults.set(Int(p), forKey: "gboy_port")
             self.ensureGboy().join(ip, Int(p))
         }))
+        // ---- 蓝牙（BLE）直连：没有 Wi-Fi 时的 2 人联机 ----
+        let bleHelp = UILabel()
+        bleHelp.numberOfLines = 0
+        bleHelp.font = .systemFont(ofSize: 12)
+        bleHelp.textColor = UIColor(white: 0.25, alpha: 1)
+        bleHelp.text = "蓝牙（BLE）：两台 iPhone/iPad 靠近即可联机，不需要 Wi-Fi 或路由器。一边点「蓝牙创建」，另一边点「蓝牙加入」；创建方是 1P，协议与 Wi-Fi 大厅完全一致（按键/复位/倍速/存档同步）。"
+        box.addArrangedSubview(bleHelp)
+        box.addArrangedSubview(row(linkButton("蓝牙创建") { [weak self] in
+            guard let self else { return }
+            self.startBLE(host: true, status: status)
+        }, linkButton("蓝牙加入") { [weak self] in
+            guard let self else { return }
+            self.startBLE(host: false, status: status)
+        }))
         // ---- 云端联机大厅（房号匹配，中继地址自动获取） ----
         let lobbyHelp = UILabel()
         lobbyHelp.numberOfLines = 0
@@ -6731,6 +6748,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let wire = GBoySpeed.wireValue(forRate: value) else { return }
         gboyLink?.sendSpeed(wire)
         lobbyLink?.sendSpeed(wire)
+        bleLink?.sendSpeed(wire)
     }
 
     /// 把「本机倍速 × 联机倍速」写给两条链路的按键上行节拍。
@@ -6745,6 +6763,102 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
         gboyLink?.setPumpRate(rate)
         lobbyLink?.setKeyIntervalRate(rate)
+    }
+
+    /// 蓝牙（BLE）联机：把 GBoy 帧原样塞进 GATT 隧道，回调与 GBoyLink 同义。
+    private func startBLE(host: Bool, status: UILabel) {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            status.text = "请先打开一个游戏再联机"
+            return
+        }
+        stopBLE()
+        // 蓝牙和 Wi-Fi 大厅是两条互斥的输入源，先收掉旧的 TCP 会话。
+        gboyLink?.close()
+        gboyLink = nil
+        gboyRemoteKeys = 0
+        let link = GBoyBLELink()
+        link.localKeys = { [weak self] in
+            guard let self else { return 0 }
+            return Int32(truncatingIfNeeded: self.userKeys())
+        }
+        link.localRomName = { [weak self] in
+            guard let path = self?.currentRomPath, !path.isEmpty else { return "mGBAx" }
+            return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        }
+        link.stateSnapshot = { [weak self] in
+            guard let self, let core = self.core else { return nil }
+            var raw: UnsafeMutableRawPointer?
+            var size = 0
+            guard mgbaMobileSaveStateToMemory(core, &raw, &size), let raw, size > 0 else { return nil }
+            let data = [UInt8](Data(bytes: UnsafeRawPointer(raw), count: size))
+            mgbaMobileFreeState(raw)
+            return data
+        }
+        link.onStatus = { [weak status] text in
+            DispatchQueue.main.async { status?.text = text }
+        }
+        link.onConnected = { [weak self] asHost in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.consoleSet?.stop()
+                self.consoleSet = nil
+                self.gate.lock()
+                self.cloudConsoleActive = false
+                self.gate.unlock()
+                self.toast(asHost ? "蓝牙联机已连接，你是 1P" : "蓝牙联机已连接，你是 2P")
+            }
+        }
+        link.onDisconnected = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gboyRemoteKeys = 0
+                self.publishKeys()
+                self.setLinkSpeed(1)
+                self.toast("蓝牙联机已断开")
+            }
+        }
+        link.onRemoteKeys = { [weak self] keys in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.gboyRemoteKeys = Int(keys)
+                self.publishKeys()
+                self.wakeInput()
+            }
+        }
+        link.onRemoteReset = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.postCommand(self.cmdReset)
+            }
+        }
+        link.onRemoteSpeed = { [weak self] wire in
+            DispatchQueue.main.async { self?.setLinkSpeed(Int(wire)) }
+        }
+        link.onRemoteState = { [weak self] bytes in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let set = self.consoleSet, set.isReady, set.applyRemoteState(bytes) {
+                    return
+                }
+                // 2 人直连没有镜像核，存档按 TCP 路径同款方式缓存（不灌可见核）。
+                self.gate.lock()
+                self.pendingPeerState = bytes
+                self.gate.unlock()
+                RunLog.shared.add("蓝牙收到对端存档 \(bytes.count) 字节（暂存）")
+            }
+        }
+        bleLink = link
+        if host {
+            link.host(name: UIDevice.current.name)
+        } else {
+            link.join(name: UIDevice.current.name)
+        }
+        startLinkWatch()
+    }
+
+    private func stopBLE() {
+        bleLink?.stop()
+        bleLink = nil
     }
 
     private func ensureGboy() -> GBoyLink {
@@ -7353,6 +7467,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         stopped.wait()
         remote?.close()
         gboyLink?.close()
+        bleLink?.stop()
         audio.stop()
         if let core { mgbaMobileDestroy(core) }
     }

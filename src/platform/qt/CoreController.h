@@ -200,6 +200,8 @@ public slots:
 	void setAutofire(int key, bool enable);
 	/** 连发翻转间隔（帧）：updateAutofire() 每 N 帧切换一次“按下/松开”。 */
 	void setAutofireThreshold(int frames);
+	/** 宏按键：按住时把多个键位一起按下（C = A+B，C2 = L+R）。 */
+	void setMacroKeys(int keys, bool held);
 
 	// WiFi link (GBoy/My Boy): the remote player's key mask is OR-ed into
 	// every key update, mirroring the Android lobby's merged-keys mode.

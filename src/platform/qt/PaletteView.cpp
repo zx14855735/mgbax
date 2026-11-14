@@ -48,6 +48,20 @@ PaletteView::PaletteView(std::shared_ptr<CoreController> controller, QWidget* pa
 	m_ui.selected->setDimensions(QSize(1, 1));
 	updatePalette();
 
+	/* 调色板导出为 PNG（对齐移动端“导出到相册”）：右键菜单整幅截图，
+	 * 比 .pal/.act 更直观，也不依赖调色板格式阅读器。 */
+	setContextMenuPolicy(Qt::ActionsContextMenu);
+	QAction* exportPng = new QAction(tr("Export as PNG..."), this);
+	connect(exportPng, &QAction::triggered, this, [this]() {
+		QString filename = GBAApp::app()->getSaveFileName(this, tr("Export palette image"),
+		                                                  tr("Portable Network Graphics (*.png)"));
+		if (filename.isNull()) {
+			return;
+		}
+		grab().save(filename, "PNG");
+	});
+	addAction(exportPng);
+
 	const QFont font = GBAApp::app()->monospaceFont();
 
 	m_ui.hexcode->setFont(font);

@@ -122,6 +122,8 @@ public slots:
 
 	void openView(QWidget* widget);
 	void showMenu(bool);
+	/** 把本进程的所有窗口横向并排铺满屏幕（本地双人 = 移动端同屏分屏的等价交互）。 */
+	void tileWindows();
 
 #ifdef ENABLE_DEBUGGERS
 	void consoleOpen();
@@ -138,6 +140,7 @@ public slots:
 protected:
 	virtual void keyPressEvent(QKeyEvent* event) override;
 	virtual void keyReleaseEvent(QKeyEvent* event) override;
+	virtual bool eventFilter(QObject*, QEvent*) override;
 	virtual void resizeEvent(QResizeEvent*) override;
 	virtual void showEvent(QShowEvent*) override;
 	virtual void hideEvent(QHideEvent*) override;

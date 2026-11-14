@@ -10,6 +10,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -2020,6 +2021,14 @@ void Window::setupMenu(QMenuBar* menubar) {
 		reloadConfig();
 	}, this);
 
+	/* 低延迟音频（对齐移动端 low_latency）：重建音频后端让缓冲立刻变小。 */
+	ConfigOption* lowLatency = m_config->addOption("lowLatency");
+	lowLatency->addBoolean(tr("Low latency audio"), &m_actions, "av");
+	lowLatency->connect([this](const QVariant&) {
+		reloadAudioDriver();
+	}, this);
+	m_config->updateOption("lowLatency");
+
 	m_actions.addMenu(tr("FPS target"),"target", "av");
 	ConfigOption* fpsTargetOption = m_config->addOption("fpsTarget");
 	QMap<double, std::shared_ptr<Action>> fpsTargets;
@@ -2046,6 +2055,11 @@ void Window::setupMenu(QMenuBar* menubar) {
 	addGameAction(tr("Take &screenshot"), "screenshot", [this]() {
 		this->takeScreenshot();
 	}, "av", tr("F12"));
+
+	/* 双击画面截图（对齐移动端 double_click_shot）。 */
+	ConfigOption* doubleClickScreenshot = m_config->addOption("doubleClickScreenshot");
+	doubleClickScreenshot->addBoolean(tr("Double-click screen to screenshot"), &m_actions, "av");
+	m_config->updateOption("doubleClickScreenshot");
 
 	/* 与移动端 shot_format 对齐：核心的 mCoreTakeScreenshot 只会写 PNG，
 	 * 所以 JPEG 走 Qt 侧（getPixels + QImage::save），文件名规则保持一致。 */
@@ -2299,6 +2313,19 @@ void Window::setupMenu(QMenuBar* menubar) {
 		}
 	}, this);
 
+	/* 宏按键（对齐移动端 c_macro / c2_macro）：C = A+B、C2 = L+R，
+	 * 用 held 动作暴露给设置里的快捷键/手柄绑定，桌面端不占屏幕空间。 */
+	m_actions.addHeldAction(tr("Macro C (A+B, held)"), "macroC", [this](bool held) {
+		if (m_controller) {
+			m_controller->setMacroKeys(GBA_KEY_A | GBA_KEY_B, held);
+		}
+	}, "emu");
+	m_actions.addHeldAction(tr("Macro C2 (L+R, held)"), "macroC2", [this](bool held) {
+		if (m_controller) {
+			m_controller->setMacroKeys(GBA_KEY_L | GBA_KEY_R, held);
+		}
+	}, "emu");
+
 	for (auto& action : m_gameActions) {
 		action->setEnabled(false);
 	}
@@ -2461,7 +2488,24 @@ void Window::attachWidget(QWidget* widget) {
 	setCentralWidget(widget);
 	if (m_display && widget == m_display.get()) {
 		m_display->show();
+		/* 双击画面截图：DisplayGL 的实际绘制面可能是子控件，事件不会冒泡到
+		 * 父窗口，所以父子都挂过滤器。 */
+		m_display->installEventFilter(this);
+		for (QWidget* child : m_display->findChildren<QWidget*>()) {
+			child->installEventFilter(this);
+		}
 	}
+}
+
+bool Window::eventFilter(QObject* object, QEvent* event) {
+	if (event->type() == QEvent::MouseButtonDblClick && m_display && m_controller
+	    && m_config->getOption("doubleClickScreenshot").toInt()) {
+		if (object == m_display.get() || (object->isWidgetType() && m_display->isAncestorOf(static_cast<QWidget*>(object)))) {
+			takeScreenshot();
+			return true;
+		}
+	}
+	return QMainWindow::eventFilter(object, event);
 }
 
 void Window::detachWidget() {

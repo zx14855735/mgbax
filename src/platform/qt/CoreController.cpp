@@ -1372,6 +1372,17 @@ void CoreController::setAutofireThreshold(int frames) {
 	}
 }
 
+void CoreController::setMacroKeys(int keys, bool held) {
+	/* 宏按键（对齐移动端 C / C2 一键多键）：直接并入本帧的按键掩码，
+	 * 松开时把同一位加进 removedKeys，避免核心误以为还按着。 */
+	if (held) {
+		m_activeKeys |= keys;
+	} else {
+		m_activeKeys &= ~keys;
+		m_removedKeys |= keys;
+	}
+}
+
 #ifdef USE_PNG
 void CoreController::screenshot() {
 	mCoreThreadRunFunction(&m_threadContext, [](mCoreThread* context) {

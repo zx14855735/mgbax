@@ -21,6 +21,9 @@ class AudioProcessor : public QObject {
 Q_OBJECT
 
 public:
+	/** 低延迟模式的缓冲上限（帧）：约 512/48000 ≈ 10.7ms。 */
+	static const int LOW_LATENCY_BUFFERS = 512;
+
 	enum class Driver {
 		DUMMY = -1,
 		QT_MULTIMEDIA = 0,

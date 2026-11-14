@@ -576,6 +576,7 @@ public class EmulatorActivity extends AppCompatActivity {
     /** GIF recording state; the queue hands frames to the encoder thread. */
     private volatile boolean gifRecording;
     private Button gifButton;
+    private Button recordButton;
     private volatile java.util.concurrent.ArrayBlockingQueue<Bitmap> gifQueue;
     private Thread gifThread;
     private long lastGifAt;
@@ -984,6 +985,10 @@ public class EmulatorActivity extends AppCompatActivity {
                     startGif();
                 }
             });
+        }
+        recordButton = findViewById(R.id.btn_record);
+        if (recordButton != null) {
+            recordButton.setOnClickListener(v -> toggleVideoRecording());
         }
         savePathView = findViewById(R.id.save_path);
         savePathView.setOnClickListener(v -> copySavePath());
@@ -2710,6 +2715,7 @@ public class EmulatorActivity extends AppCompatActivity {
                                 int frameKeys = userKeys();
                                 driveLinkSessions(netFrameNo, frameKeys);
                                 consoles.beginFrame(netFrameNo);
+                                applyLayerMask();
                                 core.runFrames(frameKeys, 1);
                                 consoles.endFrame(netFrameNo);
                                 ++netFrameNo;
@@ -2722,6 +2728,7 @@ public class EmulatorActivity extends AppCompatActivity {
                                 driveLinkSessions(netFrameNo, userKeys());
                                 ++netFrameNo;
                             }
+                            applyLayerMask();
                             core.runFrames(userKeys(), n);
                         }
                         // 倍速也有声音：重采样器按倍速变速输出（磁带式）。
@@ -3164,6 +3171,7 @@ public class EmulatorActivity extends AppCompatActivity {
         } else if (cmd == CMD_STEP) {
             // One emulated frame, keys included: the same path a live frame
             // takes, so cheats/logic see the held buttons.
+            applyLayerMask();
             core.runFrames(userKeys(), 1);
             presentFrame();
         } else if (cmd == CMD_RESET) {
@@ -3205,6 +3213,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         if (!core.copyVideo(frame)) {
             return;
+        }
+        VideoRecorder rec = recorder;
+        if (rec != null) {
+            rec.pushVideoFrame(frame);
         }
         captureGifFrame();
         if (presentQueued.get()
@@ -3489,6 +3501,10 @@ public class EmulatorActivity extends AppCompatActivity {
             int frames = core.readAudioOut(audioRead, rate, drift);
             if (frames <= 0) {
                 break;
+            }
+            VideoRecorder rec = recorder;
+            if (rec != null) {
+                rec.pushAudio(audioRead, frames);
             }
             if (!audioStarted) {
                 // Before playback starts, stop filling exactly at the target:
@@ -3857,6 +3873,36 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.frame_step_paused));
         }
         command.set(CMD_STEP);
+    }
+
+    /** Same one-frame step, callable from the debug dialogs. */
+    void stepOneFrame() {
+        stepFrame();
+    }
+
+    /** DISPCNT layer-enable bits (BG0-3 + OBJ); 0x1F = nothing hidden. */
+    private int layerMaskPref() {
+        return getPreferences(MODE_PRIVATE).getInt("layer_mask", 0x1F);
+    }
+
+    /**
+     * Forces the layer-enable bits of DISPCNT before a frame runs, the way PC's
+     * video-layer menu does. Writes nothing while every layer is on, so normal
+     * play costs one pref read per frame.
+     */
+    private void applyLayerMask() {
+        if (core == null || !core.isLoaded()) {
+            return;
+        }
+        int mask = layerMaskPref();
+        if (mask == 0x1F) {
+            return;
+        }
+        int dispcnt = core.busRead(16, 0x04000000);
+        int wanted = (dispcnt & ~0x1F00) | ((mask & 0x1F) << 8);
+        if (wanted != dispcnt) {
+            core.busWrite(16, 0x04000000, wanted);
+        }
     }
 
     private Bitmap decodePreview(int index) {
@@ -4383,6 +4429,10 @@ public class EmulatorActivity extends AppCompatActivity {
         scene.setAllCaps(false);
         scene.setText(R.string.video_scene);
         scene.setOnClickListener(v -> showSceneDialog());
+        final Button layers = new Button(this);
+        layers.setAllCaps(false);
+        layers.setText(R.string.layer_toggle);
+        layers.setOnClickListener(v -> showLayerDialog());
         CheckBox skipAuto = check(R.string.video_skip_auto, getPreferences(MODE_PRIVATE).getBoolean("vf_skip_auto", false));
         TextView skipLabel = new TextView(this);
         skipLabel.setText(getString(R.string.video_skip, skipNow));
@@ -4418,6 +4468,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(filter);
         box.addView(shaderManager);
         box.addView(scene);
+        box.addView(layers);
         box.addView(skipAuto);
         box.addView(skipLabel);
         box.addView(skipBar);
@@ -4499,6 +4550,42 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setTitle(R.string.video_title)
                 .setView(scroll)
                 .setPositiveButton(android.R.string.ok, null)
+                .show();
+    }
+
+    /**
+     * Per-layer visibility, PC's Video Layers menu. Rendered by forcing the
+     * DISPCNT enable bits before each frame, which is why the text warns about
+     * games that rewrite DISPCNT every VBlank.
+     */
+    private void showLayerDialog() {
+        final int mask = layerMaskPref();
+        final boolean[] checked = {
+                (mask & 0x01) != 0, (mask & 0x02) != 0, (mask & 0x04) != 0, (mask & 0x08) != 0,
+                (mask & 0x10) != 0,
+        };
+        CharSequence[] labels = {
+                "BG0", "BG1", "BG2", "BG3", getString(R.string.layer_obj),
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.layer_toggle)
+                .setMultiChoiceItems(labels, checked, (dialog, which, isChecked) ->
+                        checked[which] = isChecked)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    int next = 0;
+                    for (int i = 0; i < checked.length; i++) {
+                        if (checked[i]) {
+                            next |= 1 << i;
+                        }
+                    }
+                    getPreferences(MODE_PRIVATE).edit().putInt("layer_mask", next).apply();
+                    toast(getString(R.string.layer_applied));
+                })
+                .setNeutralButton(R.string.layer_all, (d, w) -> {
+                    getPreferences(MODE_PRIVATE).edit().putInt("layer_mask", 0x1F).apply();
+                    toast(getString(R.string.layer_applied));
+                })
+                .setMessage(R.string.layer_hint)
                 .show();
     }
 
@@ -8731,6 +8818,71 @@ public class EmulatorActivity extends AppCompatActivity {
         }, "save-import").start();
     }
 
+    // == MP4 录像（PC 的 recordOutput / VideoView） ==========================
+
+    private void toggleVideoRecording() {
+        if (recorder != null) {
+            stopVideoRecording();
+            return;
+        }
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.video_record_no_rom));
+            return;
+        }
+        int w = core.width();
+        int h = core.height();
+        if (w <= 0 || h <= 0) {
+            toast(getString(R.string.video_record_no_rom));
+            return;
+        }
+        File dir = new File(getCacheDir(), "videos");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            toast(getString(R.string.video_record_failed, dir.getAbsolutePath()));
+            return;
+        }
+        File file = new File(dir, "mGBAx-"
+                + DateFormat.format("yyyyMMdd-HHmmss", System.currentTimeMillis()) + ".mp4");
+        VideoRecorder started = VideoRecorder.start(this, w, h, 60, chosenOutputRate(), file);
+        if (started == null) {
+            toast(getString(R.string.video_record_failed, "H.264 编码器不可用"));
+            return;
+        }
+        recorder = started;
+        recordStartedAt = System.currentTimeMillis();
+        updateRecordButton();
+        toast(getString(R.string.video_record_started));
+    }
+
+    private void stopVideoRecording() {
+        final VideoRecorder active = recorder;
+        if (active == null) {
+            return;
+        }
+        recorder = null;
+        final long seconds = Math.max(0, (System.currentTimeMillis() - recordStartedAt) / 1000);
+        active.stop();
+        updateRecordButton();
+        final String failure = active.failure();
+        final File file = active.output();
+        new Thread(() -> {
+            String name = failure.isEmpty() ? VideoRecorder.publish(this, file) : null;
+            runOnUiThread(() -> {
+                if (name == null) {
+                    toast(failure.isEmpty() ? getString(R.string.video_record_empty)
+                            : getString(R.string.video_record_failed, failure));
+                } else {
+                    toast(getString(R.string.video_record_saved, name, seconds));
+                }
+            });
+        }, "video-publish").start();
+    }
+
+    private void updateRecordButton() {
+        if (recordButton != null) {
+            recordButton.setText(recorder != null ? R.string.video_record_stop : R.string.video_record);
+        }
+    }
+
     // == 按键宏：录制 / 回放（PC 脚本系统的可用替代） =====================
 
     private File macroFile() {
@@ -9582,6 +9734,8 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         running = false;
+        // Finish and publish an in-flight recording before the process goes away.
+        stopVideoRecording();
         stopGBoyLink();
         NoticeService.stop(this);
         if (solarListening && sensorManager != null) {

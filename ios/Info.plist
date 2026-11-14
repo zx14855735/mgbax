@@ -100,6 +100,10 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>mGBA 需要访问局域网，才能和其他设备进行游戏联机。</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>mGBA 使用蓝牙（BLE）在两台设备之间直连联机，没有 Wi-Fi 时也能一起玩。</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>mGBA 使用蓝牙（BLE）在两台设备之间直连联机。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>mGBA 需要保存截图和 GIF 录像到相册。</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

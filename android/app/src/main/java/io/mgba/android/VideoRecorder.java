@@ -59,6 +59,7 @@ final class VideoRecorder {
     private boolean audioEnabled;
     private boolean failed;
     private boolean stopped;
+    private String failure;
     private long videoFrames;
     private long audioSamples;
     private int[] argb;
