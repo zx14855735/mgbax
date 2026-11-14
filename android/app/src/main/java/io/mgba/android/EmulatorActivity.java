@@ -370,6 +370,25 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Lets `adb shell am broadcast -a io.mgba.android.action.SIGNAL --es mode host|join     *  --es user U --es pass P --es room R --es probes a,b,c` drive the gboy.top room
      *  signalling directly and log every server reply, so the room protocol can be
      *  mapped (which action hands the joiner the relay node) without guessing. */
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.BT [--es mac AA:BB:..]`
+     *  start a Bluetooth (RFCOMM) link without any server: no {@code mac} hosts
+     *  (registers the official "GBoy" SDP record and waits), a {@code mac}
+     *  joins it. Ported from the official client's A2egSU/A4TApA; the wire
+     *  format on the socket is the same GBoy framing as the cloud path. */
+    private final BroadcastReceiver btReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "bt broadcast ignored: no rom loaded");
+                return;
+            }
+            String mac = intent.getStringExtra("mac");
+            Log.i(TAG, "bt broadcast mac=" + mac);
+            GBoyCloudLink link = ensureCloud();
+            link.setOfficialMode(true); // 蓝牙与云端同构：本机多核，线上只传按键
+            link.startBluetooth(mac == null ? "" : mac);
+        }
+    };
     private final BroadcastReceiver signalReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
