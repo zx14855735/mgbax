@@ -1669,7 +1669,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         var raw: UnsafeMutableRawPointer?
         var size = 0
         guard mgbaMobileSaveStateToMemory(core, &raw, &size), let raw, size > 0 else { return }
-        undoStateData = Data(bytes: raw, count: size)
+        undoStateData = Data(bytes: UnsafeRawPointer(raw), count: size)
         mgbaMobileFreeState(raw)
         var files: [(URL, Data?)] = []
         if let slot {
@@ -3319,8 +3319,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let url = URL(fileURLWithPath: path)
         let ext = url.pathExtension.lowercased()
         let isGba = ext == "gba" || (!(ext == "gb" || ext == "gbc") && byte(0xB2) == 0x96)
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        var size: Int64 = 0
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+           let number = attrs[.size] as? NSNumber {
+            size = number.int64Value
+        }
         var lines: [String] = []
         lines.append("文件：\(url.lastPathComponent)")
         lines.append("路径：\(filesPath(path))")

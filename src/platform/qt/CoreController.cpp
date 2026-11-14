@@ -1346,6 +1346,19 @@ void CoreController::setAutofire(int key, bool enable) {
 	m_autofireStatus[key] = 0;
 }
 
+void CoreController::setAutofireThreshold(int frames) {
+	if (frames < 1) {
+		frames = 1;
+	}
+	if (m_autofireThreshold == frames) {
+		return;
+	}
+	m_autofireThreshold = frames;
+	for (int k = 0; k < 32; ++k) {
+		m_autofireStatus[k] = 0;
+	}
+}
+
 #ifdef USE_PNG
 void CoreController::screenshot() {
 	mCoreThreadRunFunction(&m_threadContext, [](mCoreThread* context) {

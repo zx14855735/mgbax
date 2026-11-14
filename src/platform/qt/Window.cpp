@@ -1001,6 +1001,27 @@ void Window::gameStarted() {
 	multiplayerChanged();
 	updateTitle();
 
+	/* 进场时套用持久化的连发开关（移动端 turbo 键的等价物）。 */
+	{
+		static const struct {
+			const char* option;
+			int key;
+		} autofireToggles[] = {
+			{ "autofireLockA", GBA_KEY_A },
+			{ "autofireLockB", GBA_KEY_B },
+			{ "autofireLockL", GBA_KEY_L },
+			{ "autofireLockR", GBA_KEY_R },
+		};
+		for (const auto& toggle : autofireToggles) {
+			m_controller->setAutofire(toggle.key, m_config->getOption(toggle.option).toInt());
+		}
+		int autofireHz = m_config->getOption("autofireRate", 8).toInt();
+		if (autofireHz <= 0) {
+			autofireHz = 8;
+		}
+		m_controller->setAutofireThreshold(qMax(1, int(30.0 / autofireHz + 0.5)));
+	}
+
 	m_hitUnimplementedBiosCall = false;
 	if (m_config->getOption("showFps", "1").toInt()) {
 		m_fpsTimer.start();
@@ -2114,6 +2135,49 @@ void Window::setupMenu(QMenuBar* menubar) {
 			m_controller->setAutofire(GBA_KEY_LEFT, held);
 		}
 	}, "autofire");
+
+	/* 可见的连发开关（对齐移动端 turbo 键）：勾选即常开，写入配置文件，
+	 * 下次进游戏自动套用。上面 hidden 的 “Autofire X (held)” 仍保留给快捷键绑定。 */
+	m_actions.addMenu(tr("Autofire"), "autofireLock", "emu");
+	static const struct {
+		const char* option;
+		const char* label;
+		int key;
+	} autofireToggles[] = {
+		{ "autofireLockA", QT_TRANSLATE_NOOP("Window", "连发 &A"), GBA_KEY_A },
+		{ "autofireLockB", QT_TRANSLATE_NOOP("Window", "连发 &B"), GBA_KEY_B },
+		{ "autofireLockL", QT_TRANSLATE_NOOP("Window", "连发 &L"), GBA_KEY_L },
+		{ "autofireLockR", QT_TRANSLATE_NOOP("Window", "连发 &R"), GBA_KEY_R },
+	};
+	for (const auto& toggle : autofireToggles) {
+		ConfigOption* option = m_config->addOption(toggle.option);
+		option->addBoolean(tr(toggle.label), &m_actions, "autofireLock");
+		const int key = toggle.key;
+		option->connect([this, key](const QVariant& value) {
+			if (m_controller) {
+				m_controller->setAutofire(key, value.toBool());
+			}
+		}, this);
+		m_config->updateOption(toggle.option);
+	}
+
+	m_actions.addMenu(tr("Rate"), "autofireRate", "autofireLock");
+	ConfigOption* autofireRate = m_config->addOption("autofireRate");
+	for (int hz : {2, 4, 8, 15}) {
+		autofireRate->addValue(tr("%1 Hz").arg(hz), hz, &m_actions, "autofireRate");
+	}
+	if (m_config->getOption("autofireRate").isEmpty()) {
+		m_config->setOption("autofireRate", 8);
+	} else {
+		m_config->updateOption("autofireRate");
+	}
+	autofireRate->connect([this](const QVariant& value) {
+		/* updateAutofire() 每 m_autofireThreshold 帧翻一次，按 60fps 换算。 */
+		const int hz = value.toInt() > 0 ? value.toInt() : 8;
+		if (m_controller) {
+			m_controller->setAutofireThreshold(qMax(1, int(30.0 / hz + 0.5)));
+		}
+	}, this);
 
 	for (auto& action : m_gameActions) {
 		action->setEnabled(false);

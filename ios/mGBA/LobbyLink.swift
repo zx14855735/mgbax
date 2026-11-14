@@ -1181,6 +1181,7 @@ final class LobbyLink {
     private func fail(_ text: String) {
         lock.lock()
         closedFlag = true
+        keyIntervalRate = 1   // 上行节拍回 1x
         lock.unlock()
         onRemoteKeys(0)
         onRemoteSpeed(1)   // 同上：链路没了就把倍速还原成 1x

@@ -3735,8 +3735,10 @@ public class EmulatorActivity extends AppCompatActivity {
         boolean canSave = undoSaveSlot >= 0 && stateBackupFile(undoSaveSlot).isFile();
         String message = getString(R.string.undo_load) + "：" + getString(canLoad
                         ? R.string.undo_available : R.string.undo_unavailable)
+                + (canLoad ? "（槽 " + undoLoadSlot + "）" : "")
                 + "\n" + getString(R.string.undo_save) + "：" + getString(canSave
                         ? R.string.undo_available : R.string.undo_unavailable)
+                + (canSave ? "（槽 " + undoSaveSlot + "）" : "")
                 + "\n\n" + getString(R.string.undo_load_hint)
                 + "\n" + getString(R.string.undo_save_hint);
         new AlertDialog.Builder(this)
@@ -6219,6 +6221,12 @@ public class EmulatorActivity extends AppCompatActivity {
                     || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_HOME
                     || keyCode == KeyEvent.KEYCODE_APP_SWITCH) {
                 return false;
+            }
+            // Fast-forward already owns these, so binding them would do nothing.
+            if (keyCode == KeyEvent.KEYCODE_TAB || keyCode == KeyEvent.KEYCODE_SPACE
+                    || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR) {
+                toast(getString(R.string.key_remap_reserved));
+                return true;
             }
             getPreferences(MODE_PRIVATE).edit().putInt("key_" + mask, keyCode).apply();
             toast(getString(R.string.key_remap_done, action, keyCodeLabel(keyCode)));
