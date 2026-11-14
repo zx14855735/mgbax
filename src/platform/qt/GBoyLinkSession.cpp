@@ -82,7 +82,13 @@ QByteArray GBoyLinkSession::keyFrameForLocalSlot(int keys) {
 }
 
 int GBoyLinkSession::defaultSenderSlot() {
-	return m_playerCount > 2 ? 1 : (m_localSlot == 2 ? 1 : 2);
+	if (m_playerCount > 2) {
+		/* 云端 4 核房间两端都把可见核放在 localSlot=1，裸 TYPE_KEYS 不带
+		 * 槽位，它代表「对端那台设备」，必须落到 slot 2（本机 4 核里代表
+		 * 对端的那个镜像核）。返回 1 会把对端按键盖到自己的可见核上。 */
+		return m_localSlot == 1 ? 2 : 1;
+	}
+	return m_localSlot == 2 ? 1 : 2;
 }
 
 int GBoyLinkSession::keysForSlot(int slot) {

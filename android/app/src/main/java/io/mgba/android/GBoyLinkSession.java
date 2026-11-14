@@ -174,7 +174,13 @@ public final class GBoyLinkSession {
      * type；两人会话沿用历史的「本机是 2 号就认为对端是 1 号」规则。
      */
     private int defaultSenderSlot() {
-        return playerCount > 2 ? 1 : (localSlot == 2 ? 1 : 2);
+        if (playerCount > 2) {
+            /* 云端 4 核房间两端都把可见核放在 localSlot=1：裸 TYPE_KEYS 不带
+             * 槽位，代表「对端那台设备」，必须落到 slot 2（本机 4 核里代表
+             * 对端的那个镜像核）。返回 1 会把对端按键盖到自己的可见核上。 */
+            return localSlot == 1 ? 2 : 1;
+        }
+        return localSlot == 2 ? 1 : 2;
     }
 
     /** Key mask the frame loop must inject into the console of {@code slot}. */

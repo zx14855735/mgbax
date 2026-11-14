@@ -73,7 +73,7 @@ public:
 	 */
 	void onFrameBody(const QByteArray& body, int senderSlot);
 
-	/** Uses the default sender slot (1 in 3/4-player sessions). */
+	/** Uses the default sender slot: slot 2 for a slot-1 device in 3/4-player sessions. */
 	void onFrameBody(const QByteArray& body);
 
 	/**

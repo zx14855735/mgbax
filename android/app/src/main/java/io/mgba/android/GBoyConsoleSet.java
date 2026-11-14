@@ -666,13 +666,14 @@ public final class GBoyConsoleSet {
              * 不改变行为；失配时分多次追，给 native SIO 会合留出节拍。 */
             int budget = 4;
             while (state == State.READY && done < ceiling && budget-- > 0) {
-                int keys = 0;
-                if (!busGame) {
-                    keys = net != null ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
-                }
-                /* busgame 时 keys 传 0 即可：镜像核的脚本由它自己 runFrames 里的
-                 * beginFrameKeys 接管（native 每帧 tick 一次）。绝不能再在 Java 层
-                 * 调 busGameTick——那会一帧 tick 两次（实测镜像 2 倍速冲出天花板）。 */
+                /* 无论脚本是否接管都写入网络按键。native 脚本激活时
+                 * beginFrameKeys 完全忽略这份 keys；一旦 callback2 连续 120 帧
+                 * 落在 battle_main.o，native 会自动释放脚本，此后 loadHeld()
+                 * 立刻拿到这里写入的网络按键 —— 交还控制权不需要额外广播或 JNI。 */
+                int keys = net != null
+                        ? net.keysForSlot(mirrorSlotFor(localSlot, players, index)) : 0;
+                /* 绝不能在 Java 层调 busGameTick——那会一帧 tick 两次
+                 * （实测镜像 2 倍速冲出天花板）。 */
                 if (done % 120 == 0) {
                     android.util.Log.i("mGBA-App", "mirror keys=" + keys + " net="
                             + (net != null) + " slot="

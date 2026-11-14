@@ -1,0 +1,46 @@
+﻿2026-11-14T04:26:43.6801980Z ##[group]Run if [ -f build.log ]; then
+2026-11-14T04:26:43.6802260Z [36;1mif [ -f build.log ]; then[0m
+2026-11-14T04:26:43.6802470Z [36;1m  echo "===== matching lines ====="[0m
+2026-11-14T04:26:43.6802890Z [36;1m  grep -nEi 'error|fatal|usage|FAILED' build.log | tail -20 | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-14T04:26:43.6803520Z [36;1m  echo "===== last 25 lines ====="[0m
+2026-11-14T04:26:43.6803850Z [36;1m  tail -25 build.log | while IFS= read -r line; do echo "::error::$line"; done[0m
+2026-11-14T04:26:43.6804230Z [36;1melse[0m
+2026-11-14T04:26:43.6804450Z [36;1m  echo "::error::build.log missing - xcodebuild did not run"[0m
+2026-11-14T04:26:43.6804710Z [36;1mfi[0m
+2026-11-14T04:26:43.8082820Z shell: /bin/bash -e {0}
+2026-11-14T04:26:43.8083020Z ##[endgroup]
+2026-11-14T04:26:43.8549300Z ===== matching lines =====
+2026-11-14T04:26:43.8665990Z ##[error]349:    export GCC_TREAT_WARNINGS_AS_ERRORS\=NO
+2026-11-14T04:26:43.8670330Z ##[error]643:    export TREAT_MISSING_SCRIPT_PHASE_OUTPUTS_AS_ERRORS\=NO
+2026-11-14T04:26:43.8676220Z ##[error]656:    export VALIDATE_DEVELOPMENT_ASSET_PATHS\=YES_ERROR
+2026-11-14T04:26:43.8703260Z ##[error]795:[2/158] Building C object libpng/CMakeFiles/png_static.dir/pngerror.c.o
+2026-11-14T04:26:43.8709920Z ##[error]956:FAILED: [code=1] CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o 
+2026-11-14T04:26:43.8750900Z ##[error]957:/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc -DBUILD_STATIC -DENABLE_DIRECTORIES -DENABLE_VFS -DENABLE_VFS_FD -DHAVE_CRC32 -DHAVE_FREELOCALE -DHAVE_FUTIMENS -DHAVE_FUTIMES -DHAVE_LOCALE -DHAVE_LOCALTIME_R -DHAVE_NEWLOCALE -DHAVE_PTHREAD_CREATE -DHAVE_PTHREAD_SETNAME_NP -DHAVE_REALPATH -DHAVE_SETLOCALE -DHAVE_SNPRINTF_L -DHAVE_STRDUP -DHAVE_STRLCPY -DHAVE_STRNDUP -DHAVE_STRTOF_L -DHAVE_USELOCALE -DHAVE_VASPRINTF -DHAVE_XLOCALE -DM_CORE_GB -DM_CORE_GBA -DUSE_MINIZIP -DUSE_PNG -DUSE_PTHREADS -DUSE_ZLIB -D_DARWIN_C_SOURCE -I/Users/runner/work/mgbax/mgbax/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/include -I/Users/runner/work/mgbax/mgbax/src -I/Users/runner/work/mgbax/mgbax/include -I/Users/runner/work/mgbax/mgbax/src/third-party/libpng -I/Users/runner/work/mgbax/mgbax/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/DerivedSources/mgba-iphonesimulator-arm64/libpng -I/Users/runner/work/mgbax/mgbax/src/third-party/zlib/contrib -I/Users/runner/work/mgbax/mgbax/src/platform/mobile -Wall -Wextra -Wno-missing-field-initializers -Werror=implicit-function-declaration -Werror=implicit-int -fwrapv -g -std=c11 -arch arm64 -isysroot /Applications/Xcode_16.4.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator18.5.sdk -mios-simulator-version-min=15.0 -MD -MT CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o -MF CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o.d -o CMakeFiles/mgba_mobile.dir/src/platform/mobile/mgba_mobile.c.o -c /Users/runner/work/mgbax/mgbax/src/platform/mobile/mgba_mobile.c
+2026-11-14T04:26:43.8758540Z ##[error]958:/Users/runner/work/mgbax/mgbax/src/platform/mobile/mgba_mobile.c:1099:22: error: no member named 'context' in 'struct mLogger'
+2026-11-14T04:26:43.8762160Z ##[error]1018:19 warnings and 1 error generated.
+2026-11-14T04:26:43.8763410Z ##[error]1022:ninja: build stopped: subcommand failed.
+2026-11-14T04:26:43.8764570Z ##[error]1025:** BUILD FAILED **
+2026-11-14T04:26:43.8765600Z ##[error]1028:The following build commands failed:
+2026-11-14T04:26:43.8766440Z ===== last 25 lines =====
+2026-11-14T04:26:43.8767150Z ##[error] 2260 |                 struct GBA* gba = (struct GBA*) emu->core->board;
+2026-11-14T04:26:43.8768190Z ##[error]      |                             ^~~
+2026-11-14T04:26:43.8770420Z ##[error]/Users/runner/work/mgbax/mgbax/src/platform/mobile/mgba_mobile.c:2313:6: warning: variable 'taken' set but not used [-Wunused-but-set-variable]
+2026-11-14T04:26:43.8772140Z ##[error] 2313 |         int taken = 0;
+2026-11-14T04:26:43.8773920Z ##[error]      |             ^
+2026-11-14T04:26:43.8775560Z ##[error]/Users/runner/work/mgbax/mgbax/src/platform/mobile/mgba_mobile.c:3088:42: warning: unused parameter 'timing' [-Wunused-parameter]
+2026-11-14T04:26:43.8777110Z ##[error] 3088 | static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate) {
+2026-11-14T04:26:43.8778420Z ##[error]      |                                          ^
+2026-11-14T04:26:43.8780030Z ##[error]/Users/runner/work/mgbax/mgbax/src/platform/mobile/mgba_mobile.c:3376:8: warning: unused variable 'wasBusy' [-Wunused-variable]
+2026-11-14T04:26:43.8781310Z ##[error] 3376 |                 bool wasBusy = (driver->p->siocnt & 0x0080) != 0;
+2026-11-14T04:26:43.8782420Z ##[error]      |                      ^~~~~~~
+2026-11-14T04:26:43.8784910Z ##[error]19 warnings and 1 error generated.
+2026-11-14T04:26:43.8786320Z ##[error][155/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_lockstep.c.o
+2026-11-14T04:26:43.8787850Z ##[error][156/158] Building C object CMakeFiles/mgba_mobile.dir/src/platform/mobile/link_net.c.o
+2026-11-14T04:26:43.8789110Z ##[error][157/158] Linking C static library libmgba.a
+2026-11-14T04:26:43.8790150Z ##[error]ninja: build stopped: subcommand failed.
+2026-11-14T04:26:43.8792680Z ##[error]note: Run script build phase 'Build mGBA core' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'mGBA' from project 'mGBA')
+2026-11-14T04:26:43.8794250Z ##[error]** BUILD FAILED **
+2026-11-14T04:26:43.8796790Z ##[error]The following build commands failed:
+2026-11-14T04:26:43.8799000Z ##[error]	PhaseScriptExecution Build\ mGBA\ core /Users/runner/work/mgbax/mgbax/build/Build/Intermediates.noindex/mGBA.build/Debug-iphonesimulator/mGBA.build/Script-C10000000000000000000001.sh (in target 'mGBA' from project 'mGBA')
+2026-11-14T04:26:43.8800780Z ##[error]	Building project mGBA with scheme mGBA and configuration Debug
+2026-11-14T04:26:43.8801840Z ##[error](2 failures)

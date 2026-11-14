@@ -1,0 +1,74 @@
+﻿2026-11-14T04:26:22.1099840Z ##[group]Run actions/checkout@v4
+2026-11-14T04:26:22.1100510Z with:
+2026-11-14T04:26:22.1100920Z   repository: zx14855735/mgbax
+2026-11-14T04:26:22.1103820Z   token: ***
+2026-11-14T04:26:22.1104230Z   ssh-strict: true
+2026-11-14T04:26:22.1104580Z   ssh-user: git
+2026-11-14T04:26:22.1104930Z   persist-credentials: true
+2026-11-14T04:26:22.1105310Z   clean: true
+2026-11-14T04:26:22.1105700Z   sparse-checkout-cone-mode: true
+2026-11-14T04:26:22.1106160Z   fetch-depth: 1
+2026-11-14T04:26:22.1106500Z   fetch-tags: false
+2026-11-14T04:26:22.1106860Z   show-progress: true
+2026-11-14T04:26:22.1107200Z   lfs: false
+2026-11-14T04:26:22.1107600Z   submodules: false
+2026-11-14T04:26:22.1107990Z   set-safe-directory: true
+2026-11-14T04:26:22.1108390Z   allow-unsafe-pr-checkout: false
+2026-11-14T04:26:22.1108900Z ##[endgroup]
+2026-11-14T04:26:22.5881170Z Syncing repository: zx14855735/mgbax
+2026-11-14T04:26:22.5886440Z ##[group]Getting Git version info
+2026-11-14T04:26:22.5887880Z Working directory is '/Users/runner/work/mgbax/mgbax'
+2026-11-14T04:26:22.5919510Z [command]/opt/homebrew/bin/git version
+2026-11-14T04:26:22.6297460Z git version 2.56.0
+2026-11-14T04:26:22.6310650Z ##[endgroup]
+2026-11-14T04:26:22.6327250Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/5189f3ff-b1da-496d-b543-ff1460684969/.gitconfig'
+2026-11-14T04:26:22.6329000Z Temporarily overriding HOME='/Users/runner/work/_temp/5189f3ff-b1da-496d-b543-ff1460684969' before making global git config changes
+2026-11-14T04:26:22.6330120Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-14T04:26:22.6331050Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/mgbax/mgbax
+2026-11-14T04:26:22.6440800Z Deleting the contents of '/Users/runner/work/mgbax/mgbax'
+2026-11-14T04:26:22.6443350Z ##[group]Initializing the repository
+2026-11-14T04:26:22.6447350Z [command]/opt/homebrew/bin/git init /Users/runner/work/mgbax/mgbax
+2026-11-14T04:26:22.6705080Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-11-14T04:26:22.6706360Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-11-14T04:26:22.6707480Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-11-14T04:26:22.6708130Z hint: call:
+2026-11-14T04:26:22.6708510Z hint:
+2026-11-14T04:26:22.6709010Z hint: 	git config --global init.defaultBranch <name>
+2026-11-14T04:26:22.6709610Z hint:
+2026-11-14T04:26:22.6710250Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-11-14T04:26:22.6711130Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-11-14T04:26:22.6711750Z hint:
+2026-11-14T04:26:22.6712240Z hint: 	git branch -m <name>
+2026-11-14T04:26:22.6712750Z hint:
+2026-11-14T04:26:22.6716410Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-11-14T04:26:22.6718160Z Initialized empty Git repository in /Users/runner/work/mgbax/mgbax/.git/
+2026-11-14T04:26:22.6724150Z [command]/opt/homebrew/bin/git remote add origin https://github.com/zx14855735/mgbax
+2026-11-14T04:26:22.6829320Z ##[endgroup]
+2026-11-14T04:26:22.6832460Z ##[group]Disabling automatic garbage collection
+2026-11-14T04:26:22.6834700Z [command]/opt/homebrew/bin/git config --local gc.auto 0
+2026-11-14T04:26:22.6904170Z ##[endgroup]
+2026-11-14T04:26:22.6904970Z ##[group]Setting up auth
+2026-11-14T04:26:22.6908500Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-14T04:26:22.6970980Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-14T04:26:22.8000480Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-11-14T04:26:22.8073800Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-11-14T04:26:22.9071320Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-14T04:26:22.9152970Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-14T04:26:23.0800990Z [command]/opt/homebrew/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-11-14T04:26:23.0880280Z ##[endgroup]
+2026-11-14T04:26:23.0882780Z ##[group]Fetching the repository
+2026-11-14T04:26:23.0887080Z [command]/opt/homebrew/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +cce3cc340461866ac35a0d676079997d87167e12:refs/remotes/origin/main
+2026-11-14T04:26:24.4964790Z From https://github.com/zx14855735/mgbax
+2026-11-14T04:26:24.5039220Z  * [new ref]         cce3cc340461866ac35a0d676079997d87167e12 -> origin/main
+2026-11-14T04:26:24.5126810Z ##[endgroup]
+2026-11-14T04:26:24.5128830Z ##[group]Determining the checkout info
+2026-11-14T04:26:24.5130300Z ##[endgroup]
+2026-11-14T04:26:24.5131380Z [command]/opt/homebrew/bin/git sparse-checkout disable
+2026-11-14T04:26:24.5196080Z [command]/opt/homebrew/bin/git config --local --unset-all extensions.worktreeConfig
+2026-11-14T04:26:24.5254470Z ##[group]Checking out the ref
+2026-11-14T04:26:24.5263030Z [command]/opt/homebrew/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-11-14T04:26:25.1830160Z Switched to a new branch 'main'
+2026-11-14T04:26:25.1838270Z branch 'main' set up to track 'origin/main'.
+2026-11-14T04:26:25.1940340Z ##[endgroup]
+2026-11-14T04:26:25.2043450Z [command]/opt/homebrew/bin/git log -1 --format=%H
+2026-11-14T04:26:25.2135470Z cce3cc340461866ac35a0d676079997d87167e12

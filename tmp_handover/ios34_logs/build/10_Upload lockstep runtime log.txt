@@ -1,0 +1,12 @@
+﻿2026-11-14T04:26:45.0986580Z ##[group]Run actions/upload-artifact@v4
+2026-11-14T04:26:45.0986990Z with:
+2026-11-14T04:26:45.0987220Z   name: lockstep-runtime-log
+2026-11-14T04:26:45.0987610Z   path: lockstep-runtime.log
+2026-11-14T04:26:45.0987980Z   if-no-files-found: ignore
+2026-11-14T04:26:45.0988250Z   compression-level: 6
+2026-11-14T04:26:45.0988560Z   overwrite: false
+2026-11-14T04:26:45.0988860Z   include-hidden-files: false
+2026-11-14T04:26:45.0989140Z ##[endgroup]
+2026-11-14T04:26:45.2620280Z (node:8695) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-11-14T04:26:45.2621260Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-11-14T04:26:45.2628060Z No files were found with the provided path: lockstep-runtime.log. No artifacts will be uploaded.
