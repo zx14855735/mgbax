@@ -112,10 +112,32 @@ AmA8tU.A4TApA():
 
 ## 5. 落地顺序（三端同步）
 
-1. **游戏通道改直连 TCP**：复用已有 `netLinkHost/netLinkJoin`（`src/platform/mobile/link_net.c`），WSS 只留房间信令。→ 解除 100 字符限制。
-2. **加 `type6` 状态同步**：建房方把可见核 `mgbaMobileSaveStateToMemory()` 广播给每个镜像核；对端 `mgbaMobileLoadStateFromMemory()` 逐槽灌入，成功后才 arm SIO。
-3. **核布局回到「1 + (N-1)」**：不再需要 slot3/4 的 NPC 灌键补丁（`CloudLink::injectNpcKeys` / `GBoyLinkSession.injectKeysForSlot` 可保留但默认关闭）。
-4. **PC / Android / iOS 共用第 1、2 步的 C 实现**，三端只做参数与 UI 接线。
+> **范围修订（2026-11-14 23:0x）**：本文件早期写过「KCP/UDP 打洞、蓝牙 RFCOMM、
+> gboy.top 的 WSS 后端不在范围内」。按最终指示**全部照抄**，不再有例外清单。
+> 照抄的意思是「同样的分层、同样的线格式、同样的时序」；实现载体允许是我们
+> 已有的等价物，但行为必须对得上。
 
-> 不允许照抄的部分：KCP/UDP 打洞、蓝牙 RFCOMM、gboy.top 的 WSS 后端。前者我们已有可用链路，
-> 后两者与我们三端目标（PC 桌面 / 安卓 / iOS）无关且依赖对方私有服务。
+1. **游戏通道一律 P2P**：WSS 只做房间信令。TCP 直连（`ServerSocket.accept`
+   / `Socket.connect`）与 KCP-over-UDP（打洞 + `PING`/`PONG`/`DISC` + 心跳）
+   两条都要有；PC 侧对应 `KcpChannel`（KCP 参数与大端头照抄）与
+   `DirectLink`（UDP 打洞 + 自带可靠层，线格式 `MBLD` v1）。
+2. **加 `type6` 状态同步**：两端各把可见核 savestate 推给对端，对端灌进
+   「代表这个玩家」的那颗镜像核（按槽位，不灌全部），成功后才 arm SIO。
+   整份状态约 790 KiB，所以**必须**分片：GBoy 靠 KCP 的 `frg`，我们的
+   `DirectLink` 加 `TYPE_FRAG`（首片带总长 + 续片，窗口 48）。
+3. **核布局回到「1 + (N-1)」**：GBoy 每端 = 1 可见核 + (N−1) 镜像核，不需要
+   NPC 位。我们这款 gen8 改版要求 4 人才放开球场（2 核被锁位），所以固定
+   4 核；slot 3/4 是 NPC 陪位，**永远不喂对端存档**。
+4. **PC / Android / iOS 共用同一套线格式**，三端只做参数与 UI 接线。
+5. **蓝牙 RFCOMM**：UUID `3a1f7b2e-8d45-4c92-bf60-5e3c21a98d47`、服务名
+   `GBoy`、服务端 `listenUsingRfcommWithServiceRecord` / 客户端
+   `createRfcommSocketToServiceRecord`，字节流上就是同一套
+   「4B 大端长度 + u16 type」帧。**iOS 没有经典蓝牙 RFCOMM API**（Apple 只
+   开放 BLE／MFi），这一条只能到 Android + PC，iOS 侧留 BLE 通道。
+6. **WSS 后端**：`join_room` / `send_message` / `leave_room` /
+   `update_room_settings`，字段 `action`+`token`+`uuid`+`roomID`。我们
+   `GbCloud` 已经在说这套协议（gboy.top 的服务器），照抄即等价于「后端不变」。
+
+> 三端对照：PC `src/platform/qt/{KcpChannel,DirectLink,CloudLink,GBoyLinkSession}.cpp`、
+> Android `io.mgba.android.{KcpChannel,GBoyDirectLink,GBoyCloudLink,GBoyLinkSession}`、
+> iOS `ios/mGBA/GBoyLink.swift`。任何一端改线格式，三端必须同时改。
