@@ -1520,7 +1520,12 @@ uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g) {
 		bool ready4 = (v8 == 5 && (lt == 0x2255 || lt == 0x2211) && fpc >= 4);
 		bool ready2 = (fpc == 2 && lst >= 4);
 		if (!ready4 && !ready2) {
-			keys = ((f % 40) < 25) ? A : 0u;
+			/* 跨设备 2P 的开场走位（转身面对柜台小姐 → 对话 → 选大竞技场
+			 * → 单打 → 保存）由 flow.sh 的驱动器（drive2p_flow.py，墙钟同步
+			 * 双端）按观测状态统一推进。这里不再盲按 A：盲按只会把角色卡在
+			 * 野外（不转身就面对 NPC 时 A 无效），永远到不了连机菜单。本地
+			 * 4 核回归用连机屏快照起步，根本不会进这个分支。 */
+			keys = 0;
 		} else {
 			int mb = (int) GBAView8(g->cpu, 0x020219D0u);
 			if (mb != 0) {
