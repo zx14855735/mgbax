@@ -818,7 +818,12 @@ void CloudLink::hostCreateRoom(GbCloud::Session* sig, const QString& token, cons
 	sig->sendText(wsText(createJson(token, gameName())));
 	waitAndProcess(2500);
 	waitForRoom(sig, room, QString(), ROOM_WAIT_MS);
-	if (room->nodeAddress.isEmpty() || room->nodePort <= 0) {
+	// MGBAX_NO_RELAY 强制走服务器隧道（跳过公共 KCP 中继）：公共中继节点是
+	// 回收池端口，经常只有一端能注册上（另一端 handshake 静默丢弃），导致
+	// 房主提交了中继、加入方却退回隧道、两端永远碰不上。强制隧道让两端都用
+	// 同一条已验证可用的信令 WS 通道，跨网必通（只是延迟比中继高一点）。
+	if (QString::fromLocal8Bit(qgetenv("MGBAX_NO_RELAY")).isEmpty()
+	    && (room->nodeAddress.isEmpty() || room->nodePort <= 0)) {
 		throw std::runtime_error("服务器没有返回中继节点");
 	}
 	GbCloud::debugLog(QStringLiteral("host: node ") + room->nodeAddress + QStringLiteral(":")
@@ -856,7 +861,11 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 	//   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
 	// 公共节点时好时坏是常态，拿不到节点或节点不应答就直接走服务器隧道——
 	// 隧道不依赖节点，跨网一定能通，只是延迟比中继高一点。
-	if (!room->nodeAddress.isEmpty() && room->nodePort > 0) {
+	// MGBAX_NO_RELAY 时跳过公共 KCP 中继，直接走服务器 WS 隧道（见 hostCreateRoom
+	// 注释）：两端在同一个已验证可用的信令通道上互换 hello，必然碰面，不受中继
+	// 回收池端口「只有一端能注册」的坑影响。
+	if (QString::fromLocal8Bit(qgetenv("MGBAX_NO_RELAY")).isEmpty()
+	    && !room->nodeAddress.isEmpty() && room->nodePort > 0) {
 		link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
 		                      RELAY_WINDOW_MS);
 	} else {

@@ -344,6 +344,18 @@ public class EmulatorActivity extends AppCompatActivity {
                     room == null ? "" : room);
         }
     };
+    /** Lets `adb shell am broadcast -a io.mgba.android.action.NO_RELAY` force the cloud
+     *  link to skip the flaky public KCP relay and use the WS server tunnel instead.
+     *  Must be sent BEFORE the CLOUD broadcast so the flag is set when the link
+     *  connects. Android apps don't inherit shell env vars, so a broadcast is the
+     *  controllable signal (the PC side uses the MGBAX_NO_RELAY env var). */
+    private final BroadcastReceiver noRelayReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            GBoyCloudLink.sForceTunnel = true;
+            Log.i(TAG, "NO_RELAY broadcast: forcing server tunnel (skip public relay)");
+        }
+    };
     /** Lets `adb shell am broadcast -a io.mgba.android.action.SIGNAL --es mode host|join
      *  --es user U --es pass P --es room R --es probes a,b,c` drive the gboy.top room
      *  signalling directly and log every server reply, so the room protocol can be
@@ -688,6 +700,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(cloudReceiver, cloudFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(cloudReceiver, cloudFilter);
+        }
+        IntentFilter noRelayFilter = new IntentFilter("io.mgba.android.action.NO_RELAY");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(noRelayReceiver, noRelayFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(noRelayReceiver, noRelayFilter);
         }
         IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");
         if (Build.VERSION.SDK_INT >= 33) {

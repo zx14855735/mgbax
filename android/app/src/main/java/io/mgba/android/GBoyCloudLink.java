@@ -153,6 +153,12 @@ public final class GBoyCloudLink {
      */
     private volatile boolean officialMode;
 
+    /** 强制走服务器隧道、跳过公共 KCP 中继（由 io.mgba.android.action.NO_RELAY
+     *  广播置位）。公共中继是回收池端口，常只有一端能注册，导致房主提交中继、
+     *  加入方退回隧道而两端碰不上；强制隧道让两端都在同一条已验证可用的信令
+     *  WS 通道上互换 hello，必然碰面（只是延迟比中继高一点）。 */
+    public static volatile boolean sForceTunnel = false;
+
     public void setOfficialMode(boolean on) {
         officialMode = on;
     }
@@ -381,7 +387,10 @@ public final class GBoyCloudLink {
         //   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
         // 公共节点时好时坏是常态，拿不到节点或节点不应答就直接走服务器隧道——
         // 隧道不依赖节点，跨网一定能通，只是延迟比中继高一点。
-        if (room.nodeAddress != null && room.nodePort > 0) {
+        // sForceTunnel（io.mgba.android.action.NO_RELAY 广播置位）时跳过公共 KCP
+        // 中继，直接走服务器 WS 隧道：两端在同一个已验证可用的信令通道上互换
+        // hello，必然碰面，不受中继回收池「只有一端能注册」的坑影响。
+        if (!sForceTunnel && room.nodeAddress != null && room.nodePort > 0) {
             final boolean creator = asHost;
             link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
                     new NodeQuery() {
