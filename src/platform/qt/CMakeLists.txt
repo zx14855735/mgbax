@@ -276,7 +276,7 @@ endif()
 if(TARGET ${QT}::WebSockets)
 	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
 	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
-	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp TcpDirectLink.cpp BtLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp)
 	list(APPEND UI_FILES LobbyView.ui)
 
 	# The official-mode mirror console wraps the same headless mobile core the
@@ -290,7 +290,7 @@ if(TARGET ${QT}::WebSockets)
 		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
 
 	# Console E2E harness: wifi round trip + gboy.top signalling self test.
-	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp GBoyLinkSession.cpp GBoyMirror.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
+	add_executable(test-gboylink test/gboylink_test.cpp GBoyFrames.cpp GBoyLink.cpp KcpChannel.cpp GbCloud.cpp CloudLink.cpp DirectLink.cpp TcpDirectLink.cpp BtLink.cpp GBoyLinkSession.cpp GBoyMirror.cpp ExternalShader.cpp WebDavSync.cpp sio_link.c audio_stretch.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_net.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c ${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c)
 	set_source_files_properties(${PROJECT_SOURCE_DIR}/src/platform/mobile/mgba_mobile.c
 		${PROJECT_SOURCE_DIR}/src/platform/mobile/link_lockstep.c
 		${PROJECT_SOURCE_DIR}/src/platform/mobile/remote_link.c

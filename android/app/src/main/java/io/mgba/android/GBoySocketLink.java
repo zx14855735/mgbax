@@ -206,11 +206,15 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 silent = 0;
             } catch (SocketTimeoutException e) {
                 // 官方 ADYaiT.A5SV6n:85-92：500ms 静默累计 8 次判对端不可达。
+                // 只有客户端能重连，服务端断掉就没人再 accept 了，所以这里只对
+                // 客户端执行「判死」，服务端继续等（避免暂停几秒就自断链路）。
                 if (++silent >= SILENT_TIMEOUT_LIMIT) {
-                    lastError = "连续 " + SILENT_TIMEOUT_LIMIT + " 次静默超时，判定对端不可达";
-                    Log.w(TAG, lastError);
-                    drop(peer);
                     silent = 0;
+                    if (peerHost != null) {
+                        lastError = "连续 " + SILENT_TIMEOUT_LIMIT + " 次静默超时，判定对端不可达";
+                        Log.w(TAG, lastError);
+                        drop(peer);
+                    }
                 }
                 continue;
             } catch (IOException e) {

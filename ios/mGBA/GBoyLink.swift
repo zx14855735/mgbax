@@ -314,13 +314,13 @@ final class GBoyLink {
                     // 官方 type 0（AzWtSf:174-179 / AmA8tU:213-221）：收到就把
                     // 本机帧率上限设成这个值（AaHO0E.f4302AZkASS）。0 和离谱
                     // 值当「没有上限」，一颗坏包不该把本机帧率钉死。
-                    let fps = Self.rttValue(frame)
+                    let fps = Self.intValue(frame)
                     if fps > 0, fps <= 240 {
-                        onRemotePacing(fps)
+                        onRemotePacing(Int(fps))
                     }
                 } else if messageType == Self.msgReady {
                     // 官方 type 3：就绪 + 上报 RTT（B25kr6:131）。
-                    let rtt = Self.rttValue(frame)
+                    let rtt = Self.intValue(frame)
                     if rtt >= 0 {
                         lock.lock()
                         lastRttValue = rtt
@@ -328,7 +328,7 @@ final class GBoyLink {
                     }
                 } else if messageType == Self.msgReconnect {
                     // 对端重连：只带 rtt，没有别的语义，记下即可。
-                    let rtt = Self.rttValue(frame)
+                    let rtt = Self.intValue(frame)
                     if rtt >= 0 {
                         lock.lock()
                         lastRttValue = rtt
@@ -563,24 +563,68 @@ final class GBoyLink {
          UInt8(truncatingIfNeeded: keys >> 8), UInt8(truncatingIfNeeded: keys)]
     }
 
-    private func expectHello(_ fd: Int32, asHost: Bool) throws {
-        let frame = try nextFrame(fd, want: Self.msgHello)
+    /// 官方断线重连包：`int32 6 + int16 100 + int32 rtt`（AmA8tU:263-272）。
+    /// send() 会给它补上 4 字节大端长度 6，合起来正好是官方 write() 的 10 字节。
+    private static func reconnectFrame(rtt: Int32) -> [UInt8] {
+        [0, UInt8(msgReconnect),
+         UInt8(truncatingIfNeeded: rtt >> 24), UInt8(truncatingIfNeeded: rtt >> 16),
+         UInt8(truncatingIfNeeded: rtt >> 8), UInt8(truncatingIfNeeded: rtt)]
+    }
+
+    /// 帧体里 type 后面那个大端 int32（RTT / fps / 按键掩码都走它）。
+    private static func intValue(_ frame: [UInt8]) -> Int32 {
         if frame.count < 6 {
-            throw LinkError(message: "对方不是联机大厅会话")
+            return -1
         }
-        let value = Int(frame[2]) << 24 | Int(frame[3]) << 16 | Int(frame[4]) << 8 | Int(frame[5])
-        if value != 6 {
-            throw LinkError(message: "联机大厅协议版本不符")
-        }
-        if asHost {
-            try send(fd, Self.helloFrame())
+        return Int32(bitPattern: UInt32(frame[2]) << 24 | UInt32(frame[3]) << 16
+                     | UInt32(frame[4]) << 8 | UInt32(frame[5]))
+    }
+
+    /**
+     * 读第一帧握手。返回 true 表示对端发的是官方**重连包**（type 100 + rtt）：
+     * 这套会话已经握过手，后面的 2/3/6 全部跳过，直接进入按键转发。
+     *
+     * 接收侧必须把它当握手而不是「未知帧」：type 100 不在正常消息表里，
+     * 老代码会在这里抛「对方不是联机大厅会话」并把整条链路判死。
+     */
+    private func expectHello(_ fd: Int32, asHost: Bool) throws -> Bool {
+        while true {
+            let frame = try readFrame(fd)
+            let messageType = Self.type(frame)
+            if messageType == Self.msgReconnect {
+                let rtt = Self.intValue(frame)
+                if rtt >= 0 {
+                    lock.lock()
+                    lastRttValue = rtt
+                    lock.unlock()
+                }
+                return true
+            }
+            if messageType == Self.msgKeys || messageType == Self.msgReset {
+                continue
+            }
+            guard messageType == Self.msgHello else {
+                throw LinkError(message: "对方不是联机大厅会话")
+            }
+            if frame.count < 6 {
+                throw LinkError(message: "对方不是联机大厅会话")
+            }
+            let value = Int(frame[2]) << 24 | Int(frame[3]) << 16 | Int(frame[4]) << 8 | Int(frame[5])
+            if value != 6 {
+                throw LinkError(message: "联机大厅协议版本不符")
+            }
+            if asHost {
+                try send(fd, Self.helloFrame())
+            }
+            return false
         }
     }
 
     /**
      * Reads frames until one of the wanted type shows up. The peer's key pump
      * keeps running while we are still shaking hands, so KEYS/RESET frames can
-     * slip in; they are dropped here.
+     * slip in; they are dropped here. 官方节奏包（type 0）与重连包（type 100）
+     * 也可能在握手途中到达，一并吞掉。
      */
     private func nextFrame(_ fd: Int32, want: Int) throws -> [UInt8] {
         while true {
@@ -589,17 +633,29 @@ final class GBoyLink {
             if messageType == want {
                 return frame
             }
+            if messageType == Self.msgPacing || messageType == Self.msgReconnect {
+                continue
+            }
             if messageType != Self.msgKeys && messageType != Self.msgReset {
                 throw LinkError(message: "对方不是联机大厅会话")
             }
         }
     }
 
-    /// 读一帧 type 6 并取出存档体（body = u16 type + u32 长度 + blob）。
-    /// 对端没发（或先发了别的）时返回 nil，不抛错 —— 状态同步是可选步骤。
+    /**
+     * 读一帧 type 6 并取出存档体（body = u16 type + u32 长度 + blob）。
+     * 对端没发时返回 nil，不抛错 —— 状态同步是可选步骤。官方的服务端路径
+     * （B25kr6.A4TApA）本来就只**读** type 6 不回发，客户端等不到是正常的，
+     * 不能因为这条超时就把已经握好的链路判死。
+     */
     private func readState(_ fd: Int32) throws -> [UInt8]? {
         while true {
-            let frame = try readFrame(fd)
+            let frame: [UInt8]
+            do {
+                frame = try readFrame(fd)
+            } catch let error as LinkError where error.timeout {
+                return nil
+            }
             let messageType = Self.type(frame)
             if messageType == Self.msgState {
                 guard frame.count >= 6 else { return nil }
@@ -607,6 +663,9 @@ final class GBoyLink {
                          | (Int(frame[4]) << 8) | Int(frame[5])
                 guard size > 0, frame.count >= 6 + size else { return nil }
                 return Array(frame[6..<(6 + size)])
+            }
+            if messageType == Self.msgPacing || messageType == Self.msgReconnect {
+                continue
             }
             if messageType != Self.msgKeys && messageType != Self.msgReset {
                 throw LinkError(message: "对方不是联机大厅会话")
@@ -643,14 +702,16 @@ final class GBoyLink {
             }
             if errno == EINTR { continue }
             if errno == EAGAIN || errno == EWOULDBLOCK {
-                throw LinkError(message: "连接超时")
+                // SO_RCVTIMEO 到点：标成 timeout，让 readState() 这种「对端可能
+                // 不发」的可选步骤能降级，而不是把链路判死（tune() 设的 15 秒）。
+                throw LinkError(message: "连接超时", timeout: true)
             }
             throw LinkError(message: "连接已断开")
         }
         return data
     }
 
-    // ---- ROM identity + state synthesis ----
+    // ---- ROM identity + state exchange ----
 
     /**
      * Builds the ROM_INFO payload: u16 type + 32-char lowercase MD5 of the ROM
@@ -689,13 +750,6 @@ final class GBoyLink {
         return frame
     }
 
-    /**
-     * Synthesizes a GBASTATE v4 image the peer will accept: the header GBoy
-     * validates (magic, version 4, the 16 ROM identity bytes from offset 0xA0,
-     * BIOS flag zero) followed by a zero-filled body, zlib compressed the way
-     * GBoy's loadStateFromMemory expects. The peer's link console loads it and
-     * that game then simply starts from a fresh boot.
-     */
     /**
      * type 6：整份即时存档。优先用 {@link saveState} 提供的**真实**存档
      * （mGBA 格式，与 PC/Android 一致）。拿不到就返回 nil，由调用方跳过这一

@@ -1940,6 +1940,11 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	// 官方 12Hz 摇键节奏：onLocalFrame 按帧调用（这里用 ~60Hz 墙钟模拟帧
 	// 节拍，等价安卓的 onLocalFrame 帧驱动），GBoyLinkSession 内部每 5 帧
 	// 发一把本地按键并采样一把远端按键——正是官方客户端的 cadence。
+	//
+	// 节拍受官方 type 0 的帧率上限约束：官方收到 type 0 后写
+	// `AaHO0E.f4302AZkASS`（AzWtSf:174-179 / AmA8tU:213-221），帧循环按
+	// `1000/fps` 排下一帧。我们照抄这个语义，把固定 16ms 换成动态节拍；
+	// 没收到过（-1）或数值非法（<5 或 >240）时保持 60fps = 16ms。
 	qint64 lastTick = 0;
 	qint64 lastFps = 0;
 	qint64 lastAdvertise = 0;
@@ -1969,7 +1974,13 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 		}
-		if (now - lastTick >= 16) {
+		/* 官方 type 0 下发的帧率上限：合法值就按 1000/fps 排节拍，否则 60fps。 */
+		int fpsLimit = m_gboySession->remoteFps();
+		if (fpsLimit < 5 || fpsLimit > 240) {
+			fpsLimit = 60;
+		}
+		const qint64 tickMs = qMax<qint64>(1, 1000 / fpsLimit);
+		if (now - lastTick >= tickMs) {
 			lastTick = now;
 			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
 			 * addKey/clearKey，不进本对象的 m_localKeys（GUI 的 keyFeed 喂的
@@ -2021,7 +2032,11 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 			lastDiag = now;
 		}
 		QByteArray message;
-		if (!link->recv(&message, 30)) {
+		/* 收包等待不能超过「到下一帧还剩多久」，否则 recv 的固定 30ms 会变成
+		 * 真正的节拍上限（帧率上限再高也跑不出来，60fps 会被压到 33fps）。 */
+		const qint64 remaining = tickMs - (now - lastTick);
+		const int waitMs = int(qBound<qint64>(0, remaining, 30));
+		if (!link->recv(&message, waitMs)) {
 			continue;
 		}
 		m_reader.append(message.constData(), message.size());

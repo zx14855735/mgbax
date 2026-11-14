@@ -255,7 +255,9 @@ final class GBoyConsoleSet {
                             let ok = state.withUnsafeBytes { raw in
                                 mgbaMobileLoadStateFromMemory(core, raw.baseAddress, raw.count)
                             }
-                            NSLog("GBOY_RT peer state applied bytes=%d ok=%d",
+                            // %ld 而不是 %d：NSLog 的 Int 参数是 64 位，%d 只取低
+                            // 32 位，字节数一过 2GB 就打印错值（varargs 未定义）。
+                            NSLog("GBOY_RT peer state applied bytes=%ld ok=%ld",
                                   state.count, ok ? 1 : 0)
                         }
                     }
@@ -347,25 +349,12 @@ final class GBoyConsoleSet {
         return data
     }
 
-    /// 把对端状态应用到每个隐藏镜像核（4 核布局里对手的游戏在本机镜像核
-    /// 上跑，与 Android applyRemoteState 同义）。镜像线程在下一帧拾取新状态。
-    func applyRemoteState(_ state: Data) -> Bool {
-        lock.lock()
-        let current = cores
-        lock.unlock()
-        guard current.count > 1, !state.isEmpty else { return false }
-        var applied = false
-        state.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            guard let base = raw.baseAddress else { return }
-            for i in 1..<current.count {
-                if let core = current[i],
-                   mgbaMobileLoadStateFromMemory(core, base, state.count) {
-                    applied = true
-                }
-            }
-        }
-        return applied
-    }
+    /// 说明：这里**故意只提供**上面那个入队版本。以前还有一个
+    /// `applyRemoteState(_ state: Data)`，在调用线程上把存档直接灌进
+    /// 1..<cores.count 的**全部**镜像核：既和正在跑帧的镜像线程抢核，
+    /// 又把 slot 3/4 的 NPC 陪位进度覆盖成对端的（GBoy 的 type 6 只灌
+    /// 「代表该玩家」的那一颗，见 NETPLAY_SPEC.md 第 6 节第 7 行）。
+    /// 已删除，避免再被误用；需要整份状态请走 `applyRemoteState([UInt8])`。
 
     func stop() {
         lock.lock()

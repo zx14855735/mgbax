@@ -62,6 +62,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 云端生效：本机多核锁步的真人对局里 slot3/4 是真实玩家位，注入会
     /// 覆盖他们的按键（Android 侧以 cloudLink 判空同款门控）。
     private var cloudConsoleActive = false
+    /// 对端 type 6 存档在四核房间建好之前的暂存（gate 保护）。云重挂会先
+    /// 重载 ROM 再重建房间，这期间到的存档没有镜像核可灌，丢掉对端就一直
+    /// 停在电池存档上（与 Android 侧 pending 队列同义）。
+    private var pendingPeerState: [UInt8]?
+    /// 官方 type 0 下发的帧率上限（gate 保护）：0 = 没有上限，帧循环保持原节奏。
+    private var linkPacingFps = 0
     private var command = 0
     private let stopped = DispatchSemaphore(value: 0)
     private let audio = AudioOut()
@@ -993,6 +999,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             command = 0
             let isPaused = paused
             let loading = loadInFlight
+            // 官方 type 0 的帧率上限（0 = 没收到/无上限）。
+            let pacingFps = linkPacingFps
             let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
@@ -1178,7 +1186,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // for GBA and GB): a rounded 60 fps would play games and their
             // audio about 0.46% fast, which sounds slightly sharp.
             let frameNanos = mgbaMobileFrameNanos(core)
-            let sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
+            var sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
+            // 联机对端下发过帧率上限（官方 type 0）时，本机不能比它跑得快：
+            // 两边子状态会越走越开，最后 SIO 凑不齐。只在「上限低于本机固有
+            // 帧率」时生效，60fps 及以上的上限等于没有限制。
+            if pacingFps > 0 {
+                let capNanos = 1_000_000_000 / Int64(pacingFps)
+                if capNanos > sliceNanos {
+                    sliceNanos = capNanos
+                }
+            }
             // Schedule slices against an absolute next start. A gate wait that
             // oversleeps then cannot accumulate into a loop that runs (and
             // pitches the music) slightly slow; a stall that leaves the loop
@@ -5931,12 +5948,36 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             consoleSet = set
             gate.lock()
             cloudConsoleActive = true
+            let pending = pendingPeerState
+            pendingPeerState = nil
             gate.unlock()
             NSLog("GBOY_RT cloud arm rebuilt players=4 visible slot=1")
+            // 重建前收到的对端存档：现在有镜像核了，补灌（入队，帧边界载入）。
+            if let pending, !pending.isEmpty, set.applyRemoteState(pending) {
+                NSLog("GBOY_RT peer state replayed (\(pending.count) bytes)")
+            }
+            /* 官方 type 6 双向：本端也把刚冷启动（帧 0）的可见核存档推给对端，
+             * 让对方的槽位 2 镜像核与本机可见核停在同一幕。必须在重建之后发：
+             * 之前发出去的是上一局推进过的进度，会把对端拉回旧状态。 */
+            lobbyLink?.sendInitialState()
         }
         gate.lock()
         suppressAutoLoadState = false
         gate.unlock()
+    }
+
+    /// 官方 type 0（节奏）：对端要求的帧率上限。0 或越界值 = 没有上限，
+    /// 帧循环保持原来的节奏（官方把收到的值直接写进 AaHO0E.f4302AZkASS）。
+    /// gate 保护，帧循环每轮读一次。
+    private func setLinkPacing(_ fps: Int) {
+        let capped = (fps > 0 && fps <= 240) ? fps : 0
+        gate.lock()
+        let changed = linkPacingFps != capped
+        linkPacingFps = capped
+        gate.unlock()
+        if changed {
+            NSLog("GBOY_RT link pacing fps=\(capped)")
+        }
     }
 
     private func ensureGboy() -> GBoyLink {
@@ -5947,9 +5988,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let self else { return 0 }
             return Int32(self.touchKeys | self.hwKeys | self.padKeys)
         }
-        /* 官方 type 6：把本机可见核的即时存档整包发给对端（与 PC
-         * mgbaMobileSaveStateToMemory、Android MgbaCore.saveStateToMemory 同一份
-         * 字节）。没有这条，对端「代表本机这个玩家」的镜像核永远停在电池存档上。 */
+            /* 官方 type 6：把本机可见核的即时存档整包发给对端（与 PC
+             * mgbaMobileSaveStateToMemory、Android MgbaCore.saveStateToMemory 同一份
+             * 字节）。没有这条，对端「代表本机这个玩家」的镜像核永远停在电池存档上。 */
         link.saveState = { [weak self] in
             guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return nil }
             var out: UnsafeMutableRawPointer?
@@ -5957,16 +5998,27 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard mgbaMobileSaveStateToMemory(core, &out, &size), let buffer = out, size > 0 else {
                 return nil
             }
-            defer { free(buffer) }
+            // 释放走 C 侧的 mgbaMobileFreeState（实现就是 free），不要混用
+            // Swift 的 free：所有权在 mgba_mobile.c，将来换成别的分配器时
+            // 只有一处需要改（GBoyConsoleSet.snapshotState 同样走它）。
+            defer { mgbaMobileFreeState(buffer) }
             return [UInt8](Data(bytes: buffer, count: size))
         }
-        /* 收到对端存档：交给多核集合，由镜像线程在帧边界灌进槽位 2 那颗核。 */
+        /* 收到对端存档：交给多核集合，由镜像线程在帧边界灌进槽位 2 那颗核。
+         * 直连路径没有 consoleSet（单核跨设备联机），此时没有「对端镜像核」
+         * 可灌，只记日志 —— 绝不能退回去灌可见核，那是本机玩家的进度。 */
         link.onRemoteState = { [weak self] state in
             DispatchQueue.main.async {
                 guard let self else { return }
                 if self.consoleSet?.applyRemoteState(state) != true {
-                    NSLog("GBOY_RT peer state not applied (consoles not ready, %d bytes)", state.count)
+                    NSLog("GBOY_RT peer state dropped: no mirror console (\(state.count) bytes)")
                 }
+            }
+        }
+        /* 官方 type 0：对端下发的帧率上限，交给帧循环（1000/fps 目标间隔）。 */
+        link.onRemotePacing = { [weak self] fps in
+            DispatchQueue.main.async {
+                self?.setLinkPacing(fps)
             }
         }
         link.onRemoteKeys = { [weak self] keys in
@@ -6055,13 +6107,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.pendingCloudRearm = false
                 self.suppressAutoLoadState = false
                 self.cloudConsoleActive = false
+                // 会话结束就丢掉没来得及灌的对端存档，别让它漏进下一局。
+                self.pendingPeerState = nil
                 self.gate.unlock()
                 self.toast("云端联机已断开")
             }
         }
-        // TYPE_STATE: the host seeds the joiner with one save-state snapshot.
-        // The C memory-state helpers already take the per-instance core lock,
-        // so calling them from the link thread needs no extra synchronisation.
+        // 官方 type 6 的**发送**：四核房间重建完成后由 rebuildCloudConsoleSet
+        // 调 sendInitialState()，这里只提供快照（C helper 自带核锁，跨线程安全）。
         link.stateSnapshot = { [weak self] in
             guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return nil }
             var blob: UnsafeMutableRawPointer? = nil
@@ -6075,18 +6128,26 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         link.onRemoteState = { [weak self] state in
             DispatchQueue.main.async {
                 guard let self else { return }
-                // 4 核布局：对端状态进镜像核（对手的游戏在本机镜像核上跑，
-                // Android applyRemoteState 同义）；无 consoleSet 时保持旧的
-                // 单核种子行为。
+                /* 4 核布局：对端存档只进「代表对端玩家」的镜像核（全局槽位 2），
+                 * 而且是入队、由镜像线程在帧边界载入。**绝不**灌可见核 ——
+                 * 那是本机玩家自己的进度，灌了就等于把对面的游戏搬到本地
+                 * （NETPLAY_SPEC.md 第 6 节第 7 行）。 */
+                let bytes = [UInt8](state)
                 if let set = self.consoleSet, set.isReady,
-                   set.applyRemoteState(state) {
+                   set.applyRemoteState(bytes) {
                     return
                 }
-                guard let core = self.core, mgbaMobileIsLoaded(core) else { return }
-                state.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                    guard let base = raw.baseAddress else { return }
-                    _ = mgbaMobileLoadStateFromMemory(core, base, state.count)
-                }
+                // 四核房间还没建好（云重挂重载中）：先缓存，重建成功后补灌。
+                self.gate.lock()
+                self.pendingPeerState = bytes
+                self.gate.unlock()
+                NSLog("GBOY_RT peer state buffered (\(bytes.count) bytes)")
+            }
+        }
+        /* 官方 type 0：对端下发的帧率上限，交给帧循环（1000/fps 目标间隔）。 */
+        link.onRemotePacing = { [weak self] fps in
+            DispatchQueue.main.async {
+                self?.setLinkPacing(fps)
             }
         }
         link.onRemoteReset = { [weak self] in
