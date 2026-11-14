@@ -1719,6 +1719,17 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 			navModeDowns = d;
 		}
 	}
+	/* 三个镜像核必须拿到同一份电池存档字节：逐个 QFile::copy 会碰到已存在的
+	 * 目标（沿用上一轮残留），也可能在循环期间读到可见核写回的新版本。先读
+	 * 一次快照再分发，四核冷启动起点才一致。 */
+	QByteArray saveSnapshot;
+	if (!savePath.isEmpty() && QFileInfo(savePath).isFile()) {
+		QFile src(savePath);
+		if (src.open(QIODevice::ReadOnly)) {
+			saveSnapshot = src.readAll();
+			src.close();
+		}
+	}
 	QString error;
 	for (int i = 0; i < MIRROR_COUNT; ++i) {
 		QDir mirrorDir(QFileInfo(savePath).dir().filePath(
@@ -1727,7 +1738,7 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		if (!mirror->start(m_config.romPath, savePath, mirrorDir.path(), port,
 		                   m_gboySession, i + 2, MIRROR_COUNT + 1,
 		                   navMenuAt > 0 ? i + 1 : -1, navMenuAt, navModeDowns,
-		                   &error)) {
+		                   saveSnapshot, &error)) {
 			mirror->stopMirror();
 			delete mirror;
 			stopOfficialMatch();
