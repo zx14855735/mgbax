@@ -41,6 +41,13 @@ final class LobbyLink {
     /// How long to wait for the peer's first key state before starting anyway.
     private static let peerKeyWaitMs: Int64 = 4000
     private static let keyIntervalMs: Int64 = 50
+    /// 按键上行节拍倍率（= 本机倍速 × 联机倍速），1.0 = 正常。
+    ///
+    /// 与 `GBoyLink` 的 pumpRate 同一个理由：官方按键是**帧数驱动**（直连每 5
+    /// 帧、房间模式每帧，AUDIT A.13 第 15/16 条），50ms 只是 1x 下的等价近似；
+    /// 倍速把帧闸改掉之后不缩放就会变成「对端每 N 帧才收到一次键」。
+    /// 1x 走常量、不做浮点除法。lock 保护。**未真机验证。**
+    private var keyIntervalRate: Double = 1
 
     // MARK: - Hooks
 
@@ -215,6 +222,23 @@ final class LobbyLink {
         lock.lock()
         stateSentThisConnection = false
         aborted = false
+        keyIntervalRate = 1   // 新连接从 1x 起；设备层连上后会按当前倍速再写一次
+        lock.unlock()
+    }
+
+    /// 按键上行间隔（ms）：1x 严格 50，其余按倍率缩放。rate 已夹到 0.25...4。
+    private static func keyInterval(rate: Double) -> Int64 {
+        if rate > 0.999 && rate < 1.001 {
+            return keyIntervalMs
+        }
+        return max(1, Int64(Double(keyIntervalMs) / rate))
+    }
+
+    /// 本机/联机倍速变化时由设备层（主线程）调用。
+    func setKeyIntervalRate(_ rate: Double) {
+        let value = (rate.isFinite && rate > 0) ? min(4, max(0.25, rate)) : 1
+        lock.lock()
+        keyIntervalRate = value
         lock.unlock()
     }
 
@@ -249,6 +273,7 @@ final class LobbyLink {
         channel = nil
         let open = session
         session = nil
+        keyIntervalRate = 1   // 上行节拍回 1x，别让下一局带着上一局的倍速起来
         lock.unlock()
         current?.close()
         open?.close()
@@ -757,10 +782,13 @@ final class LobbyLink {
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
+            lock.lock()
+            let interval = Self.keyInterval(rate: keyIntervalRate)
+            lock.unlock()
             // 官方 type 6 的发送不放这里：它必须等四核房间重建完（对端镜像核
             // 存在、本机可见核已冷启动到帧 0）再发一次，由 sendInitialState()
             // 从设备层触发。这条循环里发会把「上一局推进过的状态」灌进对端。
-            if now - lastKey >= LobbyLink.keyIntervalMs {
+            if now - lastKey >= interval {
                 let keys = localKeys()
                 if keys != sentKeys || now - lastKey >= 500 {
                     sentKeys = keys

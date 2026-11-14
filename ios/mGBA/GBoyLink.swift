@@ -130,6 +130,14 @@ final class GBoyLink {
     private var currentGeneration = 0
     /// 对端上报的 RTT（官方 type 3 / 重连包里的 int32），-1 = 未知。lock 保护。
     private var lastRttValue: Int32 = -1
+    /// 按键上行节拍倍率（= 本机倍速 × 联机倍速），1.0 = 正常。
+    ///
+    /// 官方是按**帧数**发按键的（直连 `D8MqeW.run` 每 5 帧一条、房间模式每帧
+    /// 一条，AUDIT A.13 第 15/16 条）。帧闸被本机倍速或 type 9 改变后，固定
+    /// 83ms 就不再等于 5 帧（4x 时对端要等 4 帧才收到一次键）。这里用墙钟
+    /// 等价近似：`interval = 83ms / rate`。1x 走常量、不做除法，节拍与历史
+    /// 行为逐位相同。**未真机验证。**
+    private var pumpRate: Double = 1
 
     /// 一条已建立的连接。读线程、写线程和 drop() 都带上它做代次校验。
     private struct Session {
@@ -252,6 +260,7 @@ final class GBoyLink {
         // 代号 +1 让所有在飞的读/写线程立刻变成「上一代」，它们晚到的 drop()
         // 不会再碰到后续会话的 socket。
         currentGeneration += 1
+        pumpRate = 1   // 上行节拍回 1x
         lock.unlock()
         if fd >= 0 {
             shutdown(fd, SHUT_RDWR)
@@ -276,6 +285,7 @@ final class GBoyLink {
         let staleListen = currentListenFd
         currentListenFd = -1
         currentGeneration += 1
+        pumpRate = 1   // 新会话从 1x 起；设备层连上后会按当前倍速再写一次
         lock.unlock()
         if stale >= 0 {
             shutdown(stale, SHUT_RDWR)
@@ -592,8 +602,32 @@ final class GBoyLink {
                 drop(session, Self.message(error))
                 return
             }
-            Thread.sleep(forTimeInterval: 0.083)
+            Thread.sleep(forTimeInterval: Self.pumpInterval(rate: currentPumpRate))
         }
+    }
+
+    /// 按键上行间隔：1x 严格 0.083（不参与浮点除法），其余按倍率缩放。
+    /// rate 已在 `setPumpRate` 里夹到 0.25...4。
+    private static func pumpInterval(rate: Double) -> TimeInterval {
+        if rate > 0.999 && rate < 1.001 {
+            return 0.083
+        }
+        return 0.083 / rate
+    }
+
+    private var currentPumpRate: Double {
+        lock.lock()
+        defer { lock.unlock() }
+        return pumpRate
+    }
+
+    /// 本机/联机倍速变化时由设备层（主线程）调用；夹在 0.25...4，
+    /// 免得自定义 16x 把上行的线流量放大 16 倍。
+    func setPumpRate(_ rate: Double) {
+        let value = (rate.isFinite && rate > 0) ? min(4, max(0.25, rate)) : 1
+        lock.lock()
+        pumpRate = value
+        lock.unlock()
     }
 
     /**
@@ -610,6 +644,8 @@ final class GBoyLink {
         }
         sessionClosedFlag = true
         currentFd = -1
+        // 会话结束：上行节拍回 1x，别让下一局带着上一局的 4x 起来。
+        pumpRate = 1
         lock.unlock()
         // 先 shutdown 再 close：与官方 socket.close() 同义，顺便唤醒可能还堵在
         // recv 上的另一个线程。

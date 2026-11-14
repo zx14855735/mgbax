@@ -1546,6 +1546,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         paused = false
         gate.unlock()
         NSLog("GBOY_RT load: done")
+        RunLog.shared.add("已载入 \(URL(fileURLWithPath: path).lastPathComponent)\(name.isEmpty ? "" : "（\(name)）")")
+        // 换游戏后上一款的快照没有意义，留着会把旧进度灌进新核心。
+        dropUndoState()
         // 进入游戏时自动读档：上次退出的进度。云端 4 核重载期间跳过——
         // 四核必须从同一份电池存档冷启动。
         gate.lock()
@@ -1598,6 +1601,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 writePreview(current)
             } else {
                 pendingPreview = nil
+                dropUndoState()
             }
             toast(ok ? "已保存即时存档 \(current)" : "即时存档失败")
             DispatchQueue.main.async { self.refreshSlotButton() }
@@ -1607,6 +1611,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             mgbaMobileClearAudio(core)
             if ok {
                 _ = mgbaMobileRunFrames(core, 1)
+            } else {
+                dropUndoState()
             }
             toast(ok ? "已读取即时存档 \(current)" : "没有即时存档 \(current)")
             DispatchQueue.main.async { self.refreshSlotButton() }
@@ -1679,6 +1685,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
     }
 
+    /// 丢掉当前快照（操作失败或已撤销后）。
+    private func dropUndoState() {
+        undoStateData = nil
+        undoStateFiles = []
+        undoStateLabel = ""
+        gate.lock()
+        undoAvailable = false
+        gate.unlock()
+    }
+
     /// 回滚 `rememberUndoState` 记下的那一次操作。
     private func undoLastState(core: OpaquePointer) {
         guard let data = undoStateData else {
@@ -1701,12 +1717,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             _ = mgbaMobileRunFrames(core, 1)
         }
         let label = undoStateLabel
-        undoStateData = nil
-        undoStateFiles = []
-        undoStateLabel = ""
-        gate.lock()
-        undoAvailable = false
-        gate.unlock()
+        dropUndoState()
         toast(ok ? "已撤销\(label)" : "撤销失败（快照无效）")
         DispatchQueue.main.async { self.refreshSlotButton() }
     }
@@ -2172,6 +2183,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         armMenuAutoHide()
         // 联机中把倍速同步给对端（官方 type 9 就是倍速菜单那四个分支）。
         broadcastLinkSpeed(speed)
+        // 本机切速也会改帧闸：上行的按键节拍要同比缩放（官方按帧数发）。
+        updateLinkPumpRate()
     }
 
     @objc private func toggleMenu() {
@@ -2296,6 +2309,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         alert.addAction(UIAlertAction(title: "存档", style: .default) { [weak self] _ in self?.showSaveSettingsDialog() })
         alert.addAction(UIAlertAction(title: "ROM 文件夹", style: .default) { [weak self] _ in self?.showRomDirsDialog() })
         alert.addAction(UIAlertAction(title: "高级", style: .default) { [weak self] _ in self?.showAdvanced() })
+        alert.addAction(UIAlertAction(title: "游戏信息", style: .default) { [weak self] _ in self?.showRomInfo() })
+        alert.addAction(UIAlertAction(title: "运行日志", style: .default) { [weak self] _ in self?.showRunLog() })
         alert.addAction(UIAlertAction(title: "帮助", style: .default) { [weak self] _ in self?.showHelpDialog() })
         alert.addAction(UIAlertAction(title: "关闭", style: .cancel))
         if let popover = alert.popoverPresentationController {
@@ -3278,6 +3293,159 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         })
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
         presentSheet(alert)
+    }
+
+    /// 游戏信息（PC 的 File → ROM info...）：卡带头 / 大小 / CRC32 / 存档类型与路径。
+    @objc private func showRomInfo() {
+        let path = currentRomPath ?? defaults.string(forKey: "lastRom") ?? ""
+        guard !path.isEmpty, let handle = FileHandle(forReadingAtPath: path) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let head = handle.readData(ofLength: 0x200)
+        try? handle.close()
+        func byte(_ index: Int) -> Int {
+            index >= 0 && index < head.count ? Int(head[index]) : 0
+        }
+        func text(_ start: Int, _ length: Int) -> String {
+            var bytes: [UInt8] = []
+            for i in start..<(start + length) {
+                let value = byte(i)
+                if value == 0 { break }
+                bytes.append(value >= 0x20 && value < 0x7F ? UInt8(value) : 0x20)
+            }
+            return String(bytes: bytes, encoding: .ascii)?.trimmingCharacters(in: .whitespaces) ?? ""
+        }
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        let isGba = ext == "gba" || (!(ext == "gb" || ext == "gbc") && byte(0xB2) == 0x96)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+        var lines: [String] = []
+        lines.append("文件：\(url.lastPathComponent)")
+        lines.append("路径：\(filesPath(path))")
+        lines.append(String(format: "大小：%.2f MB（%lld 字节）", Double(size) / (1024 * 1024), size))
+        lines.append("CRC32：\(romCrc.map { String(format: "%08X", $0) } ?? "未计算")")
+        if isGba {
+            lines.append("平台：Game Boy Advance")
+            lines.append("标题：\(text(0xA0, 12))")
+            lines.append("游戏编号：\(text(0xAC, 4))")
+            lines.append("厂商：\(text(0xB0, 2))")
+            lines.append("版本：\(byte(0xBC))")
+            var sum = 0
+            for i in 0xA0...0xBC { sum = (sum + byte(i)) & 0xFF }
+            let expect = (0x100 - ((sum + 0x19) & 0xFF)) & 0xFF
+            lines.append(String(format: "头部补码：%02X（应为 %02X，%@）",
+                                byte(0xBD), expect, byte(0xBD) == expect ? "一致" : "不一致"))
+        } else {
+            lines.append("平台：Game Boy / Color")
+            lines.append("标题：\(text(0x134, 16))")
+            let cgb = byte(0x143)
+            lines.append("彩色支持：\(cgb == 0x80 ? "支持彩色" : (cgb == 0xC0 ? "仅彩色" : "黑白"))")
+            lines.append(String(format: "卡带类型：%02X %@", byte(0x147), Self.gbCartName(byte(0x147))))
+            lines.append("ROM 大小：\(Self.gbRomSize(byte(0x148)))")
+            lines.append("RAM 大小：\(Self.gbRamSize(byte(0x149)))")
+            var checksum = 0
+            for i in 0x134...0x14C { checksum = (checksum - byte(i) - 1) & 0xFF }
+            lines.append(String(format: "头部校验：%02X（应为 %02X，%@）",
+                                byte(0x14D), checksum, byte(0x14D) == checksum ? "一致" : "不一致"))
+        }
+        lines.append("存档类型：\(Self.saveTypeName(saveTypePref()))")
+        if let core {
+            var savePath = [CChar](repeating: 0, count: 1200)
+            mgbaMobileSaveFile(core, &savePath, 1200)
+            let sav = String(cString: savePath)
+            if !sav.isEmpty {
+                lines.append("电池存档：\(filesPath(sav))")
+            }
+        }
+        let info = UITextView()
+        info.isEditable = false
+        info.isScrollEnabled = true
+        info.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        info.text = lines.joined(separator: "\n")
+        info.heightAnchor.constraint(equalToConstant: 360).isActive = true
+        presentSheet(SheetController(title: "游戏信息", content: info))
+    }
+
+    private static func gbCartName(_ type: Int) -> String {
+        switch type {
+        case 0x00: return "ROM only"
+        case 0x01, 0x02, 0x03: return "MBC1"
+        case 0x05, 0x06: return "MBC2"
+        case 0x08, 0x09: return "ROM+RAM"
+        case 0x0F, 0x10, 0x11, 0x12, 0x13: return "MBC3"
+        case 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E: return "MBC5"
+        case 0x20: return "MBC6"
+        case 0x22: return "MBC7"
+        case 0xFC: return "Pocket Camera"
+        case 0xFD: return "Bandai TAMA5"
+        case 0xFE: return "HuC3"
+        case 0xFF: return "HuC1+RAM"
+        default: return "未知"
+        }
+    }
+
+    private static func gbRomSize(_ code: Int) -> String {
+        switch code {
+        case 0: return "32 KB"
+        case 0x52: return "1.1 MB"
+        case 0x53: return "1.2 MB"
+        case 0x54: return "1.5 MB"
+        default: break
+        }
+        guard code <= 0x08 else { return "未知（\(code)）" }
+        return "\(32 << code) KB"
+    }
+
+    private static func gbRamSize(_ code: Int) -> String {
+        switch code {
+        case 0: return "无"
+        case 1: return "2 KB"
+        case 2: return "8 KB"
+        case 3: return "32 KB"
+        case 4: return "128 KB"
+        case 5: return "64 KB"
+        default: return "未知（\(code)）"
+        }
+    }
+
+    /// 设置 → 运行日志：查看最近事件并导出（PC 的 Tools → View logs...）。
+    @objc private func showRunLog() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+        let view = UITextView()
+        view.isEditable = false
+        view.isScrollEnabled = true
+        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let body = RunLog.shared.text()
+        view.text = body.isEmpty ? "还没有日志。玩游戏、联机或改设置后这里会有记录。" : body
+        view.heightAnchor.constraint(equalToConstant: 360).isActive = true
+        box.addArrangedSubview(view)
+        let share = UIButton(type: .system)
+        share.setTitle("导出日志（分享 / 存文件）", for: .normal)
+        share.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("mgba-log.txt")
+            try? RunLog.shared.text().write(to: url, atomically: true, encoding: .utf8)
+            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            sheet.popoverPresentationController?.sourceView = share
+            sheet.popoverPresentationController?.sourceRect = share.bounds
+            self.topmostPresenter.present(sheet, animated: true)
+        }, for: .touchUpInside)
+        let clear = UIButton(type: .system)
+        clear.setTitle("清空日志", for: .normal)
+        clear.addAction(UIAction { [weak self] _ in
+            RunLog.shared.clear()
+            view.text = "已清空。"
+            self?.toast("日志已清空")
+        }, for: .touchUpInside)
+        let row = UIStackView(arrangedSubviews: [share, clear])
+        row.axis = .horizontal
+        row.spacing = 12
+        box.addArrangedSubview(row)
+        presentSheet(SheetController(title: "运行日志", content: box))
     }
 
     private func showHelpDialog() {
@@ -6206,6 +6374,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
         if changed {
             NSLog("GBOY_RT link speed=\(rate)x")
+            updateLinkPumpRate()
         }
     }
 
@@ -6217,6 +6386,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let wire = GBoySpeed.wireValue(forRate: value) else { return }
         gboyLink?.sendSpeed(wire)
         lobbyLink?.sendSpeed(wire)
+    }
+
+    /// 把「本机倍速 × 联机倍速」写给两条链路的按键上行节拍。
+    ///
+    /// 官方按键是**帧数驱动**（直连每 5 帧、房间模式每帧），两条链路的
+    /// 83ms / 50ms 只是 1x 的墙钟等价；帧闸被本机倍速或 type 9 改掉之后，
+    /// 不缩放就变成「4x 时对端每 4 帧才收到一次键」。本机切速同样会改帧闸，
+    /// 所以 `setSpeed` 与 `setLinkSpeed` 两处都要调。**未真机验证。**
+    private func updateLinkPumpRate() {
+        gate.lock()
+        let rate = speed * linkSpeed
+        gate.unlock()
+        gboyLink?.setPumpRate(rate)
+        lobbyLink?.setKeyIntervalRate(rate)
     }
 
     private func ensureGboy() -> GBoyLink {
@@ -6296,6 +6479,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
         gboyLink = link
+        // 建链时按当前倍速写好上行节拍（连接期间用户可能已经切过速）。
+        updateLinkPumpRate()
         return link
     }
 
@@ -6412,6 +6597,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
         lobbyLink = link
+        // 建链时按当前倍速写好上行节拍（连接期间用户可能已经切过速）。
+        updateLinkPumpRate()
         return link
     }
 
@@ -6445,7 +6632,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         mgbaMobileLinkStatus(core, &text, 128)
         let status = String(cString: text)
         let state = Int(status.split(separator: " ").first ?? "0") ?? 0
-        if state != lastLinkState && state == 3 { toast(linkMessage(status)) }
+        if state != lastLinkState {
+            RunLog.shared.add("联机状态 \(lastLinkState) → \(state)：\(status)")
+            if state == 3 { toast(linkMessage(status)) }
+        }
         lastLinkState = state
         if state == 1 || state == 2 {
             let work = DispatchWorkItem { [weak self] in self?.watchLink() }
@@ -6777,6 +6967,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func toast(_ message: String) {
+        RunLog.shared.add(message)
         DispatchQueue.main.async {
             let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
             // Dismiss only once the alert is on screen: presentSheet may wait
@@ -6866,5 +7057,45 @@ private final class SheetController: UIViewController {
             body.bottomAnchor.constraint(equalTo: scroll.bottomAnchor, constant: -16),
             body.widthAnchor.constraint(equalTo: scroll.widthAnchor, constant: -32)
         ])
+    }
+}
+
+/**
+ * 运行日志（PC `Tools → View logs...` 的轻量等价物）。
+ * 只记录用户能感知的事件（提示条、ROM 载入、联机状态跃迁），
+ * 环形缓冲 400 条，供「设置 → 运行日志」查看并导出成 txt。
+ */
+final class RunLog {
+    static let shared = RunLog()
+    private static let limit = 400
+    private let lock = NSLock()
+    private var entries: [String] = []
+    private let stamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    func add(_ message: String) {
+        let line = "\(stamp.string(from: Date())) \(message)"
+        lock.lock()
+        entries.append(line)
+        if entries.count > Self.limit {
+            entries.removeFirst(entries.count - Self.limit)
+        }
+        lock.unlock()
+    }
+
+    func text() -> String {
+        lock.lock()
+        let copy = entries
+        lock.unlock()
+        return copy.joined(separator: "\n")
+    }
+
+    func clear() {
+        lock.lock()
+        entries.removeAll()
+        lock.unlock()
     }
 }

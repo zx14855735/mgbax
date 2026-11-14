@@ -6,6 +6,9 @@
 #include "Window.h"
 
 #include <QBuffer>
+#include <QCursor>
+#include <QDir>
+#include <QFileInfo>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -14,6 +17,7 @@
 #include <QPainter>
 #include <QScreen>
 #include <QTimer>
+#include <QToolTip>
 #include <QWindow>
 
 #ifdef Q_OS_WIN
@@ -267,6 +271,13 @@ void Window::argumentsPassed() {
 
 	if (args->fname) {
 		setController(m_manager->loadGame(args->fname));
+	} else if (m_config->getOption("loadLastRom").toInt() && !m_mruFiles.isEmpty()) {
+		/* lastRom（与 Android/iOS 同名语义）：只在本进程的启动窗口里做，
+		 * 多开窗口走 newWindow() 不经过 argumentsPassed()，不会连带开 ROM。 */
+		const QString lastFile = m_mruFiles.first();
+		if (QFileInfo::exists(lastFile)) {
+			setController(m_manager->loadGame(lastFile));
+		}
 	}
 
 	if (m_config->graphicsOpts()->fullscreen) {
@@ -1297,6 +1308,80 @@ void Window::recordFrame() {
 	m_frameTimer.restart();
 }
 
+void Window::takeScreenshot() {
+	if (!m_controller || !m_controller->hasStarted()) {
+		return;
+	}
+
+	QString format = m_config->getOption("screenshotFormat", "png").toLower();
+	if (format != QLatin1String("jpg") && format != QLatin1String("jpeg")) {
+		format = QStringLiteral("png");
+	} else {
+		format = QStringLiteral("jpg");
+	}
+
+	QImage image = m_controller->getPixels();
+	if (image.isNull()) {
+		LOG(QT, WARN) << tr("截图失败：没有可用的画面缓冲");
+		return;
+	}
+	/* 硬件加速路径下 getPixels() 借的是核心的帧缓冲，拷贝一份再编码，
+	 * 免得核心线程下一帧把它覆盖成半张图。 */
+	image = image.copy();
+
+	QString dir = m_config->getOption("screenshotPath");
+	if (dir.isEmpty()) {
+		/* 核心的默认行为：没配 screenshotPath 就写在 ROM 同目录。 */
+		const QString baseDirectory = m_controller->baseDirectory();
+		const QString romPath = m_controller->path();
+		if (!baseDirectory.isEmpty() && !romPath.isEmpty()) {
+			dir = QFileInfo(QDir(baseDirectory), romPath).dir().absolutePath();
+		}
+	} else {
+		dir = QDir(ConfigController::configDir()).absoluteFilePath(dir);
+	}
+	if (dir.isEmpty()) {
+		dir = QDir::currentPath();
+	}
+	if (!QDir().mkpath(dir)) {
+		LOG(QT, WARN) << tr("截图保存失败：无法创建目录 %1").arg(QDir::toNativeSeparators(dir));
+		return;
+	}
+
+	QString baseName = QFileInfo(m_controller->path()).completeBaseName();
+	if (baseName.isEmpty()) {
+		baseName = QStringLiteral("screenshot");
+	}
+
+	QString path;
+	QDir targetDir(dir);
+	for (int i = 1; i < 10000; ++i) {
+		const QString candidate = targetDir.absoluteFilePath(QString("%1-%2.%3").arg(baseName).arg(i).arg(format));
+		if (!QFileInfo::exists(candidate)) {
+			path = candidate;
+			break;
+		}
+	}
+	if (path.isEmpty()) {
+		LOG(QT, WARN) << tr("截图保存失败：目标目录里编号已用尽");
+		return;
+	}
+
+	bool ok;
+	if (format == QLatin1String("jpg")) {
+		ok = image.save(path, "JPG", 92);
+	} else {
+		ok = image.save(path, "PNG");
+	}
+	if (ok) {
+		const QString native = QDir::toNativeSeparators(path);
+		QToolTip::showText(QCursor::pos(), tr("截图已保存：%1").arg(native), this);
+		LOG(QT, INFO) << tr("Screenshot saved: %1").arg(native);
+	} else {
+		LOG(QT, WARN) << tr("截图保存失败：%1").arg(QDir::toNativeSeparators(path));
+	}
+}
+
 void Window::showFPS() {
 	qint64 total = 0;
 	for (qint64 t : m_frameList) {
@@ -1464,6 +1549,10 @@ void Window::setupMenu(QMenuBar* menubar) {
 	addGameAction(tr("ROM &info..."), "romInfo", openControllerTView<ROMInfo>(), "file");
 
 	m_actions.addMenu(tr("Recent"), "mru", "file");
+	/* 与移动端 lastRom 对齐：启动时没有命令行 ROM 就自动打开上次的游戏。 */
+	ConfigOption* loadLastRom = m_config->addOption("loadLastRom");
+	loadLastRom->addBoolean(tr("启动时打开上次的游戏"), &m_actions, "file");
+	m_config->updateOption("loadLastRom");
 	m_actions.addSeparator("file");
 
 	auto loadState = addGameAction(tr("&Load state"), "loadState", [this]() {
@@ -1829,8 +1918,20 @@ void Window::setupMenu(QMenuBar* menubar) {
 
 #ifdef USE_PNG
 	addGameAction(tr("Take &screenshot"), "screenshot", [this]() {
-		m_controller->screenshot();
+		this->takeScreenshot();
 	}, "av", tr("F12"));
+
+	/* 与移动端 shot_format 对齐：核心的 mCoreTakeScreenshot 只会写 PNG，
+	 * 所以 JPEG 走 Qt 侧（getPixels + QImage::save），文件名规则保持一致。 */
+	m_actions.addMenu(tr("Screenshot format"), "screenshotFormat", "av");
+	ConfigOption* screenshotFormat = m_config->addOption("screenshotFormat");
+	screenshotFormat->addValue(tr("PNG"), "png", &m_actions, "screenshotFormat");
+	screenshotFormat->addValue(tr("JPEG"), "jpg", &m_actions, "screenshotFormat");
+	if (m_config->getOption("screenshotFormat").isEmpty()) {
+		m_config->setOption("screenshotFormat", "png");
+	} else {
+		m_config->updateOption("screenshotFormat");
+	}
 #endif
 
 #ifdef USE_FFMPEG

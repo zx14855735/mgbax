@@ -99,7 +99,7 @@ final class DebugViewers {
 
     // == Hub ===============================================================
 
-    /** Entry dialog listing the four tools; mirrors the APK's debug menu. */
+    /** Entry dialog listing the tools; mirrors the APK's debug menu. */
     static void showHub(EmulatorActivity activity, MgbaCore core) {
         if (core == null || !core.isLoaded()) {
             Toast.makeText(activity, activity.getString(R.string.no_rom), Toast.LENGTH_SHORT).show();
@@ -111,6 +111,8 @@ final class DebugViewers {
                 activity.getString(R.string.bg_view),
                 activity.getString(R.string.oam_view),
                 activity.getString(R.string.palette_view),
+                activity.getString(R.string.tile_view),
+                activity.getString(R.string.io_view),
         };
         new AlertDialog.Builder(activity)
                 .setTitle(R.string.debug_tools)
@@ -123,8 +125,12 @@ final class DebugViewers {
                         showBg(activity, core);
                     } else if (which == 2) {
                         showOam(activity, core);
-                    } else {
+                    } else if (which == 3) {
                         showPalette(activity, core);
+                    } else if (which == 4) {
+                        showTiles(activity, core);
+                    } else {
+                        showIo(activity, core);
                     }
                 })
                 .show();
@@ -914,6 +920,232 @@ final class DebugViewers {
             }
         }
         return sheet;
+    }
+
+    // == Tile sheet viewer =================================================
+
+    private static final int TILE_SHEET_COLS = 32;
+    private static final int TILE_SHEET_ROWS = 32;
+    private static final int TILE_SHEET_COUNT = TILE_SHEET_COLS * TILE_SHEET_ROWS;
+
+    /**
+     * The whole char area as a 32x32 tile sheet, the mobile stand-in for PC's
+     * tile/map viewer. 4bpp honours a palette bank selector, 8bpp reads the
+     * full 256-entry palette. Exports the sheet like the other viewers.
+     */
+    static void showTiles(EmulatorActivity activity, MgbaCore core) {
+        LinearLayout box = column(activity);
+        final int[] state = {4, 0};     // bits per pixel, palette bank (4bpp)
+        final ImageView2 image = new ImageView2(activity);
+        final TextView info = label(activity, 0);
+        info.setTextColor(0xFFD6E8D6);
+        LinearLayout tabs = row(activity);
+        final Button bpp4 = smallButton(activity, R.string.tile_4bpp);
+        final Button bpp8 = smallButton(activity, R.string.tile_8bpp);
+        Button bankDown = smallButton(activity, 0);
+        bankDown.setText("−");
+        Button bankUp = smallButton(activity, 0);
+        bankUp.setText("＋");
+        Button export = smallButton(activity, R.string.export);
+        final Bitmap[] current = new Bitmap[1];
+        Runnable render = () -> {
+            Bitmap sheet = tileSheet(core, state[0], state[1]);
+            image.set(sheet);
+            current[0] = sheet;
+            bpp4.setEnabled(state[0] != 4);
+            bpp8.setEnabled(state[0] != 8);
+            bankDown.setEnabled(state[0] == 4 && state[1] > 0);
+            bankUp.setEnabled(state[0] == 4 && state[1] < 15);
+            String text = activity.getString(R.string.tile_info, state[0], TILE_SHEET_COUNT,
+                    sheet.getWidth(), sheet.getHeight());
+            if (state[0] == 4) {
+                text = text + " · " + activity.getString(R.string.tile_bank, state[1]);
+            }
+            info.setText(text);
+        };
+        bpp4.setOnClickListener(v -> {
+            state[0] = 4;
+            render.run();
+        });
+        bpp8.setOnClickListener(v -> {
+            state[0] = 8;
+            render.run();
+        });
+        bankDown.setOnClickListener(v -> {
+            if (state[1] > 0) {
+                state[1]--;
+                render.run();
+            }
+        });
+        bankUp.setOnClickListener(v -> {
+            if (state[1] < 15) {
+                state[1]++;
+                render.run();
+            }
+        });
+        export.setOnClickListener(v -> {
+            if (current[0] != null) {
+                exportImage(activity, current[0], "tiles");
+            }
+        });
+        tabs.addView(bpp4);
+        tabs.addView(bpp8);
+        tabs.addView(bankDown);
+        tabs.addView(bankUp);
+        tabs.addView(export);
+        HorizontalScrollView hScroll = new HorizontalScrollView(activity);
+        hScroll.addView(image);
+        box.addView(tabs);
+        box.addView(info);
+        box.addView(hScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 260)));
+        render.run();
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+        new AlertDialog.Builder(activity)
+                .setTitle(R.string.tile_view)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .show();
+    }
+
+    /** Decodes one tile sheet out of a single VRAM dump (no per-pixel bus reads). */
+    private static Bitmap tileSheet(MgbaCore core, int bpp, int paletteBank) {
+        int width = TILE_SHEET_COLS * 8;
+        int height = TILE_SHEET_ROWS * 8;
+        Bitmap sheet = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] pixels = new int[width * height];
+        byte[] vram = core.busReadBlock(0x06000000, 0x18000);
+        byte[] pal = core.busReadBlock(0x05000000, 512);
+        int stride = bpp == 4 ? 32 : 64;
+        for (int tile = 0; tile < TILE_SHEET_COUNT; tile++) {
+            int tileAddr = tile * stride;
+            int baseX = (tile % TILE_SHEET_COLS) * 8;
+            int baseY = (tile / TILE_SHEET_COLS) * 8;
+            for (int row = 0; row < 8; row++) {
+                for (int col = 0; col < 8; col++) {
+                    int index;
+                    if (bpp == 4) {
+                        int addr = tileAddr + row * 4 + (col >> 1);
+                        if (addr >= vram.length) {
+                            index = 0;
+                        } else {
+                            int value = vram[addr] & 0xFF;
+                            index = ((col & 1) != 0 ? (value >> 4) : (value & 0xF))
+                                    + paletteBank * 16;
+                        }
+                    } else {
+                        int addr = tileAddr + row * 8 + col;
+                        index = addr < vram.length ? vram[addr] & 0xFF : 0;
+                    }
+                    int entry = index * 2;
+                    int colour = 0;
+                    if (entry + 1 < pal.length) {
+                        int bgr = (pal[entry] & 0xFF) | (pal[entry + 1] & 0xFF) << 8;
+                        colour = bgr == 0 ? 0 : bgr15(bgr);
+                    }
+                    pixels[(baseY + row) * width + baseX + col] =
+                            colour == 0 ? 0xFF101010 : colour;
+                }
+            }
+        }
+        sheet.setPixels(pixels, 0, width, 0, 0, width, height);
+        return sheet;
+    }
+
+    // == I/O register viewer ===============================================
+
+    private static final class IoReg {
+        final String name;
+        final int offset;
+        final int bits;
+
+        IoReg(String name, int offset, int bits) {
+            this.name = name;
+            this.offset = offset;
+            this.bits = bits;
+        }
+    }
+
+    private static final IoReg[] GBA_IO = {
+            new IoReg("DISPCNT", 0x000, 16), new IoReg("DISPSTAT", 0x004, 16),
+            new IoReg("VCOUNT", 0x006, 16),
+            new IoReg("BG0CNT", 0x008, 16), new IoReg("BG1CNT", 0x00A, 16),
+            new IoReg("BG2CNT", 0x00C, 16), new IoReg("BG3CNT", 0x00E, 16),
+            new IoReg("BG0HOFS", 0x010, 16), new IoReg("BG0VOFS", 0x012, 16),
+            new IoReg("BG1HOFS", 0x014, 16), new IoReg("BG1VOFS", 0x016, 16),
+            new IoReg("BG2HOFS", 0x018, 16), new IoReg("BG2VOFS", 0x01A, 16),
+            new IoReg("BG3HOFS", 0x01C, 16), new IoReg("BG3VOFS", 0x01E, 16),
+            new IoReg("BG2PA", 0x020, 16), new IoReg("BG2PB", 0x022, 16),
+            new IoReg("BG2PC", 0x024, 16), new IoReg("BG2PD", 0x026, 16),
+            new IoReg("BG3PA", 0x030, 16), new IoReg("BG3PB", 0x032, 16),
+            new IoReg("BG3PC", 0x034, 16), new IoReg("BG3PD", 0x036, 16),
+            new IoReg("WIN0H", 0x040, 16), new IoReg("WIN1H", 0x042, 16),
+            new IoReg("WIN0V", 0x044, 16), new IoReg("WIN1V", 0x046, 16),
+            new IoReg("WININ", 0x048, 16), new IoReg("WINOUT", 0x04A, 16),
+            new IoReg("MOSAIC", 0x04C, 16),
+            new IoReg("BLDCNT", 0x050, 16), new IoReg("BLDALPHA", 0x052, 16),
+            new IoReg("BLDY", 0x054, 16),
+            new IoReg("SOUNDBIAS", 0x088, 16),
+            new IoReg("DMA0SAD", 0x0B0, 32), new IoReg("DMA0DAD", 0x0B4, 32),
+            new IoReg("DMA0CNT", 0x0B8, 32),
+            new IoReg("DMA1SAD", 0x0BC, 32), new IoReg("DMA1DAD", 0x0C0, 32),
+            new IoReg("DMA1CNT", 0x0C4, 32),
+            new IoReg("DMA2SAD", 0x0C8, 32), new IoReg("DMA2DAD", 0x0CC, 32),
+            new IoReg("DMA2CNT", 0x0D0, 32),
+            new IoReg("DMA3SAD", 0x0D4, 32), new IoReg("DMA3DAD", 0x0D8, 32),
+            new IoReg("DMA3CNT", 0x0DC, 32),
+            new IoReg("KEYINPUT", 0x130, 16), new IoReg("KEYCNT", 0x132, 16),
+            new IoReg("IE", 0x200, 16), new IoReg("IF", 0x202, 16),
+            new IoReg("IME", 0x208, 16),
+    };
+
+    /** Named I/O dump with a manual refresh, the mobile stand-in for PC's ioViewer. */
+    static void showIo(EmulatorActivity activity, MgbaCore core) {
+        LinearLayout box = column(activity);
+        final TextView values = new TextView(activity);
+        values.setTypeface(Typeface.MONOSPACE);
+        values.setTextSize(12);
+        values.setTextColor(0xFFE0E0E0);
+        values.setTextIsSelectable(true);
+        Button refresh = smallButton(activity, R.string.io_refresh);
+        refresh.setOnClickListener(v -> values.setText(ioDump(core)));
+        values.setText(ioDump(core));
+        box.addView(label(activity, R.string.io_info));
+        box.addView(refresh);
+        box.addView(values);
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+        new AlertDialog.Builder(activity)
+                .setTitle(R.string.io_view)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .show();
+    }
+
+    private static String ioDump(MgbaCore core) {
+        byte[] io = core.busReadBlock(0x04000000, 0x400);
+        StringBuilder out = new StringBuilder();
+        for (IoReg reg : GBA_IO) {
+            if (reg.offset + reg.bits / 8 > io.length) {
+                continue;
+            }
+            long value;
+            if (reg.bits == 32) {
+                value = (io[reg.offset] & 0xFFL)
+                        | (io[reg.offset + 1] & 0xFFL) << 8
+                        | (io[reg.offset + 2] & 0xFFL) << 16
+                        | (io[reg.offset + 3] & 0xFFL) << 24;
+                out.append(String.format(Locale.US, "%-10s %03X  %08X",
+                        reg.name, reg.offset, value));
+            } else {
+                value = (io[reg.offset] & 0xFFL) | (io[reg.offset + 1] & 0xFFL) << 8;
+                out.append(String.format(Locale.US, "%-10s %03X  %04X",
+                        reg.name, reg.offset, value));
+            }
+            out.append("  (").append(value).append(")\n");
+        }
+        return out.toString();
     }
 
     // == Export ============================================================

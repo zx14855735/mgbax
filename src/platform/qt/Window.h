@@ -184,6 +184,7 @@ private:
 	void setupMenu(QMenuBar*);
 	void setupOptions();
 	void openStateWindow(LoadSave);
+	void takeScreenshot();
 
 	void attachWidget(QWidget* widget);
 	void detachWidget();

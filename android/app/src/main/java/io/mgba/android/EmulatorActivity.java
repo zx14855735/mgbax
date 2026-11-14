@@ -73,6 +73,7 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -680,6 +681,16 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Fallback folders used when the ROM has no saves beside it. */
     private File defaultSaveDir;
     private File defaultStateDir;
+    /**
+     * In-memory snapshot of the state that was running right before a load
+     * state, so 撤销读档 can put the player back. Lives only as long as this
+     * process (a slot file cannot describe "the moment before the load").
+     */
+    private volatile byte[] undoLoadBlob;
+    /** Slot the pending undo-load snapshot was taken from; -1 when unavailable. */
+    private volatile int undoLoadSlot = -1;
+    /** Slot whose previous contents sit in {@code .ssN.bak} for 撤销存档; -1 when none. */
+    private volatile int undoSaveSlot = -1;
     /** Hidden mirror core; null until the ported GBoy link is started. */
     private volatile GBoyConsoleSet consoleSet;
     /** 3/4 人本机多核时改用进程内锁步 SIO（默认关，走共享内存总线）。 */
@@ -925,6 +936,14 @@ public class EmulatorActivity extends AppCompatActivity {
         });
         findViewById(R.id.btn_save).setOnClickListener(v -> chooseSlot(true));
         findViewById(R.id.btn_load).setOnClickListener(v -> chooseSlot(false));
+        View undoButton = findViewById(R.id.btn_undo);
+        if (undoButton != null) {
+            undoButton.setOnClickListener(v -> showUndoDialog());
+        }
+        View frameButton = findViewById(R.id.btn_frame);
+        if (frameButton != null) {
+            frameButton.setOnClickListener(v -> stepFrame());
+        }
         findViewById(R.id.btn_reset).setOnClickListener(v -> confirmReset());
         findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
         findViewById(R.id.btn_link).setOnClickListener(v -> showLinkDialog());
@@ -1120,6 +1139,8 @@ public class EmulatorActivity extends AppCompatActivity {
         defaultSaveDir = SaveLocation.prepare(this);
         defaultStateDir = new File(getFilesDir(), "states");
         activeStateDir = defaultStateDir;
+        // 撤销存档的备份文件在磁盘上，跨进程有效；槽号跟着持久化。
+        undoSaveSlot = getPreferences(MODE_PRIVATE).getInt("undo_save_slot", -1);
         core = new MgbaCore(defaultSaveDir, defaultStateDir);
         core.setRewind(true);
         applyCoreOptions();
@@ -2851,6 +2872,13 @@ public class EmulatorActivity extends AppCompatActivity {
         currentRomPath = path;
         applyRomSaveLocation(path);
         romCrc = romCrc32(path);
+        // A snapshot belongs to the running session; the slot backup survives a
+        // restart but only for the ROM that made it.
+        undoLoadBlob = null;
+        undoLoadSlot = -1;
+        String undoRom = getPreferences(MODE_PRIVATE).getString("undo_save_rom", null);
+        undoSaveSlot = path.equals(undoRom)
+                ? getPreferences(MODE_PRIVATE).getInt("undo_save_slot", -1) : -1;
         boolean ok = core.load(path);
         if (!ok) {
             runOnUiThread(() -> {
@@ -3004,6 +3032,7 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         int current = slot;
         if (cmd == CMD_SAVE) {
+            backupSlotBeforeSave(current);
             boolean ok = core.saveState(current);
             if (ok) {
                 writeStatePreview(current);
@@ -3013,7 +3042,14 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(ok ? getString(R.string.state_saved, current) : getString(R.string.state_failed));
             runOnUiThread(this::refreshSlotButton);
         } else if (cmd == CMD_LOAD) {
+            /* 读档前的进度先存进内存，误读档时「撤销」能原样还回来。
+             * 必须在这一帧、loadState 之前取，读档后的核已经换掉了。 */
+            byte[] before = core.saveStateToMemory();
             boolean ok = core.loadState(current);
+            if (ok) {
+                undoLoadBlob = before;
+                undoLoadSlot = current;
+            }
             core.clearAudio();
             if (ok) {
                 core.runFrames(userKeys(), 1);
@@ -3021,6 +3057,48 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             toast(ok ? getString(R.string.state_loaded, current) : getString(R.string.state_missing, current));
             runOnUiThread(this::refreshSlotButton);
+        } else if (cmd == CMD_UNDO_LOAD) {
+            byte[] blob = undoLoadBlob;
+            if (blob == null) {
+                toast(getString(R.string.undo_none_load));
+                return;
+            }
+            boolean ok = core.loadStateFromMemory(blob);
+            core.clearAudio();
+            if (ok) {
+                undoLoadBlob = null;
+                undoLoadSlot = -1;
+                core.runFrames(userKeys(), 1);
+                presentFrame();
+                toast(getString(R.string.undo_load_done));
+            } else {
+                toast(getString(R.string.undo_load_failed));
+            }
+            runOnUiThread(this::refreshSlotButton);
+        } else if (cmd == CMD_UNDO_SAVE) {
+            int target = undoSaveSlot;
+            File backup = target < 0 ? null : stateBackupFile(target);
+            if (backup == null || !backup.isFile() || backup.length() <= 0) {
+                toast(getString(R.string.undo_none_save));
+                return;
+            }
+            boolean ok = restoreSlotFromBackup(target);
+            if (ok) {
+                undoSaveSlot = -1;
+                getPreferences(MODE_PRIVATE).edit()
+                        .putInt("undo_save_slot", -1)
+                        .remove("undo_save_rom")
+                        .apply();
+                toast(getString(R.string.undo_save_done, target));
+            } else {
+                toast(getString(R.string.undo_save_failed));
+            }
+            runOnUiThread(this::refreshSlotButton);
+        } else if (cmd == CMD_STEP) {
+            // One emulated frame, keys included: the same path a live frame
+            // takes, so cheats/logic see the held buttons.
+            core.runFrames(userKeys(), 1);
+            presentFrame();
         } else if (cmd == CMD_RESET) {
             core.reset();
             core.clearAudio();
@@ -3569,6 +3647,130 @@ public class EmulatorActivity extends AppCompatActivity {
 
     private File statePreviewFile(int index) {
         return new File(stateFile(index).getAbsolutePath() + ".png");
+    }
+
+    // == 撤销存档 / 撤销读档 =================================================
+
+    /** Copy of a slot's file taken right before it is overwritten. */
+    private File stateBackupFile(int index) {
+        return new File(stateFile(index).getAbsolutePath() + ".bak");
+    }
+
+    private File statePreviewBackupFile(int index) {
+        return new File(statePreviewFile(index).getAbsolutePath() + ".bak");
+    }
+
+    /**
+     * Runs on the emulation thread. Keeps the slot's previous contents so the
+     * save can be undone; an empty slot leaves nothing to restore.
+     */
+    private void backupSlotBeforeSave(int index) {
+        File target = stateFile(index);
+        File backup = stateBackupFile(index);
+        if (!target.isFile() || target.length() <= 0) {
+            undoSaveSlot = -1;
+            getPreferences(MODE_PRIVATE).edit()
+                    .putInt("undo_save_slot", -1)
+                    .remove("undo_save_rom")
+                    .apply();
+            if (backup.isFile() && !backup.delete()) {
+                Log.w(TAG, "stale state backup not deleted: " + backup);
+            }
+            File previewBak = statePreviewBackupFile(index);
+            if (previewBak.isFile() && !previewBak.delete()) {
+                Log.w(TAG, "stale preview backup not deleted: " + previewBak);
+            }
+            return;
+        }
+        try {
+            if (copyFile(target, backup) == null) {
+                throw new IOException("copy failed");
+            }
+            File preview = statePreviewFile(index);
+            if (preview.isFile()) {
+                if (copyFile(preview, statePreviewBackupFile(index)) == null) {
+                    throw new IOException("preview copy failed");
+                }
+            } else {
+                statePreviewBackupFile(index).delete();
+            }
+            undoSaveSlot = index;
+            getPreferences(MODE_PRIVATE).edit()
+                    .putInt("undo_save_slot", index)
+                    .putString("undo_save_rom", currentRomPath)
+                    .apply();
+        } catch (IOException e) {
+            Log.w(TAG, "state backup failed: " + e.getMessage());
+            undoSaveSlot = -1;
+            getPreferences(MODE_PRIVATE).edit().putInt("undo_save_slot", -1).apply();
+        }
+    }
+
+    /** Puts a slot's backed-up file (and its preview) back in place. */
+    private boolean restoreSlotFromBackup(int index) {
+        File backup = stateBackupFile(index);
+        if (!backup.isFile() || backup.length() <= 0) {
+            return false;
+        }
+        if (copyFile(backup, stateFile(index)) == null) {
+            return false;
+        }
+        File previewBak = statePreviewBackupFile(index);
+        File preview = statePreviewFile(index);
+        if (previewBak.isFile()) {
+            copyFile(previewBak, preview);
+        } else if (preview.isFile() && !preview.delete()) {
+            Log.w(TAG, "stale preview not deleted: " + preview);
+        }
+        return true;
+    }
+
+    /** Entry for the 撤销 toolbar button. */
+    private void showUndoDialog() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        boolean canLoad = undoLoadBlob != null;
+        boolean canSave = undoSaveSlot >= 0 && stateBackupFile(undoSaveSlot).isFile();
+        String message = getString(R.string.undo_load) + "：" + getString(canLoad
+                        ? R.string.undo_available : R.string.undo_unavailable)
+                + "\n" + getString(R.string.undo_save) + "：" + getString(canSave
+                        ? R.string.undo_available : R.string.undo_unavailable)
+                + "\n\n" + getString(R.string.undo_load_hint)
+                + "\n" + getString(R.string.undo_save_hint);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.undo_title)
+                .setMessage(message)
+                .setPositiveButton(R.string.undo_load, (d, w) -> {
+                    if (!canLoad) {
+                        toast(getString(R.string.undo_none_load));
+                        return;
+                    }
+                    command.set(CMD_UNDO_LOAD);
+                })
+                .setNeutralButton(R.string.undo_save, (d, w) -> {
+                    if (!canSave) {
+                        toast(getString(R.string.undo_none_save));
+                        return;
+                    }
+                    command.set(CMD_UNDO_SAVE);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** One emulated frame; pauses first so the frame visibly stands still. */
+    private void stepFrame() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        if (!paused) {
+            setPaused(true);
+            toast(getString(R.string.frame_step_paused));
+        }
+        command.set(CMD_STEP);
     }
 
     private Bitmap decodePreview(int index) {
@@ -5552,7 +5754,8 @@ public class EmulatorActivity extends AppCompatActivity {
         final int IDX_ADVANCED = 4;
         final int IDX_ROM_DIRS = 5;
         final int IDX_SCAN = 6;
-        final int IDX_HELP = 7;
+        final int IDX_ROM_INFO = 7;
+        final int IDX_HELP = 8;
         String[] items = {
                 getString(R.string.orientation_title),
                 getString(R.string.settings_sound),
@@ -5561,6 +5764,7 @@ public class EmulatorActivity extends AppCompatActivity {
                 getString(R.string.settings_advanced),
                 getString(R.string.rom_dirs_menu),
                 getString(R.string.scan_button),
+                getString(R.string.rom_info),
                 getString(R.string.settings_help),
         };
         new AlertDialog.Builder(this)
@@ -5580,6 +5784,8 @@ public class EmulatorActivity extends AppCompatActivity {
                         showRomDirsDialog();
                     } else if (which == IDX_SCAN) {
                         showRomScan();
+                    } else if (which == IDX_ROM_INFO) {
+                        showRomInfoDialog();
                     } else if (which == IDX_HELP) {
                         showHelpDialog();
                     }
@@ -5770,6 +5976,10 @@ public class EmulatorActivity extends AppCompatActivity {
         extras.setAllCaps(false);
         extras.setText(R.string.input_extras);
         extras.setOnClickListener(v -> showExtraKeysDialog());
+        final Button keyRemap = new Button(this);
+        keyRemap.setAllCaps(false);
+        keyRemap.setText(R.string.key_remap);
+        keyRemap.setOnClickListener(v -> showKeyRemapDialog());
         final Button rewindTap = new Button(this);
         rewindTap.setAllCaps(false);
         rewindTap.setText(getString(R.string.rewind_tap, rewindTapSeconds()));
@@ -5837,6 +6047,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(opacityLabel);
         box.addView(opacityBar);
         box.addView(extras);
+        box.addView(keyRemap);
         box.addView(rewindTap);
         box.addView(cKey);
         box.addView(c2Key);
@@ -5900,6 +6111,123 @@ public class EmulatorActivity extends AppCompatActivity {
             {"save", "快速存档"}, {"load", "快速读档"}, {"ff", "倍速（按住快进）"}, {"shot", "截图"},
             {"rewind", "倒带快捷键（点一次 2 秒）"},
     };
+
+    /**
+     * Hardware key remapping (PC has this in Settings→Keyboard). Ten rows, one
+     * per virtual button; tapping a row waits for the next key press. Bindings
+     * live in {@code key_<mask>} and are read by {@link #mapKey}.
+     */
+    private void showKeyRemapDialog() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(12);
+        box.setPadding(pad, pad, pad, pad);
+        scroll.addView(box);
+        TextView hint = new TextView(this);
+        hint.setText(R.string.key_remap_hint_text);
+        hint.setTextColor(0xFF444444);
+        hint.setTextSize(13);
+        hint.setPadding(0, 0, 0, dp(8));
+        box.addView(hint);
+        Button[] rows = new Button[KEY_ACTION_MASKS.length];
+        Runnable refresh = () -> {
+            for (int i = 0; i < rows.length; i++) {
+                if (rows[i] != null) {
+                    rows[i].setText(remapRowText(i));
+                }
+            }
+        };
+        for (int i = 0; i < KEY_ACTION_MASKS.length; i++) {
+            final int index = i;
+            Button row = new Button(this);
+            row.setAllCaps(false);
+            row.setText(remapRowText(i));
+            row.setOnClickListener(v -> captureKey(KEY_ACTION_MASKS[index], index, refresh));
+            rows[i] = row;
+            box.addView(row);
+        }
+        Button resetAll = new Button(this);
+        resetAll.setAllCaps(false);
+        resetAll.setText(R.string.key_remap_reset_all);
+        resetAll.setOnClickListener(v -> {
+            SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit();
+            for (int mask : KEY_ACTION_MASKS) {
+                editor.remove("key_" + mask);
+            }
+            editor.apply();
+            refresh.run();
+        });
+        box.addView(resetAll);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.key_remap_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .show();
+    }
+
+    private String remapRowText(int index) {
+        int mask = KEY_ACTION_MASKS[index];
+        int code = keyPref(mask);
+        String key = code == 0 ? defaultKeyLabel(mask) : keyCodeLabel(code);
+        return getString(R.string.key_remap_row, getString(KEY_ACTION_LABELS[index]), key);
+    }
+
+    /** First keycode the built-in table still maps to this action. */
+    private String defaultKeyLabel(int mask) {
+        for (int code = 1; code <= KeyEvent.getMaxKeyCode(); code++) {
+            if (defaultMapKey(code) == mask) {
+                return keyCodeLabel(code);
+            }
+        }
+        return getString(R.string.key_none);
+    }
+
+    private static String keyCodeLabel(int code) {
+        String name = KeyEvent.keyCodeToString(code);
+        if (name == null) {
+            return String.valueOf(code);
+        }
+        if (name.startsWith("KEYCODE_")) {
+            name = name.substring("KEYCODE_".length());
+        }
+        if (name.startsWith("BUTTON_")) {
+            return "手柄 " + name.substring("BUTTON_".length()).replace('_', ' ');
+        }
+        return name.replace('_', ' ');
+    }
+
+    /** Waits for one key press and stores it as the binding for {@code mask}. */
+    private void captureKey(int mask, int index, Runnable onChanged) {
+        String action = getString(KEY_ACTION_LABELS[index]);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(getString(R.string.key_remap_capture, action))
+                .setMessage(R.string.key_remap_waiting)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setNeutralButton(R.string.key_remap_reset, (d, w) -> {
+                    getPreferences(MODE_PRIVATE).edit().remove("key_" + mask).apply();
+                    toast(getString(R.string.key_remap_reset_one, action));
+                    onChanged.run();
+                })
+                .create();
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) {
+                return false;
+            }
+            // Keys with a system meaning are not bindable.
+            if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                    || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_HOME
+                    || keyCode == KeyEvent.KEYCODE_APP_SWITCH) {
+                return false;
+            }
+            getPreferences(MODE_PRIVATE).edit().putInt("key_" + mask, keyCode).apply();
+            toast(getString(R.string.key_remap_done, action, keyCodeLabel(keyCode)));
+            d.dismiss();
+            onChanged.run();
+            return true;
+        });
+        dialog.show();
+    }
 
     private void showExtraKeysDialog() {
         Set<String> enabled = extraKeys();
@@ -6302,6 +6630,208 @@ public class EmulatorActivity extends AppCompatActivity {
                 })
                 .setNegativeButton(android.R.string.cancel, null)
                 .show();
+    }
+
+    /**
+     * ROM header / runtime summary, the counterpart of PC's ROMInfo view: what
+     * cartridge this is, what the core thinks its save type is, and where the
+     * battery save and states actually live.
+     */
+    private void showRomInfoDialog() {
+        String path = currentRomPath;
+        if (path == null) {
+            path = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        }
+        File rom = path == null ? null : new File(path);
+        if (rom == null || !rom.isFile()) {
+            toast(getString(R.string.rom_info_none));
+            return;
+        }
+        byte[] header = new byte[0x200];
+        int read = 0;
+        try (InputStream in = new FileInputStream(rom)) {
+            int n;
+            while (read < header.length && (n = in.read(header, read, header.length - read)) > 0) {
+                read += n;
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "rom header read failed: " + e.getMessage());
+        }
+        String lower = rom.getName().toLowerCase(Locale.US);
+        boolean gba;
+        if (lower.endsWith(".gba")) {
+            gba = true;
+        } else if (lower.endsWith(".gb") || lower.endsWith(".gbc")) {
+            gba = false;
+        } else {
+            gba = read > 0xB2 && (header[0xB2] & 0xFF) == 0x96;
+        }
+        StringBuilder out = new StringBuilder();
+        out.append(getString(R.string.rom_info_header)).append('\n');
+        if (gba) {
+            appendInfoRow(out, "标题", asciiText(header, 0xA0, 12));
+            appendInfoRow(out, "游戏代码", asciiText(header, 0xAC, 4));
+            appendInfoRow(out, "厂商", asciiText(header, 0xB0, 2));
+            appendInfoRow(out, "版本", String.valueOf(header[0xBC] & 0xFF));
+            int sum = 0;
+            for (int i = 0xA0; i <= 0xBC && i < read; i++) {
+                sum += header[i] & 0xFF;
+            }
+            boolean headerOk = read > 0xBD
+                    && (((-(sum + 0x19)) & 0xFF) == (header[0xBD] & 0xFF));
+            appendInfoRow(out, "头校验", headerOk ? "正常" : "异常");
+        } else {
+            appendInfoRow(out, "标题", asciiText(header, 0x134, 16));
+            int cgb = read > 0x143 ? header[0x143] & 0xFF : 0;
+            appendInfoRow(out, "机型", cgb == 0xC0 ? "GBC 专用"
+                    : cgb == 0x80 ? "GBC 兼容" : "GB");
+            int cart = read > 0x147 ? header[0x147] & 0xFF : 0;
+            appendInfoRow(out, "卡带类型", gbCartName(cart));
+            int romCode = read > 0x148 ? header[0x148] & 0xFF : 0;
+            appendInfoRow(out, "ROM 大小", romCode <= 8
+                    ? (32 << romCode) + " KB" : "未标注");
+            int ramCode = read > 0x149 ? header[0x149] & 0xFF : 0;
+            appendInfoRow(out, "RAM 大小", gbRamName(ramCode));
+            int checksum = 0;
+            for (int i = 0x134; i <= 0x14C && i < read; i++) {
+                checksum = (checksum - (header[i] & 0xFF) - 1) & 0xFF;
+            }
+            appendInfoRow(out, "头校验", read > 0x14D && checksum == (header[0x14D] & 0xFF)
+                    ? "正常" : "异常");
+        }
+        out.append('\n').append(getString(R.string.rom_info_runtime)).append('\n');
+        appendInfoRow(out, "文件", rom.getName());
+        appendInfoRow(out, "目录", String.valueOf(rom.getParent()));
+        long bytes = rom.length();
+        appendInfoRow(out, "大小", String.format(Locale.US, "%d 字节 (%.2f MB)",
+                bytes, bytes / (1024.0 * 1024.0)));
+        if (romCrc < 0) {
+            romCrc = romCrc32(rom.getAbsolutePath());
+        }
+        appendInfoRow(out, "CRC32", romCrc < 0 ? "未知"
+                : String.format(Locale.US, "0x%08X", romCrc));
+        Integer perRomType = perRomSaveType;
+        appendInfoRow(out, "存档类型", perRomType != null
+                ? saveTypeName(perRomType) + "（本游戏）"
+                : saveTypeName(saveTypePref()));
+        String savePath = core != null && core.isLoaded() ? core.saveFile() : null;
+        if (savePath == null || savePath.isEmpty()) {
+            appendInfoRow(out, "电池存档", "尚未生成");
+        } else {
+            File save = new File(savePath);
+            appendInfoRow(out, "电池存档", SaveLocation.displayPath(this, savePath)
+                    + (save.isFile() ? "（" + save.length() + " 字节）" : "（未写入）"));
+        }
+        File dir = activeStateDir != null ? activeStateDir : defaultStateDir;
+        if (dir != null) {
+            appendInfoRow(out, "状态目录", dir.getAbsolutePath());
+        }
+        appendInfoRow(out, "补丁", getPreferences(MODE_PRIVATE).getBoolean("patches", true)
+                ? "自动应用" : "关");
+
+        TextView text = new TextView(this);
+        int pad = dp(16);
+        text.setPadding(pad, pad, pad, pad);
+        text.setText(out.toString());
+        text.setTextSize(12);
+        text.setTextIsSelectable(true);
+        text.setTypeface(android.graphics.Typeface.MONOSPACE);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(text);
+        final String report = out.toString();
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.rom_info_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .setNeutralButton(R.string.copy_path, (d, w) -> {
+                    ClipboardManager clipboard =
+                            (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    if (clipboard != null) {
+                        clipboard.setPrimaryClip(ClipData.newPlainText("rom", report));
+                        toast(getString(R.string.copy_done));
+                    }
+                })
+                .show();
+    }
+
+    private static void appendInfoRow(StringBuilder out, String label, String value) {
+        out.append(label).append(": ").append(value).append('\n');
+    }
+
+    /** Fixed-length header string, cut at the first NUL and trimmed. */
+    private static String asciiText(byte[] data, int offset, int length) {
+        StringBuilder text = new StringBuilder();
+        for (int i = offset; i < offset + length && i < data.length; i++) {
+            int ch = data[i] & 0xFF;
+            if (ch == 0) {
+                break;
+            }
+            text.append(ch >= 32 && ch < 127 ? (char) ch : '.');
+        }
+        return text.toString().trim();
+    }
+
+    private static String gbCartName(int cart) {
+        switch (cart) {
+            case 0x00:
+                return "ROM ONLY";
+            case 0x01:
+            case 0x02:
+            case 0x03:
+                return "MBC1";
+            case 0x05:
+            case 0x06:
+                return "MBC2";
+            case 0x08:
+            case 0x09:
+                return "ROM+RAM";
+            case 0x0F:
+            case 0x10:
+            case 0x11:
+            case 0x12:
+            case 0x13:
+                return "MBC3";
+            case 0x19:
+            case 0x1A:
+            case 0x1B:
+            case 0x1C:
+            case 0x1D:
+            case 0x1E:
+                return "MBC5";
+            case 0x20:
+                return "MBC6";
+            case 0x22:
+                return "MBC7";
+            case 0xFC:
+                return "POCKET CAMERA";
+            case 0xFD:
+                return "BANDAI TAMA5";
+            case 0xFE:
+                return "HuC3";
+            case 0xFF:
+                return "HuC1";
+            default:
+                return String.format(Locale.US, "未知 (0x%02X)", cart);
+        }
+    }
+
+    private static String gbRamName(int code) {
+        switch (code) {
+            case 0:
+                return "无";
+            case 1:
+                return "2 KB";
+            case 2:
+                return "8 KB";
+            case 3:
+                return "32 KB";
+            case 4:
+                return "128 KB";
+            case 5:
+                return "64 KB";
+            default:
+                return "未标注";
+        }
     }
 
     private void showHelpDialog() {
@@ -8222,7 +8752,57 @@ public class EmulatorActivity extends AppCompatActivity {
         return true;
     }
 
-    private static int mapKey(int keyCode) {
+    /**
+     * Hardware keys the remap dialog offers, in table order. The preference
+     * key for each is {@code key_<mask>} and holds the KeyEvent code.
+     */
+    private static final int[] KEY_ACTION_MASKS = {
+            ControlsView.UP, ControlsView.DOWN, ControlsView.LEFT, ControlsView.RIGHT,
+            ControlsView.A, ControlsView.B, ControlsView.L, ControlsView.R,
+            ControlsView.START, ControlsView.SELECT,
+    };
+
+    private static final int[] KEY_ACTION_LABELS = {
+            R.string.key_a_up, R.string.key_a_down, R.string.key_a_left, R.string.key_a_right,
+            R.string.key_a_a, R.string.key_a_b, R.string.key_a_l, R.string.key_a_r,
+            R.string.key_a_start, R.string.key_a_select,
+    };
+
+    private int keyPref(int mask) {
+        return getPreferences(MODE_PRIVATE).getInt("key_" + mask, 0);
+    }
+
+    /**
+     * Maps a hardware key to a virtual button: user bindings first, then the
+     * built-in table. A key that the player rebound away from its default is
+     * dropped from its old action, the way a desktop keymap behaves.
+     */
+    private int mapKey(int keyCode) {
+        int customMask = 0;
+        for (int mask : KEY_ACTION_MASKS) {
+            if (keyPref(mask) == keyCode) {
+                customMask = mask;
+                break;
+            }
+        }
+        if (customMask != 0) {
+            return customMask;
+        }
+        int def = defaultMapKey(keyCode);
+        if (def == 0) {
+            return 0;
+        }
+        // The default key of an action that was rebound elsewhere no longer
+        // belongs to it.
+        for (int mask : KEY_ACTION_MASKS) {
+            if (mask == def && keyPref(mask) != 0) {
+                return 0;
+            }
+        }
+        return def;
+    }
+
+    private static int defaultMapKey(int keyCode) {
         switch (keyCode) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_W:

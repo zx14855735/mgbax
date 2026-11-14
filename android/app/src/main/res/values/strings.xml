@@ -428,6 +428,8 @@
     <string name="undo_save_failed">还原失败：备份文件不可用</string>
     <string name="undo_load_hint">读档前会自动缓存当前进度，仅本次运行有效</string>
     <string name="undo_save_hint">存档前会备份槽位旧内容(.bak)，重启后仍可撤销</string>
+    <string name="undo_available">可用</string>
+    <string name="undo_unavailable">不可用</string>
     <string name="frame_step">帧进</string>
     <string name="frame_step_paused">已暂停，点「帧进」逐帧前进</string>
 
@@ -460,6 +462,8 @@
     <string name="rom_info_none">还没有加载 ROM</string>
     <string name="rom_info_header">卡带头</string>
     <string name="rom_info_runtime">运行状态</string>
+    <string name="copy_path">复制</string>
+    <string name="copy_done">已复制到剪贴板</string>
 
     <!-- External shaders -->
     <string name="shader_external">外部渲染器</string>
