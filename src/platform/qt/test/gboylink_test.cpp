@@ -1160,7 +1160,7 @@ static int gboySessionSlotTest(void) {
 		}
 	};
 	const int expected[4] = {GBoyFrames::TYPE_KEYS, GBoyFrames::TYPE_INPUT_2,
-	                         GBoyFrames::TYPE_READY, GBoyFrames::TYPE_INPUT_4};
+	                         GBoyFrames::TYPE_INPUT_3, GBoyFrames::TYPE_INPUT_4};
 	for (int slot = 1; slot <= 4; ++slot) {
 		QByteArray sent;
 		GBoyLinkSession::Events ev;
