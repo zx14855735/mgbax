@@ -5648,7 +5648,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     private func makeAudioSampleBuffer(_ buffer: AVAudioPCMBuffer, elapsed: TimeInterval) -> CMSampleBuffer? {
-        guard let format = buffer.format.formatDescription else { return nil }
+        // AVAudioFormat.formatDescription 是非 Optional,不能 if let(CI #62 实锤)。
+        let format = buffer.format.formatDescription
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return nil }
         let rate = buffer.format.sampleRate
