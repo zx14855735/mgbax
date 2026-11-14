@@ -466,6 +466,30 @@
     <string name="copy_path">复制</string>
     <string name="copy_done">已复制到剪贴板</string>
 
+    <!-- Audio output rate -->
+    <string name="sound_rate">输出采样率: %1$s</string>
+    <string name="sound_rate_title">输出采样率</string>
+    <string name="sound_rate_auto">自动（设备 %1$d Hz）</string>
+    <string name="sound_rate_hz">%1$d Hz</string>
+
+    <!-- Battery save file export / import -->
+    <string name="save_file">电池存档导出 / 导入</string>
+    <string name="save_export">导出当前电池存档(.sav)</string>
+    <string name="save_import_file">从文件导入电池存档(.sav/.srm)</string>
+    <string name="save_no_battery">还没有电池存档（先在游戏里存一次档）</string>
+    <string name="save_export_done">已导出 %1$s</string>
+    <string name="save_export_failed">导出失败：%1$s</string>
+    <string name="save_import_done">存档已导入，正在重新载入游戏</string>
+    <string name="save_import_failed">导入失败：%1$s</string>
+
+    <!-- Memory watch -->
+    <string name="watch_view">内存变化监视</string>
+    <string name="watch_start">开始监视</string>
+    <string name="watch_stop">停止</string>
+    <string name="watch_hint">每 0.5 秒对比一次，列出发生变化的地址（旧值 → 新值），最多 200 条。</string>
+    <string name="watch_none">这段时间没有地址发生变化</string>
+    <string name="watch_changed_n">%1$d 个地址在变化（%2$s）</string>
+
     <!-- External shaders -->
     <string name="shader_external">外部渲染器</string>
     <string name="shader_external_value">外部渲染器:%1$s</string>

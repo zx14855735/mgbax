@@ -38,6 +38,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var fastHold = false
     private var orientationMode = UserDefaults.standard.string(forKey: "orientation") ?? "landscape"
     private var portrait: Bool { orientationMode == "portrait" || orientationMode == "portrait_rev" }
+    /// 沉浸式（Android `immersive` 的等价物）：隐藏状态栏与 Home 指示条。
+    private func immersivePref() -> Bool {
+        defaults.object(forKey: "immersive") == nil ? true : defaults.bool(forKey: "immersive")
+    }
+    override var prefersStatusBarHidden: Bool { immersivePref() }
+    override var prefersHomeIndicatorAutoHidden: Bool { immersivePref() }
     private var touchKeys = 0
     private var hwKeys = 0
     private var padKeys = 0
@@ -210,6 +216,38 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var undoAvailable = false
     /** 逐帧前进：暂停时由帧循环消费一次（gate 保护）。 */
     private var stepFrameWanted = false
+    /** 逐帧倒带：暂停时由帧循环消费一次（gate 保护）。 */
+    private var rewindFrameWanted = false
+    /** 逐帧倒带回放用的本地按键历史（环形，emu 线程读写）。 */
+    private static let keyHistorySize = 240
+    private var keyHistory = [UInt32](repeating: 0, count: 240)
+    /**
+     * 硬件键盘映射（PC Settings → Keyboard 页的等价物）：物理键名 → GBA 键名，
+     * 存 `UserDefaults["key_map"]`；默认表与改造前的 `mapKey` 逐键等价。
+     */
+    private static let keyInputs: [(String, UIKeyboardHIDUsage)] = [
+        ("↑", .keyboardUpArrow), ("↓", .keyboardDownArrow),
+        ("←", .keyboardLeftArrow), ("→", .keyboardRightArrow),
+        ("W", .keyboardW), ("A", .keyboardA), ("S", .keyboardS), ("D", .keyboardD),
+        ("X", .keyboardX), ("Z", .keyboardZ),
+        ("回车", .keyboardReturnOrEnter), ("退格", .keyboardDeleteOrBackspace),
+        ("左Shift", .keyboardLeftShift), ("右Shift", .keyboardRightShift)
+    ]
+    private static let keyTargets: [(String, Int)] = [
+        ("上", ControlsView.up), ("下", ControlsView.down),
+        ("左", ControlsView.left), ("右", ControlsView.right),
+        ("A", ControlsView.A), ("B", ControlsView.B),
+        ("L", ControlsView.l), ("R", ControlsView.r),
+        ("START", ControlsView.start), ("SELECT", ControlsView.select),
+        ("无", 0)
+    ]
+    private static let keyDefaults: [String: String] = [
+        "↑": "上", "↓": "下", "←": "左", "→": "右",
+        "W": "上", "A": "L", "S": "R", "D": "无",
+        "X": "A", "Z": "B",
+        "回车": "START", "退格": "SELECT",
+        "左Shift": "SELECT", "右Shift": "SELECT"
+    ]
     private static let menuHideSeconds: TimeInterval = 4
     private static let audioStepFrames = 4
     private static let audioReadFrames: Int32 = 8192
@@ -555,6 +593,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("读档", #selector(loadState)),
             ("撤销", #selector(undoStateAction)),
             ("逐帧", #selector(stepFrame)),
+            ("退一帧", #selector(stepBackFrame)),
             ("BIOS", #selector(openBios)),
             ("画质", #selector(showVideo)),
             ("联机", #selector(showLink)),
@@ -1087,11 +1126,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 gate.lock()
                 let step = stepFrameWanted
                 stepFrameWanted = false
+                let back = rewindFrameWanted
+                rewindFrameWanted = false
                 gate.unlock()
                 if step && !loading && mgbaMobileIsLoaded(core) {
                     // 逐帧前进：暂停时只推进一帧并立刻显示（PC 的 Next frame）。
                     _ = mgbaMobileRunFrames(core, 1)
                     mgbaMobileClearAudio(core)
+                    present(core, &video, &videoCap)
+                }
+                if back && !loading && mgbaMobileIsLoaded(core) {
+                    replayBackOneFrame(core: core)
                     present(core, &video, &videoCap)
                 }
                 gate.lock()
@@ -1218,6 +1263,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     if let set = consoleSet, set.isReady {
                         netFrameNo += n
                         set.beginFrame(netFrameNo)
+                    }
+                    // 逐帧倒带用：记下这批帧的本地按键掩码（环 240 帧，1 KB）。
+                    let frameMask = UInt32(truncatingIfNeeded: userKeys())
+                    let frameIndex = Int(mgbaMobileFrameCounter(core))
+                    for k in 0..<n {
+                        keyHistory[(frameIndex + k) % Self.keyHistorySize] = frameMask
                     }
                     _ = mgbaMobileRunFrames(core, Int32(n))
                     pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
@@ -1722,6 +1773,34 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         DispatchQueue.main.async { self.refreshSlotButton() }
     }
 
+    /**
+     * 逐帧倒带（PC 的 Step backwards）：先倒带 1 秒，再按 `keyHistory` 里记录的
+     * 本地按键掩码逐帧重放到「上一帧」。暂停状态没有新输入，所以这段回放的
+     * 输入与当时完全一致（记录环 240 帧 > 1 秒 60 帧，不会读到被覆盖的旧条目）。
+     */
+    private func replayBackOneFrame(core: OpaquePointer) {
+        let now = Int(mgbaMobileFrameCounter(core))
+        guard now > 0 else {
+            toast("没有可倒带的历史")
+            return
+        }
+        let target = now - 1
+        guard mgbaMobileRewind(core, 1) else {
+            toast("没有可倒带的历史")
+            return
+        }
+        var steps = 0
+        while Int(mgbaMobileFrameCounter(core)) < target && steps < 600 {
+            let index = Int(mgbaMobileFrameCounter(core)) % Self.keyHistorySize
+            mgbaMobileSetKeys(core, keyHistory[index])
+            _ = mgbaMobileRunFrames(core, 1)
+            steps += 1
+        }
+        // 回到暂停时的按键状态（通常为 0，避免回放里按下的键粘住）。
+        mgbaMobileSetKeys(core, UInt32(truncatingIfNeeded: userKeys()))
+        mgbaMobileClearAudio(core)
+    }
+
     /// Drops every locally held key after the touch stream or focus was lost.
     /// Without this the matching UP/CANCEL can go to another window, and a
     /// latched A (or fast-forward hold) makes the next press look dead.
@@ -2135,7 +2214,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         paused.toggle()
         let value = paused
         // 继续时丢掉没消费掉的逐帧请求，免得下次暂停凭空多走一帧。
-        if !value { stepFrameWanted = false }
+        if !value {
+            stepFrameWanted = false
+            rewindFrameWanted = false
+        }
         gate.unlock()
         pauseButton.setTitle(value ? "继续" : "暂停", for: .normal)
         audio.setPaused(value)
@@ -2465,6 +2547,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         padMapping.contentHorizontalAlignment = .left
         padMapping.setTitle("手柄按键映射", for: .normal)
         padMapping.addAction(UIAction { [weak self] _ in self?.showPadMapping() }, for: .touchUpInside)
+        let keyMapping = UIButton(type: .system)
+        keyMapping.contentHorizontalAlignment = .left
+        keyMapping.setTitle("键盘按键映射（iPad 外接键盘）", for: .normal)
+        keyMapping.addAction(UIAction { [weak self] _ in self?.showKeyMapping() }, for: .touchUpInside)
         let cKey = UIButton(type: .system)
         cKey.contentHorizontalAlignment = .left
         cKey.setTitle("C 键组合宏：\(macroTitle(controls.macro(0)))", for: .normal)
@@ -2545,6 +2631,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(keypadDetect.0)
         box.addArrangedSubview(extras)
         box.addArrangedSubview(padMapping)
+        box.addArrangedSubview(keyMapping)
         box.addArrangedSubview(cKey)
         box.addArrangedSubview(c2Key)
         box.addArrangedSubview(shotFormat)
@@ -2598,6 +2685,46 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }, for: .touchUpInside)
         box.addArrangedSubview(reset)
         presentSheet(SheetController(title: "手柄按键映射", content: box))
+    }
+
+    /// 设置 → 输入 → 键盘按键映射：点一行循环切换该物理键对应的游戏键。
+    private func showKeyMapping() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 6
+        let note = UILabel()
+        note.numberOfLines = 0
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabel
+        note.text = "点一行循环切换这个实体键对应的游戏键（iPad 外接键盘）。Tab 与空格固定是快进，不在此表里。"
+        box.addArrangedSubview(note)
+        var map = keyMap()
+        for (input, _) in Self.keyInputs {
+            let button = UIButton(type: .system)
+            button.contentHorizontalAlignment = .left
+            button.setTitle("\(input) → \(map[input] ?? "无")", for: .normal)
+            button.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                let now = map[input] ?? "无"
+                let index = Self.keyTargets.firstIndex(where: { $0.0 == now }) ?? 0
+                let next = Self.keyTargets[(index + 1) % Self.keyTargets.count].0
+                map[input] = next
+                self.defaults.set(map, forKey: "key_map")
+                button.setTitle("\(input) → \(next)", for: .normal)
+                self.releaseInput()
+            }, for: .touchUpInside)
+            box.addArrangedSubview(button)
+        }
+        let reset = UIButton(type: .system)
+        reset.setTitle("恢复默认映射", for: .normal)
+        reset.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.removeObject(forKey: "key_map")
+            self.releaseInput()
+            self.toast("已恢复默认键盘映射，重新打开本页查看")
+        }, for: .touchUpInside)
+        box.addArrangedSubview(reset)
+        presentSheet(SheetController(title: "键盘按键映射", content: box))
     }
 
     private func showExtraKeysDialog() {
@@ -5469,6 +5596,29 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         armMenuAutoHide()
     }
 
+    /// 逐帧倒带：PC 的 Step backwards（Ctrl+B）。先暂停，再往回退一帧。
+    @objc private func stepBackFrame() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        if let set = consoleSet, set.isReady {
+            toast("联机中不能逐帧倒带")
+            return
+        }
+        gate.lock()
+        let wasPaused = paused
+        gate.unlock()
+        if !wasPaused {
+            togglePause()
+        }
+        gate.lock()
+        rewindFrameWanted = true
+        gate.signal()
+        gate.unlock()
+        armMenuAutoHide()
+    }
+
     private func postCommand(_ cmd: Int) {
         gate.lock()
         command = cmd
@@ -5647,6 +5797,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         shaderRow.contentHorizontalAlignment = .left
         shaderRow.setTitle("外部渲染器：\(ExternalShader.current ?? "无")", for: .normal)
         shaderRow.addAction(UIAction { [weak self] _ in self?.showShaderDialog() }, for: .touchUpInside)
+        let immersive = labeledSwitch("沉浸式全屏（隐藏状态栏 / Home 指示条）", immersivePref())
+        immersive.1.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.set(immersive.1.isOn, forKey: "immersive")
+            self.setNeedsStatusBarAppearanceUpdate()
+            self.setNeedsUpdateOfHomeIndicatorAutoHidden()
+        }, for: .valueChanged)
         let autoSkip = labeledSwitch("自动跳帧（跟不上时自动跳帧保速度）", defaults.bool(forKey: "vf_skip_auto"))
         let skip = slider(max: 5, value: Float(defaults.integer(forKey: "vf_skip")))
         let bright = slider(max: 100, value: Float((defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")) - 50))
@@ -5675,6 +5832,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(filterRow)
         box.addArrangedSubview(sceneRow)
         box.addArrangedSubview(shaderRow)
+        box.addArrangedSubview(immersive.0)
         box.addArrangedSubview(autoSkip.0)
         box.addArrangedSubview(skipLabel)
         box.addArrangedSubview(skip)
@@ -6893,20 +7051,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
+    /// 物理键 → 游戏键（设置 → 输入 → 键盘按键映射）。
+    private func keyMap() -> [String: String] {
+        let stored = defaults.dictionary(forKey: "key_map") as? [String: String] ?? [:]
+        var map = Self.keyDefaults
+        for (key, value) in stored { map[key] = value }
+        return map
+    }
+
     private func mapKey(_ code: UIKeyboardHIDUsage) -> Int {
-        switch code {
-        case .keyboardUpArrow, .keyboardW: return ControlsView.up
-        case .keyboardDownArrow: return ControlsView.down
-        case .keyboardLeftArrow: return ControlsView.left
-        case .keyboardRightArrow: return ControlsView.right
-        case .keyboardA: return ControlsView.l
-        case .keyboardX: return ControlsView.A
-        case .keyboardZ: return ControlsView.B
-        case .keyboardS: return ControlsView.r
-        case .keyboardReturnOrEnter: return ControlsView.start
-        case .keyboardDeleteOrBackspace, .keyboardLeftShift, .keyboardRightShift: return ControlsView.select
-        default: return 0
-        }
+        guard let input = Self.keyInputs.first(where: { $0.1 == code })?.0 else { return 0 }
+        let target = keyMap()[input] ?? "无"
+        return Self.keyTargets.first(where: { $0.0 == target })?.1 ?? 0
     }
 
     private func labeledSwitch(_ title: String, _ on: Bool) -> (UIStackView, UISwitch) {

@@ -276,7 +276,7 @@ endif()
 if(TARGET ${QT}::WebSockets)
 	list(APPEND QT_LIBRARIES ${QT}::WebSockets)
 	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
-	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp TcpDirectLink.cpp BtLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp)
+	list(APPEND SOURCE_FILES CloudLink.cpp GbCloud.cpp DirectLink.cpp TcpDirectLink.cpp BtLink.cpp KcpChannel.cpp LobbyView.cpp GBoyLinkSession.cpp GBoyMirror.cpp DirectTransportDialog.cpp)
 	list(APPEND UI_FILES LobbyView.ui)
 
 	# The official-mode mirror console wraps the same headless mobile core the

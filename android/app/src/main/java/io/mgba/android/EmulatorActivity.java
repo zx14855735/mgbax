@@ -1445,6 +1445,18 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             return;
         }
+        if (requestCode == REQ_SAV_EXPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                exportBatterySave(data.getData());
+            }
+            return;
+        }
+        if (requestCode == REQ_SAV_IMPORT) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                importBatterySave(data.getData());
+            }
+            return;
+        }
         if (requestCode == REQ_BACKUP_EXPORT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 Uri target = data.getData();
@@ -3176,9 +3188,26 @@ public class EmulatorActivity extends AppCompatActivity {
         // Prefer the rate the device's audio hardware actually runs at so the
         // system does not have to resample our output; the core's own rate is
         // the fallback when that cannot be opened.
-        if (!buildAudioTrack(deviceOutputRate())) {
+        if (!buildAudioTrack(chosenOutputRate())) {
             buildAudioTrack(sourceRate);
         }
+    }
+
+    /** User-selected output rate (0 = follow the device), the P14 sampleRate knob. */
+    private int chosenOutputRate() {
+        int pref = getPreferences(MODE_PRIVATE).getInt("audio_rate", 0);
+        if (pref >= 8000 && pref <= 192000) {
+            return pref;
+        }
+        return deviceOutputRate();
+    }
+
+    private String outputRateName() {
+        int pref = getPreferences(MODE_PRIVATE).getInt("audio_rate", 0);
+        if (pref >= 8000 && pref <= 192000) {
+            return getString(R.string.sound_rate_hz, pref);
+        }
+        return getString(R.string.sound_rate_auto, deviceOutputRate());
     }
 
     /** Sample rate Android's audio output runs at, defaulting to the usual 48 kHz. */
@@ -5842,8 +5871,38 @@ public class EmulatorActivity extends AppCompatActivity {
         volumeBar.setProgress(volumeNow);
         CheckBox lowLatency = check(R.string.sound_low_latency, getPreferences(MODE_PRIVATE).getBoolean("low_latency", false));
         CheckBox immersive = check(R.string.settings_immersive, getPreferences(MODE_PRIVATE).getBoolean("immersive", true));
+        final Button rateButton = new Button(this);
+        rateButton.setAllCaps(false);
+        rateButton.setText(getString(R.string.sound_rate, outputRateName()));
+        rateButton.setOnClickListener(v -> {
+            final int[] values = {0, 44100, 48000, 96000};
+            CharSequence[] labels = new CharSequence[values.length];
+            for (int i = 0; i < values.length; i++) {
+                labels[i] = values[i] == 0
+                        ? getString(R.string.sound_rate_auto, deviceOutputRate())
+                        : getString(R.string.sound_rate_hz, values[i]);
+            }
+            int checked = 0;
+            int now = getPreferences(MODE_PRIVATE).getInt("audio_rate", 0);
+            for (int i = 0; i < values.length; i++) {
+                if (values[i] == now) {
+                    checked = i;
+                    break;
+                }
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.sound_rate_title)
+                    .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                        getPreferences(MODE_PRIVATE).edit().putInt("audio_rate", values[which]).apply();
+                        rateButton.setText(getString(R.string.sound_rate, outputRateName()));
+                        setupAudio();
+                        dialog.dismiss();
+                    })
+                    .show();
+        });
         box.addView(volumeLabel);
         box.addView(volumeBar);
+        box.addView(rateButton);
         box.addView(lowLatency);
         box.addView(immersive);
         volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
@@ -6376,6 +6435,10 @@ public class EmulatorActivity extends AppCompatActivity {
         sync.setAllCaps(false);
         sync.setText(R.string.sync_title);
         sync.setOnClickListener(v -> showSyncDialog());
+        Button saveFile = new Button(this);
+        saveFile.setAllCaps(false);
+        saveFile.setText(R.string.save_file);
+        saveFile.setOnClickListener(v -> showSaveFileDialog());
         box.addView(saveType);
         box.addView(autoLoad);
         box.addView(autoSave);
@@ -6387,6 +6450,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(timedSave);
         box.addView(deleteSav);
         box.addView(importSav);
+        box.addView(saveFile);
         box.addView(sync);
         autoLoad.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_load_state", checked).apply());
         autoSave.setOnCheckedChangeListener((v, checked) -> getPreferences(MODE_PRIVATE).edit().putBoolean("auto_save_state", checked).apply());
@@ -7723,6 +7787,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_BACKUP_IMPORT = 6;
     private static final int REQ_SKIN_IMPORT = 7;
     private static final int REQ_STICKER = 8;
+    private static final int REQ_SAV_EXPORT = 12;
+    private static final int REQ_SAV_IMPORT = 13;
 
     private int skinStylePref() {
         return getPreferences(MODE_PRIVATE).getInt("skin_style", ControlsView.STYLE_CLASSIC);
@@ -8302,6 +8368,113 @@ public class EmulatorActivity extends AppCompatActivity {
                 .setView(scroll)
                 .setPositiveButton(android.R.string.ok, (d, w) -> toast(getString(R.string.per_rom_saved)))
                 .show();
+    }
+
+    /**
+     * Battery save in/out through SAF. PC does this with convertSave /
+     * exportShark; the point here is moving one .sav between devices without
+     * taking the whole backup zip.
+     */
+    private void showSaveFileDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.save_file)
+                .setItems(new CharSequence[]{
+                        getString(R.string.save_export),
+                        getString(R.string.save_import_file),
+                }, (dialog, which) -> {
+                    if (which == 0) {
+                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("application/octet-stream");
+                        intent.putExtra(Intent.EXTRA_TITLE, batterySaveName());
+                        launchPicker(intent, REQ_SAV_EXPORT);
+                    } else {
+                        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("*/*");
+                        launchPicker(intent, REQ_SAV_IMPORT);
+                    }
+                })
+                .show();
+    }
+
+    /** File name the battery save already has, or one derived from the ROM. */
+    private String batterySaveName() {
+        String path = core != null && core.isLoaded() ? core.saveFile() : null;
+        if (path != null && !path.isEmpty()) {
+            return new File(path).getName();
+        }
+        String rom = currentRomPath != null ? currentRomPath
+                : getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        String base = rom == null ? "game" : new File(rom).getName();
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            base = base.substring(0, dot);
+        }
+        return base + ".sav";
+    }
+
+    private void exportBatterySave(Uri target) {
+        final String path = core != null && core.isLoaded() ? core.saveFile() : null;
+        new Thread(() -> {
+            File source = path == null || path.isEmpty() ? null : new File(path);
+            if (source == null || !source.isFile() || source.length() <= 0) {
+                runOnUiThread(() -> toast(getString(R.string.save_no_battery)));
+                return;
+            }
+            try (InputStream in = new FileInputStream(source);
+                 OutputStream out = getContentResolver().openOutputStream(target, "wt")) {
+                if (out == null) {
+                    throw new IOException("no stream");
+                }
+                byte[] buffer = new byte[65536];
+                int n;
+                while ((n = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, n);
+                }
+                runOnUiThread(() -> toast(getString(R.string.save_export_done, source.getName())));
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(getString(R.string.save_export_failed, e.getMessage())));
+            }
+        }, "save-export").start();
+    }
+
+    private void importBatterySave(Uri source) {
+        final String path = core != null && core.isLoaded() ? core.saveFile() : null;
+        final String romPath = currentRomPath;
+        new Thread(() -> {
+            if (path == null || path.isEmpty()) {
+                runOnUiThread(() -> toast(getString(R.string.save_no_battery)));
+                return;
+            }
+            File dest = new File(path);
+            long before = dest.isFile() ? dest.length() : 0;
+            try (InputStream in = getContentResolver().openInputStream(source);
+                 OutputStream out = new FileOutputStream(dest)) {
+                if (in == null) {
+                    throw new IOException("no stream");
+                }
+                byte[] buffer = new byte[65536];
+                int n;
+                while ((n = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, n);
+                }
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(getString(R.string.save_import_failed, e.getMessage())));
+                return;
+            }
+            long after = dest.length();
+            if (before > 0 && before != after) {
+                Log.w(TAG, "battery save size changed on import: " + before + " -> " + after);
+            }
+            runOnUiThread(() -> {
+                toast(getString(R.string.save_import_done));
+                // Reload so the core picks the new battery save up.
+                if (romPath != null) {
+                    pendingPath.set(romPath);
+                }
+            });
+        }, "save-import").start();
     }
 
     /** Backup hub: export everything to a zip, restore from one. */

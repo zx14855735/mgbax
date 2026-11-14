@@ -13,6 +13,8 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
@@ -108,6 +110,7 @@ final class DebugViewers {
         boolean gba = core.width() == 240;
         String[] items = {
                 activity.getString(R.string.memory_view),
+                activity.getString(R.string.watch_view),
                 activity.getString(R.string.bg_view),
                 activity.getString(R.string.oam_view),
                 activity.getString(R.string.palette_view),
@@ -119,15 +122,17 @@ final class DebugViewers {
                 .setItems(items, (dialog, which) -> {
                     if (which == 0) {
                         showMemory(activity, core);
+                    } else if (which == 1) {
+                        showWatch(activity, core);
                     } else if (!gba) {
                         Toast.makeText(activity, activity.getString(R.string.debug_gba_only), Toast.LENGTH_SHORT).show();
-                    } else if (which == 1) {
-                        showBg(activity, core);
                     } else if (which == 2) {
-                        showOam(activity, core);
+                        showBg(activity, core);
                     } else if (which == 3) {
-                        showPalette(activity, core);
+                        showOam(activity, core);
                     } else if (which == 4) {
+                        showPalette(activity, core);
+                    } else if (which == 5) {
                         showTiles(activity, core);
                     } else {
                         showIo(activity, core);
@@ -920,6 +925,117 @@ final class DebugViewers {
             }
         }
         return sheet;
+    }
+
+    // == Memory watch (stand-in for PC's memory access log) =================
+
+    private static final int WATCH_MAX_ROWS = 200;
+    private static final int WATCH_INTERVAL_MS = 500;
+
+    /**
+     * Polls one RAM region twice a second and lists the bytes that changed
+     * since the previous poll. PC's memory-access log taps the core; this
+     * needs no core change and answers the same practical question ("who keeps
+     * writing here") for cheats and save-type hunting.
+     */
+    static void showWatch(EmulatorActivity activity, MgbaCore core) {
+        LinearLayout box = column(activity);
+        final Region[] current = {searchRegions(core)[0]};
+        final TextView out = new TextView(activity);
+        out.setTypeface(Typeface.MONOSPACE);
+        out.setTextSize(12);
+        out.setTextColor(0xFFD6E8D6);
+        out.setTextIsSelectable(true);
+        out.setText(activity.getString(R.string.watch_hint));
+        final Button toggle = smallButton(activity, R.string.watch_start);
+        LinearLayout chips = row(activity);
+        final Button[] chipViews = new Button[searchRegions(core).length];
+        final Handler handler = new Handler(Looper.getMainLooper());
+        final boolean[] running = {false};
+        final byte[][] baseline = new byte[1][];
+        final Runnable[] tick = new Runnable[1];
+        Region[] regions = searchRegions(core);
+        for (int i = 0; i < regions.length; i++) {
+            final Region region = regions[i];
+            final int index = i;
+            Button chip = smallButton(activity, 0);
+            chip.setText(region.name);
+            chip.setOnClickListener(v -> {
+                current[0] = region;
+                baseline[0] = null;
+                out.setText(activity.getString(R.string.watch_hint));
+                for (int k = 0; k < chipViews.length; k++) {
+                    chipViews[k].setAlpha(k == index ? 1f : 0.5f);
+                }
+            });
+            chipViews[i] = chip;
+            chips.addView(chip);
+        }
+        chipViews[0].setAlpha(1f);
+        for (int i = 1; i < chipViews.length; i++) {
+            chipViews[i].setAlpha(0.5f);
+        }
+        tick[0] = () -> {
+            if (!running[0]) {
+                return;
+            }
+            Region region = current[0];
+            byte[] now = core.busReadBlock(region.address, region.size);
+            byte[] before = baseline[0];
+            if (before == null || before.length != now.length) {
+                baseline[0] = now;
+                handler.postDelayed(tick[0], WATCH_INTERVAL_MS);
+                return;
+            }
+            int changed = 0;
+            for (int i = 0; i < now.length; i++) {
+                if (now[i] != before[i]) {
+                    changed++;
+                }
+            }
+            StringBuilder text = new StringBuilder();
+            if (changed == 0) {
+                text.append(activity.getString(R.string.watch_none));
+            } else {
+                text.append(activity.getString(R.string.watch_changed_n, changed, region.name))
+                        .append('\n');
+                int shown = 0;
+                for (int i = 0; i < now.length && shown < WATCH_MAX_ROWS; i++) {
+                    if (now[i] != before[i]) {
+                        text.append(String.format(Locale.US, "%08X  %02X → %02X\n",
+                                region.address + i, before[i] & 0xFF, now[i] & 0xFF));
+                        shown++;
+                    }
+                }
+            }
+            out.setText(text.toString());
+            baseline[0] = now;
+            handler.postDelayed(tick[0], WATCH_INTERVAL_MS);
+        };
+        toggle.setOnClickListener(v -> {
+            running[0] = !running[0];
+            toggle.setText(running[0] ? R.string.watch_stop : R.string.watch_start);
+            handler.removeCallbacks(tick[0]);
+            baseline[0] = null;
+            if (running[0]) {
+                handler.post(tick[0]);
+            }
+        });
+        box.addView(chips);
+        box.addView(toggle);
+        box.addView(out);
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+        AlertDialog dialog = new AlertDialog.Builder(activity)
+                .setTitle(R.string.watch_view)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .create();
+        dialog.setOnDismissListener(d -> {
+            running[0] = false;
+            handler.removeCallbacks(tick[0]);
+        });
+        dialog.show();
     }
 
     // == Tile sheet viewer =================================================

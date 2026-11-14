@@ -7,6 +7,7 @@
 
 #include <QBuffer>
 #include <QCursor>
+#include <QDialog>
 #include <QDir>
 #include <QFileInfo>
 #include <QKeyEvent>
@@ -58,6 +59,7 @@
 #include "LobbyView.h"
 #ifdef BUILD_QT_CLOUD
 #include "CloudLink.h"
+#include "DirectTransportDialog.h"
 #include <QLoggingCategory>
 #endif
 #endif
@@ -230,6 +232,11 @@ Window::~Window() {
 
 void Window::argumentsPassed() {
 	const mArguments* args = m_config->args();
+
+#ifdef BUILD_QT_CLOUD
+	/* 把上一次保存的直连传输选择同步成 MGBAX_*，保证联机大厅开打前就位。 */
+	DirectTransportDialog::applyToEnvironment(m_config);
+#endif
 
 	if (args->patch) {
 		m_pendingPatch = args->patch;
@@ -2101,6 +2108,21 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addAction(tr("WebDAV 存档同步…"), "webdavSync", openNamedTView<WebDavView>(&m_webdavView, false, this), "tools");
+
+#ifdef BUILD_QT_CLOUD
+	/* 蓝牙 / TCP 直连以前只认环境变量，这里给一个可见入口（写 qt.ini + 同步 env）。 */
+	m_actions.addAction(tr("联机直连传输（蓝牙 / TCP）…"), "directTransport", [this]() {
+		DirectTransportDialog dialog(m_config, this);
+		if (dialog.exec() == QDialog::Accepted) {
+			const QString status = DirectTransportDialog::applyToEnvironment(m_config);
+			if (status.isEmpty()) {
+				LOG(QT, INFO) << tr("直连传输：已恢复自动选择");
+			} else {
+				LOG(QT, INFO) << status;
+			}
+		}
+	}, "tools");
+#endif
 
 #if defined(M_CORE_GBA) || defined(M_CORE_GB)
 	m_actions.addAction(tr("模拟器增强..."), "enhancements", openNamedTView<EnhancementsView>(&m_enhancementsView, true, this), "tools");
