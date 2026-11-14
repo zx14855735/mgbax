@@ -136,9 +136,9 @@ final class GBoyLink {
 
     /**
      * 官方断线重连握手：裸 10 字节 `int32 6 + int16 100 + int32 rtt`
-     * （KpHwm4/AmA8tU.java 的 ARc23Z(Socket)，263-272 行）。按本文件的帧
-     * 格式它等价于「长度 6 + type 100 + 4 字节 rtt」，所以直接走 send()
-     * 出来的字节和官方 write() 的 10 字节一模一样。
+     * （KpHwm4/AmA8tU.java 的 ARc23Z(Socket)，263-272 行）。这 10 字节本身就是
+     * 一条完整帧（长度 6 + type 100 + rtt），所以用 sendAll() 原样写出，不再
+     * 经过 send() 补长度头。
      *
      * 只在**已经和对端完成过一次握手**的会话上发：官方用它代替整套 1→2→3→6
      * 重放（存档早已灌进镜像核）。iOS 的 GBoyLink 是一次性会话（断开即结束，
