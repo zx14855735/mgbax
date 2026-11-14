@@ -2314,7 +2314,10 @@ public class EmulatorActivity extends AppCompatActivity {
             if (asHost) {
                 link.startHost(tcpPort);
             } else {
-                link.startJoin(peer, tcpPort);
+                /* 这个方法由广播/对话框在主线程调用：首次连接失败要立刻返回，
+                 * 不能套官方的 2s×50s 重试（50 秒阻塞直接 ANR）。掉线后的
+                 * 自动重连仍由 GBoySocketLink 内部的 2s/50s 窗口负责。 */
+                link.startJoin(peer, tcpPort, false);
             }
             localLink = link;
             gboyRemoteKeysEnabled = false;
