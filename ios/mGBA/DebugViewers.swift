@@ -55,7 +55,8 @@ enum DebugViewers {
     // MARK: - Hub
 
     /// Entry sheet listing the tools.
-    static func showHub(core: OpaquePointer?, presenter: UIViewController) {
+    static func showHub(core: OpaquePointer?, presenter: UIViewController,
+                        onLayerMask: ((UInt32) -> Void)? = nil) {
         guard let core, mgbaMobileIsLoaded(core) else {
             alert(title: "调试工具", message: "请先打开一个游戏", presenter: presenter)
             return
@@ -67,8 +68,13 @@ enum DebugViewers {
         let bg = button("BG 图层", action: { sheet.dismiss(animated: false); showBg(core: core, presenter: presenter) })
         let oam = button("OAM 精灵", action: { sheet.dismiss(animated: false); showOam(core: core, presenter: presenter) })
         let palette = button("调色板", action: { sheet.dismiss(animated: false); showPalette(core: core, presenter: presenter) })
+        let tiles = button("图块（VRAM）", action: { sheet.dismiss(animated: false); showTiles(core: core, presenter: presenter) })
+        let io = button("I/O 与帧状态", action: {
+            sheet.dismiss(animated: false)
+            showIo(core: core, presenter: presenter, onLayerMask: onLayerMask)
+        })
         if !gba {
-            for item in [bg, oam, palette] {
+            for item in [bg, oam, palette, tiles, io] {
                 item.isEnabled = false
                 item.alpha = 0.4
             }
@@ -76,6 +82,8 @@ enum DebugViewers {
         sheet.add(bg)
         sheet.add(oam)
         sheet.add(palette)
+        sheet.add(tiles)
+        sheet.add(io)
         presenter.present(sheet, animated: true)
     }
 
@@ -638,6 +646,186 @@ enum DebugViewers {
             + "图块 \(attr2 & 0x3FF)  调色板 \((attr2 >> 12) & 15)\n"
             + "地址 \(hex(0x07000000 + UInt32(index * 8)))"
         alert(title: "精灵 #\(index)", message: message, presenter: presenter)
+    }
+
+    // MARK: - VRAM tile viewer
+
+    /// PC `tileWindow` 的等价物：VRAM 图块表按 16 列铺开，可选 4bpp/8bpp 与字符块。
+    static func showTiles(core: OpaquePointer?, presenter: UIViewController) {
+        guard let core, mgbaMobileIsLoaded(core), mgbaMobileWidth(core) == 240 else {
+            alert(title: "图块（VRAM）", message: "仅 GBA 游戏可用", presenter: presenter)
+            return
+        }
+        let sheet = DebugSheet(title: "图块（VRAM）")
+        let info = label("")
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .black
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.heightAnchor.constraint(equalToConstant: 300).isActive = true
+        var bpp = 4
+        var block = 0
+        func refresh() {
+            imageView.image = renderTiles(core: core, bpp: bpp, block: block)
+            info.text = "\(bpp)bpp  字符块 \(block)  \(hex(0x06000000 + UInt32(block) * 0x4000))"
+        }
+        let tabs = UIStackView()
+        tabs.axis = .horizontal
+        tabs.spacing = 6
+        for value in [4, 8] {
+            let item = button("\(value)bpp") {
+                bpp = value
+                if value == 8 && block > 1 { block = 0 }
+                refresh()
+            }
+            tabs.addArrangedSubview(item)
+        }
+        for value in 0..<4 {
+            let item = button("块\(value)") {
+                block = value
+                refresh()
+            }
+            tabs.addArrangedSubview(item)
+        }
+        tabs.addArrangedSubview(button("导出") {
+            if let image = imageView.image {
+                saveToPhotos(image, presenter: presenter)
+            }
+        })
+        sheet.add(tabs)
+        sheet.add(info)
+        sheet.add(imageView)
+        refresh()
+        presenter.present(sheet, animated: true)
+    }
+
+    private static func renderTiles(core: OpaquePointer, bpp: Int, block: Int) -> UIImage? {
+        let base = 0x06000000 + UInt32(max(0, min(3, block))) * 0x4000
+        let vram = readBlock(core, base, 0x4000)
+        guard !vram.isEmpty else { return nil }
+        let bytesPerTile = bpp == 8 ? 64 : 32
+        let count = min(vram.count / bytesPerTile, 512)
+        guard count > 0 else { return nil }
+        let perRow = 16
+        let rows = (count + perRow - 1) / perRow
+        let width = perRow * 8
+        let height = max(8, rows * 8)
+        var pixels = [UInt32](repeating: 0xFF000000, count: width * height)
+        for tile in 0..<count {
+            let originX = (tile % perRow) * 8
+            let originY = (tile / perRow) * 8
+            let offset = tile * bytesPerTile
+            for py in 0..<8 {
+                for px in 0..<8 {
+                    let index: Int
+                    if bpp == 8 {
+                        index = Int(vram[offset + py * 8 + px])
+                    } else {
+                        let byte = Int(vram[offset + py * 4 + (px >> 1)])
+                        index = (px & 1) != 0 ? (byte >> 4) : (byte & 0xF)
+                    }
+                    if index == 0 { continue }
+                    pixels[(originY + py) * width + originX + px] = UInt32(paletteColor(core, index))
+                }
+            }
+        }
+        return image(pixels: pixels, width: width, height: height)
+    }
+
+    // MARK: - I/O and frame inspector
+
+    /// PC `ioViewer` + `frameWindow` 的等价物：寄存器/帧状态，外加粗粒度图层开关
+    /// （`onLayerMask` 把要**强制关闭**的 DISPCNT 位交给帧循环每帧重写）。
+    static func showIo(core: OpaquePointer?, presenter: UIViewController,
+                       onLayerMask: ((UInt32) -> Void)? = nil) {
+        guard let core, mgbaMobileIsLoaded(core), mgbaMobileWidth(core) == 240 else {
+            alert(title: "I/O 与帧状态", message: "仅 GBA 游戏可用", presenter: presenter)
+            return
+        }
+        let sheet = DebugSheet(title: "I/O 与帧状态")
+        let dump = UITextView()
+        dump.isEditable = false
+        dump.isScrollEnabled = true
+        dump.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        dump.backgroundColor = UIColor(white: 0.96, alpha: 1)
+        dump.textColor = .black
+        dump.layer.cornerRadius = 6
+        dump.translatesAutoresizingMaskIntoConstraints = false
+        dump.heightAnchor.constraint(equalToConstant: 260).isActive = true
+        func read(_ address: UInt32) -> UInt32 {
+            mgbaMobileBusRead(core, 16, address)
+        }
+        func on(_ value: UInt32) -> String { value != 0 ? "开" : "关" }
+        func refresh() {
+            let dispcnt = read(0x04000000)
+            let dispstat = read(0x04000004)
+            let vcount = read(0x04000006)
+            var lines: [String] = []
+            lines.append("DISPCNT  \(hex(dispcnt))  模式 \(dispcnt & 7)  \(dispcnt & 0x80 != 0 ? "强制空白" : "显示开")")
+            lines.append("  BG0 \(on(dispcnt & 0x100))  BG1 \(on(dispcnt & 0x200))  BG2 \(on(dispcnt & 0x400))  BG3 \(on(dispcnt & 0x800))  OBJ \(on(dispcnt & 0x1000))")
+            lines.append("DISPSTAT \(hex(dispstat))  VBlank \(on(dispstat & 1))  HBlank \(on(dispstat & 2))  VCount 命中 \(on(dispstat & 4))")
+            lines.append("VCOUNT \(vcount & 0xFF)  帧号 \(mgbaMobileFrameCounter(core))")
+            for bg in 0..<4 {
+                let cnt = read(0x04000008 + UInt32(bg * 2))
+                lines.append("BG\(bg)CNT \(hex(cnt))  优先级 \(cnt & 3)  字符基址 \(((cnt >> 2) & 3) * 0x4000)  屏基址 \(((cnt >> 8) & 31) * 0x800)  尺寸 \((cnt >> 14) & 3)")
+            }
+            for bg in 0..<4 {
+                let x = read(0x04000010 + UInt32(bg * 4)) & 0x1FF
+                let y = read(0x04000012 + UInt32(bg * 4)) & 0x1FF
+                lines.append("BG\(bg)HOFS/VOFS \(x), \(y)")
+            }
+            lines.append("MOSAIC \(hex(read(0x0400004C)))  BLDCNT \(hex(read(0x04000050)))  BLDY \(read(0x04000054) & 0x1F)")
+            dump.text = lines.joined(separator: "\n")
+        }
+        var mask: UInt32 = 0
+        func toggle(_ title: String, _ bit: UInt32) -> UIStackView {
+            let name = UILabel()
+            name.text = title
+            name.font = .systemFont(ofSize: 11)
+            let control = UISwitch()
+            control.isOn = true
+            control.transform = CGAffineTransform(scaleX: 0.7, y: 0.7)
+            control.addAction(UIAction { _ in
+                if control.isOn {
+                    mask &= ~bit
+                } else {
+                    mask |= bit
+                }
+                onLayerMask?(mask)
+                refresh()
+            }, for: .valueChanged)
+            let row = UIStackView(arrangedSubviews: [name, control])
+            row.axis = .horizontal
+            row.spacing = 2
+            return row
+        }
+        let layers = UIStackView()
+        layers.axis = .horizontal
+        layers.spacing = 4
+        for (name, bit) in [("BG0", UInt32(0x100)), ("BG1", UInt32(0x200)), ("BG2", UInt32(0x400)),
+                            ("BG3", UInt32(0x800)), ("OBJ", UInt32(0x1000))] {
+            layers.addArrangedSubview(toggle(name, bit))
+        }
+        let actions = UIStackView()
+        actions.axis = .horizontal
+        actions.spacing = 8
+        actions.addArrangedSubview(button("刷新") { refresh() })
+        actions.addArrangedSubview(button("全部恢复") {
+            mask = 0
+            onLayerMask?(0)
+            refresh()
+        })
+        let note = UILabel()
+        note.numberOfLines = 0
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = UIColor(white: 0.35, alpha: 1)
+        note.text = "图层开关会在每帧重写 DISPCNT（游戏自己改也会被覆盖）；关掉后画面下一帧生效。"
+        sheet.add(layers)
+        sheet.add(actions)
+        sheet.add(note)
+        sheet.add(dump)
+        refresh()
+        presenter.present(sheet, animated: true)
     }
 
     // MARK: - Palette viewer
