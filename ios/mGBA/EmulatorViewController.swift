@@ -2134,6 +2134,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.lock()
         paused.toggle()
         let value = paused
+        // 继续时丢掉没消费掉的逐帧请求，免得下次暂停凭空多走一帧。
+        if !value { stepFrameWanted = false }
         gate.unlock()
         pauseButton.setTitle(value ? "继续" : "暂停", for: .normal)
         audio.setPaused(value)
@@ -3298,8 +3300,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 游戏信息（PC 的 File → ROM info...）：卡带头 / 大小 / CRC32 / 存档类型与路径。
     @objc private func showRomInfo() {
         let path = currentRomPath ?? defaults.string(forKey: "lastRom") ?? ""
-        guard !path.isEmpty, let handle = FileHandle(forReadingAtPath: path) else {
+        guard !path.isEmpty else {
             toast("请先打开一个游戏")
+            return
+        }
+        guard let handle = FileHandle(forReadingAtPath: path) else {
+            toast("找不到游戏文件")
             return
         }
         let head = handle.readData(ofLength: 0x200)
@@ -3418,30 +3424,33 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let box = UIStackView()
         box.axis = .vertical
         box.spacing = 8
-        let view = UITextView()
-        view.isEditable = false
-        view.isScrollEnabled = true
-        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        let logView = UITextView()
+        logView.isEditable = false
+        logView.isScrollEnabled = true
+        logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         let body = RunLog.shared.text()
-        view.text = body.isEmpty ? "还没有日志。玩游戏、联机或改设置后这里会有记录。" : body
-        view.heightAnchor.constraint(equalToConstant: 360).isActive = true
-        box.addArrangedSubview(view)
+        logView.text = body.isEmpty ? "还没有日志。玩游戏、联机或改设置后这里会有记录。" : body
+        logView.heightAnchor.constraint(equalToConstant: 360).isActive = true
+        box.addArrangedSubview(logView)
         let share = UIButton(type: .system)
-        share.setTitle("导出日志（分享 / 存文件）", for: .normal)
+        share.setTitle("导出日志（存文件 / 分享）", for: .normal)
         share.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("mgba-log.txt")
-            try? RunLog.shared.text().write(to: url, atomically: true, encoding: .utf8)
-            let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-            sheet.popoverPresentationController?.sourceView = share
-            sheet.popoverPresentationController?.sourceRect = share.bounds
-            self.topmostPresenter.present(sheet, animated: true)
+            do {
+                try RunLog.shared.text().write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                self.toast("日志写入失败")
+                return
+            }
+            // 与「一键备份」同一套导出路径，用户在文件 App 里选位置。
+            self.presentSheet(UIDocumentPickerViewController(forExporting: [url], asCopy: true))
         }, for: .touchUpInside)
         let clear = UIButton(type: .system)
         clear.setTitle("清空日志", for: .normal)
         clear.addAction(UIAction { [weak self] _ in
             RunLog.shared.clear()
-            view.text = "已清空。"
+            logView.text = "已清空。"
             self?.toast("日志已清空")
         }, for: .touchUpInside)
         let row = UIStackView(arrangedSubviews: [share, clear])
@@ -3455,7 +3464,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         let text = UILabel()
         text.numberOfLines = 0
         text.font = .systemFont(ofSize: 14)
-        text.text = "游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」存进相册，「录像」录制 GIF。"
+        text.text = "游戏：打开 .gba/.gbc/.gb 后自动继续上次的进度（电池存档自动保存）。\n\n倍速：菜单里点「倍速」选 0.25~16 倍，或长按「自定义」输入小数；TAB/空格/手柄右摇杆按下为快进。\n\n画质：可开画面滤镜（GBA 色彩、灰度、HQ2x、HQ4x、2xBR、4xBR、残影、点阵、LCD3x、扫描线、锐利插值），配整数缩放效果最佳；GB 游戏可在高级设置里换调色板。\n\n金手指：菜单「金手指」里新增，格式选自动识别即可，每行一个代码，勾选生效。\n\n补丁：把 IPS/UPS/BPS 补丁改成和 ROM 同名（扩展名保留）放在同一文件夹，进游戏时自动应用。\n\n联机：两边运行同一 ROM，一边创建一边加入。\n\n截屏：菜单「截图」存进相册，「录像」录制 GIF。\n\n撤销 / 逐帧：顶栏「撤销」回滚上一次读档或存档（含槽文件）；「逐帧」在暂停时单帧推进。\n\n游戏信息 / 运行日志：设置里可看卡带头、存档类型与最近事件，日志可导出成 txt。"
         presentSheet(SheetController(title: "帮助", content: text))
     }
 
@@ -5447,7 +5456,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("联机中不能逐帧前进")
             return
         }
-        if !paused {
+        gate.lock()
+        let wasPaused = paused
+        gate.unlock()
+        if !wasPaused {
             togglePause()
         }
         gate.lock()
@@ -7080,9 +7092,8 @@ final class RunLog {
     }()
 
     func add(_ message: String) {
-        let line = "\(stamp.string(from: Date())) \(message)"
         lock.lock()
-        entries.append(line)
+        entries.append("\(stamp.string(from: Date())) \(message)")
         if entries.count > Self.limit {
             entries.removeFirst(entries.count - Self.limit)
         }

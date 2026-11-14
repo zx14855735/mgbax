@@ -441,6 +441,7 @@
     <string name="key_remap_waiting">正在等待按键…</string>
     <string name="key_remap_reset">恢复默认</string>
     <string name="key_remap_reset_one">已恢复「%1$s」的默认按键</string>
+    <string name="key_remap_reserved">TAB / 空格 / 右摇杆按下已用于快进，请换一个键</string>
     <string name="key_remap_done">「%1$s」已绑定到 %2$s</string>
     <string name="key_remap_reset_all">全部恢复默认</string>
     <string name="key_remap_row">%1$s　←　%2$s</string>

@@ -988,6 +988,19 @@ void CoreController::forceFastForward(bool enable) {
 	emit fastForwardChanged(enable || m_fastForward);
 }
 
+void CoreController::setFastForwardRatio(float ratio) {
+	/* 与 loadConfig() 里的取值口径一致：<=0 表示 Unbounded（无限速）。 */
+	if (!(ratio > 0.f)) {
+		ratio = -1.f;
+	}
+	if (m_fastForwardRatio == ratio) {
+		return;
+	}
+	m_fastForwardRatio = ratio;
+	m_fastForwardHeldRatio = ratio;
+	updateFastForward();
+}
+
 void CoreController::changePlayer(int id) {
 	Interrupter interrupter(this);
 	int playerId = 0;

@@ -159,6 +159,8 @@ public slots:
 
 	void setFastForward(bool);
 	void forceFastForward(bool);
+	/** 直接改倍速（不写配置）：每游戏倍速记忆在进场时用它覆盖全局值。 */
+	void setFastForwardRatio(float ratio);
 	/**
 	 * 联机倍速（官方 type 9）：0.5 / 1 / 2 / 4。只改本机的帧目标，
 	 * 与「按住快进」解耦——快进时取两者较大值，松开后回到网络倍速。

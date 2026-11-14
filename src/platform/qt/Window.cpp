@@ -1022,6 +1022,9 @@ void Window::gameStarted() {
 		m_controller->setAutofireThreshold(qMax(1, int(30.0 / autofireHz + 0.5)));
 	}
 
+	/* 换游戏/重进时先套用本游戏的倍速记忆（不会改全局 fastForwardRatio）。 */
+	applyPerGameSpeed();
+
 	m_hitUnimplementedBiosCall = false;
 	if (m_config->getOption("showFps", "1").toInt()) {
 		m_fpsTimer.start();
@@ -1403,6 +1406,56 @@ void Window::takeScreenshot() {
 	}
 }
 
+QString Window::perGameSpeedKey() const {
+	if (!m_controller) {
+		return QString();
+	}
+	const QString romPath = m_controller->path();
+	if (romPath.isEmpty()) {
+		return QString();
+	}
+	return QFileInfo(romPath).completeBaseName();
+}
+
+void Window::storePerGameSpeed() {
+	if (!m_controller || !m_config->getOption("perRomSpeed").toInt()) {
+		return;
+	}
+	const QString key = perGameSpeedKey();
+	if (key.isEmpty()) {
+		return;
+	}
+	m_config->setQtOption(key, m_config->getOption("fastForwardRatio", "-1"), "perRomSpeed");
+}
+
+void Window::syncFastForwardSpeedMenu(float ratio) {
+	for (auto iter = m_ffspeedActions.begin(); iter != m_ffspeedActions.end(); ++iter) {
+		QSignalBlocker blocker(iter.value().get());
+		iter.value()->setActive(qAbs(iter.key() - ratio) < 0.001);
+	}
+}
+
+void Window::applyPerGameSpeed() {
+	if (!m_controller || !m_config->getOption("perRomSpeed").toInt()) {
+		return;
+	}
+	const QString key = perGameSpeedKey();
+	if (key.isEmpty()) {
+		return;
+	}
+	const QVariant stored = m_config->getQtOption(key, "perRomSpeed");
+	if (!stored.isValid() || stored.isNull()) {
+		return;
+	}
+	bool ok = false;
+	const float ratio = stored.toString().toFloat(&ok);
+	if (!ok) {
+		return;
+	}
+	m_controller->setFastForwardRatio(ratio);
+	syncFastForwardSpeedMenu(ratio);
+}
+
 void Window::showFPS() {
 	qint64 total = 0;
 	for (qint64 t : m_frameList) {
@@ -1701,13 +1754,18 @@ void Window::setupMenu(QMenuBar* menubar) {
 	ffspeed->connect([this](const QVariant&) {
 		reloadConfig();
 	}, this);
-	ffspeed->addValue(tr("Unbounded"), -1.0f, &m_actions, "fastForwardSpeed");
+	m_ffspeedActions[-1.0] = ffspeed->addValue(tr("Unbounded"), -1.0f, &m_actions, "fastForwardSpeed");
 	ffspeed->setValue(QVariant(-1.0f));
 	m_actions.addSeparator("fastForwardSpeed");
 	for (int i = 2; i < 11; ++i) {
-		ffspeed->addValue(tr("%0x").arg(i), i, &m_actions, "fastForwardSpeed");
+		m_ffspeedActions[i] = ffspeed->addValue(tr("%0x").arg(i), i, &m_actions, "fastForwardSpeed");
 	}
 	m_config->updateOption("fastForwardRatio");
+	/* 每游戏倍速记忆（B7，与移动端 per_rom_speed 等价）：Speed 变化后写进
+	 * qt.ini 的 perRomSpeed/<rom 基名>，进场时再套回来。 */
+	ffspeed->connect([this](const QVariant&) {
+		storePerGameSpeed();
+	}, this);
 
 	addGameAction(tr("Increase fast forward speed"), "fastForwardUp", [this] {
 		float newRatio = m_config->getOption("fastForwardRatio", 1.0f).toFloat() + 1.0f;
@@ -1721,6 +1779,26 @@ void Window::setupMenu(QMenuBar* menubar) {
 		if (newRatio >= 2.0f) {
 			m_config->setOption("fastForwardRatio", QVariant(newRatio));
 		}
+	}, "emu");
+
+	ConfigOption* perRomSpeed = m_config->addOption("perRomSpeed");
+	perRomSpeed->addBoolean(tr("Remember speed for this game"), &m_actions, "emu");
+	if (m_config->getOption("perRomSpeed").isEmpty()) {
+		m_config->setOption("perRomSpeed", true);
+	} else {
+		m_config->updateOption("perRomSpeed");
+	}
+	addGameAction(tr("Forget this game's speed"), "forgetPerGameSpeed", [this]() {
+		const QString key = perGameSpeedKey();
+		if (key.isEmpty()) {
+			return;
+		}
+		m_config->setQtOption(key, QVariant(), "perRomSpeed");
+		const float globalRatio = m_config->getOption("fastForwardRatio", "-1").toFloat();
+		if (m_controller) {
+			m_controller->setFastForwardRatio(globalRatio);
+		}
+		syncFastForwardSpeedMenu(globalRatio);
 	}, "emu");
 
 	auto rewindHeld = m_actions.addHeldAction(tr("Rewind (held)"), "holdRewind", [this](bool held) {

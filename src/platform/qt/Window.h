@@ -185,6 +185,10 @@ private:
 	void setupOptions();
 	void openStateWindow(LoadSave);
 	void takeScreenshot();
+	QString perGameSpeedKey() const;
+	void storePerGameSpeed();
+	void applyPerGameSpeed();
+	void syncFastForwardSpeedMenu(float ratio);
 
 	void attachWidget(QWidget* widget);
 	void detachWidget();
@@ -228,6 +232,7 @@ private:
 	QMultiMap<mPlatform, std::shared_ptr<Action>> m_platformActions;
 	std::shared_ptr<Action> m_multiWindow;
 	QMap<int, std::shared_ptr<Action>> m_frameSizes;
+	QMap<double, std::shared_ptr<Action>> m_ffspeedActions;
 
 	LogController m_log{0};
 	LogView* m_logView;
