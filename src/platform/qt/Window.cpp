@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenuBar>
@@ -30,6 +31,7 @@
 #endif
 
 #ifdef USE_SQLITE3
+#include "AiTranslate.h"
 #include "ArchiveInspector.h"
 #include "library/LibraryController.h"
 #endif
@@ -1620,6 +1622,47 @@ void Window::stopGifRecording() {
 #endif
 }
 
+void Window::translateScreen() {
+	if (!m_controller || !m_display || !m_controller->hasStarted()) {
+		return;
+	}
+	QString key = m_config->getOption("aiKey").trimmed();
+	if (key.isEmpty()) {
+		bool ok = false;
+		key = QInputDialog::getText(this, tr("AI 翻译"), tr("Gemini API Key（留空则取消）"),
+		    QLineEdit::Password, QString(), &ok).trimmed();
+		if (!ok || key.isEmpty()) {
+			return;
+		}
+		m_config->setOption("aiKey", key);
+	}
+	if (!m_aiTranslate) {
+		m_aiTranslate = new AiTranslate(this);
+		connect(m_aiTranslate, &AiTranslate::finished, this,
+		    [this](const QList<AiTranslate::Block>& blocks, const QString& error) {
+			if (!m_aiOverlay) {
+				return;
+			}
+			if (!error.isEmpty()) {
+				m_aiOverlay->setStatus(error);
+				m_aiOverlay->show();
+				return;
+			}
+			m_aiOverlay->setBlocks(blocks);
+			m_aiOverlay->show();
+			m_aiOverlay->raise();
+		});
+	}
+	if (!m_aiOverlay) {
+		m_aiOverlay = new AiOverlay(m_display.get());
+	}
+	m_aiOverlay->setGeometry(m_display->rect());
+	m_aiOverlay->setStatus(tr("AI 翻译中…"));
+	m_aiOverlay->show();
+	m_aiOverlay->raise();
+	m_aiTranslate->translate(m_controller->getPixels().copy(), key, m_config->getOption("aiLang", tr("简体中文")));
+}
+
 void Window::applySticker() {
 	if (!m_display) {
 		return;
@@ -2511,6 +2554,34 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addAction(tr("WebDAV 存档同步…"), "webdavSync", openNamedTView<WebDavView>(&m_webdavView, false, this), "tools");
+
+	/* AI 截图翻译（对齐 Android AiTranslate + AiOverlayView）：结果画在画面浮层上。 */
+	m_actions.addMenu(tr("AI 翻译"), "aiTranslate", "tools");
+	m_actions.addAction(tr("翻译当前画面…"), "aiTranslateNow", [this]() {
+		translateScreen();
+	}, "aiTranslate");
+	m_actions.addAction(tr("设置 API Key…"), "aiTranslateKey", [this]() {
+		bool ok = false;
+		const QString key = QInputDialog::getText(this, tr("AI 翻译"), tr("Gemini API Key（留空则清除）"),
+		    QLineEdit::Password, m_config->getOption("aiKey"), &ok);
+		if (ok) {
+			m_config->setOption("aiKey", key.trimmed());
+		}
+	}, "aiTranslate");
+	m_actions.addAction(tr("目标语言…"), "aiTranslateLang", [this]() {
+		bool ok = false;
+		const QString lang = QInputDialog::getText(this, tr("AI 翻译"), tr("目标语言"),
+		    QLineEdit::Normal, m_config->getOption("aiLang", tr("简体中文")), &ok);
+		if (ok && !lang.trimmed().isEmpty()) {
+			m_config->setOption("aiLang", lang.trimmed());
+		}
+	}, "aiTranslate");
+	m_actions.addAction(tr("清除译文浮层"), "aiTranslateClear", [this]() {
+		if (m_aiOverlay) {
+			m_aiOverlay->clear();
+			m_aiOverlay->hide();
+		}
+	}, "aiTranslate");
 
 #ifdef BUILD_QT_CLOUD
 	/* 蓝牙 / TCP 直连以前只认环境变量，这里给一个可见入口（写 qt.ini + 同步 env）。 */

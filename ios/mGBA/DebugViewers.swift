@@ -55,8 +55,7 @@ enum DebugViewers {
     // MARK: - Hub
 
     /// Entry sheet listing the tools.
-    static func showHub(core: OpaquePointer?, presenter: UIViewController,
-                        onLayerMask: ((UInt32) -> Void)? = nil) {
+    static func showHub(core: OpaquePointer?, presenter: UIViewController) {
         guard let core, mgbaMobileIsLoaded(core) else {
             alert(title: "调试工具", message: "请先打开一个游戏", presenter: presenter)
             return
@@ -71,7 +70,7 @@ enum DebugViewers {
         let tiles = button("图块（VRAM）", action: { sheet.dismiss(animated: false); showTiles(core: core, presenter: presenter) })
         let io = button("I/O 与帧状态", action: {
             sheet.dismiss(animated: false)
-            showIo(core: core, presenter: presenter, onLayerMask: onLayerMask)
+            showIo(core: core, presenter: presenter)
         })
         if !gba {
             for item in [bg, oam, palette, tiles, io] {

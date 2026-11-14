@@ -98,6 +98,7 @@ endif()
 
 set(SOURCE_FILES
 	AboutScreen.cpp
+	AiTranslate.cpp
 	AbstractUpdater.cpp
 	Action.cpp
 	ActionMapper.cpp
