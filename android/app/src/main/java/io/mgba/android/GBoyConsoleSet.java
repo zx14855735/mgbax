@@ -173,23 +173,40 @@ public final class GBoyConsoleSet {
         byte[] saveSnapshot = null;
         String saveSnapshotName = null;
         String primarySavePath = primary.saveFile();
-        if (primarySavePath != null && !primarySavePath.isEmpty()) {
-            File primarySaveFile = new File(primarySavePath);
-            if (primarySaveFile.isFile()) {
-                saveSnapshotName = primarySaveFile.getName();
-                try (InputStream in = new FileInputStream(primarySaveFile)) {
-                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
-                    byte[] buffer = new byte[8192];
-                    int n;
-                    while ((n = in.read(buffer)) > 0) {
-                        bos.write(buffer, 0, n);
-                    }
-                    saveSnapshot = bos.toByteArray();
-                } catch (IOException e) {
-                    return fail("读取初始存档失败: " + e.getMessage());
-                }
+        File primarySaveFile = (primarySavePath == null || primarySavePath.isEmpty())
+                ? null : new File(primarySavePath);
+        if (primarySaveFile == null || !primarySaveFile.isFile()) {
+            // MgbaCore.nativeSaveFile() can still be empty right after a cloud
+            // rearm reloads the ROM. Fall back to the canonical <rom>.sav in
+            // saveDir (that is the file the visible core actually booted from).
+            String base = rom.getName();
+            int dot = base.lastIndexOf('.');
+            if (dot > 0) {
+                base = base.substring(0, dot);
+            }
+            File fallback = new File(saveDir, base + ".sav");
+            if (fallback.isFile()) {
+                primarySaveFile = fallback;
             }
         }
+        if (primarySaveFile != null && primarySaveFile.isFile()) {
+            saveSnapshotName = primarySaveFile.getName();
+            try (InputStream in = new FileInputStream(primarySaveFile)) {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = in.read(buffer)) > 0) {
+                    bos.write(buffer, 0, n);
+                }
+                saveSnapshot = bos.toByteArray();
+            } catch (IOException e) {
+                return fail("读取初始存档失败: " + e.getMessage());
+            }
+        }
+        android.util.Log.i("mGBA-App", "save snapshot path="
+                + (primarySaveFile == null ? "null" : primarySaveFile.getAbsolutePath())
+                + " bytes=" + (saveSnapshot == null ? -1 : saveSnapshot.length)
+                + " mirrors=" + count);
         final byte[] snapshot = saveSnapshot;
         final String snapshotName = saveSnapshotName;
 
