@@ -31,6 +31,9 @@ public:
 public slots:
 	void setController(std::shared_ptr<CoreController>);
 
+	/** 供悬浮球等外部入口直接指定输出文件（跳过文件选择对话框）。 */
+	void setOutputPath(const QString& path) { m_filename = path; }
+
 	void startRecording();
 	void stopRecording();
 

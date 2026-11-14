@@ -27,6 +27,9 @@
 #include "scripting/ScriptingController.h"
 #endif
 
+class QLabel;
+class QToolButton;
+
 namespace QGBA {
 
 class AudioProcessor;
@@ -189,6 +192,11 @@ private:
 	void openStateWindow(LoadSave);
 	void takeScreenshot();
 	void applyFilters();
+	void storePerGameFilter();
+	void toggleGifBall(bool enable);
+	void startGifRecording();
+	void stopGifRecording();
+	void applySticker();
 	QString perGameSpeedKey() const;
 	void storePerGameSpeed();
 	void applyPerGameSpeed();
@@ -268,6 +276,9 @@ private:
 	bool m_pendingClose = false;
 	/** 当前画面是否由内置滤镜着色器接管（用于「None」时恢复用户外部 shader）。 */
 	bool m_builtinFilterActive = false;
+	QPointer<QToolButton> m_gifBall;
+	QPointer<QLabel> m_sticker;
+	bool m_gifRecording = false;
 
 	bool m_hitUnimplementedBiosCall;
 

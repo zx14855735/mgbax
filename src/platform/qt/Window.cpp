@@ -7,7 +7,10 @@
 
 #include <QBuffer>
 #include <QCursor>
+#include <QDateTime>
 #include <QDialog>
+#include <QLabel>
+#include <QToolButton>
 #include <QDir>
 #include <QFileInfo>
 #include <QInputDialog>
@@ -1061,6 +1064,8 @@ void Window::gameStarted() {
 	/* 换游戏/重进时先套用本游戏的倍速记忆（不会改全局 fastForwardRatio）。 */
 	applyPerGameSpeed();
 	applyFilters();
+	applySticker();
+	toggleGifBall(m_config->getOption("gifBall").toInt());
 
 	m_hitUnimplementedBiosCall = false;
 	if (m_config->getOption("showFps", "1").toInt()) {
@@ -1450,10 +1455,30 @@ void Window::applyFilters() {
 	if (!m_display) {
 		return;
 	}
-	const int id = m_config->getOption("filter").toInt();
-	const float brightness = std::max(1, m_config->getOption("filterBrightness", 100).toInt()) / 100.f;
-	const float contrast = std::max(1, m_config->getOption("filterContrast", 100).toInt()) / 100.f;
-	const float scanlines = std::max(0, std::min(100, m_config->getOption("filterScanlines", 0).toInt())) / 100.f;
+	/* 每游戏滤镜记忆（对齐移动端 RomSettingsDb 的滤镜列）：进场时读
+	 * perRomFilter/<rom 基名>，有记录就压过全局值；离开游戏时清掉。 */
+	int id = m_config->getOption("filter").toInt();
+	int brightPct = m_config->getOption("filterBrightness", 100).toInt();
+	int contrastPct = m_config->getOption("filterContrast", 100).toInt();
+	int scanPct = m_config->getOption("filterScanlines", 0).toInt();
+	if (m_controller && m_config->getOption("perRomFilter").toInt()) {
+		const QString key = perGameSpeedKey();
+		if (!key.isEmpty()) {
+			const QVariant stored = m_config->getQtOption(key, "perRomFilter");
+			if (stored.isValid() && !stored.isNull()) {
+				const QStringList parts = stored.toString().split(QLatin1Char(','));
+				if (parts.size() == 4) {
+					id = parts[0].toInt();
+					brightPct = parts[1].toInt();
+					contrastPct = parts[2].toInt();
+					scanPct = parts[3].toInt();
+				}
+			}
+		}
+	}
+	const float brightness = std::max(1, brightPct) / 100.f;
+	const float contrast = std::max(1, contrastPct) / 100.f;
+	const float scanlines = std::max(0, std::min(100, scanPct)) / 100.f;
 
 	if (!m_display->supportsShaders()) {
 		/* 软件后端：交给 DisplayQt 在 paintEvent 里做 CPU 后处理。 */
@@ -1505,6 +1530,143 @@ void Window::applyFilters() {
 		LOG(QT, WARN) << tr("滤镜着色器加载失败（渲染器不支持？）");
 	}
 	shader->close(shader);
+}
+
+void Window::toggleGifBall(bool enable) {
+#ifdef USE_FFMPEG
+	if (!enable) {
+		if (m_gifBall) {
+			m_gifBall->close();
+			m_gifBall->deleteLater();
+			m_gifBall = nullptr;
+		}
+		return;
+	}
+	if (m_gifBall) {
+		m_gifBall->show();
+		return;
+	}
+	QToolButton* ball = new QToolButton(nullptr);
+	ball->setText(tr("GIF"));
+	ball->setCheckable(true);
+	ball->setToolTip(tr("点击开始 / 停止 GIF 录制"));
+	ball->setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+	ball->setAttribute(Qt::WA_DeleteOnClose);
+	ball->resize(56, 56);
+	ball->setStyleSheet(QStringLiteral("QToolButton { background: rgba(20,20,20,180); color: white; border-radius: 10px; font-weight: bold; }"
+	                                   "QToolButton:checked { background: rgba(200,40,40,200); }"));
+	QScreen* s = screen();
+	if (s) {
+		const QRect avail = s->availableGeometry();
+		ball->move(avail.right() - 90, avail.bottom() - 120);
+	}
+	connect(ball, &QToolButton::toggled, this, [this](bool on) {
+		if (on) {
+			this->startGifRecording();
+		} else {
+			this->stopGifRecording();
+		}
+	});
+	connect(this, &Window::shutdown, ball, [this, ball]() {
+		ball->close();
+	});
+	ball->show();
+	m_gifBall = ball;
+}
+
+void Window::startGifRecording() {
+	if (!m_controller || m_gifRecording) {
+		return;
+	}
+	if (!m_gifView) {
+		m_gifView = new GIFView(m_controller, this);
+		connect(m_controller.get(), &CoreController::stopping, m_gifView.data(), &QWidget::close);
+		connect(this, &Window::shutdown, m_gifView.data(), &QWidget::close);
+	}
+	QString dir = m_config->getOption("screenshotPath");
+	if (dir.isEmpty()) {
+		const QString baseDirectory = m_controller->baseDirectory();
+		const QString romPath = m_controller->path();
+		if (!baseDirectory.isEmpty() && !romPath.isEmpty()) {
+			dir = QFileInfo(QDir(baseDirectory), romPath).dir().absolutePath();
+		}
+	} else {
+		dir = QDir(ConfigController::configDir()).absoluteFilePath(dir);
+	}
+	if (dir.isEmpty()) {
+		dir = QDir::currentPath();
+	}
+	QDir().mkpath(dir);
+	QString baseName = QFileInfo(m_controller->path()).completeBaseName();
+	if (baseName.isEmpty()) {
+		baseName = QStringLiteral("recording");
+	}
+	const QString path = QDir(dir).absoluteFilePath(QString("%1-%2.gif")
+	    .arg(baseName, QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-hhmmss"))));
+	m_gifView->setOutputPath(path);
+	m_gifView->startRecording();
+	m_gifRecording = true;
+	LOG(QT, INFO) << tr("GIF 录制开始：%1").arg(QDir::toNativeSeparators(path));
+}
+
+void Window::stopGifRecording() {
+	if (m_gifView) {
+		m_gifView->stopRecording();
+	}
+	m_gifRecording = false;
+}
+#else
+	Q_UNUSED(enable);
+#endif
+}
+
+void Window::applySticker() {
+	if (!m_display) {
+		return;
+	}
+	if (m_sticker) {
+		m_sticker->deleteLater();
+		m_sticker = nullptr;
+	}
+	const QString path = m_config->getQtOption("stickerPath").toString();
+	if (path.isEmpty() || !QFileInfo::exists(path)) {
+		return;
+	}
+	QPixmap pixmap(path);
+	if (pixmap.isNull()) {
+		return;
+	}
+	int scale = m_config->getOption("stickerScale", 25).toInt();
+	if (scale <= 0) {
+		scale = 25;
+	}
+	scale = std::max(5, scale);
+	const int targetHeight = std::max(16, m_display->height() * scale / 100);
+	QLabel* label = new QLabel(m_display.get());
+	label->setAttribute(Qt::WA_TransparentForMouseEvents);
+	label->setPixmap(pixmap.scaledToHeight(targetHeight, Qt::SmoothTransformation));
+	label->adjustSize();
+	label->move(std::max(0, m_display->width() - label->width() - 8),
+	            std::max(0, m_display->height() - label->height() - 8));
+	label->show();
+	m_sticker = label;
+}
+
+void Window::storePerGameFilter() {
+	if (!m_controller || !m_config->getOption("perRomFilter").toInt()) {
+		return;
+	}
+	const QString key = perGameSpeedKey();
+	if (key.isEmpty()) {
+		return;
+	}
+	m_config->setQtOption(key,
+	    QString("%1,%2,%3,%4")
+	        .arg(m_config->getOption("filter", 0))
+	        .arg(m_config->getOption("filterBrightness", 100))
+	        .arg(m_config->getOption("filterContrast", 100))
+	        .arg(m_config->getOption("filterScanlines", 0)),
+	    "perRomFilter");
 }
 
 QString Window::perGameSpeedKey() const {
@@ -2099,6 +2261,19 @@ void Window::setupMenu(QMenuBar* menubar) {
 		m_config->updateOption("filter");
 	}
 	filter->connect([this](const QVariant&) {
+		storePerGameFilter();
+		applyFilters();
+	}, this);
+
+	/* 每游戏滤镜记忆开关（与 perRomSpeed 同结构）。 */
+	ConfigOption* perRomFilter = m_config->addOption("perRomFilter");
+	perRomFilter->addBoolean(tr("Remember filter for this game"), &m_actions, "filters");
+	if (m_config->getOption("perRomFilter").isEmpty()) {
+		m_config->setOption("perRomFilter", true);
+	} else {
+		m_config->updateOption("perRomFilter");
+	}
+	perRomFilter->connect([this](const QVariant&) {
 		applyFilters();
 	}, this);
 
@@ -2113,6 +2288,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 		m_config->updateOption("filterBrightness");
 	}
 	filterBrightness->connect([this](const QVariant&) {
+		storePerGameFilter();
 		applyFilters();
 	}, this);
 
@@ -2127,6 +2303,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 		m_config->updateOption("filterContrast");
 	}
 	filterContrast->connect([this](const QVariant&) {
+		storePerGameFilter();
 		applyFilters();
 	}, this);
 
@@ -2141,7 +2318,51 @@ void Window::setupMenu(QMenuBar* menubar) {
 		m_config->updateOption("filterScanlines");
 	}
 	filterScanlines->connect([this](const QVariant&) {
+		storePerGameFilter();
 		applyFilters();
+	}, this);
+
+	/* GIF 悬浮球（对齐移动端 GifBall）：一个无边框置顶小按钮，点一下开始/停止录制。 */
+#ifdef USE_FFMPEG
+	ConfigOption* gifBall = m_config->addOption("gifBall");
+	gifBall->addBoolean(tr("GIF floating button"), &m_actions, "av");
+	if (m_config->getOption("gifBall").isEmpty()) {
+		m_config->setOption("gifBall", false);
+	} else {
+		m_config->updateOption("gifBall");
+	}
+	gifBall->connect([this](const QVariant& value) {
+		toggleGifBall(value.toBool());
+	}, this);
+#endif
+
+	/* 贴纸叠图（对齐移动端 StickerOverlay）：载入 PNG 叠在画面上，可调大小，路径/大小持久化。 */
+	m_actions.addMenu(tr("Sticker"), "sticker", "av");
+	m_actions.addAction(tr("Load sticker image..."), "stickerLoad", [this]() {
+		const QString file = GBAApp::app()->getOpenFileName(this, tr("Select sticker"),
+		    tr("Image file (*.png *.jpg *.jpeg *.gif);;All files (*)"));
+		if (file.isEmpty()) {
+			return;
+		}
+		m_config->setQtOption("stickerPath", file);
+		applySticker();
+	}, "sticker");
+	m_actions.addAction(tr("Clear sticker"), "stickerClear", [this]() {
+		m_config->setQtOption("stickerPath", QString());
+		applySticker();
+	}, "sticker");
+	m_actions.addMenu(tr("Size"), "stickerSize", "sticker");
+	ConfigOption* stickerScale = m_config->addOption("stickerScale");
+	for (int v : {15, 25, 35, 50}) {
+		stickerScale->addValue(QString("%1%").arg(v), v, &m_actions, "stickerSize");
+	}
+	if (m_config->getOption("stickerScale").isEmpty()) {
+		m_config->setOption("stickerScale", 25);
+	} else {
+		m_config->updateOption("stickerScale");
+	}
+	stickerScale->connect([this](const QVariant&) {
+		applySticker();
 	}, this);
 
 	m_actions.addMenu(tr("Frame&skip"),"skip", "av");
@@ -2642,6 +2863,7 @@ void Window::attachWidget(QWidget* widget) {
 		for (QWidget* child : m_display->findChildren<QWidget*>()) {
 			child->installEventFilter(this);
 		}
+		applySticker();
 	}
 }
 

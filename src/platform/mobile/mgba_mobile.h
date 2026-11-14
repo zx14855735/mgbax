@@ -14,6 +14,7 @@ extern "C" {
 
 struct MgbaMobile;
 struct GBA;
+struct mCoreChannelInfo;
 
 /**
  * 与载体无关的 busgame 导航状态。Android 的 MgbaMobile 四核和 PC Qt 的
@@ -179,6 +180,19 @@ void mgbaMobileFreeState(void* state);
  * enabled; rewind by about the given number of seconds of gameplay. */
 void mgbaMobileSetRewind(struct MgbaMobile* emu, bool enabled);
 bool mgbaMobileRewind(struct MgbaMobile* emu, int seconds);
+/* 视频层枚举 / 开关（BG0-3、OBJ、backdrop）：UI 用来生成勾选列表。
+ * 复用 mCore 的 listVideoLayers / enableVideoLayer，不另造结构。 */
+size_t mgbaMobileListVideoLayers(const struct MgbaMobile* emu, const struct mCoreChannelInfo** info);
+void mgbaMobileSetVideoLayer(struct MgbaMobile* emu, size_t id, bool enable);
+/* 精确逐帧倒带：回退 frames 帧。内部按 REWIND_DIVIDER 粒度的快照回滚，
+ * 不足一个快照时回滚后再补跑到目标帧（帧号正好少 frames）。
+ * 需要先 mgbaMobileSetRewind(emu, true) 且历史里已有快照。 */
+bool mgbaMobileRewindFrames(struct MgbaMobile* emu, int frames);
+/* 内存监视：每帧检查 [addr, addr+len) 的字节（len 上限 64），值发生变化时
+ * 回调 cb(addr, len, ctx)。写同值不会被发现（这是轮询式监视的固有限制，
+ * 与 BusRead 轮询相比至少能捕获写事件造成的值变化）。cb 传 NULL 关闭监视。 */
+bool mgbaMobileSetMemoryWatch(struct MgbaMobile* emu, uint32_t addr, uint32_t len,
+                              void (*cb)(uint32_t, uint32_t, void*), void* ctx);
 void mgbaMobileReset(struct MgbaMobile* emu);
 void mgbaMobileTitle(const struct MgbaMobile* emu, char* out, size_t outLen);
 void mgbaMobileSetInterframe(struct MgbaMobile* emu, bool enabled);

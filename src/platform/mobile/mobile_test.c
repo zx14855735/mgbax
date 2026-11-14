@@ -3850,6 +3850,57 @@ static void testLockstepRun(const char* romPath) {
 	mgbaLockstepRelease(again);
 }
 
+static void watchCounterCb(uint32_t addr, uint32_t len, void* ctx) {
+	(void) addr;
+	(void) len;
+	++*(int*) ctx;
+}
+
+/* 新增的 4 个 UI 侧接口：视频层枚举/开关、精确逐帧倒带、内存监视。 */
+static void testCoreSurface(const char* dir) {
+	unsigned char rom[2048];
+	char path[512];
+	struct MgbaMobile* emu;
+	const struct mCoreChannelInfo* layers = NULL;
+	size_t n;
+	memset(rom, 0, sizeof(rom));
+	rom[0] = 0xFE;
+	rom[1] = 0xFF;
+	rom[2] = 0xFF;
+	rom[3] = 0xEA;
+	rom[0xB2] = 0x96;
+	snprintf(path, sizeof(path), "%s/test_core.gba", dir);
+	expect(writeFile(path, rom, sizeof(rom)), "write core-surface rom");
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(mgbaMobileLoad(emu, path), "load core-surface rom");
+
+	n = mgbaMobileListVideoLayers(emu, &layers);
+	expect(n > 0 && layers != NULL, "video layer list non-empty");
+	mgbaMobileSetVideoLayer(emu, 0, false);
+	mgbaMobileSetVideoLayer(emu, 0, true);
+	mgbaMobileSetVideoLayer(emu, n, false); /* 越界 id 不得崩 */
+
+	mgbaMobileSetRewind(emu, true);
+	expect(mgbaMobileRunFrames(emu, 120), "run frames for rewind");
+	{
+		uint32_t before = mgbaMobileFrameCounter(emu);
+		expect(mgbaMobileRewindFrames(emu, 1), "rewind one frame");
+		uint32_t after = mgbaMobileFrameCounter(emu);
+		expect(before > after && before - after == 1, "frame counter stepped back one");
+	}
+
+	{
+		int hits = 0;
+		expect(mgbaMobileSetMemoryWatch(emu, 0x02000000u, 2, watchCounterCb, &hits), "set memory watch");
+		expect(mgbaMobileBusWrite(emu, 16, 0x02000000u, 0x1234), "write watched memory");
+		expect(mgbaMobileRunFrames(emu, 2), "run frames for watch");
+		expect(hits > 0, "memory watch fired on change");
+		mgbaMobileSetMemoryWatch(emu, 0, 0, NULL, NULL);
+	}
+
+	mgbaMobileDestroy(emu);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
@@ -4005,6 +4056,7 @@ int main(int argc, char** argv) {
 	testResample();
 	testGb(dir);
 	testGba(dir);
+	testCoreSurface(dir);
 	testRom64(dir);
 	testTurboB(dir);
 	testAudioOut(dir);

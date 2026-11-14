@@ -444,7 +444,7 @@ Rgb applyOne(const Sampler& sampler, int id, float u, float v, int outWidth) {
 		const float BLEND = 0.65f;
 		float pixelX = u * w;
 		float pixelY = v * h;
-		auto bloom = [](const Rgb& color) {
+		auto bloom = [=](const Rgb& color) {
 			float bright = 0.30f * color.r + 0.59f * color.g + 0.11f * color.b;
 			return 1.0f + SHINE - 2.0f * SHINE * bright;
 		};

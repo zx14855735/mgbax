@@ -237,6 +237,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var rewindFrameWanted = false
     /** 调试页「I/O 与帧状态」要求强制关闭的图层位（gate 保护，见 applyForcedLayers）。 */
     private var forcedLayerMask: UInt32 = 0
+    /** 软件断点（GDB 的替代）：地址 + 期望值，变化即记录并暂停（gate 保护）。 */
+    private var watchAddress: UInt32 = 0
+    private var watchValue: UInt32 = 0
+    private var watchArmed = false
     /** 逐帧倒带回放用的本地按键历史（环形，emu 线程读写）。 */
     private static let keyHistorySize = 240
     private var keyHistory = [UInt32](repeating: 0, count: 240)
@@ -1296,6 +1300,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     done += n
                 }
                 pollRumble(core: core)
+                checkMemoryWatch(core)
             } else {
                 pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: false)
             }
@@ -1617,6 +1622,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         perRomPalette = nil
         applyCoreOptions()
         applyPerRomSettings()
+        // 帧率目标（fps/59.7275 折算倍速）在重开游戏后恢复；每游戏倍速优先。
+        if perRomSpeed == nil {
+            let savedFps = defaults.double(forKey: "fps_target")
+            if savedFps > 0 {
+                speed = min(16, max(0.05, savedFps / 59.7275))
+            }
+        }
         frameDebt = 0
         gate.lock()
         paused = false
@@ -1646,6 +1658,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.title = name.isEmpty ? "mGBA" : name
             self.showSaveLocation()
             self.refreshSlotButton()
+            self.refreshSpeedButtons()
             self.armMenuAutoHide()
             self.startTimedSave()
         }
@@ -2022,6 +2035,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             addCustomRomFolder(url)
         case 12:
             importSps(url)
+        case 13:
+            importCameraImage(url)
         case 10:
             installShader(url)
         case 9:
@@ -2451,6 +2466,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         alert.addAction(UIAlertAction(title: "存档", style: .default) { [weak self] _ in self?.showSaveSettingsDialog() })
         alert.addAction(UIAlertAction(title: "ROM 文件夹", style: .default) { [weak self] _ in self?.showRomDirsDialog() })
         alert.addAction(UIAlertAction(title: "高级", style: .default) { [weak self] _ in self?.showAdvanced() })
+        alert.addAction(UIAlertAction(title: "外设（相机/打印/卡牌）", style: .default) { [weak self] _ in self?.showPeripherals() })
+        alert.addAction(UIAlertAction(title: "调试控制台", style: .default) { [weak self] _ in self?.showDebugConsole() })
         alert.addAction(UIAlertAction(title: "游戏信息", style: .default) { [weak self] _ in self?.showRomInfo() })
         alert.addAction(UIAlertAction(title: "运行日志", style: .default) { [weak self] _ in self?.showRunLog() })
         alert.addAction(UIAlertAction(title: "帮助", style: .default) { [weak self] _ in self?.showHelpDialog() })
@@ -3284,6 +3301,171 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     private static func clampTilt(_ value: CGFloat) -> CGFloat {
         max(-1, min(1, value * 1.4))
+    }
+
+    /// 外设替代实现：相机（相册选图暂存）/ 打印机（导出画面）/ e-Reader 与
+    /// BattleChip（走金手指）。core 目前没有这些外设，先把入口与数据路径做好，
+    /// C 层一导出就能直接接上（见 IOS_GAPS §3.5）。
+    private func showPeripherals() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 10
+        let note = UILabel()
+        note.numberOfLines = 0
+        note.font = .systemFont(ofSize: 12)
+        note.textColor = .secondaryLabel
+        note.text = "当前核心没有相机/打印机/e-Reader/BattleChip 实现，下面是替代方案：相机图先暂存到 Documents（等 C 接口后可直接注入），打印机导出当前画面，e-Reader/BattleChip 用金手指代码（GameShark）。"
+        box.addArrangedSubview(note)
+        if let path = defaults.string(forKey: "camera_image"),
+           let image = UIImage(contentsOfFile: path) {
+            let preview = UIImageView(image: image)
+            preview.contentMode = .scaleAspectFit
+            preview.backgroundColor = .black
+            preview.heightAnchor.constraint(equalToConstant: 140).isActive = true
+            box.addArrangedSubview(preview)
+        }
+        box.addArrangedSubview(linkButton("相机：从相册/文件选图（暂存）") { [weak self] in
+            guard let self else { return }
+            self.pickerKind = 13
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.image], asCopy: true)
+            picker.delegate = self
+            self.presentSheet(picker)
+        })
+        box.addArrangedSubview(linkButton("打印机：导出当前画面到相册") { [weak self] in
+            guard let self else { return }
+            self.takeScreenshot()
+            RunLog.shared.add("外设：打印机模拟（截图导出）")
+        })
+        box.addArrangedSubview(linkButton("e-Reader / BattleChip：添加卡牌金手指") { [weak self] in
+            guard let self else { return }
+            self.showCheatEdit()
+            RunLog.shared.add("外设：e-Reader/BattleChip 走金手指路径")
+        })
+        presentSheet(SheetController(title: "外设（替代实现）", content: box))
+    }
+
+    /// 相机选图：统一存成 PNG 放在 Documents/peripherals/camera.png。
+    private func importCameraImage(_ url: URL) {
+        let secured = url.startAccessingSecurityScopedResource()
+        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data),
+              let png = image.pngData() else {
+            toast("读取图片失败")
+            return
+        }
+        let dir = docs.appendingPathComponent("peripherals", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent("camera.png")
+        do {
+            try png.write(to: dest)
+        } catch {
+            toast("保存失败")
+            return
+        }
+        defaults.set(dest.path, forKey: "camera_image")
+        RunLog.shared.add("外设：相机图已暂存 \(dest.lastPathComponent)（等 C 接口注入）")
+        toast("已暂存相机图；核心导出注入接口后即可生效")
+    }
+
+    /// 软件断点（GDB 的替代）：每帧比较监视地址，值变了就记录并暂停。
+    /// 命中一次后自动解除，等用户重新设置，避免暂停后继续刷屏。
+    private func checkMemoryWatch(_ core: OpaquePointer) {
+        gate.lock()
+        let armed = watchArmed
+        let address = watchAddress
+        let expected = watchValue
+        gate.unlock()
+        guard armed, address != 0 else { return }
+        let current = mgbaMobileBusRead(core, 16, address)
+        guard current != expected else { return }
+        gate.lock()
+        watchValue = current
+        watchArmed = false
+        paused = true
+        gate.unlock()
+        RunLog.shared.add(String(format: "断点命中：%08X %04X → %04X", address, expected, current))
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.audio.setPaused(true)
+            self.pauseButton?.setTitle("继续", for: .normal)
+            self.toast(String(format: "断点命中 0x%08X：%04X → %04X", address, expected, current))
+        }
+    }
+
+    /// 调试控制台（GDB/脚本的替代）：寄存器/内存读写 + 条件断点 + 动作序列。
+    private func showDebugConsole() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 8
+        let address = field("03000000", "地址（十六进制，可带 0x）")
+        address.autocapitalizationType = .allCharacters
+        let readLabel = UILabel()
+        readLabel.numberOfLines = 0
+        readLabel.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        readLabel.text = "读：—"
+        let value = field("", "写入值（16 位十六进制）")
+        value.autocapitalizationType = .allCharacters
+        func addressValue() -> UInt32 {
+            let text = (address.text ?? "").trimmingCharacters(in: .whitespaces)
+            let hex = text.lowercased().hasPrefix("0x") ? String(text.dropFirst(2)) : text
+            return UInt32(hex, radix: 16) ?? 0
+        }
+        func valueValue() -> UInt32 {
+            let text = (value.text ?? "").trimmingCharacters(in: .whitespaces)
+            let hex = text.lowercased().hasPrefix("0x") ? String(text.dropFirst(2)) : text
+            return UInt32(hex, radix: 16) ?? 0
+        }
+        box.addArrangedSubview(address)
+        box.addArrangedSubview(readLabel)
+        box.addArrangedSubview(value)
+        box.addArrangedSubview(row(linkButton("读取") {
+            let addr = addressValue()
+            guard addr != 0 else { return }
+            let data = mgbaMobileBusRead(core, 16, addr)
+            readLabel.text = String(format: "读：0x%08X = %04X（%d）", addr, data & 0xFFFF, data & 0xFFFF)
+        }, linkButton("写入") {
+            let addr = addressValue()
+            guard addr != 0 else { return }
+            let data = valueValue()
+            let ok = mgbaMobileBusWrite(core, 16, addr, data)
+            readLabel.text = ok ? String(format: "已写 0x%08X = %04X", addr, data) : "写入失败"
+            RunLog.shared.add(String(format: "控制台写入 %08X=%04X %@", addr, data, ok ? "ok" : "fail"))
+        }))
+        box.addArrangedSubview(row(linkButton("设断点（值变化即暂停）") { [weak self] in
+            guard let self else { return }
+            let addr = addressValue()
+            guard addr != 0 else {
+                self.toast("地址无效")
+                return
+            }
+            let current = mgbaMobileBusRead(core, 16, addr)
+            self.gate.lock()
+            self.watchAddress = addr
+            self.watchValue = current
+            self.watchArmed = true
+            self.gate.unlock()
+            RunLog.shared.add(String(format: "断点设置 %08X 当前 %04X", addr, current))
+            self.toast(String(format: "断点已设：0x%08X 当前 %04X", addr, current))
+        }, linkButton("解除断点") { [weak self] in
+            guard let self else { return }
+            self.gate.lock()
+            self.watchArmed = false
+            self.watchAddress = 0
+            self.gate.unlock()
+            RunLog.shared.add("断点已解除")
+            self.toast("断点已解除")
+        }))
+        let hint = UILabel()
+        hint.numberOfLines = 0
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabel
+        hint.text = "这是 GDB/脚本的替代：按帧轮询比较（精度 1 帧），命中即暂停并写运行日志。脚本请用 mgba://action 动作序列或 BLE 通道驱动。"
+        box.addArrangedSubview(hint)
+        presentSheet(SheetController(title: "调试控制台", content: box))
     }
 
     @objc private func showAdvanced() {
@@ -6191,6 +6373,26 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.setNeedsStatusBarAppearanceUpdate()
             self.setNeedsUpdateOfHomeIndicatorAutoHidden()
         }, for: .valueChanged)
+        // 帧率目标（Android fpsTarget 的等价物）：不改核心节拍，只按
+        // fps / 59.7275 折算成倍速，走现有 setSpeed 与 type 9 广播。
+        let fpsRow = UIButton(type: .system)
+        fpsRow.contentHorizontalAlignment = .left
+        let fpsOptions: [Double] = [0, 15, 30, 45, 60, 120, 240]
+        let fpsNames = ["Native（59.7275）", "15", "30", "45", "60", "120", "240"]
+        var fpsIndex = fpsOptions.firstIndex(of: defaults.double(forKey: "fps_target")) ?? 0
+        fpsRow.setTitle("帧率目标：\(fpsNames[fpsIndex])", for: .normal)
+        fpsRow.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "帧率目标（折算成倍速）", current: fpsIndex, options: fpsNames) { [weak self] index in
+                guard let self else { return }
+                fpsIndex = index
+                let fps = fpsOptions[index]
+                self.defaults.set(fps, forKey: "fps_target")
+                fpsRow.setTitle("帧率目标：\(fpsNames[index])", for: .normal)
+                self.setSpeed(fps <= 0 ? 1 : fps / 59.7275)
+                self.toast(fps <= 0 ? "帧率目标：Native（1×）" : "帧率目标 \(Int(fps)) ≈ \(String(format: "%.2f", fps / 59.7275))×")
+            }
+        }, for: .touchUpInside)
         let autoSkip = labeledSwitch("自动跳帧（跟不上时自动跳帧保速度）", defaults.bool(forKey: "vf_skip_auto"))
         let skip = slider(max: 5, value: Float(defaults.integer(forKey: "vf_skip")))
         let bright = slider(max: 100, value: Float((defaults.object(forKey: "vf_bright") == nil ? 100 : defaults.integer(forKey: "vf_bright")) - 50))
@@ -6220,6 +6422,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(sceneRow)
         box.addArrangedSubview(shaderRow)
         box.addArrangedSubview(immersive.0)
+        box.addArrangedSubview(fpsRow)
         box.addArrangedSubview(autoSkip.0)
         box.addArrangedSubview(skipLabel)
         box.addArrangedSubview(skip)

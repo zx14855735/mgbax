@@ -373,6 +373,17 @@ struct MgbaMobile {
 	bool rewindInited;
 	bool rewindEnabled;
 	unsigned rewindCounter;
+	/* 内存监视（mgbaMobileSetMemoryWatch）：每帧轮询一小段内存，值变了就回调。
+	 * 上限 64 字节，避免前端误传大区间导致每帧 O(n) 扫描。 */
+	struct {
+		bool active;
+		uint32_t addr;
+		uint32_t len;
+		void (*cb)(uint32_t, uint32_t, void*);
+		void* ctx;
+		uint8_t prev[64];
+		uint8_t cur[64];
+	} watch;
 	/* Per-channel audio gains, replayed on every load (see SetChannelVolumes). */
 	int32_t channelGains[6];
 	/*
@@ -3899,6 +3910,22 @@ uint16_t mgbaMobileLastKeys(struct MgbaMobile* emu) {
 }
 
 /* RunFrames 的实现体。调用方必须已持有核心锁（见下面的公开包装）。 */
+/* 内存监视：每帧在核心锁内读一小段内存，值变化才回调。调用方已持锁
+ * （帧循环里调用），递归锁允许回调再进 mgbaMobile*。 */
+static void mobilePollMemoryWatch(struct MgbaMobile* emu) {
+	if (!emu->watch.active || !emu->watch.cb) {
+		return;
+	}
+	uint32_t len = emu->watch.len;
+	for (uint32_t i = 0; i < len; ++i) {
+		emu->watch.cur[i] = (uint8_t) emu->core->busRead8(emu->core, emu->watch.addr + i);
+	}
+	if (memcmp(emu->watch.prev, emu->watch.cur, len) != 0) {
+		memcpy(emu->watch.prev, emu->watch.cur, len);
+		emu->watch.cb(emu->watch.addr, len, emu->watch.ctx);
+	}
+}
+
 static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	if (!emu || !emu->core) {
 		return false;
@@ -4125,6 +4152,9 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 			mgbaLockstepRunFrame(emu->lockstepSlot, emu->core);
 		} else {
 			emu->core->runFrame(emu->core);
+		}
+		if (emu->watch.active) {
+			mobilePollMemoryWatch(emu);
 		}
 		if (emu->rewindEnabled && ++emu->rewindCounter >= REWIND_DIVIDER) {
 			emu->rewindCounter = 0;
@@ -4874,6 +4904,90 @@ bool mgbaMobileRewind(struct MgbaMobile* emu, int seconds) {
 	}
 	MOBILE_LOGI("Rewind %ds %s", seconds, ok ? "ok" : "empty");
 	return ok;
+}
+
+size_t mgbaMobileListVideoLayers(const struct MgbaMobile* emu, const struct mCoreChannelInfo** info) {
+	if (!emu || !emu->core || !emu->core->listVideoLayers) {
+		return 0;
+	}
+	return emu->core->listVideoLayers(emu->core, info);
+}
+
+void mgbaMobileSetVideoLayer(struct MgbaMobile* emu, size_t id, bool enable) {
+	if (!emu || !emu->core || !emu->core->enableVideoLayer) {
+		return;
+	}
+	/* UI 线程调用；与 runFrames / 存档读写共用同一把（递归）核心锁。 */
+	mgbaMobileLock(emu);
+	emu->core->enableVideoLayer(emu->core, id, enable);
+	mgbaMobileUnlock(emu);
+}
+
+bool mgbaMobileRewindFrames(struct MgbaMobile* emu, int frames) {
+	if (!emu || !emu->core || frames <= 0) {
+		return false;
+	}
+	mgbaMobileLock(emu);
+	bool ok = false;
+	if (emu->rewindInited) {
+		int remaining = frames;
+		ok = true;
+		while (remaining > 0) {
+			if (!mCoreRewindRestore(&emu->rewind, emu->core, 1)) {
+				ok = false;
+				break;
+			}
+			if (remaining >= REWIND_DIVIDER) {
+				remaining -= REWIND_DIVIDER;
+			} else {
+				/* 快照粒度是 REWIND_DIVIDER 帧：回滚后补跑到目标帧，
+				 * 这样净效果正好是回退 frames 帧。 */
+				int replay = REWIND_DIVIDER - remaining;
+				for (int i = 0; i < replay; ++i) {
+					emu->core->setKeys(emu->core, beginFrameKeys(emu));
+					emu->core->runFrame(emu->core);
+				}
+				remaining = 0;
+			}
+		}
+		if (ok) {
+			applyFrameskip(emu->core, 0);
+			ensureVideo(emu);
+			emu->fast = -1;
+			attachKeyCallback(emu);
+		}
+	}
+	mgbaMobileUnlock(emu);
+	return ok;
+}
+
+bool mgbaMobileSetMemoryWatch(struct MgbaMobile* emu, uint32_t addr, uint32_t len,
+                              void (*cb)(uint32_t, uint32_t, void*), void* ctx) {
+	if (!emu || !emu->core) {
+		return false;
+	}
+	if (!cb) {
+		mgbaMobileLock(emu);
+		emu->watch.active = false;
+		emu->watch.cb = NULL;
+		emu->watch.ctx = NULL;
+		mgbaMobileUnlock(emu);
+		return true;
+	}
+	if (len == 0 || len > sizeof(emu->watch.prev)) {
+		return false;
+	}
+	mgbaMobileLock(emu);
+	emu->watch.addr = addr;
+	emu->watch.len = len;
+	emu->watch.cb = cb;
+	emu->watch.ctx = ctx;
+	for (uint32_t i = 0; i < len; ++i) {
+		emu->watch.prev[i] = (uint8_t) emu->core->busRead8(emu->core, addr + i);
+	}
+	emu->watch.active = true;
+	mgbaMobileUnlock(emu);
+	return true;
 }
 
 void mgbaMobileReset(struct MgbaMobile* emu) {
