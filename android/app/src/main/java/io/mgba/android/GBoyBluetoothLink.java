@@ -69,9 +69,13 @@ final class GBoyBluetoothLink implements GBoyCloudLink.Link {
         if (adapter == null) {
             throw new IOException("设备没有蓝牙适配器");
         }
+        /* 官方 A4TApA 构造：先 cancelDiscovery()，再 listenUsingRfcommWithServiceRecord；
+         * A4TApA.A4TApA() 在 accept 前把线程优先级提到 -19。 */
+        adapter.cancelDiscovery();
         BluetoothServerSocket server =
                 adapter.listenUsingRfcommWithServiceRecord(SERVICE_NAME, SERVICE_UUID);
         try {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
             BluetoothSocket peer = server.accept();
             return new GBoyBluetoothLink(peer);
         } finally {
@@ -90,9 +94,12 @@ final class GBoyBluetoothLink implements GBoyCloudLink.Link {
         if (mac == null || mac.isEmpty()) {
             throw new IOException("没有指定蓝牙地址");
         }
-        adapter.cancelDiscovery();
+        /* 官方 A2egSU(String) 构造：getRemoteDevice(mac)
+         * .createRfcommSocketToServiceRecord(UUID) 之后才 cancelDiscovery()，
+         * 连接线程同样是 -19。 */
         BluetoothDevice device = adapter.getRemoteDevice(mac);
         BluetoothSocket peer = device.createRfcommSocketToServiceRecord(SERVICE_UUID);
+        adapter.cancelDiscovery();
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO);
         peer.connect();
         return new GBoyBluetoothLink(peer);

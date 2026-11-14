@@ -108,6 +108,17 @@ private:
 	/** 隧道配对上后，尝试大厅信令之外的直连（P2P）；失败返回 nullptr。 */
 	ILink* tryDirectLink(GbCloud::Session* sig, const QString& token, Room* room,
 	                     ILink* tunnel, bool asHost);
+	/**
+	 * 环境变量指定的 TCP 直连（官方 `ServerSocket.accept` / `Socket.connect`）：
+	 * `MGBAX_TCP_PEER=host:port` 当客户端，`MGBAX_TCP_LISTEN=port` 当服务端。
+	 * 两个都没设时返回 nullptr——默认行为不受影响。
+	 */
+	ILink* tryEnvTcpLink(QString* error);
+	/**
+	 * 蓝牙 RFCOMM（仅 Windows）：`MGBAX_BT=host` 当服务端 / `MGBAX_BT=MAC`
+	 * 当客户端。非 Windows 或没有该变量时返回 nullptr。
+	 */
+	ILink* tryBtLink(QString* error);
 	void cleanupTunnel();
 	/** 分开控制：pipe the native SIO link bytes through the tunnel. */
 	void startSioBridge(ILink* link, bool asHost);

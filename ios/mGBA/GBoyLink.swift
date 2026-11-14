@@ -12,22 +12,43 @@ import Foundation
  * `[u32 payload length][payload]` and the payload starts with a `u16`
  * message type.
  *
- *   1 HELLO   u16 type + u32 6; the client sends it first, the server echoes.
- *   2 ROMINFO u16 type + 32-byte ASCII MD5 of the ROM + u16 name length + name.
- *   3 READY   u16 type only, sent once the local console is loaded.
- *   4 KEYS    u16 type + u32 GBA key mask (same bit layout mGBA uses).
- *   5 RESET   u16 type only.
- *   6 STATE   u16 type + u32 size + zlib-compressed GBASTATE v4 image.
+ * 消息号逐条对齐官方客户端（KpHwm4.B25kr6 的 ARc23Z 调用、KpHwm4/AmA8tU.java）：
+ *
+ *   0 PACING    u16 type + int32 fps；帧率上限，接收方据此限本机帧率。
+ *   1 HELLO     u16 type + u32 6；客户端先发，服务端原样回。
+ *   2 ROMINFO   u16 type + 32 字节 ASCII MD5 + u16 名字长度 + 名字。
+ *   3 READY     u16 type（官方还允许带 int32 rtt，见 B25kr6:131）。
+ *   5 READY_ACK u16 type；就绪确认，只有客户端路径发。
+ *   6 STATE     u16 type + u32 size + 整份 mGBA 即时存档。
+ *   9 KEYS      u16 type + u32 GBA 按键掩码（与 mGBA 同一位序）。
+ *  13 RESET     u16 type；自家扩展（官方没有复位消息）。
+ *
+ * 断线重连另有官方私有包：裸 10 字节 `int32 6 + int16 100 + int32 rtt`
+ * （AmA8tU.ARc23Z(Socket):263-272），按帧格式读出来就是「长度 6 + type 100 +
+ * 4 字节 rtt」，即 type 100 带 int32 rtt。见 msgReconnect。
  *
  * After the handshake each side sends its key mask about every five frames
  * (~83 ms) and applies the mask it receives, so a GBoy handset drives the
  * remote player here the same way it would drive its own second console.
+ *
+ * 蓝牙：官方还有一条经典蓝牙 RFCOMM 通道（`KpHwm4/A4TApA`、服务名 `GBoy`、
+ * UUID 3a1f7b2e-8d45-4c92-bf60-5e3c21a98d47），字节流上跑的就是上面这套
+ * 「4B 大端长度 + u16 type」帧。**iOS 上这条路不存在**：Apple 只对 MFi
+ * 配件开放 ExternalAccessory，第三方 App 拿不到 RFCOMM 的
+ * `listenUsingRfcommWithServiceRecord` / `createRfcommSocketToServiceRecord`。
+ * iOS 能做的等价物是 BLE 自定义 GATT 服务（一条 write/notify 特征对，
+ * 把同样的帧切块塞进去），但它需要设备端也实现同一套 GATT 服务，且带宽
+ * 与 20 字节 MTU 的分片方式和 RFCOMM 完全不同 —— 目前**未实现**，这里
+ * 不留半成品代码。热点/Wi-Fi 直连（本文件的 TCP 路径）是 iOS 的实际通道。
  */
 final class GBoyLink {
     static let defaultPort = 6374
 
     private struct LinkError: Error {
         let message: String
+        /// 读超时（SO_RCVTIMEO 到点）而不是对端断开：状态同步这类「对端可能
+        /// 不发」的可选步骤要能把它和真正的断线区分开。
+        var timeout = false
     }
 
     // 消息号必须与官方客户端（KpHwm4.B25kr6 的 ARc23Z 调用）以及 PC/Android
@@ -42,9 +63,8 @@ final class GBoyLink {
     private static let msgKeys = 9
     /// 复位是我们自己的扩展（官方没有这条消息），放在 11 以上避免撞号。
     private static let msgReset = 13
-
-    /// Zero-filled body appended to the synthesized state image, in bytes.
-    private static let statePad = 900 * 1024
+    /// 官方断线重连握手（AmA8tU.ARc23Z(Socket):263-272）：type 100 + int32 rtt。
+    private static let msgReconnect = 100
 
     var romPath: () -> String? = { nil }
     var localKeys: () -> Int32 = { 0 }
@@ -70,10 +90,15 @@ final class GBoyLink {
     var onRemoteReset: () -> Void = {}
     /// 收到对端 type 6 的整份存档：交给镜像核（代表对端那个玩家）载入。
     var onRemoteState: ([UInt8]) -> Void = { _ in }
+    /// 官方 type 0（节奏）：对端下发的帧率上限。0 或越界值表示「没有上限」，
+    /// 由上层按 1000/fps 调整帧循环的目标间隔。Called from the reader thread.
+    var onRemotePacing: (Int) -> Void = { _ in }
 
     private let lock = NSLock()
     private var isClosedFlag = false
     private var currentFd: Int32 = -1
+    /// 对端上报的 RTT（官方 type 3 / 重连包里的 int32），-1 = 未知。lock 保护。
+    private var lastRttValue: Int32 = -1
 
     private var closed: Bool {
         lock.lock()
@@ -100,6 +125,34 @@ final class GBoyLink {
         if fd >= 0 && !dead {
             try? Self.sendAll(fd, Self.frame(Self.msgReset))
         }
+    }
+
+    /// 对端上报的 RTT（官方 `A5SV6n.f5293B9tovu`），-1 = 还没收到。
+    var lastRtt: Int32 {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastRttValue
+    }
+
+    /**
+     * 官方断线重连握手：裸 10 字节 `int32 6 + int16 100 + int32 rtt`
+     * （KpHwm4/AmA8tU.java 的 ARc23Z(Socket)，263-272 行）。按本文件的帧
+     * 格式它等价于「长度 6 + type 100 + 4 字节 rtt」，所以直接走 send()
+     * 出来的字节和官方 write() 的 10 字节一模一样。
+     *
+     * 只在**已经和对端完成过一次握手**的会话上发：官方用它代替整套 1→2→3→6
+     * 重放（存档早已灌进镜像核）。iOS 的 GBoyLink 是一次性会话（断开即结束，
+     * 没有 AmA8tU 那个 50 秒自动重连循环），所以这里只提供发送入口，供上层
+     * 在自建的重连流程里复用；接收侧已经能识别 type 100（见 expectHello）。
+     */
+    func sendReconnectHandshake() {
+        lock.lock()
+        let fd = currentFd
+        let dead = isClosedFlag
+        let rtt = lastRttValue
+        lock.unlock()
+        guard fd >= 0, !dead else { return }
+        try? Self.sendAll(fd, Self.reconnectFrame(rtt: rtt))
     }
 
     func close() {

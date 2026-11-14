@@ -69,6 +69,8 @@ public final class GBoyCloudLink {
     /** Local loopback ports for the SIO link bridge (分开控制模式). */
     private static final int SIO_PORT_BASE = 18765;
     private static final int SIO_PORT_TRIES = 8;
+    /** 官方 WiFi 直连的默认监听端口（与本地联机广播默认值一致）。 */
+    private static final int DEFAULT_TCP_PORT = 19876;
 
     /**
      * Minimal transport shared by the KCP relay and the websocket tunnel; the
@@ -244,6 +246,89 @@ public final class GBoyCloudLink {
                 }
             }
         }, "lobby-bt");
+        thread.setDaemon(true);
+        thread.start();
+        worker = thread;
+    }
+
+    /**
+     * 官方 WiFi 直连（{@code KpHwm4.A2egSU} 服务端 / {@code KpHwm4.AmA8tU}
+     * 客户端），不经过任何服务器：一端 {@code ServerSocket.accept()}，另一端
+     * {@code Socket.connect(host, port, 10s)}，之后跑同一套镜像会话（线上仍是
+     * {@code 4B 大端长度 + u16 type} 的 GBoy 帧）。
+     *
+     * <p>入口形如 {@code am broadcast -a io.mgba.android.action.TCP
+     * --es peer 1.2.3.4:5678}；{@code peer} 留空（或只给端口）表示当服务端。</p>
+     *
+     * @param hostPort {@code 地址:端口} = 加入；空 / {@code :端口} / 纯端口 = 监听。
+     */
+    public void startTcp(final String hostPort) {
+        closed = false;
+        Thread thread = new Thread(() -> {
+            GBoySocketLink link = null;
+            try {
+                String spec = hostPort == null ? "" : hostPort.trim();
+                boolean asHost = spec.isEmpty() || spec.startsWith(":")
+                        || spec.indexOf(':') < 0;
+                int port = DEFAULT_TCP_PORT;
+                String host = null;
+                if (asHost) {
+                    // 纯端口（"19876"）或 ":19876" 都按监听端口解释。
+                    if (!spec.isEmpty()) {
+                        int colon = spec.lastIndexOf(':');
+                        port = Integer.parseInt(spec.substring(colon + 1).trim());
+                    }
+                } else {
+                    int colon = spec.lastIndexOf(':');
+                    host = spec.substring(0, colon);
+                    port = Integer.parseInt(spec.substring(colon + 1).trim());
+                }
+                if (port < 1 || port > 65535) {
+                    throw new IOException("端口非法：" + port);
+                }
+                /* localSlot=1 / playerCount=4：与云端镜像模式一致（可见核 1P，
+                 * 对端按键落到镜像核 slot 2，slot 3/4 作 NPC 队位）。 */
+                link = new GBoySocketLink(1, 4, sessionEvents);
+                socketLink = link;
+                linkSession = link.session();
+                if (asHost) {
+                    int actual = link.startHost(port);
+                    status("TCP 联机：本机监听 " + actual + "，等待对方连接…");
+                    while (!closed && !link.isClosed() && !link.isReady()) {
+                        Thread.sleep(100);
+                    }
+                    if (!link.isReady()) {
+                        return;
+                    }
+                    hooks.onConnected(true, null);
+                    status("TCP 联机已连接，你是 1P（端口 " + actual + "）");
+                } else {
+                    status("TCP 联机：正在连接 " + host + ":" + port);
+                    link.startJoin(host, port);
+                    hooks.onConnected(false, null);
+                    status("TCP 联机已连接，你是 2P");
+                }
+                // 链路自己的读写线程负责收发与重连，这里只维持生命周期。
+                while (!closed && !link.isClosed()) {
+                    Thread.sleep(200);
+                }
+            } catch (Exception e) {
+                if (!closed) {
+                    fail(message(e));
+                }
+            } finally {
+                if (link != null) {
+                    link.close();
+                }
+                if (socketLink == link) {
+                    socketLink = null;
+                    linkSession = null;
+                }
+                if (!closed) {
+                    hooks.onDisconnected();
+                }
+            }
+        }, "lobby-tcp");
         thread.setDaemon(true);
         thread.start();
         worker = thread;
@@ -1999,7 +2084,9 @@ public final class GBoyCloudLink {
     public void sendInitialState(byte[] snapshot) {
         GBoyLinkSession session = linkSession;
         Link link = servingLink;
-        if (session == null || link == null || snapshot == null || snapshot.length == 0) {
+        /* 会话自己不依赖 servingLink 发帧（它持有自己的 transport），TCP 直连
+         * 这条路径没有云 Link，只有 GBoySocketLink 会话，所以不能用 link 判空。 */
+        if (closed || session == null || snapshot == null || snapshot.length == 0) {
             Log.w(TAG, "initial state skipped (session=" + (session != null)
                     + " link=" + (link != null)
                     + " bytes=" + (snapshot == null ? 0 : snapshot.length) + ")");
@@ -2065,6 +2152,11 @@ public final class GBoyCloudLink {
             }
             case GBoyFrames.TYPE_RESET:
                 hooks.onRemoteReset();
+                break;
+            case GBoyFrames.TYPE_RECONNECT:
+                /* 官方断线重连包（AmA8tU:263-272）。session 已按握手处理；
+                 * 这里只留一条日志，别落进 default 当未知帧。 */
+                Log.i(TAG, "rx reconnect handshake rtt=" + GBoyFrames.intOf(body));
                 break;
             case GBoyFrames.TYPE_EVENT:
                 Log.i(TAG, "event " + GBoyFrames.intOf(body));

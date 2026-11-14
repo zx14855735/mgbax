@@ -63,6 +63,15 @@ enum Type {
 	/** 槽位 3 的按键掩码。**必须单独占号**：早先借 TYPE_READY(3) 带 int
 	 *  的形态夹带，与官方的「3 = RTT」互斥。 */
 	TYPE_INPUT_3 = 17,
+
+	/**
+	 * 官方「断线重连握手包」（KpHwm4.AmA8tU.java:263-272，ARc23Z(Socket)）：
+	 * 重连成功后先发一个裸 10 字节 {@code int32 6 + int16 100 + int32 rtt}，
+	 * 再进入读循环。它刻意长成一条合法的线帧（长度 6 = 2 字节类型 + 4 字节
+	 * rtt），只是类型号 100 在官方消息表里没有别的含义，所以按普通帧解析
+	 * 不会错位；接收侧必须把它当握手处理，而不是当成未知类型丢掉。
+	 */
+	TYPE_RECONNECT = 100,
 };
 
 /** Bare frame: length = 2, no payload. */
@@ -83,6 +92,14 @@ QByteArray frame(int type, const QByteArray& payload);
 QByteArray nameFrame(const QByteArray& name, const QByteArray& desc = QByteArray());
 
 QByteArray stateFrame(const QByteArray& state);
+
+/**
+ * 官方的重连握手包（KpHwm4.AmA8tU.java:263-272）：10 字节裸帧，
+ * {@code int32 6 + int16 100 + int32 rtt}。数值上等于
+ * {@code frame(TYPE_RECONNECT, rtt)}，这里单独取名是为了让调用点读得懂
+ * 语义：这是「我重连上来了，上一次的 RTT 是 rtt」。
+ */
+QByteArray reconnectFrame(int rtt);
 
 /** Reverse of stateFrame(). Returns empty when the length header does not fit
  *  the payload - the SIO relay bridge also uses type 6, but carries a raw

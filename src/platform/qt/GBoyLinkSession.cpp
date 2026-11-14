@@ -119,16 +119,24 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 	}
 	case GBoyFrames::TYPE_READY:
 	case GBoyFrames::TYPE_READY_ACK:
+	case GBoyFrames::TYPE_RECONNECT:
 	{
 		// 官方语义：type 3 = 就绪 + RTT（int32），type 5 = 就绪确认（空体）。
+		// type 100 = 断线重连握手包（AmA8tU.ARc23Z(Socket)），体里同样带 RTT，
+		// 收到它说明对端重连上来了，按「对端已就绪」处理，不能让默认分支把
+		// 它当未知类型（对端会一直以为我们没回来）。
 		bool first = false;
 		{
 			std::lock_guard<std::mutex> locker(m_mutex);
 			first = !m_ready;
 			m_ready = true;
-			if (type == GBoyFrames::TYPE_READY && GBoyFrames::payloadOf(body).size() >= 4) {
+			if (type != GBoyFrames::TYPE_READY_ACK && GBoyFrames::payloadOf(body).size() >= 4) {
 				m_remoteRtt = GBoyFrames::intOf(body);
 			}
+		}
+		if (type == GBoyFrames::TYPE_RECONNECT && m_events.onStatus) {
+			m_events.onStatus(QStringLiteral("peer reconnected (rtt %1 ms)")
+			                          .arg(GBoyFrames::intOf(body)));
 		}
 		if (first && m_events.onReady) {
 			m_events.onReady();
@@ -250,6 +258,13 @@ void GBoyLinkSession::sendSocketHandshake() {
 	m_transport(GBoyFrames::frame(GBoyFrames::TYPE_REGISTER, SOCKET_HANDSHAKE_VALUE));
 }
 
+/* 官方 AmA8tU.ARc23Z(Socket) 在重连成功后直接往 socket 写这 10 个字节：
+ *   putInt(6); putShort((short) 100); putInt(上次的 rtt)
+ * rtt 在对端还没有记录时是 -1，这里保持一致。 */
+void GBoyLinkSession::sendReconnectHandshake(int rtt) {
+	m_transport(GBoyFrames::reconnectFrame(rtt));
+}
+
 void GBoyLinkSession::sendState(const QByteArray& state) {
 	QByteArray body(4 + state.size(), 0);
 	GBoyFrames::putInt(&body, 0, quint32(state.size()));
@@ -297,6 +312,11 @@ int GBoyLinkSession::remoteCounter() {
 int GBoyLinkSession::remoteFps() {
 	std::lock_guard<std::mutex> locker(m_mutex);
 	return m_remoteFps;
+}
+
+int GBoyLinkSession::remoteRtt() {
+	std::lock_guard<std::mutex> locker(m_mutex);
+	return m_remoteRtt;
 }
 
 long GBoyLinkSession::droppedFrames() {

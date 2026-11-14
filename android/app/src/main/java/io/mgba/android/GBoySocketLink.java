@@ -371,6 +371,11 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         return s != null && s.isConnected() && !s.isClosed();
     }
 
+    /** 链路已被主动关闭（供 {@link GBoyCloudLink#startTcp} 的生命周期循环用）。 */
+    public boolean isClosed() {
+        return !running.get();
+    }
+
     public int port() {
         ServerSocket s = server;
         return s == null ? -1 : s.getLocalPort();

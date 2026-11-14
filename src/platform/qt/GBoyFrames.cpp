@@ -62,6 +62,13 @@ QByteArray stateFrame(const QByteArray& state) {	QByteArray body;
 	return frame(TYPE_STATE, body);
 }
 
+/* 官方重连握手包：10 字节裸帧，int32 6 + int16 100 + int32 rtt
+ * （KpHwm4.AmA8tU.java:263-272）。按普通帧构造即可得到同样的字节：
+ * 长度字段 6 = 2 字节类型 + 4 字节 rtt。 */
+QByteArray reconnectFrame(int rtt) {
+	return frame(TYPE_RECONNECT, rtt);
+}
+
 QByteArray stateOf(const QByteArray& body) {
 	QByteArray payload = payloadOf(body);
 	if (payload.size() < 4) {

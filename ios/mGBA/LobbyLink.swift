@@ -49,9 +49,8 @@ final class LobbyLink {
     /// Local key bitmask, GBA style.
     var localKeys: () -> Int32 = { 0 }
     /// Save-state snapshot for the host to seed the joiner (TYPE_STATE).
-    /// Unused since the 4-core cloud layout: both devices cold-start from the
-    /// same battery save, and a host-side seed would diverge the joiner's
-    /// mirrors. Kept as API surface for the legacy single-core path.
+    /// 官方 type 6 的**发送**来源：由 sendInitialState() 在四核房间重建完成
+    /// 后取一次，发给对端灌进「代表本机这个玩家」的镜像核（B25kr6:144-152）。
     /// Called from the link thread; return nil until a core is loaded.
     var stateSnapshot: () -> Data? = { nil }
     /// Peer's save-state blob; called from the reader thread.
@@ -62,6 +61,9 @@ final class LobbyLink {
     /// N-core lockstep uses this to feed the right mirror core instead of
     /// dumping every peer's keys into one fixed slot.
     var onRemoteKeysForSlot: (Int, Int32) -> Void = { _, _ in }
+    /// 官方 type 0（节奏）：对端下发的帧率上限。0 或越界值表示「没有上限」，
+    /// 由上层按 1000/fps 调整帧循环的目标间隔。Called from the reader thread.
+    var onRemotePacing: (Int) -> Void = { _ in }
     /// Slot owned by this device's visible console (1...4). Devices in a
     /// 3/4-player session must use distinct slots so key frames reach the
     /// right mirror console; slot 1 keeps the two-player TYPE_KEYS behaviour.
@@ -87,6 +89,10 @@ final class LobbyLink {
     private let reader = LobbyFrames.Reader()
     /// Last key state received from the peer; only transitions are logged.
     private var lastRxKeys = Int32.min
+    /// 对端 type 0 下发的帧率上限（-1 = 还没收到）。
+    private(set) var remoteFps: Int = -1
+    /// 对端在 type 3 里上报的 RTT（官方 A5SV6n.f5293B9tovu），-1 = 未知。
+    private(set) var remoteRtt: Int32 = -1
     /// 会话信息：「重新连接中继」复用它，不重建房间。
     private var authToken: String?
     private var currentRoom: Room?
@@ -139,6 +145,33 @@ final class LobbyLink {
         if let current, !dead {
             current.send(LobbyFrames.frame(LobbyFrames.typeReset, 0))
         }
+    }
+
+    /**
+     * 官方 type 6：把本机可见核的即时存档整包推给对端，让对端「代表本机这个
+     * 玩家」的镜像核停在同一幕（B25kr6:144-152、AmA8tU:199）。
+     *
+     * 云端这条路径原来只有接收（handle 里的 typeState）没有发送，于是对端的
+     * 镜像核永远停在电池存档上。发送时机必须在**四核房间重建完成之后**：
+     * onConnected 会重载可见核，若趁重载前发，发出去的是上一局的进度，
+     * 对端镜像核与本机可见核立刻分叉（Android GBoyCloudLink.sendInitialState
+     * 同样由外部在建好房间后调用）。
+     */
+    func sendInitialState() {
+        lock.lock()
+        let current = channel
+        let dead = closedFlag
+        lock.unlock()
+        guard let current, !dead else {
+            status("初始状态未发送：联机通道还没就绪")
+            return
+        }
+        guard let snapshot = stateSnapshot(), !snapshot.isEmpty else {
+            status("初始状态未发送：本机还没有可用的即时存档")
+            return
+        }
+        current.send(LobbyFrames.stateFrame(snapshot))
+        status("已把本机即时存档 \(snapshot.count) 字节发给对端")
     }
 
     func close() {
@@ -582,7 +615,7 @@ final class LobbyLink {
      *     -> type 1, body: int playerCount, short 0, int baseStateCount
      *     <- type 3, body: int playerCount
      *     -> type 3, body: empty            (the base states are loaded now)
-     *     <- type 0, body: int              (first key state of the peer)
+     *     <- type 0, body: int              (帧率上限，AmA8tU:213-221)
      *     -> type 1, body: empty            (acknowledgement)
      */
     private func handshake(link: LobbyKcpChannel, room: Room) throws {
@@ -594,10 +627,15 @@ final class LobbyLink {
         status("已注册到中继，等待对方…")
 
         link.send(LobbyFrames.frame(LobbyFrames.typeReady))
-        // The node only pushes the peer's first key state once a second player
-        // has registered, so blocking on it would make the host time out while
-        // it is simply waiting for an opponent. Treat it as optional.
-        _ = try? expect(link: link, type: LobbyFrames.typeKeys, timeoutMs: LobbyLink.peerKeyWaitMs)
+        // AmA8tU:213-221：客户端发完空的 type 3 就等 type 0（帧率上限），等到
+        // 才发空 type 1 收尾。中继要等第二个玩家注册才推帧率包，房主在等人时
+        // 不能因此超时，所以这里按可选处理。
+        // expect 会把命中的那一帧直接返回、不经 handle()，所以这里补一次，
+        // 否则握手阶段收到的上限不生效（官方在 AaHO0E 里同一处赋值）。
+        if let pacing = try? expect(link: link, type: LobbyFrames.typeFps,
+                                    timeoutMs: LobbyLink.peerKeyWaitMs) {
+            handle(pacing)
+        }
         link.send(LobbyFrames.frame(LobbyFrames.typeRegister))
     }
 
@@ -609,9 +647,9 @@ final class LobbyLink {
     }
 
     /**
-     * Reads frames until one of `type` shows up. The room server sends the key
-     * state (type 0) before the handshake is finished, so unrelated frames are
-     * remembered instead of being dropped.
+     * Reads frames until one of `type` shows up. The room server pushes the
+     * 节奏包（type 0）与握手残留（type 3）在 handshake 完成前就到，所以
+     * 不匹配的帧交给 handle() 消化而不是丢掉。
      */
     private func expect(link: LobbyKcpChannel, type: Int, timeoutMs: Int64) throws -> Data {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
@@ -642,9 +680,9 @@ final class LobbyLink {
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
-            // 云端不发初始 TYPE_STATE（Android GBoyCloudLink.serve 同构）：
-            // 4 核对战布局两端都从同一份电池存档冷启动，种子反而会把房主
-            // 已推进的状态灌进加入方的镜像核，四核相位立刻分叉。
+            // 官方 type 6 的发送不放这里：它必须等四核房间重建完（对端镜像核
+            // 存在、本机可见核已冷启动到帧 0）再发一次，由 sendInitialState()
+            // 从设备层触发。这条循环里发会把「上一局推进过的状态」灌进对端。
             if now - lastKey >= LobbyLink.keyIntervalMs {
                 let keys = localKeys()
                 if keys != sentKeys || now - lastKey >= 500 {
@@ -683,19 +721,20 @@ final class LobbyLink {
 
     /// Official protocol tags key frames with the target console slot once
     /// more than two consoles are in play. Mirrors GBoyLinkSession on Android
-    /// and GBoyLinkSession.cpp on the PC build.
+    /// and GBoyLinkSession.cpp on the PC build. 官方只有 9（按键）；11/12/17
+    /// 是我们自己的「带槽位按键」扩展，避开官方 1/2/3/5/6/9。
     private func keyFrameType() -> Int {
         switch localSlot {
         case 2: return LobbyFrames.typeInput2
-        case 3: return LobbyFrames.typeReady
+        case 3: return LobbyFrames.typeInput3
         case 4: return LobbyFrames.typeInput4
         default: return LobbyFrames.typeKeys
         }
     }
 
     /// Frame type identifies the sender's 1-based global slot, mirroring
-    /// `keyFrameType()`: TYPE_KEYS=1, TYPE_INPUT2=2, TYPE_READY=3,
-    /// TYPE_INPUT4=4. Keep the legacy single-callback path intact.
+    /// `keyFrameType()`: TYPE_KEYS=9, TYPE_INPUT2=11, TYPE_INPUT3=17,
+    /// TYPE_INPUT4=12. Keep the legacy single-callback path intact.
     private func deliverKeys(_ slot: Int, _ body: Data) {
         let keys = LobbyFrames.intValue(of: body)
         onRemoteKeys(keys)
@@ -717,12 +756,30 @@ final class LobbyLink {
             deliverKeys(bareKeysSenderSlot, body)
         case LobbyFrames.typeInput2:
             deliverKeys(2, body)
+        case LobbyFrames.typeInput3:
+            deliverKeys(3, body)
         case LobbyFrames.typeInput4:
             deliverKeys(4, body)
         case LobbyFrames.typeReady:
-            // Bare type 3 is the handshake; with an int it is slot 3's keys.
-            if LobbyFrames.payload(of: body).count >= 4 {
-                deliverKeys(3, body)
+            // 官方语义：3 = 就绪 + RTT（int32）。带 int 的不再当槽位 3 的
+            // 按键（那是撞号，已改到 typeInput3 = 17）；运行中收到的裸 3
+            // 只是握手残留，记录 RTT 即可。
+            let rtt = LobbyFrames.intValue(of: body)
+            if LobbyFrames.payload(of: body).count >= 4, rtt >= 0 {
+                lock.lock()
+                remoteRtt = rtt
+                lock.unlock()
+            }
+        case LobbyFrames.typeFps:
+            // 官方 type 0：AzWtSf:174-179 / AmA8tU:213-221 收到后直接设
+            // 帧率上限（AaHO0E.f4302AZkASS）。0 和离谱值当「没有上限」，不然
+            // 一颗坏包就能把本机帧率钉死。
+            let fps = Int(LobbyFrames.intValue(of: body))
+            if fps > 0, fps <= 240 {
+                lock.lock()
+                remoteFps = fps
+                lock.unlock()
+                onRemotePacing(fps)
             }
         case LobbyFrames.typeReset:
             onRemoteReset()
@@ -730,6 +787,9 @@ final class LobbyLink {
             if let state = LobbyFrames.state(of: body), !state.isEmpty {
                 onRemoteState(state)
             }
+        case LobbyFrames.typeReadyAck:
+            // 就绪确认（B25kr6:141），握手阶段已经处理，这里只吞掉。
+            break
         default:
             break
         }

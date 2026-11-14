@@ -29,28 +29,48 @@ enum LobbyFrames {
     /// a corrupted offset, which is why the cloud link showed phantom inputs and
     /// never received a state.
     static let maxFrameLength = 16 * 1024 * 1024
-    /// Key bitmask for the console this session owns.
-    static let typeKeys = 0
-    /// Session registration (ten byte body) and the plain acknowledgement.
+
+    /*
+     * 类型号与官方客户端逐条对齐（KpHwm4.B25kr6 的 ARc23Z 调用、
+     * KpHwm4/AmA8tU.java:167-221）：
+     *   0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 就绪确认 / 6 状态 / 9 按键。
+     * 官方没用到 4、7、8、10 之后的号，自家扩展（多槽位按键、复位、计数）
+     * 一律放到 11 以上 —— 早先这里 0 当按键、9 当 FPS、5 当复位、3 兼作
+     * 槽位 3 按键，全部与官方语义撞车（见 NETPLAY_SPEC.md 第 6 节第 3 行）。
+     * 这份表与 Android `GBoyFrames` 逐项相同，三端必须同时改。
+     */
+
+    /// 官方 0：节奏 / 帧率上限（int32），接收方据此设本机帧率上限。
+    static let typeFps = 0
+    /// 官方 1：握手（int32 playerCount；长度 0 的 1 = 断开/结束）。
     static let typeRegister = 1
-    /// Key bitmask aimed at another console slot.
-    static let typeInput2 = 2
-    /// "Ready" in the handshake, the key bitmask of console slot 3 while the
-    /// game runs - the official client reuses the type for both.
+    /// 官方 2：名字（32 字节定长 + int16 长度 + 描述串）。
+    static let typeName = 2
+    /// 官方 3：就绪 + RTT（int32）。云端注册阶段中继也用 3 回玩家数。
     static let typeReady = 3
-    static let typeInput4 = 4
-    /// Reset request, the body is an int (0).
-    static let typeReset = 5
-    /// Save state transfer, the body is an int length plus the blob.
+    /// 官方 5：就绪确认（空体，只有客户端路径发）。
+    static let typeReadyAck = 5
+    /// 官方 6：整份 savestate（int32 长度 + blob）。
     static let typeState = 6
-    /// Key bitmask for the console the local player drives.
-    static let typeKeysLocal = 7
-    /// Free running counter.
-    static let typeCounter = 8
-    /// Frames per second report.
-    static let typeFps = 9
-    /// Out of band event.
-    static let typeEvent = 10
+    /// 官方 9：按键掩码（int32）。
+    static let typeKeys = 9
+
+    // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
+
+    /// 槽位 2 的按键掩码（官方没有「带槽位的按键」，两人会话用 9 即可）。
+    static let typeInput2 = 11
+    /// 槽位 4 的按键掩码。
+    static let typeInput4 = 12
+    /// 复位请求，body 是 int(0)。
+    static let typeReset = 13
+    /// 本机可见核自己的按键掩码（兼容旧对端）。
+    static let typeKeysLocal = 14
+    /// 自由计数器。
+    static let typeCounter = 15
+    /// 带外事件。
+    static let typeEvent = 16
+    /// 槽位 3 的按键掩码（以前借官方 3 夹带，与「3 = RTT」冲突）。
+    static let typeInput3 = 17
 
     /// Bare frame: `length = 2`, no payload.
     static func frame(_ type: Int) -> Data {

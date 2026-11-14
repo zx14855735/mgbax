@@ -110,6 +110,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_SAVDIR = 4;
     private static final int REQ_SHADER = 9;
     private static final int REQ_ROMDIR = 10;
+    /** Android 12+ 蓝牙联机的运行时权限（只申请缺的那一个）。 */
+    private static final int REQ_BLUETOOTH = 11;
     private static final int CMD_SAVE = 1;
     private static final int CMD_LOAD = 2;
     private static final int CMD_RESET = 3;
@@ -383,10 +385,42 @@ public class EmulatorActivity extends AppCompatActivity {
                 return;
             }
             String mac = intent.getStringExtra("mac");
-            Log.i(TAG, "bt broadcast mac=" + mac);
+            /* Android 12+ 的蓝牙连接是运行时权限：检查并只申请缺的那一个，
+             * 授权后回到 onRequestPermissionsResult 再真正发起连接。 */
+            if (Build.VERSION.SDK_INT >= 31
+                    && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
+                            != PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "bt broadcast: requesting BLUETOOTH_CONNECT");
+                pendingBtMac = mac == null ? "" : mac;
+                requestPermissions(
+                        new String[] {Manifest.permission.BLUETOOTH_CONNECT}, REQ_BLUETOOTH);
+                return;
+            }
+            startBluetoothLink(mac == null ? "" : mac);
+        }
+    };
+
+    /** 蓝牙直连的实际发起：权限已就绪后调用。 */
+    private void startBluetoothLink(String mac) {
+        Log.i(TAG, "bt broadcast mac=" + mac);
+        GBoyCloudLink link = ensureCloud();
+        link.setOfficialMode(true); // 蓝牙与云端同构：本机多核，线上只传按键
+        link.startBluetooth(mac);
+    }
+
+    /** 官方 WiFi 直连：{@code --es peer 1.2.3.4:5678} 加入，空 = 本机监听。 */
+    private final BroadcastReceiver tcpReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "tcp broadcast ignored: no rom loaded");
+                return;
+            }
+            String peer = intent.getStringExtra("peer");
+            Log.i(TAG, "tcp broadcast peer=" + peer);
             GBoyCloudLink link = ensureCloud();
-            link.setOfficialMode(true); // 蓝牙与云端同构：本机多核，线上只传按键
-            link.startBluetooth(mac == null ? "" : mac);
+            link.setOfficialMode(true); // 与云端/蓝牙同构：本机 4 核，线上只传按键
+            link.startTcp(peer == null ? "" : peer);
         }
     };
     private final BroadcastReceiver signalReceiver = new BroadcastReceiver() {
@@ -592,6 +626,8 @@ public class EmulatorActivity extends AppCompatActivity {
     /** GBoy/My Boy Wi-Fi link session and the key mask it delivers. */
     /** gboy.top cloud room session (KCP relay), same key mask delivery. */
     private GBoyCloudLink cloudLink;
+    /** 等待 BLUETOOTH_CONNECT 授权后要连的 MAC（授权回调里用）。 */
+    private volatile String pendingBtMac;
     private volatile int gboyRemoteKeys;
     /**
      * GBoy/My Boy lobbies mirror the peer's held keys into our core (one
@@ -744,6 +780,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(btReceiver, btFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(btReceiver, btFilter);
+        }
+        IntentFilter tcpFilter = new IntentFilter("io.mgba.android.action.TCP");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(tcpReceiver, tcpFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(tcpReceiver, tcpFilter);
         }
         IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");        if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(signalReceiver, signalFilter, Context.RECEIVER_EXPORTED);
@@ -2333,6 +2375,33 @@ public class EmulatorActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 官方 type 0 的帧率上限（{@code KpHwm4.AaHO0E.f4302AZkASS}，收到后由
+     * {@code AmA8tU.java:213-221} 直接赋值）。返回 0 表示还没收到或数值非法，
+     * 此时沿用本地原始节拍（约 16.74ms，即 59.73fps），行为与之前完全一致。
+     */
+    private long linkFpsCapNanos() {
+        GBoyLinkSession session = null;
+        GBoyCloudLink cloud = cloudLink;
+        if (cloud != null) {
+            session = cloud.linkSession();
+        }
+        if (session == null) {
+            GBoySocketLink local = localLink;
+            if (local != null) {
+                session = local.session();
+            }
+        }
+        if (session == null) {
+            return 0;
+        }
+        int fps = session.remoteFps();
+        if (fps < 1 || fps > 240) {
+            return 0;
+        }
+        return 1_000_000_000L / fps;
+    }
+
     /** Empty on success, otherwise the setup error of the last start. */
     public String gboyLinkFailure() {
         GBoyConsoleSet set = consoleSet;
@@ -2564,6 +2633,12 @@ public class EmulatorActivity extends AppCompatActivity {
                 // both.
                 boolean fastPacing = factor > 1.5f && fastSliceNanos > 0;
                 long paceNanos = fastPacing ? fastSliceNanos : sliceNanos;
+                // 官方 type 0 下发的帧率上限：间隔 = 1000/fps，只在比本地
+                // 原始节拍更慢时生效（真正的「上限」，不会把游戏加速）。
+                long fpsCapNanos = linkFpsCapNanos();
+                if (fpsCapNanos > paceNanos) {
+                    paceNanos = fpsCapNanos;
+                }
                 nextSlice += paceNanos;
                 if (System.nanoTime() - nextSlice > 2 * paceNanos) {
                     nextSlice = System.nanoTime();
@@ -8171,6 +8246,17 @@ public class EmulatorActivity extends AppCompatActivity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STORAGE) {
             startEmulator();
+            return;
+        }
+        if (requestCode == REQ_BLUETOOTH) {
+            String mac = pendingBtMac;
+            pendingBtMac = null;
+            if (grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startBluetoothLink(mac == null ? "" : mac);
+            } else {
+                toast("未授予蓝牙权限，无法发起蓝牙联机");
+            }
         }
     }
 
@@ -8224,6 +8310,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(stateReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(tcpReceiver);
         } catch (Exception ignored) {
         }
         stopTimedSave();
