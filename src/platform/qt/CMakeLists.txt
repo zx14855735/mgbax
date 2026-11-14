@@ -127,6 +127,7 @@ set(SOURCE_FILES
 	ForwarderGeneratorVita.cpp
 	ForwarderView.cpp
 	FrameView.cpp
+	Filters.cpp
 	GBAApp.cpp
 	GBAKeyEditor.cpp
 	GBoyFrames.cpp

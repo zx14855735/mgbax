@@ -44,6 +44,7 @@
 #include "DolphinConnector.h"
 #include "EnhancementsView.h"
 #include "ScriptedControl.h"
+#include "VFileDevice.h"
 #include "CoreController.h"
 #include "ForwarderView.h"
 #include "Filters.h"
@@ -1059,6 +1060,7 @@ void Window::gameStarted() {
 
 	/* 换游戏/重进时先套用本游戏的倍速记忆（不会改全局 fastForwardRatio）。 */
 	applyPerGameSpeed();
+	applyFilters();
 
 	m_hitUnimplementedBiosCall = false;
 	if (m_config->getOption("showFps", "1").toInt()) {
@@ -1287,6 +1289,9 @@ void Window::reloadDisplayDriver() {
 		m_scripting->setVideoBackend(m_display->videoBackend());
 	}
 #endif
+	/* 换渲染器后 display 是新的，内置滤镜要重新套一遍。 */
+	m_builtinFilterActive = false;
+	applyFilters();
 }
 
 void Window::reloadAudioDriver() {

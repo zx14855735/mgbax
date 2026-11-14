@@ -3879,8 +3879,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     mgbaMobileCheatAdd(core, namePtr, linePtr, 2)
                 }
             }
-            if ok { added += 1 }
-            if ok { imported.append(line) }
+            if ok {
+                added += 1
+                imported.append(line)
+            }
         }
         rememberCheatLines(imported)
         RunLog.shared.add(".sps 导入 \(added) 条（\(url.lastPathComponent)）")
