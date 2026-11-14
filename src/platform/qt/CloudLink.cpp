@@ -1645,9 +1645,9 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		fail(QStringLiteral("模拟核心未就绪"));
 		return;
 	}
-	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），3 个镜像核
-	// 连进来凑满 4 人。players 必须与镜像核的 linkJoin 一致，否则两边包格式
-	// 不同（星型总线 BusPacket vs 两人直连 Packet），TCP 连上也解不出字。
+	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），1 个镜像核
+	// 连进来凑满 2 人（1P + 镜像）。players 必须与镜像核的 linkJoin 一致，否则
+	// 两边包格式不同（星型总线 BusPacket vs 两人直连 Packet），TCP 连上也解不出字。
 	quint16 port = 0;
 	for (int t = 0; t < 8; ++t) {
 		quint16 candidate = quint16(18781 + t);
@@ -1689,7 +1689,11 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	        /* 4 槽位：本机可见核占 slot 1，3 个镜像占 slot 2/3/4。会话只把
 	         * 真人按键跨网络送出去（对端按键进 slot 2），slot 3/4 恒 0 作为
 	         * NPC 陪位；keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
-	        events, 1, 4);
+	        /* 2 核/设备：本机可见核占 slot 1，1 个镜像占 slot 2（对端真人按键
+	         * 经网络进 slot 2）。会话只把本机真人按键跨网络送出去（裸 TYPE_KEYS
+	         * 落到对端 slot 2），对端镜像核 keysForSlot(2) 即拿到对方操作；两端
+	         * 各跑一个 2 人本地 SIO，干净 1v1。 */
+	        events, 1, 2);
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{
@@ -1748,9 +1752,9 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		m_mirrors[i] = mirror;
 	}
 	if (navMenuAt > 0) {
-		/* 三个镜像核已经在 start() 里各自武装好脚本；此刻才写 nav_at，让
-		 * 可见核（ScriptedControl 每 16ms 探测该文件）在同一瞬间起跑，四核
-		 * 相位一致。提前写会让可见核独自先跑几十秒，SIO 握手时四核状态
+		/* 镜像核已经在 start() 里武装好脚本；此刻才写 nav_at，让
+		 * 可见核（ScriptedControl 每 16ms 探测该文件）在同一瞬间起跑，两核
+		 * 相位一致。提前写会让可见核独自先跑几十秒，SIO 握手时两核状态
 		 * 完全不同。文件内容 "menuAt modeDowns" 与 Android 广播参数一致。 */
 		QFile navAt(scriptDir + QStringLiteral("/nav_at"));
 		if (navAt.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
