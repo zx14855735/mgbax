@@ -428,24 +428,6 @@ public final class GBoyLinkSession {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_RESET, 0));
     }
 
-    /** 官方 type 9 的速度值 → 倍率；{@code -1} = 0.5x，其它/未收到 = 1x。 */
-    public static float speedFactor(int speed) {
-        return speed == -1 ? 0.5f : (speed == 2 || speed == 4) ? speed : 1.0f;
-    }
-
-    /** 官方 type 9 值域 {@code {1, -1, 2, 4}}；未收到或其它值一律视为未知。 */
-    public static boolean isKnownSpeed(int speed) {
-        return speed == 1 || speed == -1 || speed == 2 || speed == 4;
-    }
-
-    /**
-     * 官方 {@code AaHO0E.AYUAbz(float)} 的帧闸：{@code nanos = 1e9/(speed*60)}。
-     * 1x = 16.67ms、2x = 8.33ms、4x = 4.17ms、0.5x = 33.33ms。
-     */
-    public static long speedToNanos(int speed) {
-        return (long) (1_000_000_000.0 / (speedFactor(speed) * 60.0));
-    }
-
     /** 官方 9：请求对端切换模拟速度（1 / -1=0.5x / 2 / 4）。 */
     public void sendSpeed(int speed) {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_SPEED, speed));

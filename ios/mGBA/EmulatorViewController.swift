@@ -1002,6 +1002,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // 官方 type 9 的倍速（1 = 1x；对端切 2x/4x 时本机跟着跑）。
             let linkRate = linkSpeed
             let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
+            // 本机倍速 × 联机倍速 = 真实运行速率。帧闸按 linkRate 缩放，
+            // 音频与「倍速」读数按两者之积走（否则 2x 联机时音频只出 1x 的量，
+            // 队列会越积越多、最后整段丢帧）。
+            let playRate = mult * linkRate
             gate.unlock()
             if let path {
                 gate.lock()
@@ -1104,7 +1108,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // Fast-forward keeps its sound unless it was switched off; with the
             // hold engaged the resampler plays the 1x stream, so a change only
             // needs the queues dropped.
-            var audioSpeed: Double = wantSound ? mult : 1
+            var audioSpeed: Double = wantSound ? playRate : 1
             if holdOn {
                 audioSpeed = 1
             }
