@@ -1412,6 +1412,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             try? fh.close()
             NSLog("GBOY_RT rom padded to 32MB (was %llu)", size)
         }
+        NSLog("GBOY_RT load: native start")
         let ok = mgbaMobileLoad(core, path)
         // 进出游戏时自动同步（设置里可关）
         if defaults.bool(forKey: "sync_auto") {
