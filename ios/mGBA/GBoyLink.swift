@@ -164,25 +164,35 @@ final class GBoyLink {
      * 经过 send() 补长度头。
      *
      * 只在**已经和对端完成过一次握手**的会话上发：官方用它代替整套 1→2→3→6
-     * 重放（存档早已灌进镜像核）。iOS 的 GBoyLink 是一次性会话（断开即结束，
-     * 没有 AmA8tU 那个 50 秒自动重连循环），所以这里只提供发送入口，供上层
-     * 在自建的重连流程里复用；接收侧已经能识别 type 100（见 expectHello）。
+     * 重放（存档早已灌进镜像核）。guestLoop 的重连循环走的就是这条；接收侧
+     * 把 type 100 当握手（见 expectHello），不回任何包（与 Android
+     * GBoySocketLink.pumpInput 一致：只有首次 TYPE_REGISTER 才回声）。
      */
     func sendReconnectHandshake() {
         lock.lock()
         let fd = currentFd
-        let dead = isClosedFlag
+        let dead = userClosedFlag || sessionClosedFlag
         let rtt = lastRttValue
         lock.unlock()
         guard fd >= 0, !dead else { return }
         try? Self.sendAll(fd, Self.reconnectFrame(rtt: rtt))
     }
 
+    /// 重连包的实际发送点：绑定到某代会话，写失败要抛出去让 guestLoop 重试。
+    private func sendReconnect(_ session: Session) throws {
+        try Self.sendAll(session.fd, Self.reconnectFrame(rtt: lastRtt))
+    }
+
     func close() {
         lock.lock()
-        isClosedFlag = true
+        // 用户主动断开：连监听口一起收（host/guest 循环都以 userClosedFlag 为准）。
+        userClosedFlag = true
+        sessionClosedFlag = true
         let fd = currentFd
         currentFd = -1
+        // 代号 +1 让所有在飞的读/写线程立刻变成「上一代」，它们晚到的 drop()
+        // 不会再碰到后续会话的 socket。
+        currentGeneration += 1
         lock.unlock()
         if fd >= 0 {
             shutdown(fd, SHUT_RDWR)
@@ -196,9 +206,11 @@ final class GBoyLink {
         // A fresh session clears any previous close: 断开 followed by a new
         // join must work without recreating this object.
         lock.lock()
-        isClosedFlag = false
+        userClosedFlag = false
+        sessionClosedFlag = false
         let stale = currentFd
         currentFd = -1
+        currentGeneration += 1
         lock.unlock()
         if stale >= 0 {
             shutdown(stale, SHUT_RDWR)
@@ -213,7 +225,7 @@ final class GBoyLink {
                     try self.guestLoop(ip ?? "", port)
                 }
             } catch {
-                if !self.closed {
+                if !self.userClosed {
                     self.status(Self.message(error))
                 }
             }
@@ -223,29 +235,85 @@ final class GBoyLink {
         thread.start()
     }
 
+    /**
+     * 建房：监听口在整个生命周期里不关，accept 循环每接一个对端跑一轮会话。
+     * 官方 A2egSU 就是「每 socket 一个服务线程」，监听对象一直活着；Android
+     * 侧也按这个语义补了 accept 循环。对端掉线 → 回到 accept 等它重连（对方
+     * 会先发 type 100）。只有用户按「断开」才退出。
+     */
     private func hostLoop(_ port: Int) throws {
         status("联机大厅等待连接…\n端口 \(port)，你是 1P")
         let listenFd = try listenSocket(port)
         defer { Darwin.close(listenFd) }
-        let accepted = try acceptLoop(listenFd)
-        store(fd: accepted)
-        Self.tune(accepted)
-        status("对方已接入，正在同步…")
-        let note = try handshake(accepted, asHost: true)
-        try session(accepted, asHost: true, note: note)
+        while !userClosed {
+            let accepted = try acceptLoop(listenFd)
+            let session = store(fd: accepted)
+            Self.tune(accepted)
+            status("对方已接入，正在同步…")
+            do {
+                let note = try handshake(session, asHost: true)
+                try self.session(session, asHost: true, note: note)
+            } catch {
+                // 握手失败或会话中途出错：关掉这一条连接，回到 accept 等对方
+                // 重新来过（重连包同样会落进 expectHello 的 resumed 分支）。
+                drop(session, Self.message(error))
+            }
+            if userClosed { return }
+            status("对方已断开，等待重新连接…\n端口 \(port)")
+        }
     }
 
+    /**
+     * 入房：第一次走完整握手（1→2→3→6），之后掉线按官方 AmA8tU 的节奏重连：
+     * 每 2 秒一次、总窗口 50 秒（AmA8tU 的 `System.currentTimeMillis() - BChYOn
+     * >= 50000` 判断），连上先发裸 10 字节 type 100 再进读循环。
+     */
     private func guestLoop(_ ip: String, _ port: Int) throws {
-        status("正在连接 \(ip):\(port)…")
-        let fd = try connectSocket(ip, port)
-        store(fd: fd)
-        Self.tune(fd)
-        status("已连上，正在同步…")
-        let note = try handshake(fd, asHost: false)
-        try session(fd, asHost: false, note: note)
+        var resume = false                  // 已经完成过一次握手
+        var reconnectUntil: Date?           // 重连窗口截止
+        while !userClosed {
+            var active: Session?
+            do {
+                status(resume ? "正在重连 \(ip):\(port)…" : "正在连接 \(ip):\(port)…")
+                let fd = try connectSocket(ip, port)
+                let session = store(fd: fd)
+                active = session
+                Self.tune(fd)
+                let note: String
+                if resume {
+                    try sendReconnect(session)
+                    note = "已恢复联机（重连握手）"
+                } else {
+                    status("已连上，正在同步…")
+                    note = try handshake(session, asHost: false)
+                }
+                resume = true
+                reconnectUntil = nil
+                try self.session(session, asHost: false, note: note)
+            } catch {
+                // 握手/重连包写失败：把这条连接关掉再去重试，别让 fd 泄漏。
+                if let session = active {
+                    drop(session, Self.message(error))
+                }
+                if userClosed { throw error }
+                if let until = reconnectUntil, Date() >= until {
+                    throw LinkError(message: "对方已断开（50 秒内没能重连）")
+                }
+                if reconnectUntil == nil {
+                    reconnectUntil = Date().addingTimeInterval(50)
+                }
+            }
+            if userClosed { return }
+            if reconnectUntil == nil {
+                reconnectUntil = Date().addingTimeInterval(50)
+            }
+            status("对方已断开，2 秒后重连…")
+            Thread.sleep(forTimeInterval: 2)
+        }
     }
 
-    private func handshake(_ fd: Int32, asHost: Bool) throws -> String {
+    private func handshake(_ session: Session, asHost: Bool) throws -> String {
+        let fd = session.fd
         var note = ""
         if !asHost {
             try send(fd, Self.helloFrame())
@@ -305,27 +373,28 @@ final class GBoyLink {
         note.isEmpty ? extra : note + "\n" + extra
     }
 
-    private func session(_ fd: Int32, asHost: Bool, note: String) throws {
+    private func session(_ session: Session, asHost: Bool, note: String) throws {
         // The steady state has no handshake deadline: the peer may not even
         // have connected yet, and its key frames arrive at their own cadence.
-        Self.clearTimeouts(fd)
+        Self.clearTimeouts(session.fd)
         var text = asHost ? "已连接，你是 1P" : "已连接，你是 2P"
         if !note.isEmpty {
             text = note + "\n" + text
         }
         status(text)
         let reader = Thread { [weak self] in
-            self?.readLoop(fd)
+            self?.readLoop(session)
         }
         reader.name = "gboy-read"
         reader.stackSize = 1 << 20
         reader.start()
-        pump(fd)
+        pump(session)
     }
 
-    private func readLoop(_ fd: Int32) {
+    private func readLoop(_ session: Session) {
+        let fd = session.fd
         do {
-            while !closed {
+            while !stopRequested {
                 let frame = try readFrame(fd)
                 let messageType = Self.type(frame)
                 if messageType == Self.msgKeys, frame.count >= 6 {
@@ -369,35 +438,42 @@ final class GBoyLink {
                 }
             }
         } catch {
-            drop(Self.message(error))
+            drop(session, Self.message(error))
         }
     }
 
-    private func pump(_ fd: Int32) {
-        while !closed {
+    private func pump(_ session: Session) {
+        let fd = session.fd
+        while !stopRequested {
             do {
                 try send(fd, Self.keysFrame(localKeys()))
             } catch {
-                drop(Self.message(error))
+                drop(session, Self.message(error))
                 return
             }
             Thread.sleep(forTimeInterval: 0.083)
         }
     }
 
-    private func drop(_ text: String) {
-        if closed {
+    /**
+     * 本代会话结束。**只关自己那条 fd**：旧读线程可能在新会话已经建立之后
+     * 才被唤醒/报错，那时 currentFd 已经换人（或代号不同），这里必须直接
+     * 返回，否则会把对面正在用的新连接关掉。
+     */
+    private func drop(_ session: Session, _ text: String) {
+        lock.lock()
+        let mine = currentFd == session.fd && currentGeneration == session.generation
+        if !mine {
+            lock.unlock()
             return
         }
-        lock.lock()
-        isClosedFlag = true
-        let fd = currentFd
+        sessionClosedFlag = true
         currentFd = -1
         lock.unlock()
-        if fd >= 0 {
-            shutdown(fd, SHUT_RDWR)
-            Darwin.close(fd)
-        }
+        // 先 shutdown 再 close：与官方 socket.close() 同义，顺便唤醒可能还堵在
+        // recv 上的另一个线程。
+        shutdown(session.fd, SHUT_RDWR)
+        Darwin.close(session.fd)
         onRemoteKeys(0)
         // 会话结束：撤销对端的帧率上限（0 = 无上限），否则本机会一直按
         // 对端最后要求的 30fps 慢放。onRemotePacing 的 0 与「没收到」等价。
@@ -409,10 +485,19 @@ final class GBoyLink {
         onStatus(text)
     }
 
-    private func store(fd: Int32) {
+    /// 登记一条新连接，返回它所属的会话。清掉上一代会话的「已死」标记，并把
+    /// 代号 +1 —— 等价于 Android 的 reader.reset()：旧流的残余不会落进新会话。
+    /// （本文件没有跨帧累积的读缓冲：readFrame 每次按 4 字节长度 + 整帧读满，
+    /// 半帧只会留在旧 fd 的内核缓冲里，随 fd 关闭一起丢弃。）
+    @discardableResult
+    private func store(fd: Int32) -> Session {
         lock.lock()
         currentFd = fd
+        currentGeneration += 1
+        sessionClosedFlag = false
+        let session = Session(fd: fd, generation: currentGeneration)
         lock.unlock()
+        return session
     }
 
     // ---- wire helpers ----
@@ -482,10 +567,13 @@ final class GBoyLink {
         }
     }
 
-    /** Accept loop on a non-blocking socket so 关闭 can break it out. */
+    /**
+     * Accept loop on a non-blocking socket so 关闭 can break it out.
+     * 只认「用户主动断开」：对端掉线后本循环要能继续等它按官方时序重连回来。
+     */
     private func acceptLoop(_ listenFd: Int32) throws -> Int32 {
         while true {
-            if closed {
+            if userClosed {
                 throw LinkError(message: "已取消")
             }
             var readSet = fd_set()
@@ -540,7 +628,7 @@ final class GBoyLink {
                 throw LinkError(message: "无法连接 \(ip)")
             }
         }
-        if closed {
+        if userClosed {
             Darwin.close(fd)
             throw LinkError(message: "已取消")
         }

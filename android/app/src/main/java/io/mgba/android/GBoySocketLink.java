@@ -118,7 +118,24 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                         peer.close();
                         break;
                     }
-                    attach(peer);
+                    synchronized (this) {
+                        // 已有活着的会话时拒绝第二路连接，避免把正在跑的对端
+                        // 直接顶掉；只有旧 socket 已关闭（掉线）才接受重连。
+                        if (socket != null && !socket.isClosed() && input != null) {
+                            peer.close();
+                            continue;
+                        }
+                    }
+                    try {
+                        attach(peer);
+                    } catch (IOException e) {
+                        // 某一个对端在 attach 期间就没了，不能因此结束整个监听。
+                        lastError = String.valueOf(e.getMessage());
+                        try {
+                            peer.close();
+                        } catch (IOException ignored) {
+                        }
+                    }
                 }
             } catch (IOException e) {
                 // close() 会关掉 listener 让 accept 抛异常；此时 running 已为 false。
@@ -222,8 +239,14 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         byte[] buffer = new byte[READ_BUFFER];
         int silent = 0;
         while (running.get()) {
-            Socket peer = socket;
-            InputStream in = input;
+            Socket peer;
+            InputStream in;
+            // socket 与 stream 必须成对读取：重连/重 accept 时 attach() 会
+            // 同时替换两者，分两次读可能把旧流配到新 socket 上。
+            synchronized (this) {
+                peer = socket;
+                in = input;
+            }
             if (peer == null || in == null) {
                 // 服务端：accept 线程会挂上新连接，这里只等，不退出；客户端：
                 // 按官方 AmA8tU 的 2s×50s 窗口重连。
@@ -303,13 +326,17 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
 
     private void pumpOutput() {
         while (running.get()) {
+            Socket peer = null;
             try {
                 byte[] frame = outbox.poll(200, TimeUnit.MILLISECONDS);
                 if (frame == null) {
                     continue;
                 }
-                OutputStream out = output;
-                Socket peer = socket;
+                OutputStream out;
+                synchronized (this) {
+                    out = output;
+                    peer = socket;
+                }
                 if (out == null || peer == null || peer.isClosed()) {
                     // 断线期间产生的按键帧直接丢弃：官方发送线程同样是写失败
                     // 就丢，重连后不重放旧帧（重放会让镜像核倒着走）。
@@ -321,7 +348,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 if (running.get()) {
                     lastError = String.valueOf(e.getMessage());
                 }
-                Socket peer = socket;
+                // 只清掉自己这一代 socket；期间若已重 accept，drop 的身份比较
+                // 会让它成为 no-op，不会误关新会话。
                 if (peer != null) {
                     drop(peer);
                 }
