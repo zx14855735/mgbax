@@ -603,4 +603,9 @@
     <string name="map_info">BG%1$d · %2$s\n优先级 %3$d · 图块基址 0x%4$X · 映射基址 0x%5$X · %6$d bpp</string>
     <string name="frame_view">帧检查器</string>
     <string name="frame_oam">OBJ: 可见 %1$d 个 · 旋转/缩放 %2$d 个\n</string>
+
+    <!-- Frame rate target -->
+    <string name="fps_target">帧率目标</string>
+    <string name="fps_target_native">Native（本机 59.73 fps）</string>
+    <string name="fps_target_applied">帧率目标 %1$d fps（倍速 %2$s×）</string>
 </resources>

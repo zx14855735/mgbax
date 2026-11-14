@@ -87,6 +87,33 @@ final class AudioOut {
 
     /// Starts the output device at its own sample rate. The core is told about
     /// the rate separately, through `mgbaMobileSetAudioOutput`.
+    /// 音频输出路由：0 自动（跟随系统，耳机/蓝牙都行）/ 1 强制扬声器。
+    /// iOS 不允许选「驱动」，能真正调的就是这个端口覆盖与缓冲时长。
+    func setOutputRoute(_ route: Int) {
+        let session = AVAudioSession.sharedInstance()
+        if route == 1 {
+            try? session.overrideOutputAudioPort(.speaker)
+        } else {
+            try? session.overrideOutputAudioPort(.none)
+        }
+    }
+
+    /// 给录像用：在主混音节点上装一个 PCM tap。返回 false 表示当前没有可用
+    /// 音频图（静音模式/引擎没起来），调用方应降级成纯视频。
+    func installRecordingTap(_ handler: @escaping (AVAudioPCMBuffer) -> Void) -> Bool {
+        guard engine.isRunning else { return false }
+        let mixer = engine.mainMixerNode
+        mixer.removeTap(onBus: 0)
+        mixer.installTap(onBus: 0, bufferSize: 1024, format: nil) { buffer, _ in
+            handler(buffer)
+        }
+        return true
+    }
+
+    func removeRecordingTap() {
+        engine.mainMixerNode.removeTap(onBus: 0)
+    }
+
     func start() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])

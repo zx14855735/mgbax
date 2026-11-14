@@ -5881,6 +5881,17 @@ public class EmulatorActivity extends AppCompatActivity {
         speedCustom.setPadding(dp(8), 0, dp(8), 0);
         speedCustom.setOnClickListener(v -> showCustomSpeedDialog());
         row.addView(speedCustom);
+        Button fpsTarget = new Button(this);
+        fpsTarget.setText(R.string.fps_target);
+        fpsTarget.setAllCaps(false);
+        fpsTarget.setMinWidth(dp(64));
+        fpsTarget.setMinHeight(dp(36));
+        fpsTarget.setMinimumWidth(dp(64));
+        fpsTarget.setMinimumHeight(dp(36));
+        fpsTarget.setTextSize(14);
+        fpsTarget.setPadding(dp(8), 0, dp(8), 0);
+        fpsTarget.setOnClickListener(v -> showFpsTargetDialog());
+        row.addView(fpsTarget);
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         CheckBox sound = new CheckBox(this);
         sound.setText(R.string.speed_sound);
@@ -5952,6 +5963,32 @@ public class EmulatorActivity extends AppCompatActivity {
                     }
                 })
                 .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /**
+     * PC's 帧率目标, expressed as the speed factor it implies: mGBA's target
+     * frame rate changes how many frames the core runs per wall-clock second,
+     * which is exactly what the speed multiplier does here. Native = 1x.
+     */
+    private void showFpsTargetDialog() {
+        final float nativeFps = 59.7275f;
+        final int[] targets = {15, 30, 45, 60, 90, 120, 240};
+        CharSequence[] labels = new CharSequence[targets.length + 1];
+        for (int i = 0; i < targets.length; i++) {
+            labels[i] = targets[i] + " fps";
+        }
+        labels[targets.length] = getString(R.string.fps_target_native);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.fps_target)
+                .setSingleChoiceItems(labels, -1, (dialog, which) -> {
+                    float value = which < targets.length ? targets[which] / nativeFps : 1f;
+                    setSpeed(value);
+                    toast(getString(R.string.fps_target_applied,
+                            which < targets.length ? targets[which] : Math.round(nativeFps),
+                            speedLabel(speed)));
+                    dialog.dismiss();
+                })
                 .show();
     }
 

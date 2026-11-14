@@ -1599,6 +1599,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // queue level then steers that resampler (see AudioOut.rateDrift).
         if !silentMode {
             audio.start()
+            audio.setOutputRoute(defaults.integer(forKey: "audio_route"))
             _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
         }
         NSLog("GBOY_RT load: audio ok")
@@ -2508,6 +2509,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(volumeLabel)
         box.addArrangedSubview(volume)
         box.addArrangedSubview(lowLatency.0)
+        let route = UIButton(type: .system)
+        route.contentHorizontalAlignment = .left
+        var routeValue = defaults.integer(forKey: "audio_route")
+        route.setTitle("音频输出：\(routeValue == 1 ? "强制扬声器" : "自动（跟随系统 / 蓝牙）")", for: .normal)
+        route.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickOption(title: "音频输出", current: routeValue,
+                            options: ["自动（跟随系统 / 蓝牙）", "强制扬声器"]) { [weak self] index in
+                guard let self else { return }
+                routeValue = index
+                self.defaults.set(index, forKey: "audio_route")
+                route.setTitle("音频输出：\(index == 1 ? "强制扬声器" : "自动（跟随系统 / 蓝牙）")", for: .normal)
+                self.audio.setOutputRoute(index)
+            }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(route)
         // Per-channel gains, in the spirit of Pizza Boy's 声道音量.
         let channelKeys = ["vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"]
         let channelNames = ["声道 1", "声道 2", "声道 3", "声道 4", "声道 A", "声道 B"]

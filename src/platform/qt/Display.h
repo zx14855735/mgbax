@@ -64,6 +64,17 @@ public:
 	std::shared_ptr<VideoProxy> videoProxy() { return m_videoProxy; }
 	virtual VideoBackend* videoBackend();
 
+	/**
+	 * 软件渲染后端的内置滤镜入口：GL 后端走 setShaders()，软件后端（DisplayQt）
+	 * 重写这个方法，在 paintEvent 里按同样的公式做 CPU 后处理。
+	 */
+	virtual void setCpuFilter(int id, float brightness, float contrast, float scanlines) {
+		Q_UNUSED(id);
+		Q_UNUSED(brightness);
+		Q_UNUSED(contrast);
+		Q_UNUSED(scanlines);
+	}
+
 signals:
 	void drawingStarted();
 	void showCursor();

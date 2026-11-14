@@ -171,6 +171,22 @@ void DisplayQt::paintEvent(QPaintEvent*) {
 	full.translate(screenOrigin);
 	painter.save();
 	painter.translate(full.topLeft());
+
+	if (m_cpuFilterId != 0 && !m_layers[VIDEO_LAYER_IMAGE].isNull() && full.width() > 0 && full.height() > 0) {
+		/* 软件后端的滤镜：按 GL 路径同一套公式在输出分辨率上采样（见 Filters.cpp）。 */
+		QImage filtered = Filters::applyCpu(m_layers[VIDEO_LAYER_IMAGE], m_cpuFilterId, full.size(),
+		                                    m_cpuBrightness, m_cpuContrast, m_cpuScanlines);
+		if (!filtered.isNull()) {
+			painter.drawImage(QPoint(0, 0), filtered);
+			painter.restore();
+			painter.setOpacity(1);
+			if (isShowOSD() || isShowFrameCounter()) {
+				messagePainter()->paint(&painter);
+			}
+			return;
+		}
+	}
+
 	painter.scale(full.width() / static_cast<qreal>(frame.width), full.height() / static_cast<qreal>(frame.height));
 
 	if (!m_layers[VIDEO_LAYER_BACKGROUND].isNull()) {

@@ -45,6 +45,7 @@ public slots:
 	void clearShaders() override {}
 	void resizeContext() override;
 	void setBackgroundImage(const QImage&) override;
+	void setCpuFilter(int id, float brightness, float contrast, float scanlines) override;
 
 protected:
 	virtual void paintEvent(QPaintEvent*) override;
@@ -75,6 +76,10 @@ private:
 	int m_maxScale = 0;
 	QSize m_cachedSize;
 	std::shared_ptr<CoreController> m_context = nullptr;
+	int m_cpuFilterId = 0;
+	float m_cpuBrightness = 1.f;
+	float m_cpuContrast = 1.f;
+	float m_cpuScanlines = 0.f;
 };
 
 }
