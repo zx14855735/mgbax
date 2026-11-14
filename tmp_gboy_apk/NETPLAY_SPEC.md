@@ -150,7 +150,7 @@ AmA8tU.A4TApA():
 |---|---|---|---|
 | 1 | WSS 房间信令 `join_room`/`send_message`/`leave_room`/`update_room_settings`，字段 `action`+`token`+`uuid`+`roomID`（`LLYwnm.AYUAbz`） | `CloudLink.cpp:737/793/795/818`、`GbCloud` | ✅ 同名同字段，后端就是 gboy.top |
 | 2 | 帧封装 `4B 大端长度 + u16 type + payload`，上限 8 MiB（`BTvldC.ADYaiT`） | `GBoyFrames::Reader`，上限 16 MiB | ✅（上限放宽，语义一致） |
-| 3 | **type 编号**：0 节奏 / 1 握手 / 2 名字 / 3 ready+RTT / 5 ready-ack / 6 状态 / 9 按键 | PC+Android：0 按键 / 1 注册 / 2 槽2键 / 3 ready / 4 槽4键 / 5 reset / 6 状态 / 9 FPS；**iOS 又是另一套**（4 按键、5 reset） | ❌ **三端三套编号，且都不等于官方** |
+| 3 | **type 编号**：0 节奏 / 1 握手 / 2 名字 / 3 ready+RTT / 5 ready-ack / 6 状态 / 9 按键 | 三端已统一到官方：`GBoyFrames.h`（PC 枚举）/ `GBoyFrames.java`（Android）/ `GBoyLink.swift` 的 msg 常量；自家扩展挪到 11..17（槽位键/复位/计数/事件） | ✅（23:2x 改，PC 编译+`buslocal`/`SESSIONSLOT` 回归 PASS，Android `compileDebugJavaWithJavac` PASS，iOS 未编译验证） |
 | 4 | 握手时序 1 → 2 → 3 → 6 → reset → 开始转发（`B25kr6.A4TApA`） | 官方模式直接进 serve，只发 1（int 6）与 6 | ❌ 缺 2 名字、3 RTT、5 ack，也没有「6 之后 reset 两核」 |
 | 5 | type 0 下发帧率上限，接收方设 `AaHO0E.f4302AZkASS` | 发 `TYPE_FPS(60)`，但号是 9，且收到不生效 | ❌ |
 | 6 | 每对端一路通道（`McNXgv.A5SV6n`）+ 一个镜像核 | `GBoyLinkSession` 4 槽位 + `GBoyMirror`/`GBoyConsoleSet` | ⚠️ 等价（我们用单连接 + 槽位路由） |

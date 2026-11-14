@@ -260,6 +260,23 @@ public final class GBoyLinkSession {
                 }
                 events.onReady();
                 break;
+            case GBoyFrames.TYPE_RECONNECT: {
+                /* 官方重连握手（AmA8tU.ARc23Z(Socket) 263-272）：裸 10 字节
+                 * int32 6 + int16 100 + int32 rtt，在线上就是 type=100 的普通
+                 * 帧。收到即代表对端重新接上了同一条会话，语义等同一次握手：
+                 * 标记就绪并刷新 RTT，绝不能落到 default 被当成未知帧。 */
+                boolean first;
+                synchronized (lock) {
+                    first = !ready;
+                    ready = true;
+                    remoteRtt = GBoyFrames.intOf(body);
+                }
+                if (first) {
+                    events.onReady();
+                }
+                events.onStatus("peer reconnected, rtt=" + GBoyFrames.intOf(body));
+                break;
+            }
             case GBoyFrames.TYPE_RESET:
                 events.onReset();
                 break;

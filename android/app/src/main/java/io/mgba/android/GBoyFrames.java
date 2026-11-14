@@ -57,6 +57,17 @@ final class GBoyFrames {
     /** 官方 9：按键掩码（int32）。 */
     static final int TYPE_KEYS = 9;
 
+    /**
+     * 官方断线重连握手（{@code KpHwm4/AmA8tU.java:263-272 ARc23Z(Socket)}）。
+     *
+     * <p>它直接把 10 个字节写进 socket，不经过 {@code ARc23Z(short type, int len)}：
+     * {@code putInt(6)} + {@code putShort((short) 100)} + {@code putInt(rtt)}。
+     * 巧的是长度字段正好等于 6，所以它在线上<b>天然就是一条普通帧</b>——
+     * {@code u32 len=6, u16 type=100, int32 rtt}，接收侧的 4B 长度分帧器无需
+     * 做任何特殊处理，只要认得 type 100 是「重连握手」即可。</p>
+     */
+    static final int TYPE_RECONNECT = 100;
+
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
     static final int TYPE_INPUT_2 = 11;
     static final int TYPE_INPUT_4 = 12;
@@ -118,9 +129,16 @@ final class GBoyFrames {
         return out;
     }
 
+    /**
+     * 官方重连握手包：{@code int32 6 + int16 100 + int32 rtt}，与
+     * {@code frame(TYPE_RECONNECT, rtt)} 字节完全相同（见 {@link #TYPE_RECONNECT}）。
+     */
+    static byte[] reconnectFrame(int rtt) {
+        return frame(TYPE_RECONNECT, rtt);
+    }
+
     /** The message type of a frame body. */
-    static int typeOf(byte[] body) {
-        if (body == null || body.length < 2) {
+    static int typeOf(byte[] body) {        if (body == null || body.length < 2) {
             return -1;
         }
         return ((body[0] & 0xFF) << 8) | (body[1] & 0xFF);
@@ -173,11 +191,15 @@ final class GBoyFrames {
         private byte[] buffer = new byte[0];
         private int position;
 
+        /** Discards any half-received frame (used after a socket reconnect). */
+        void reset() {
+            position = 0;
+        }
+
         void append(byte[] data, int length) {
             if (length <= 0) {
                 return;
-            }
-            int needed = position + length;
+            }            int needed = position + length;
             if (needed > buffer.length) {
                 int size = Math.max(needed, buffer.length * 2 + 64);
                 buffer = Arrays.copyOf(buffer, size);

@@ -3,12 +3,15 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import android.util.Log;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -16,30 +19,46 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * The official local TCP link, ported from {@code LKpHwm4/B25kr6}.
+ * 官方 WiFi 直连，逐条对应 {@code KpHwm4/A2egSU.java}（服务端）与
+ * {@code KpHwm4/AmA8tU.java}（客户端）。
  *
- * <p>The official client wraps a {@code java.net.Socket} in an
- * {@code InputStream}/{@code OutputStream} pair, registers the endpoints in
- * {@code CopyOnWriteArrayList}s and exchanges length-prefixed frames. A host
- * and a guest greet each other with a {@code type 1} frame carrying {@code int 6}
- * ({@code ARc23Z((short) 1, 4)} plus {@code putInt(6)}); after that the reader
- * loop pulls a frame off the peer queue and dispatches it by message type.</p>
+ * <p>官方在 {@code java.net.Socket} 外面套一层 {@code InputStream}/{@code OutputStream}，
+ * 用 {@code 4 字节大端长度 + u16 type + payload} 的 GBoy 帧通信：</p>
  *
- * <p>Frames are exactly {@link GBoyFrames}: {@code u32 length + u16 type +
- * payload}, split incrementally by {@link GBoyFrames.Reader}. Incoming bodies go
- * to {@link GBoyLinkSession#onFrameBody(byte[])}, which handles slot dispatch,
- * state/reset/counter/fps and the 12 Hz key cadence. Outgoing frames are queued
- * so the emulation thread never blocks on a socket write; when the queue is
- * full the oldest frame is dropped, matching the official back-pressure.</p>
+ * <ul>
+ *   <li>客户端连接：{@code Socket.connect(host, port, 10000)}（AmA8tU:92）、
+ *       {@code setSoTimeout(500)}（:93）、{@code setTcpNoDelay(true)}（:94）；</li>
+ *   <li>服务端 accept：{@code setSoTimeout(500)} + {@code setTcpNoDelay(true)}
+ *       （A2egSU:64-67）；</li>
+ *   <li>读超时：{@code BTvldC/ADYaiT.java:79-101} 连续 8 次静默超时判对端
+ *       不可达（500ms × 8）；</li>
+ *   <li>断线重连：{@code AmA8tU.ARc23Z(Socket):263-272} 先写裸 10 字节
+ *       {@code int32 6 + int16 100 + int32 rtt}，再进入读循环。</li>
+ * </ul>
  *
- * <p>Runs on plain JDK sockets with no Android dependency, so the whole
- * handshake and key exchange can be exercised on loopback in a JVM test.</p>
+ * <p>帧由 {@link GBoyFrames.Reader} 增量切分，收到的 body 交给
+ * {@link GBoyLinkSession#onFrameBody(byte[])}；发送走队列，模拟线程永不阻塞在
+ * socket 写上（队列满丢最旧一帧，与官方的背压一致）。</p>
+ *
+ * <p>纯 JDK socket，无 Android 依赖（除了日志），所以整套握手/按键交换可以在
+ * 本机回环上跑 JVM 测试。</p>
  */
 public final class GBoySocketLink implements GBoyLinkSession.Transport {
 
+    private static final String TAG = "GBoySocketLink";
+
     /** Frames queued before back-pressure starts dropping the oldest. */
     public static final int OUTBOX_CAPACITY = 256;
-    private static final int CONNECT_TIMEOUT_MS = 3000;
+    /** 官方 {@code AmA8tU.java:92} 的 10 秒连接超时。 */
+    private static final int CONNECT_TIMEOUT_MS = 10000;
+    /** 官方 {@code AmA8tU.java:93} / {@code A2egSU.java:65} 的 500ms 读超时。 */
+    private static final int READ_TIMEOUT_MS = 500;
+    /** 官方 {@code ADYaiT.java:88}：连续 8 次静默超时判对端不可达。 */
+    private static final int SILENT_TIMEOUT_LIMIT = 8;
+    /** 官方 {@code AmA8tU.java:107}：重连窗口 50 秒。 */
+    private static final long RECONNECT_WINDOW_MS = 50000;
+    /** 官方 {@code AmA8tU.java:114}：两次重试之间睡 2 秒。 */
+    private static final long RECONNECT_DELAY_MS = 2000;
     private static final int READ_BUFFER = 2048;
 
     private final GBoyLinkSession session;
@@ -50,11 +69,18 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     private final AtomicLong received = new AtomicLong();
 
     private volatile Socket socket;
+    private volatile InputStream input;
+    private volatile OutputStream output;
     private volatile ServerSocket server;
     private volatile Thread acceptThread;
     private volatile Thread readThread;
     private volatile Thread writeThread;
     private volatile String lastError = "";
+    /** 客户端模式记住对端，断线后按官方流程重连；服务端为 null。 */
+    private volatile String peerHost;
+    private volatile int peerPort;
+    /** 最近一次 type 3 带回来的 RTT，重连握手包里要带出去（官方 -1 = 未知）。 */
+    private volatile int lastRtt = -1;
 
     public GBoySocketLink(int localSlot, int playerCount, GBoyLinkSession.Events events) {
         session = new GBoyLinkSession(this, events, localSlot, playerCount);
@@ -67,6 +93,9 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     /**
      * Listens on {@code port} and accepts one peer. Pass 0 to let the OS pick a
      * free port; {@link #port()} reports the actual one. Non-blocking.
+     *
+     * <p>官方 {@code A2egSU.java:64-67}：accept 之后立刻 {@code setSoTimeout(500)}
+     * 与 {@code setTcpNoDelay(true)}。</p>
      */
     public int startHost(int port) throws IOException {
         ServerSocket listener = new ServerSocket(port);
@@ -75,6 +104,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         Thread accept = new Thread(() -> {
             try {
                 Socket peer = listener.accept();
+                peer.setSoTimeout(READ_TIMEOUT_MS);
                 peer.setTcpNoDelay(true);
                 if (running.get()) {
                     open(peer);
@@ -94,19 +124,23 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     }
 
     /**
-     * Connects to the peer and sends the official registration frame.
-     * Android forbids socket I/O on the main thread and broadcast receivers run
-     * there, so the connect happens on a worker; this method still waits for the
-     * outcome and keeps its synchronous contract for callers and tests.
+     * Connects to the peer and sends the official registration frame
+     * ({@code type 1, int 6}). Retries the connect on later drops like
+     * {@code AmA8tU.A4TApA()} does, but the first attempt keeps the synchronous
+     * contract callers and tests rely on.
      */
     public void startJoin(String host, int port) throws IOException {
         running.set(true);
+        peerHost = host;
+        peerPort = port;
         final Socket[] connected = new Socket[1];
         final IOException[] failure = new IOException[1];
         Thread connector = new Thread(() -> {
             Socket peer = new Socket();
             try {
                 peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                // 官方 AmA8tU:93-94
+                peer.setSoTimeout(READ_TIMEOUT_MS);
                 peer.setTcpNoDelay(true);
                 connected[0] = peer;
             } catch (IOException e) {
@@ -135,10 +169,16 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         session.sendSocketHandshake();
     }
 
-    private void open(Socket peer) {
+    /** Attaches a live socket and starts the I/O threads (only once). */
+    private synchronized void open(Socket peer) throws IOException {
         socket = peer;
-        Thread read = new Thread(() -> pumpInput(peer), "gboy-socket-read");
-        Thread write = new Thread(() -> pumpOutput(peer), "gboy-socket-write");
+        input = peer.getInputStream();
+        output = peer.getOutputStream();
+        if (readThread != null) {
+            return;
+        }
+        Thread read = new Thread(this::pumpInput, "gboy-socket-read");
+        Thread write = new Thread(this::pumpOutput, "gboy-socket-write");
         read.setDaemon(true);
         write.setDaemon(true);
         readThread = read;
@@ -147,51 +187,165 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         write.start();
     }
 
-    private void pumpInput(Socket peer) {
+    private void pumpInput() {
         byte[] buffer = new byte[READ_BUFFER];
-        try {
-            InputStream in = peer.getInputStream();
+        int silent = 0;
+        while (running.get()) {
+            Socket peer = socket;
+            InputStream in = input;
+            if (peer == null || in == null) {
+                if (!reconnect()) {
+                    break;
+                }
+                silent = 0;
+                continue;
+            }
             int n;
-            while (running.get() && (n = in.read(buffer)) > 0) {
-                reader.append(buffer, n);
-                byte[] body;
-                while ((body = reader.next()) != null) {
-                    received.incrementAndGet();
-                    session.onFrameBody(body);
-                    if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_REGISTER) {
-                        boolean wasHost = server != null;
-                        boolean first = handshakeDone.compareAndSet(false, true);
-                        // Only the listening side answers; the joining side
-                        // started the exchange. Both then consider it ready.
-                        if (wasHost && first) {
-                            session.sendSocketHandshake();
-                        }
+            try {
+                n = in.read(buffer);
+                silent = 0;
+            } catch (SocketTimeoutException e) {
+                // 官方 ADYaiT.A5SV6n:85-92：500ms 静默累计 8 次判对端不可达。
+                if (++silent >= SILENT_TIMEOUT_LIMIT) {
+                    lastError = "连续 " + SILENT_TIMEOUT_LIMIT + " 次静默超时，判定对端不可达";
+                    Log.w(TAG, lastError);
+                    drop(peer);
+                    silent = 0;
+                }
+                continue;
+            } catch (IOException e) {
+                if (!running.get()) {
+                    break;
+                }
+                lastError = String.valueOf(e.getMessage());
+                drop(peer);
+                if (!reconnect()) {
+                    break;
+                }
+                silent = 0;
+                continue;
+            }
+            if (n <= 0) {
+                drop(peer);
+                if (!reconnect()) {
+                    break;
+                }
+                silent = 0;
+                continue;
+            }
+            reader.append(buffer, n);
+            byte[] body;
+            while ((body = reader.next()) != null) {
+                received.incrementAndGet();
+                session.onFrameBody(body);
+                if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_READY) {
+                    lastRtt = GBoyFrames.intOf(body);
+                }
+                if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_REGISTER) {
+                    boolean wasHost = server != null;
+                    boolean first = handshakeDone.compareAndSet(false, true);
+                    // Only the listening side answers; the joining side
+                    // started the exchange. Both then consider it ready.
+                    if (wasHost && first) {
+                        session.sendSocketHandshake();
                     }
                 }
-            }
-        } catch (IOException e) {
-            if (running.get()) {
-                lastError = String.valueOf(e.getMessage());
             }
         }
     }
 
-    private void pumpOutput(Socket peer) {
-        try {
-            OutputStream out = peer.getOutputStream();
-            while (running.get()) {
+    private void pumpOutput() {
+        while (running.get()) {
+            try {
                 byte[] frame = outbox.poll(200, TimeUnit.MILLISECONDS);
-                if (frame != null) {
-                    out.write(frame);
-                    out.flush();
+                if (frame == null) {
+                    continue;
+                }
+                OutputStream out = output;
+                Socket peer = socket;
+                if (out == null || peer == null || peer.isClosed()) {
+                    // 断线期间产生的按键帧直接丢弃：官方发送线程同样是写失败
+                    // 就丢，重连后不重放旧帧（重放会让镜像核倒着走）。
+                    continue;
+                }
+                out.write(frame);
+                out.flush();
+            } catch (IOException e) {
+                if (running.get()) {
+                    lastError = String.valueOf(e.getMessage());
+                }
+                Socket peer = socket;
+                if (peer != null) {
+                    drop(peer);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /**
+     * 官方断线重连：{@code AmA8tU.ARc23Z(Socket):263-272} 先写裸 10 字节
+     * {@code int32 6 + int16 100 + int32 rtt}，再继续读循环。窗口 50 秒、
+     * 每 2 秒重试一次（{@code AmA8tU:107/114}）。
+     *
+     * @return true = 已重连；false = 服务端模式或窗口耗尽。
+     */
+    private synchronized boolean reconnect() {
+        String host = peerHost;
+        int port = peerPort;
+        if (host == null || host.isEmpty() || port <= 0) {
+            return false;
+        }
+        long deadline = System.currentTimeMillis() + RECONNECT_WINDOW_MS;
+        Log.i(TAG, "reconnecting to " + host + ":" + port);
+        while (running.get() && System.currentTimeMillis() < deadline) {
+            Socket peer = new Socket();
+            try {
+                peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                peer.setSoTimeout(READ_TIMEOUT_MS);
+                peer.setTcpNoDelay(true);
+                OutputStream out = peer.getOutputStream();
+                // 官方 ARc23Z(Socket): 重连握手包，接收侧按 type 100 认。
+                out.write(GBoyFrames.reconnectFrame(lastRtt));
+                out.flush();
+                socket = peer;
+                input = peer.getInputStream();
+                output = out;
+                // 旧连接上可能残留半帧；不丢弃会把新流的第一帧切错位。
+                reader.reset();
+                handshakeDone.set(true);
+                Log.i(TAG, "reconnected, sent type " + GBoyFrames.TYPE_RECONNECT
+                        + " rtt=" + lastRtt);
+                return true;
+            } catch (IOException e) {
+                lastError = String.valueOf(e.getMessage());
+                try {
+                    peer.close();
+                } catch (IOException ignored) {
+                }
+                try {
+                    Thread.sleep(RECONNECT_DELAY_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return false;
                 }
             }
-        } catch (IOException e) {
-            if (running.get()) {
-                lastError = String.valueOf(e.getMessage());
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        }
+        return false;
+    }
+
+    /** Detaches {@code peer} (if still current) and closes it. */
+    private synchronized void drop(Socket peer) {
+        if (socket == peer) {
+            socket = null;
+            input = null;
+            output = null;
+        }
+        try {
+            peer.close();
+        } catch (IOException ignored) {
         }
     }
 
@@ -247,6 +401,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         }
         Socket s = socket;
         socket = null;
+        input = null;
+        output = null;
         if (s != null) {
             try {
                 s.close();

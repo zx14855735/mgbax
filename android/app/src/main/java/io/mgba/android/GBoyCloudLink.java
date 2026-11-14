@@ -114,6 +114,8 @@ public final class GBoyCloudLink {
     private volatile boolean closed;
     private volatile KcpChannel channel;
     private volatile Link wsLink;
+    /** 官方 WiFi 直连（{@link GBoySocketLink}）的持有者，close() 时要一起关。 */
+    private volatile GBoySocketLink socketLink;
     private volatile java.net.Socket sioSock;
     private volatile GbCloud.Session session;
     /** Re-broadcasts the relay endpoint to the room so the joiner can find it. */
@@ -248,8 +250,7 @@ public final class GBoyCloudLink {
     }
 
     /** Asks the peer to reset its game. */
-    public void sendReset() {
-        KcpChannel current = channel;
+    public void sendReset() {        KcpChannel current = channel;
         if (current != null && !closed) {
             current.send(GBoyFrames.frame(GBoyFrames.TYPE_RESET, 0));
         }
@@ -272,6 +273,11 @@ public final class GBoyCloudLink {
         wsLink = null;
         if (tunnel != null) {
             tunnel.close();
+        }
+        GBoySocketLink tcp = socketLink;
+        socketLink = null;
+        if (tcp != null) {
+            tcp.close();
         }
         java.net.Socket sio = sioSock;
         sioSock = null;
