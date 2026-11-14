@@ -1907,9 +1907,10 @@ public final class GBoyCloudLink {
                     current.send(frame);
                 }
             }
-        /* 4 槽位会话：本机可见核 slot 1，3 个镜像核 slot 2/3/4。网络只传
-         * 真人按键，对端按键进 slot 2，slot 3/4 恒 0 作为 NPC 陪位。 */
-        }, sessionEvents, 1, 4);
+        /* 2 核/设备：本机可见核 slot 1，1 个镜像核 slot 2（对端真人按键经网络
+         * 进 slot 2）。网络只传真人按键，对端按键进 slot 2；两端各跑一个 2 人
+         * 本地 SIO，干净 1v1。 */
+        }, sessionEvents, 1, 2);
     }
 
     /** The onConnected callback is posted to the UI thread, so the session has

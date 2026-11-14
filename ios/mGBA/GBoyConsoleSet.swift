@@ -44,6 +44,42 @@ final class GBoyConsoleSet {
     private var frameEpoch: Int = -1
     private var mirrorFrames: [Int] = []
 
+    // MARK: - 初始存档缓存（与 Android d09514f9b 同构）
+
+    /// 整轮联机只取一次初始存档：两次 start() 之间游戏可能保存并写回电池
+    /// 存档，重读会得到不同进度（Android 实测 mirror1 与 mirror2/3 分叉，
+    /// idx=1 卡在保存菜单、SIO 不启动、pc 恒 0）。缓存后每次 start() 都
+    /// 无条件回写主存档 + ROM 旁路存档，可见核 reload 与镜像核冷启动读到
+    /// 的字节完全相同。
+    private static let snapshotLock = NSLock()
+    private static var sInitialSnapshot: Data?
+
+    /// 新一轮 ROM 加载时清掉上一轮的快照缓存（云端重挂路径已在重载前把
+    /// 缓存写回 canonical 路径，这里的清空让它重新读到的就是同一份字节）。
+    static func resetInitialSaveSnapshot() {
+        snapshotLock.lock()
+        sInitialSnapshot = nil
+        snapshotLock.unlock()
+    }
+
+    /// 可见核重载 ROM 前把缓存的初始存档写回 saveDir，抹掉游戏期间写回的
+    /// 进度。云重挂的 reload 与重建房间之间若不回写，可见核会读到新进度、
+    /// 镜像核读缓存，四核相位立刻分叉。
+    static func restoreInitialSaveSnapshot(romPath: String, saveDir: String) {
+        snapshotLock.lock()
+        let snap = sInitialSnapshot
+        snapshotLock.unlock()
+        guard let snap, !romPath.isEmpty, !saveDir.isEmpty else { return }
+        let base = URL(fileURLWithPath: romPath).deletingPathExtension().lastPathComponent
+        let target = URL(fileURLWithPath: saveDir, isDirectory: true)
+            .appendingPathComponent(base + ".sav")
+        do {
+            try snap.write(to: target)
+        } catch {
+            NSLog("GBOY_RT restore save snapshot failed: %@", target.path)
+        }
+    }
+
     init?(romPath: String, saveDir: String, stateDir: String,
           players: Int, localSlot: Int, roomKey: Int32 = 0x4C53) {
         guard (2...4).contains(players), (1...players).contains(localSlot),
@@ -69,18 +105,42 @@ final class GBoyConsoleSet {
         let count = players - 1
         cores = [visible] + [OpaquePointer?](repeating: nil, count: count)
         let romName = URL(fileURLWithPath: romPath).deletingPathExtension().lastPathComponent
-        let primarySave = (saveDir as NSString).appendingPathComponent(romName + ".sav")
         let fm = FileManager.default
 
-        // 先把可见核的电池存档一次性读成快照，再分发给所有镜像目录。
-        // 旧实现在循环里每轮重新复制同一个源文件：云连接重建房间时可见核
-        // 会在循环期间写回存档，实测四个存档内容各不相同，四核从不同的
-        // 游戏进度冷启动，SIO 握手永远凑不齐 playerCount（Android 侧同坑
-        // 同修：save snapshot）。同一份字节数组保证起点一致。
-        var saveSnapshot: Data?
-        if fm.fileExists(atPath: primarySave) {
-            saveSnapshot = try? Data(contentsOf: URL(fileURLWithPath: primarySave))
+        // 初始存档快照（缓存一次、整轮复用）：主存档路径以可见核当前配置
+        // 为准（mgbaMobileSaveFile），缺席时回落 saveDir。读到后回写主存档
+        // 与 ROM 旁路 canonical 路径，保证 reload 与镜像冷启动同一份字节。
+        var primarySave: String?
+        var saveBuf = [CChar](repeating: 0, count: 1200)
+        mgbaMobileSaveFile(visible, &saveBuf, 1200)
+        let nativeSave = String(cString: saveBuf)
+        if !nativeSave.isEmpty, fm.fileExists(atPath: nativeSave) {
+            primarySave = nativeSave
         }
+        if primarySave == nil {
+            let fallback = (saveDir as NSString).appendingPathComponent(romName + ".sav")
+            if fm.fileExists(atPath: fallback) {
+                primarySave = fallback
+            }
+        }
+        GBoyConsoleSet.snapshotLock.lock()
+        if GBoyConsoleSet.sInitialSnapshot == nil, let source = primarySave {
+            GBoyConsoleSet.sInitialSnapshot = try? Data(contentsOf: URL(fileURLWithPath: source))
+        }
+        let saveSnapshot = GBoyConsoleSet.sInitialSnapshot
+        GBoyConsoleSet.snapshotLock.unlock()
+        if let snapshot = saveSnapshot {
+            if let target = primarySave {
+                try? snapshot.write(to: URL(fileURLWithPath: target))
+            }
+            let canonical = URL(fileURLWithPath: romPath).deletingLastPathComponent()
+                .appendingPathComponent(romName + ".sav")
+            if canonical.path != primarySave {
+                try? snapshot.write(to: canonical)
+            }
+        }
+        NSLog("GBOY_RT save snapshot path=%@ bytes=%ld cached=yes",
+              primarySave ?? "null", saveSnapshot.map { $0.count } ?? -1)
 
         // 镜像核从可见核存档的快照启动，保证 4 核初始状态一致（同 Android
         // GBoyConsoleSet.copyPrimarySave）。
@@ -233,6 +293,42 @@ final class GBoyConsoleSet {
         lock.lock()
         remoteKeys[slot] = mask
         lock.unlock()
+    }
+
+    /// 可见核的即时存档快照（TYPE_STATE 来源，与 Android snapshotState()
+    /// 同义）。C 侧 helper 自带 per-instance 核锁，跨线程安全。
+    func snapshotState() -> Data? {
+        lock.lock()
+        let core = visibleCore
+        lock.unlock()
+        guard let core else { return nil }
+        var blob: UnsafeMutableRawPointer?
+        var size = 0
+        guard mgbaMobileSaveStateToMemory(core, &blob, &size),
+              let ptr = blob, size > 0 else { return nil }
+        let data = Data(bytes: UnsafeRawPointer(ptr), count: size)
+        mgbaMobileFreeState(ptr)
+        return data
+    }
+
+    /// 把对端状态应用到每个隐藏镜像核（4 核布局里对手的游戏在本机镜像核
+    /// 上跑，与 Android applyRemoteState 同义）。镜像线程在下一帧拾取新状态。
+    func applyRemoteState(_ state: Data) -> Bool {
+        lock.lock()
+        let current = cores
+        lock.unlock()
+        guard current.count > 1, !state.isEmpty else { return false }
+        var applied = false
+        state.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            for i in 1..<current.count {
+                if let core = current[i],
+                   mgbaMobileLoadStateFromMemory(core, base, state.count) {
+                    applied = true
+                }
+            }
+        }
+        return applied
     }
 
     func stop() {
