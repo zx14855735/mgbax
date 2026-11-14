@@ -44,6 +44,13 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var turboB = false
     private var slot = 1
     private var pendingPath: String?
+    /// 云端 4 核对战武装（Android pendingCloudRearm 同构）：emu 线程在
+    /// pendingPath 消费时重建 4 核房间。gate 保护。
+    private var pendingCloudRearm = false
+    /// 云重载期间跳过 auto_load_state：四核必须从同一份电池存档冷启动，
+    /// 可见核读即时存档、镜像核冷链会让游戏上下文开局就错位（Android
+    /// suppressAutoState 同坑同修）。gate 保护。
+    private var suppressAutoLoadState = false
     private var command = 0
     private let stopped = DispatchSemaphore(value: 0)
     private let audio = AudioOut()
@@ -977,6 +984,22 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
+                gate.lock()
+                let cloudRearm = pendingCloudRearm
+                pendingCloudRearm = false
+                gate.unlock()
+                if cloudRearm {
+                    // 云重挂会在 reload 之后立刻重建 4 核房间；先把缓存的
+                    // 初始存档写回，否则可见核读到游戏写回的新进度、镜像核
+                    // 读缓存，四核起点分叉，SIO 永远凑不齐 playerCount
+                    // （Android 同坑同修）。
+                    let rom = URL(fileURLWithPath: path).standardizedFileURL
+                    let saveDirPath = romSaveBesideRom(rom)
+                        ? rom.deletingLastPathComponent().path
+                        : docs.appendingPathComponent("saves", isDirectory: true).path
+                    GBoyConsoleSet.restoreInitialSaveSnapshot(romPath: path,
+                                                              saveDir: saveDirPath)
+                }
                 loadRom(path)
                 // Loading blocks for a while; start the pacing schedule and
                 // the feedback window fresh so the stall is not measured as
@@ -984,6 +1007,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 nextSlice = Int64(bitPattern: DispatchTime.now().uptimeNanoseconds)
                 slices = 0
                 fpsStamp = UInt64(bitPattern: nextSlice)
+                if cloudRearm {
+                    rebuildCloudConsoleSet(romPath: path, visible: core)
+                }
             }
             if cmd != 0 {
                 runCommand(cmd)
@@ -1355,6 +1381,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private func loadRom(_ path: String) {
         guard let core else { return }
         currentRomPath = path
+        // 新一轮 ROM 加载清掉上一轮的初始存档缓存（云端重挂路径已在重载
+        // 前把缓存写回 canonical 路径，这里的清空让它重新读到的就是同一份
+        // 字节；换 ROM / 删档重载则拿到干净的新起点）。
+        GBoyConsoleSet.resetInitialSaveSnapshot()
         applyRomSaveLocation(path)
         stopTimedSave()
         audio.stop()
@@ -1423,8 +1453,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         paused = false
         gate.unlock()
         NSLog("GBOY_RT load: done")
-        // 进入游戏时自动读档：上次退出的进度。
-        if defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
+        // 进入游戏时自动读档：上次退出的进度。云端 4 核重载期间跳过——
+        // 四核必须从同一份电池存档冷启动。
+        gate.lock()
+        let allowAutoState = !suppressAutoLoadState
+        gate.unlock()
+        if allowAutoState, defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
             mgbaMobileClearAudio(core)
             _ = mgbaMobileRunFrames(core, 1)
         }
@@ -1560,9 +1594,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         publishKeys()
     }
 
-    /** Keys applied this frame: local input plus the GBoy peer's mask. */
+    /** Keys applied this frame: local input plus the GBoy peer's mask. In
+     *  the 4-core cloud layout the peer's mask goes to the mirror core via
+     *  setRemoteKeys — feeding it to the visible core too would double-press
+     *  every opponent key（Android startGBoyLink 的 gboyRemoteKeysEnabled=false
+     *  同构）。 */
     private func userKeys() -> Int {
-        touchKeys | hwKeys | padKeys | gboyRemoteKeys
+        let remote = (consoleSet?.isReady == true) ? 0 : gboyRemoteKeys
+        return touchKeys | hwKeys | padKeys | remote
     }
 
     private func publishKeys() {
@@ -4066,12 +4105,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         guard let core else { return }
         let rom = URL(fileURLWithPath: path).standardizedFileURL
         let parent = rom.deletingLastPathComponent()
-        let beside = FileManager.default.isWritableFile(atPath: parent.path)
-            && (hasBesideSaves(rom) || defaults.bool(forKey: "saves_beside_rom"))
+        let beside = romSaveBesideRom(rom)
         let saveDir = beside ? parent : docs.appendingPathComponent("saves", isDirectory: true)
         let stateDir = beside ? parent : docs.appendingPathComponent("states", isDirectory: true)
         activeStateDir = stateDir
         mgbaMobileSetSaveDirs(core, saveDir.path, stateDir.path)
+    }
+
+    /// ROM 旁路存档判定（applyRomSaveLocation 与云端重挂 restore 共用，
+    /// 保证 restore 写入的正是 reload 后可见核读取的目录）。
+    private func romSaveBesideRom(_ rom: URL) -> Bool {
+        let parent = rom.deletingLastPathComponent()
+        return FileManager.default.isWritableFile(atPath: parent.path)
+            && (hasBesideSaves(rom) || defaults.bool(forKey: "saves_beside_rom"))
     }
 
     @objc private func showRomLibrary() {
@@ -5797,6 +5843,54 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         return nil
     }
 
+    /// 云端 4 核对战武装（Android officialMode onReady 同构，注释逐句对应）。
+    /// 两端都从电池存档冷启动：可见核若读即时存档、镜像核冷链，两样的游戏
+    /// 上下文一开局就错位，联机永远 pc=0。重载在 emu 线程完成（pendingPath），
+    /// 重载完成后重建 4 核房间——重挂走 Join 语义会排到镜像核后面，必须
+    /// 整房间重建、可见核重新当 host（Android 实测）。
+    private func armCloudMulticore(asHost: Bool) {
+        guard let core, mgbaMobileIsLoaded(core), let path = currentRomPath,
+              !path.isEmpty else {
+            NSLog("GBOY_RT cloud arm skipped: no rom (host=%d)", asHost ? 1 : 0)
+            return
+        }
+        NSLog("GBOY_RT cloud arm host=%d", asHost ? 1 : 0)
+        gate.lock()
+        suppressAutoLoadState = true
+        pendingCloudRearm = true
+        pendingPath = path
+        gate.signal()
+        gate.unlock()
+    }
+
+    /// 云重挂：重载完成后在 emu 线程重建 4 核房间。可见核刚复位到帧 0、
+    /// 锁步驱动已被复位卸掉，此刻整房间重建干净无死锁（Android 同款）。
+    /// 失败时保持单核旧路径（consoleSet 为空，远端按键回落可见核）。
+    private func rebuildCloudConsoleSet(romPath: String, visible: OpaquePointer) {
+        consoleSet?.stop()
+        consoleSet = nil
+        let saves = docs.appendingPathComponent("saves").path
+        let states = docs.appendingPathComponent("states").path
+        guard let set = GBoyConsoleSet(romPath: romPath, saveDir: saves, stateDir: states,
+                                       players: 4, localSlot: 1, roomKey: 18781) else {
+            NSLog("GBOY_RT cloud arm rebuild failed: invalid params")
+            gate.lock()
+            suppressAutoLoadState = false
+            gate.unlock()
+            return
+        }
+        if let error = set.start(visible: visible) {
+            NSLog("GBOY_RT cloud arm rebuild failed: %@", error)
+            toast("四核联机启动失败：\(error)")
+        } else {
+            consoleSet = set
+            NSLog("GBOY_RT cloud arm rebuilt players=4 visible slot=1")
+        }
+        gate.lock()
+        suppressAutoLoadState = false
+        gate.unlock()
+    }
+
     private func ensureGboy() -> GBoyLink {
         if let gboyLink { return gboyLink }
         let link = GBoyLink()
@@ -5873,6 +5967,25 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     self.toast(note)
                 }
                 self.toast(asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P")
+                // 云端 4 核对战武装（Android officialMode onReady 同构）：
+                // 抑制自动读档、标记重挂并触发可见核重载；重载完成后
+                // emulationLoop 在帧 0 重建 4 核房间。ROM 未加载时保持
+                // 旧的单核路径。
+                self.armCloudMulticore(asHost: asHost)
+            }
+        }
+        link.onDisconnected = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                // 会话结束就拆掉 4 核房间，可见核不再等一条死掉的 SIO 房间
+                // （Android onDisconnected → stopGBoyLink 同构）。
+                self.consoleSet?.stop()
+                self.consoleSet = nil
+                self.gate.lock()
+                self.pendingCloudRearm = false
+                self.suppressAutoLoadState = false
+                self.gate.unlock()
+                self.toast("云端联机已断开")
             }
         }
         // TYPE_STATE: the host seeds the joiner with one save-state snapshot.
@@ -5890,7 +6003,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         link.onRemoteState = { [weak self] state in
             DispatchQueue.main.async {
-                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
+                guard let self else { return }
+                // 4 核布局：对端状态进镜像核（对手的游戏在本机镜像核上跑，
+                // Android applyRemoteState 同义）；无 consoleSet 时保持旧的
+                // 单核种子行为。
+                if let set = self.consoleSet, set.isReady,
+                   set.applyRemoteState(state) {
+                    return
+                }
+                guard let core = self.core, mgbaMobileIsLoaded(core) else { return }
                 state.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                     guard let base = raw.baseAddress else { return }
                     _ = mgbaMobileLoadStateFromMemory(core, base, state.count)

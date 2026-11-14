@@ -49,6 +49,9 @@ final class LobbyLink {
     /// Local key bitmask, GBA style.
     var localKeys: () -> Int32 = { 0 }
     /// Save-state snapshot for the host to seed the joiner (TYPE_STATE).
+    /// Unused since the 4-core cloud layout: both devices cold-start from the
+    /// same battery save, and a host-side seed would diverge the joiner's
+    /// mirrors. Kept as API surface for the legacy single-core path.
     /// Called from the link thread; return nil until a core is loaded.
     var stateSnapshot: () -> Data? = { nil }
     /// Peer's save-state blob; called from the reader thread.
@@ -67,6 +70,11 @@ final class LobbyLink {
     var onStatus: (String) -> Void = { _ in }
     /// The link is up: `true` when this device is the 1P.
     var onConnected: (Bool, String?) -> Void = { _, _ in }
+    /// The relay link closed (peer gone or session closed); the owner stops
+    /// its multicore room so the visible core does not keep waiting on a
+    /// dead SIO room（Android onDisconnected → stopGBoyLink 同构）.
+    /// Called from the link thread; the owner hops to the main queue.
+    var onDisconnected: () -> Void = {}
     /// Peer asked for a console reset; called from the reader thread.
     var onRemoteReset: () -> Void = {}
 
@@ -83,8 +91,6 @@ final class LobbyLink {
     private var authToken: String?
     private var currentRoom: Room?
     private var hostRole = false
-    /// The host sends exactly one TYPE_STATE snapshot per session.
-    private var initialStateSent = false
 
     private var isClosed: Bool {
         lock.lock()
@@ -257,6 +263,7 @@ final class LobbyLink {
         status("房号 \(room.roomId ?? "")\n中继 \(room.nodeAddress ?? ""):\(room.nodePort)\n\(text)")
         onConnected(asHost, nil)
         serve(link)
+        onDisconnected()
     }
 
     /// 问服务器（房主）或房主广播（加入方）当前的中继节点，返回 "地址:端口" 或 nil。
@@ -467,6 +474,7 @@ final class LobbyLink {
         status("云端联机已连接，你是 \(asHost ? "1P" : "2P")（手动中继）")
         onConnected(asHost, nil)
         serve(link)
+        onDisconnected()
     }
 
     /**
@@ -634,11 +642,9 @@ final class LobbyLink {
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
             let now = Int64(Date().timeIntervalSince1970 * 1000)
-            if hostRole && !initialStateSent,
-               let snapshot = stateSnapshot(), !snapshot.isEmpty {
-                initialStateSent = true
-                link.send(LobbyFrames.stateFrame(snapshot))
-            }
+            // 云端不发初始 TYPE_STATE（Android GBoyCloudLink.serve 同构）：
+            // 4 核对战布局两端都从同一份电池存档冷启动，种子反而会把房主
+            // 已推进的状态灌进加入方的镜像核，四核相位立刻分叉。
             if now - lastKey >= LobbyLink.keyIntervalMs {
                 let keys = localKeys()
                 if keys != sentKeys || now - lastKey >= 500 {
@@ -696,10 +702,19 @@ final class LobbyLink {
         onRemoteKeysForSlot(slot, keys)
     }
 
+    /// Mirrors GBoyLinkSession.defaultSenderSlot(): in the 4-core cloud room
+    /// both devices keep localSlot=1, so a bare TYPE_KEYS frame means「对面
+    /// 那台设备」and must land on slot 2 — the mirror core that represents
+    /// the opponent. Delivering slot 1 would overwrite our own visible
+    /// core's keys（Android 实测教训）。
+    private var bareKeysSenderSlot: Int {
+        localSlot == 1 ? 2 : 1
+    }
+
     private func handle(_ body: Data) {
         switch LobbyFrames.type(of: body) {
         case LobbyFrames.typeKeys, LobbyFrames.typeKeysLocal:
-            deliverKeys(1, body)
+            deliverKeys(bareKeysSenderSlot, body)
         case LobbyFrames.typeInput2:
             deliverKeys(2, body)
         case LobbyFrames.typeInput4:
