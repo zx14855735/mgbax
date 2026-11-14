@@ -9,6 +9,7 @@
 #include <QString>
 #include <QThread>
 #include <atomic>
+#include <functional>
 #include <mutex>
 
 #include "platform/mobile/mgba_mobile.h"
@@ -61,9 +62,16 @@ public:
 	 * 那个玩家的控制台」，之后两边才 arm SIO。本类有自己的帧线程，直接在
 	 * CloudLink 线程里 mgbaMobileLoadStateFromMemory 会与正在跑帧的核心抢
 	 * 状态（实测偶发死循环/画面花屏），所以这里只入队，真正的载入发生在
-	 * 镜像线程的帧边界上。返回是否受理（不代表已经载入）。
+	 * 镜像线程的帧边界上。
+	 *
+	 * 返回值按官方 type 6 的错误码：0 = 已受理（真正载入的结果走
+	 * {@code result} 回调），-5 = 尺寸不符（当场拒绝，不入队），1 = 参数
+	 * 非法。载入成功后镜像线程按官方语义 {@code reset(false)} 本核。
 	 */
-	bool applyRemoteState(const QByteArray& state);
+	int applyRemoteState(const QByteArray& state, std::function<void(int)> result = {});
+
+	/** 官方 type 5：复位本核。线程安全，真正的 reset 在帧边界执行。 */
+	void requestReset();
 
 	/** 已受理并真正载入的状态包计数（诊断用）。 */
 	int appliedStateCount() const { return m_appliedStates.load(std::memory_order_relaxed); }

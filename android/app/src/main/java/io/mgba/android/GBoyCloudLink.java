@@ -2130,7 +2130,7 @@ public final class GBoyCloudLink {
         int type = GBoyFrames.typeOf(body);
         GBoyLinkSession s = linkSession;
         if (s != null) {
-            // Session handles slot dispatch, counter/fps, state and handshake.
+            // Session handles slot dispatch, counter/speed, state and handshake.
             // The switch below stays as the compatibility path for the UI.
             s.onFrameBody(body);
         }

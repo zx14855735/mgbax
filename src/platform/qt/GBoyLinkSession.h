@@ -106,12 +106,13 @@ public:
 	static QByteArray stateOf(const QByteArray& body);
 
 	void sendReset();
-	void sendFps(int fps);
+	/** 官方 9 = 速度倍率（1 / -1 / 2 / 4）；官方没有帧率下发消息。 */
+	void sendSpeed(int speed);
 
 	long frameNo();
 	bool isReady();
 	int remoteCounter();
-	int remoteFps();
+	int remoteSpeed();
 	/** 对端上报的 RTT（毫秒），-1 = 还没收到（type 3 / type 100）。 */
 	int remoteRtt();
 	long droppedFrames();
@@ -140,7 +141,7 @@ private:
 	int m_sampleCountdown = 1;
 	bool m_ready = false;
 	int m_remoteCounter = -1;
-	int m_remoteFps = -1;
+	int m_remoteSpeed = -1;
 	/** 官方 type 3 带回的对端 RTT（毫秒），-1 = 还没收到。 */
 	int m_remoteRtt = -1;
 	int m_lastLocalKeys = 0;

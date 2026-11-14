@@ -118,10 +118,9 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		break;
 	}
 	case GBoyFrames::TYPE_READY:
-	case GBoyFrames::TYPE_READY_ACK:
 	case GBoyFrames::TYPE_RECONNECT:
 	{
-		// 官方语义：type 3 = 就绪 + RTT（int32），type 5 = 就绪确认（空体）。
+		// 官方语义：type 3 = 就绪 + RTT（int32）；type 5 是复位，不在这里。
 		// type 100 = 断线重连握手包（AmA8tU.ARc23Z(Socket)），体里同样带 RTT，
 		// 收到它说明对端重连上来了，按「对端已就绪」处理，不能让默认分支把
 		// 它当未知类型（对端会一直以为我们没回来）。
@@ -130,7 +129,7 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 			std::lock_guard<std::mutex> locker(m_mutex);
 			first = !m_ready;
 			m_ready = true;
-			if (type != GBoyFrames::TYPE_READY_ACK && GBoyFrames::payloadOf(body).size() >= 4) {
+			if (GBoyFrames::payloadOf(body).size() >= 4) {
 				m_remoteRtt = GBoyFrames::intOf(body);
 			}
 		}
@@ -177,6 +176,8 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		break;
 	}
 	case GBoyFrames::TYPE_RESET:
+	case GBoyFrames::TYPE_RESET_LEGACY:
+		/* 官方 5 = 复位；13 是我们旧版的号，收到也照做，方便旧客户端互通。 */
 		if (m_events.onReset) {
 			m_events.onReset();
 		}
@@ -304,9 +305,9 @@ int GBoyLinkSession::remoteCounter() {
 	return m_remoteCounter;
 }
 
-int GBoyLinkSession::remoteFps() {
+int GBoyLinkSession::remoteSpeed() {
 	std::lock_guard<std::mutex> locker(m_mutex);
-	return m_remoteFps;
+	return m_remoteSpeed;
 }
 
 int GBoyLinkSession::remoteRtt() {

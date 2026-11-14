@@ -4808,15 +4808,33 @@ static bool mobileLoadStateLocked(struct MgbaMobile* emu, const void* data, size
 }
 
 bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size) {
-	if (!emu || !emu->core || !data || size == 0) {
-		return false;
+	return mgbaMobileLoadStateFromMemoryEx(emu, data, size) == 0;
+}
+
+int mgbaMobileLoadStateFromMemoryEx(struct MgbaMobile* emu, const void* data, size_t size) {
+	if (!emu || !emu->core) {
+		return 1;
 	}
-	/* 这条路径的危险性最高：状态帧在 socket 读线程上到达，镜像核正在另一条
-	 * 线程上 runFrame。没有这把锁就是「运行中换掉整个核心状态」。 */
+	/* 官方 GBoy 的错误码：-5 = 状态尺寸不符，1 = 其它失败，0 = 成功。
+	 * 尺寸在锁内读，和正在跑帧的线程看到的 core 一致。 */
 	mgbaMobileLock(emu);
-	bool ok = mobileLoadStateLocked(emu, data, size);
+	ssize_t expected = emu->core->stateSize(emu->core);
+	int result;
+	if (!data || size == 0 || expected <= 0 || size_t(expected) > size) {
+		result = -5;
+	} else {
+		result = mobileLoadStateLocked(emu, data, size) ? 0 : 1;
+	}
 	mgbaMobileUnlock(emu);
-	return ok;
+	return result;
+}
+
+size_t mgbaMobileStateSize(const struct MgbaMobile* emu) {
+	if (!emu || !emu->core) {
+		return 0;
+	}
+	ssize_t size = emu->core->stateSize(emu->core);
+	return size > 0 ? size_t(size) : 0;
 }
 
 void mgbaMobileFreeState(void* state) {

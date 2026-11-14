@@ -1946,7 +1946,6 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	// `1000/fps` 排下一帧。我们照抄这个语义，把固定 16ms 换成动态节拍；
 	// 没收到过（-1）或数值非法（<5 或 >240）时保持 60fps = 16ms。
 	qint64 lastTick = 0;
-	qint64 lastFps = 0;
 	qint64 lastAdvertise = 0;
 	// 每分钟一次的会话自检：对端按键积压/掉帧从会话里捞出来打日志。
 	qint64 lastDiag = 0;
@@ -1974,12 +1973,9 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 		}
-		/* 官方 type 0 下发的帧率上限：合法值就按 1000/fps 排节拍，否则 60fps。 */
-		int fpsLimit = m_gboySession->remoteFps();
-		if (fpsLimit < 5 || fpsLimit > 240) {
-			fpsLimit = 60;
-		}
-		const qint64 tickMs = qMax<qint64>(1, 1000 / fpsLimit);
+		/* 节拍固定 60fps：官方**没有**帧率下发消息（type 0 是按键掩码，
+		 * type 9 才是倍速），所以这里不能按网络值改节拍。 */
+		const qint64 tickMs = 16;
 		if (now - lastTick >= tickMs) {
 			lastTick = now;
 			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
@@ -2008,10 +2004,6 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 			m_gboySession->onLocalFrame(++m_officialFrame, keys);
-		}
-		if (now - lastFps >= 1000) {
-			lastFps = now;
-			m_gboySession->sendFps(60);
 		}
 		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
 			m_gboySession->sendReset();
@@ -2199,7 +2191,6 @@ QByteArray CloudLink::expect(ILink* link, int type, int timeoutMs) {
 
 void CloudLink::serve(ILink* link) {
 	qint64 lastKey = 0;
-	qint64 lastFps = 0;
 	qint64 lastAdvertise = 0;
 	int sentKeys = -1;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
@@ -2212,10 +2203,6 @@ void CloudLink::serve(ILink* link) {
 				lastKey = now;
 				link->send(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, keys));
 			}
-		}
-		if (now - lastFps >= 1000) {
-			lastFps = now;
-			link->send(GBoyFrames::frame(GBoyFrames::TYPE_FPS, 60));
 		}
 		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
 			link->send(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));

@@ -2314,10 +2314,9 @@ public class EmulatorActivity extends AppCompatActivity {
             if (asHost) {
                 link.startHost(tcpPort);
             } else {
-                /* 这个方法由广播/对话框在主线程调用：首次连接失败要立刻返回，
-                 * 不能套官方的 2s×50s 重试（50 秒阻塞直接 ANR）。掉线后的
-                 * 自动重连仍由 GBoySocketLink 内部的 2s/50s 窗口负责。 */
-                link.startJoin(peer, tcpPort, false);
+                /* 首次连接是单次 10s（官方 AmA8tU 的 if(!B9tovu) throw）；
+                 * 掉线后的 2s/50s 重连由 GBoySocketLink 内部负责。 */
+                link.startJoin(peer, tcpPort);
             }
             localLink = link;
             gboyRemoteKeysEnabled = false;
@@ -2376,33 +2375,6 @@ public class EmulatorActivity extends AppCompatActivity {
         if (socket != null) {
             socket.session().onLocalFrame(frame, keys);
         }
-    }
-
-    /**
-     * 官方 type 0 的帧率上限（{@code KpHwm4.AaHO0E.f4302AZkASS}，收到后由
-     * {@code AmA8tU.java:213-221} 直接赋值）。返回 0 表示还没收到或数值非法，
-     * 此时沿用本地原始节拍（约 16.74ms，即 59.73fps），行为与之前完全一致。
-     */
-    private long linkFpsCapNanos() {
-        GBoyLinkSession session = null;
-        GBoyCloudLink cloud = cloudLink;
-        if (cloud != null) {
-            session = cloud.linkSession();
-        }
-        if (session == null) {
-            GBoySocketLink local = localLink;
-            if (local != null) {
-                session = local.session();
-            }
-        }
-        if (session == null) {
-            return 0;
-        }
-        int fps = session.remoteFps();
-        if (fps < 1 || fps > 240) {
-            return 0;
-        }
-        return 1_000_000_000L / fps;
     }
 
     /** Empty on success, otherwise the setup error of the last start. */
@@ -2636,12 +2608,6 @@ public class EmulatorActivity extends AppCompatActivity {
                 // both.
                 boolean fastPacing = factor > 1.5f && fastSliceNanos > 0;
                 long paceNanos = fastPacing ? fastSliceNanos : sliceNanos;
-                // 官方 type 0 下发的帧率上限：间隔 = 1000/fps，只在比本地
-                // 原始节拍更慢时生效（真正的「上限」，不会把游戏加速）。
-                long fpsCapNanos = linkFpsCapNanos();
-                if (fpsCapNanos > paceNanos) {
-                    paceNanos = fpsCapNanos;
-                }
                 nextSlice += paceNanos;
                 if (System.nanoTime() - nextSlice > 2 * paceNanos) {
                     nextSlice = System.nanoTime();

@@ -134,6 +134,25 @@ final class GBoyFrames {
     }
 
     /**
+     * 官方 type 2：自我介绍 = 32 字节定长 ROM 哈希 + int16 长度 + ROM 名。
+     *
+     * <p>发送点 {@code ADYaiT/AZkASS.handleMessage}（{@code AZkASS.java:136}）：
+     * {@code romHash.getBytes()} 写进 32 字节定宽数组 + {@code putShort(romName.length)}
+     * + {@code romName.getBytes()}。名字短于 32 字节时右侧补 0，对端按固定宽度读。</p>
+     */
+    static byte[] nameFrame(String romHash, String romName) {
+        byte[] name = romName == null ? new byte[0] : romName.getBytes();
+        byte[] body = new byte[32 + 2 + name.length];
+        if (romHash != null) {
+            byte[] hash = romHash.getBytes();
+            System.arraycopy(hash, 0, body, 0, Math.min(32, hash.length));
+        }
+        putShort(body, 32, name.length);
+        System.arraycopy(name, 0, body, 34, name.length);
+        return frame(TYPE_NAME, body);
+    }
+
+    /**
      * 官方重连握手包：{@code int32 6 + int16 100 + int32 rtt}，与
      * {@code frame(TYPE_RECONNECT, rtt)} 字节完全相同（见 {@link #TYPE_RECONNECT}）。
      */

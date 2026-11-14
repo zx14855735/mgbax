@@ -164,6 +164,16 @@ bool mgbaMobileLoadState(struct MgbaMobile* emu, int slot);
  */
 bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* outSize);
 bool mgbaMobileLoadStateFromMemory(struct MgbaMobile* emu, const void* data, size_t size);
+/**
+ * Official GBoy type-6 error contract (KpHwm4.B25kr6:156-157):
+ * {@code 0} = loaded, {@code -5} = state size mismatch (the blob is shorter
+ * than this core's state), {@code 1} = any other load failure. Used by the
+ * mirror console so a bogus peer state is reported instead of silently
+ * dropped.
+ */
+int mgbaMobileLoadStateFromMemoryEx(struct MgbaMobile* emu, const void* data, size_t size);
+/** Size in bytes of one savestate of the loaded core (0 when no core). */
+size_t mgbaMobileStateSize(const struct MgbaMobile* emu);
 void mgbaMobileFreeState(void* state);
 /* Rewind history: append a differential state every ~half second while
  * enabled; rewind by about the given number of seconds of gameplay. */

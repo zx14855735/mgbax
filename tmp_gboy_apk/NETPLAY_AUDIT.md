@@ -603,6 +603,12 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 51 | `type 6` 与 SIO 中继桥共用 6 的判别（官方无此问题） | `GBoyFrames::stateOf` 用"u32 头是否放得下"区分（`GBoyFrames.cpp:72-84`） | 同 | 同 | ⚠️等价（我们自造的分层，官方没有桥） |
 | 52 | 交付实测状态 | 蓝牙仅编译验证（无适配器）；fps 上限无真机对端下发验证 | 蓝牙权限+通道已加，未真机验证 | 无 RFCOMM | ⚠️等价（**已实现未实测**，验收前需补） |
 
+**已知偏差（4P 槽位键）**：官方稳态用 `type 1..4` 表示"第 N 号玩家的按键"（`AYUAbz` 前半段按 playerCount 算槽位），
+我们三端用自家扩展 `11/12/17`。APK 内**没有**任何代码发送 1..4，它们只可能来自中继节点（节点给按键打玩家标签）；
+我们自己的中继不打标签，所以内部自洽但与官方 4P 房不互通。**不要**为了"对齐"去发 1..4：
+那会和握手期的 `1=注册`、`3=RTT` 撞号，必须做阶段二义（风险高、收益低）。真要与官方 4P 互通，
+正确做法是"只发 `type 0`，让节点打标签"。
+
 **争议行说明（5/6/9/10）**：PC 侧主张「0=帧率、9=按键、5=就绪确认」，依据是 `NETPLAY_SPEC.md`。
 本节坚持相反结论，依据是**发送端全量枚举**（12 处 `ARc23Z` 调用，类型只有 0/1/2/3/5/6/9，`type9` 的唯一调用者是倍速菜单）
 与**接收端字节码**（`AYUAbz` case 0 = `setKeys`、case 9 = 改帧闸）。两种读法只在「握手期 vs 稳态」分阶段时才自洽，
@@ -647,20 +653,38 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 - **风险**：低（13 号继续保留给自家旧版本，收 5 时执行 reset 即可）。
 - **验证**：一端按"重置"，另一端所有核重启到开机画面。
 
-### C4. `type 6` load 后复位的两颗粒（P0，三端，各 3 行）
+### C4. `type 6` load 后复位的两颗粒（P0，三端）——**先定语义再动手**
 - **缺什么**：官方 `B25kr6:156-157` 在 load 成功后 `reset(false)` **可见核 + 对端核**。
-- **改哪**：PC `CloudLink.cpp:1830-1842` 的 `onState` 回调里，`applyRemoteState` 成功后
-  `m_controller->reset(false)`（或 `sioReset`）+ 镜像核 reset；Android `GBoyConsoleSet.java:591-611`；
+- **⚠️ 语义未定（2026-11-14 复核）**：`Console.reset(boolean)` 是 libgboy 的 native 方法
+  （`libgboy.so` 里 `Java_com_game_boy_emu_gba_Console_reset` 存在，且签名确认带一个 boolean），
+  但 libgboy 不是 mGBA 内核（`.so` 内无 mGBA/GBASIOReset/SavedataUnmask 任何字符串），
+  所以**无法从 mGBA 源码推断这个 bool 的含义**，静态也读不到函数体。
+  现有线索互相矛盾：`B9tovu` 建核后也 `reset(false)`（像"开机"），而这里紧跟在 load 之后（像"提交/软复位"）。
+- **因此本轮结论**：**不要照抄**。先记为"待确认"，别把 `m_controller->reset()`（整机软复位）
+  直接塞进 load 之后 —— 那会把刚载入的 RAM 冲掉，比不 reset 更糟。
+- **可替代的等价动作**（风险低、可立即做）：load 之后只做「重新武装 SIO」——PC/Android/iOS 的镜像核
+  本来就是持续 `linkJoin`/`runFrame`，帧边界 `loadState` 后下一帧会自然继续；若观察到载入后 SIO 卡死，
+  再补 `sioClose+linkJoin` 重建，而不是整机 reset。
+- **最省事的判定法**：用官方客户端连我们，发一份 state 给它，看它收到后是"画面跳到存档那一帧继续跑"
+  还是"回到开机画面"。前者说明 `reset(false)` 不毁 RAM（是软/联机复位），后者说明它其实是开机复位、
+  且官方在 load 之后还能用说明 load 是"暂存 + reset 时提交"。
+- **改哪（确定语义后）**：PC `CloudLink.cpp:1830-1842`、Android `GBoyConsoleSet.java:591-611`、
   iOS `GBoyConsoleSet.swift:328-350`。
-- **风险**：中（reset 会打断正在跑的帧，必须在帧边界做）。
-- **验证**：两端同时进游戏，镜像核画面在第 1 帧就与对端一致（而不是"慢一步"）。
+- **注意区分**：`type 5`（用户点"重置游戏"）的 `reset` 是**整机复位**，与这条无关，可以照抄。
 
-### C5. `type 6` load 返回值检查（P0，三端，各 5 行）
+### C5. `type 6` load 失败要可见（P1，三端，各 ~10 行）——**不做异步回包**
 - **缺什么**：官方 `-5 → 3`（尺寸不符）、`其它 → 1`、`0 → 成功`，失败即断链。
-- **改哪**：`mgbaMobileLoadStateFromMemory` 返回值一路透传到 `applyRemoteState`；
-  PC `GBoyMirror.cpp:242`、Android `GBoyConsoleSet.java:591`、iOS `GBoyConsoleSet.swift:328`。
-- **风险**：低（只是把静默失败变成显式失败）。
-- **验证**：故意发一个 100 字节假存档，应看到断链 + 错误码 3，而不是画面错乱。
+- **为什么不做完整等价物**：官方是在网络线程**同步** load（同一线程、无帧边界），所以能把返回码
+  直接映射成 `type1` 错误包。我们的 load 在镜像线程帧边界执行，要"异步回传再发错误包"会改时序、
+  增加一条反向通路，收益只是让对端 UI 显示 3 而不是"断开"——**不值得**。
+- **建议的最小实现（两段，都不跨线程回包）**：
+  1. **尺寸预检（网络线程，零风险）**：建镜像核时在镜像线程取一次 `mgbaMobileStateSize()` 存进
+     `applyRemoteState` 的期望值；收到 `type6` 时先比 `size`，不等就**直接关连接**（等价于官方的 `3`）。
+  2. **结果上报（镜像线程，3 行）**：帧边界 load 的返回值写进一个 `std::atomic<int>`/`volatile int`，
+     会话循环下一拍读到非 0 → 关连接 + 日志。对端看到的是 EOF，等价于官方的 `type1` 空体。
+- **改哪**：`GBoyMirror.cpp:242`、`GBoyConsoleSet.java:591`、`GBoyConsoleSet.swift:328`。
+- **风险**：低（只把静默失败变成显式失败）。
+- **验证**：故意发一个 100 字节假存档 → 5 秒内断链并有明确日志，而不是"看起来连上了但核不动"。
 
 ### C6. `type 1` 注册体按官方裁短（P1，三端，各 5 行）
 - **缺什么**：官方 `AmA8tU:173-178` 只有 `playerCount==1` 才补 `short 0 + int listSize`；

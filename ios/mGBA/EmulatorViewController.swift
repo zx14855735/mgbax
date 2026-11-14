@@ -66,8 +66,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 重载 ROM 再重建房间，这期间到的存档没有镜像核可灌，丢掉对端就一直
     /// 停在电池存档上（与 Android 侧 pending 队列同义）。
     private var pendingPeerState: [UInt8]?
-    /// 官方 type 0 下发的帧率上限（gate 保护）：0 = 没有上限，帧循环保持原节奏。
-    private var linkPacingFps = 0
+    /// 官方 type 9（倍速）下发的模拟速度（gate 保护）：1 = 正常，0.5 / 2 / 4 见菜单。
+    private var linkSpeed: Double = 1
     private var command = 0
     private let stopped = DispatchSemaphore(value: 0)
     private let audio = AudioOut()
@@ -999,8 +999,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             command = 0
             let isPaused = paused
             let loading = loadInFlight
-            // 官方 type 0 的帧率上限（0 = 没收到/无上限）。
-            let pacingFps = linkPacingFps
+            // 官方 type 9 的倍速（1 = 1x；对端切 2x/4x 时本机跟着跑）。
+            let linkRate = linkSpeed
             let mult: Double = (fastHold || ffOn) ? max(speed, fastHoldSpeed()) : speed
             gate.unlock()
             if let path {
@@ -1187,14 +1187,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // audio about 0.46% fast, which sounds slightly sharp.
             let frameNanos = mgbaMobileFrameNanos(core)
             var sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
-            // 联机对端下发过帧率上限（官方 type 0）时，本机不能比它跑得快：
-            // 两边子状态会越走越开，最后 SIO 凑不齐。只在「上限低于本机固有
-            // 帧率」时生效，60fps 及以上的上限等于没有限制。
-            if pacingFps > 0 {
-                let capNanos = 1_000_000_000 / Int64(pacingFps)
-                if capNanos > sliceNanos {
-                    sliceNanos = capNanos
-                }
+            // 官方 type 9：对端切倍速时本机的帧闸跟着缩放（官方收到后写
+            // AaHO0E.AZkASS 并重算 1e9/(speed*60)，两端速度必须一致，否则
+            // 子状态会越走越开）。1x 时这里等于不缩放。
+            if linkRate > 0.01, abs(linkRate - 1) > 0.01 {
+                sliceNanos = Int64(Double(sliceNanos) / linkRate)
             }
             // Schedule slices against an absolute next start. A gate wait that
             // oversleeps then cannot accumulate into a loop that runs (and
@@ -5823,7 +5820,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.gboyRemoteKeys = 0
             // 链路断了就撤销对端下发的帧率上限，否则本机会一直按 30fps
             // 慢放（上限是会话级的，不是本机设置）。
-            self.setLinkPacing(0)
+            self.setLinkSpeed(1)
             // Mirror the Android disconnect path: republish the (now empty)
             // key mask so the last remote peer's buttons don't linger on the
             // core until the next local key event.
@@ -5973,17 +5970,23 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
     }
 
-    /// 官方 type 0（节奏）：对端要求的帧率上限。0 或越界值 = 没有上限，
-    /// 帧循环保持原来的节奏（官方把收到的值直接写进 AaHO0E.f4302AZkASS）。
-    /// gate 保护，帧循环每轮读一次。
-    private func setLinkPacing(_ fps: Int) {
-        let capped = (fps > 0 && fps <= 240) ? fps : 0
+    /// 官方 type 9（倍速）：对端菜单选了 1x / 0.5x / 2x / 4x，线上值是 1 / -1 / 2 / 4。
+    /// 官方收到后直接写 AaHO0E.AZkASS 并重算帧闸；iOS 存成倍率给帧循环缩放。
+    /// 非法值当 1x。gate 保护，帧循环每轮读一次。
+    private func setLinkSpeed(_ raw: Int) {
+        let rate: Double
+        switch raw {
+        case -1: rate = 0.5
+        case 2: rate = 2
+        case 4: rate = 4
+        default: rate = 1
+        }
         gate.lock()
-        let changed = linkPacingFps != capped
-        linkPacingFps = capped
+        let changed = abs(linkSpeed - rate) > 0.001
+        linkSpeed = rate
         gate.unlock()
         if changed {
-            NSLog("GBOY_RT link pacing fps=\(capped)")
+            NSLog("GBOY_RT link speed=\(rate)x")
         }
     }
 
@@ -6022,10 +6025,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
         }
-        /* 官方 type 0：对端下发的帧率上限，交给帧循环（1000/fps 目标间隔）。 */
-        link.onRemotePacing = { [weak self] fps in
+        /* 官方 type 9：对端切换倍速，交给帧循环按倍率缩放帧闸。 */
+        link.onRemoteSpeed = { [weak self] speed in
             DispatchQueue.main.async {
-                self?.setLinkPacing(fps)
+                self?.setLinkSpeed(speed)
             }
         }
         link.onRemoteKeys = { [weak self] keys in
@@ -6117,7 +6120,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // 会话结束就丢掉没来得及灌的对端存档，别让它漏进下一局。
                 self.pendingPeerState = nil
                 self.gate.unlock()
-                self.setLinkPacing(0)   // 见「断开」按钮：上限是会话级的
+                self.setLinkSpeed(1)   // 见「断开」按钮：倍速是会话级的
                 self.toast("云端联机已断开")
             }
         }
@@ -6152,10 +6155,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 NSLog("GBOY_RT peer state buffered (\(bytes.count) bytes)")
             }
         }
-        /* 官方 type 0：对端下发的帧率上限，交给帧循环（1000/fps 目标间隔）。 */
-        link.onRemotePacing = { [weak self] fps in
+        /* 官方 type 9：对端切换倍速，交给帧循环按倍率缩放帧闸。 */
+        link.onRemoteSpeed = { [weak self] speed in
             DispatchQueue.main.async {
-                self?.setLinkPacing(fps)
+                self?.setLinkSpeed(speed)
             }
         }
         link.onRemoteReset = { [weak self] in

@@ -116,8 +116,10 @@ QByteArray stateOf(const QByteArray& body);
 
 /**
  * The registration frame the official client sends the moment the KCP
- * handshake completes: type 1, body: int playerCount, short 0, int
- * baseStateCount.
+ * handshake completes: type 1, body {@code int32 playerCount}; the official
+ * {@code AmA8tU.A5SV6n:173-178} appends {@code short 0 + int32 baseStateCount}
+ * only when {@code playerCount == 1}, so a multiplayer room frame is 10 bytes
+ * on the wire and a one-player frame is 18 bytes.
  */
 QByteArray registerFrame(int playerCount, int baseStateCount);
 

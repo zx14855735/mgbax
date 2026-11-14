@@ -100,9 +100,18 @@ public final class GBoyConsoleSet {
     /* 调试用：置位时镜像线程在锁外暂停，好让别的线程安全地给镜像核存档
      * （「隐藏镜像核到底走到哪一步」只能把它的状态倒出来在 PC 上回放看）。 */
     private volatile boolean mirrorHold;
-    /* 待灌进镜像核 0（= 对端那个玩家，slot 2）的 TYPE_STATE 存档。入队由
-     * 网络线程做，真正 loadStateFromMemory 在镜像线程的帧边界执行。 */
-    private byte[] pendingRemoteState;
+    /* TYPE_RESET(5) 与「type 6 载入成功后复位」都要动镜像核，而
+     * mgbaMobileReset 不取核心锁（mgba_mobile.c:4861），从 UI/网络线程直接
+     * reset 会和镜像线程的 runFrames 抢同一个 core。所以只置标志，由每颗
+     * 镜像线程在帧边界自己复位。 */
+    private boolean[] mirrorReset;
+    /* 同一时刻也要复位可见核（官方 B25kr6:156-157 是可见核 + 对端核各一次）。
+     * 可见核由模拟线程独占，这里只留请求，交给 emulationLoop 消费。 */
+    private volatile boolean visibleResetRequested;
+    /* 本机对端存档的字节数：官方 loadStateFromMemory 用 -5 表示「尺寸不符」，
+     * 我们的 JNI 只回 boolean（jni_bridge.cpp:250-269），失败时用这个长度
+     * 区分「尺寸不符(3)」和「其它错误(1)」。 */
+    private volatile int stateSizeHint;
     /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
      * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
      * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
@@ -176,6 +185,8 @@ public final class GBoyConsoleSet {
         mirrors = new MgbaCore[count];
         mirrorThreads = new Thread[count];
         mirrorFrames = new long[count];
+        mirrorReset = new boolean[count];
+        visibleResetRequested = false;
 
         /* 整轮联机只取一次初始存档：两次 start() 之间游戏可能保存并写回
          * 电池存档，重读会得到不同进度（实测 mirror1 与 mirror2/3 分叉，
@@ -581,42 +592,112 @@ public final class GBoyConsoleSet {
         }
     }
 
+    /** 本机可见核即时存档的字节数；对端 type 6 的尺寸预检与结果分类用。 */
+    private int expectedStateSize() {
+        int size = stateSizeHint;
+        if (size > 0) {
+            return size;
+        }
+        MgbaCore visible = primary;
+        byte[] own = visible == null ? null : visible.saveStateToMemory();
+        if (own == null || own.length == 0) {
+            return 0;
+        }
+        stateSizeHint = own.length;
+        return own.length;
+    }
+
     /** Snapshot of the visible core, for TYPE_STATE when a link starts. */
     public byte[] snapshotState() {
         MgbaCore visible = primary;
-        return visible == null ? null : visible.saveStateToMemory();
+        byte[] state = visible == null ? null : visible.saveStateToMemory();
+        if (state != null && state.length > 0) {
+            stateSizeHint = state.length;
+        }
+        return state;
     }
 
-    /** Applies a peer state blob to every hidden mirror console. */
-    public boolean applyRemoteState(byte[] state) {
+    /** applyRemoteState 的结果码，对齐官方 {@code B25kr6:148-152}：
+     *  {@code -5 → 3}（存档尺寸不符）、其它非 0 → 1、0 → 成功。 */
+    public static final int STATE_OK = 0;
+    public static final int STATE_ERROR = 1;
+    public static final int STATE_SIZE_MISMATCH = 3;
+
+    /**
+     * 灌入对端的 type 6 存档，返回官方口径的结果码。
+     *
+     * <p>只给「代表对端的那个镜像核」：本机布局是可见核 slot 1 + 镜像核
+     * slot 2/3/4（{@link GBoyLinkSession#mirrorSlotFor}），对端按键走 slot 2，
+     * 所以是第 0 个镜像。GBoy 的 case 6 同样是 {@code list.get(slot)} 按槽位
+     * 取那一颗控制台；老实现灌进全部镜像会把 slot 3/4 的进度覆盖成对端的，
+     * 四人子状态当场分裂（SIO 报「请确认玩家数量」）。</p>
+     *
+     * <p>载入本身在这里同步做：{@code mgbaMobileLoadStateFromMemory} 与
+     * {@code mgbaMobileRunFrames} 共用同一把核心锁（mgba_mobile.c:4816 /
+     * 4146），和镜像线程并发是安全的；载入后官方 {@code B25kr6:156-157} 会
+     * 复位可见核 + 对端核，而 {@code mgbaMobileReset} 不取锁，所以复位只能
+     * 置请求、由各自线程在帧边界执行（见 {@link #takeVisibleResetRequest()}
+     * 与 mirrorLoop）。</p>
+     */
+    public int applyRemoteState(byte[] state) {
         if (mirrors == null || mirrors.length == 0 || state == null || state.length == 0) {
+            return STATE_ERROR;
+        }
+        MgbaCore target = mirrors[0];
+        if (target == null) {
+            return STATE_ERROR;
+        }
+        if (!target.loadStateFromMemory(state)) {
+            int expected = expectedStateSize();
+            /* JNI 只回 boolean：失败且长度与本地存档不一致 → 官方的 -5，映射成 3。 */
+            boolean sizeMismatch = expected > 0 && state.length != expected;
+            android.util.Log.w("mGBA-App", "peer state rejected bytes=" + state.length
+                    + " expected=" + expected + " code="
+                    + (sizeMismatch ? STATE_SIZE_MISMATCH : STATE_ERROR));
+            return sizeMismatch ? STATE_SIZE_MISMATCH : STATE_ERROR;
+        }
+        stateSizeHint = state.length;
+        android.util.Log.i("mGBA-App", "applied peer state bytes=" + state.length
+                + " index=0 slot=" + mirrorSlotFor(localSlot, players, 0));
+        /* 官方载入成功后复位两颗粒：镜像核各自在帧边界复位，可见核交给模拟线程。 */
+        requestMirrorResets();
+        visibleResetRequested = true;
+        return STATE_OK;
+    }
+
+    /**
+     * 请求所有镜像核在各自的帧边界复位（官方 {@code AYUAbz} case 5 / case 6
+     * 都对每颗镜像核调 {@code reset(false)}）。可见核的复位由调用方负责：
+     * TYPE_RESET 走 UI 线程那条现有路径，type 6 载入则用
+     * {@link #takeVisibleResetRequest()}。
+     */
+    public void requestMirrorResets() {
+        synchronized (lock) {
+            if (mirrorReset != null) {
+                java.util.Arrays.fill(mirrorReset, true);
+            }
+            lock.notifyAll();
+        }
+    }
+
+    /** 模拟线程取走「可见核复位」请求（type 6 载入成功后由官方语义触发）。 */
+    public boolean takeVisibleResetRequest() {
+        if (!visibleResetRequested) {
             return false;
         }
-        /* 只给「代表对端的那个镜像核」：本机布局是可见核 slot 1 + 镜像核
-         * slot 2/3/4（GBoyLinkSession.mirrorSlotFor(1, players, i) = i + 2），
-         * 对端按键走 slot 2，所以是第 0 个镜像。GBoy 的 case 6 同样是
-         * list.get(A2egSU(slot)) 按槽位取那一颗控制台。
-         *
-         * 老实现把整份存档灌进**全部**镜像核，slot 3/4 这两个 NPC 陪位的
-         * 进度被覆盖成对端的，四人子状态当场分裂（SIO 报「请确认玩家数量」）。
-         *
-         * 载入本身延到镜像线程的帧边界执行：这里直接 load 会和正在跑帧的
-         * 核心抢状态。 */
-        synchronized (lock) {
-            pendingRemoteState = state;
-        }
+        visibleResetRequested = false;
         return true;
     }
 
-    /** 镜像线程在帧边界取走待载入的对端存档（只有 slot 2 那颗吃）。 */
-    private byte[] takePendingRemoteState(int index) {
-        if (index != 0) {
-            return null;
-        }
+    /** 镜像线程取走自己的复位请求。 */
+    private boolean takeMirrorReset(int index) {
         synchronized (lock) {
-            byte[] state = pendingRemoteState;
-            pendingRemoteState = null;
-            return state;
+            if (mirrorReset != null && index >= 0 && index < mirrorReset.length
+                    && mirrorReset[index]) {
+                mirrorReset[index] = false;
+                return true;
+            }
+            return false;
         }
     }
 
@@ -722,14 +803,15 @@ public final class GBoyConsoleSet {
             if (state != State.READY) {
                 return;
             }
-            /* 对端存档：只在帧边界载入。GBoy 的 case 6 也是「载入 → reset →
-             * 开始跑」，载入点永远落在一帧结束后。 */
-            byte[] incomingState = takePendingRemoteState(index);
-            if (incomingState != null) {
-                MgbaCore target = mirrors[index];
-                boolean ok = target != null && target.loadStateFromMemory(incomingState);
-                android.util.Log.i("mGBA-App", "applied peer state bytes="
-                        + incomingState.length + " index=" + index + " ok=" + ok);
+            /* 复位请求（type 5，或 type 6 载入成功后）：只在本线程的帧边界做。
+             * mgbaMobileReset 不取核心锁，别的线程直接调会和 runFrames 抢核。 */
+            if (takeMirrorReset(index)) {
+                MgbaCore target = mirrors == null ? null : mirrors[index];
+                if (target != null) {
+                    target.reset();
+                    android.util.Log.i("mGBA-App", "mirror reset index=" + index
+                            + " slot=" + mirrorSlotFor(localSlot, players, index));
+                }
             }
             long ceiling;
             synchronized (lock) {

@@ -213,7 +213,7 @@ final class LobbyLink {
         current?.close()
         open?.close()
         onRemoteKeys(0)
-        onRemotePacing(0)   // 会话结束撤销对端的帧率上限（0 = 无上限）
+        onRemoteSpeed(1)   // 会话结束把倍速还原成 1x（官方断开时速度归 1）
     }
 
     // MARK: - Session
@@ -750,9 +750,8 @@ final class LobbyLink {
     }
 
     /// Official protocol tags key frames with the target console slot once
-    /// more than two consoles are in play. Mirrors GBoyLinkSession on Android
-    /// and GBoyLinkSession.cpp on the PC build. 官方只有 9（按键）；11/12/17
-    /// 是我们自己的「带槽位按键」扩展，避开官方 1/2/3/5/6/9。
+    /// more than two consoles are in play. 官方稳态按键号是 0（`AYUAbz` case 0），
+    /// 9 是倍速；11/12/17 是我们自己的「带槽位按键」扩展，避开官方 0/1/2/3/5/6/9。
     private func keyFrameType() -> Int {
         switch localSlot {
         case 2: return LobbyFrames.typeInput2
@@ -763,7 +762,7 @@ final class LobbyLink {
     }
 
     /// Frame type identifies the sender's 1-based global slot, mirroring
-    /// `keyFrameType()`: TYPE_KEYS=9, TYPE_INPUT2=11, TYPE_INPUT3=17,
+    /// `keyFrameType()`: TYPE_KEYS=0, TYPE_INPUT2=11, TYPE_INPUT3=17,
     /// TYPE_INPUT4=12. Keep the legacy single-callback path intact.
     private func deliverKeys(_ slot: Int, _ body: Data) {
         let keys = LobbyFrames.intValue(of: body)
@@ -780,9 +779,26 @@ final class LobbyLink {
         localSlot == 1 ? 2 : 1
     }
 
-    private func handle(_ body: Data) {
-        switch LobbyFrames.type(of: body) {
-        case LobbyFrames.typeKeys, LobbyFrames.typeKeysLocal:
+    /**
+     * 一条帧的分发。**`steady` 决定 type 0 的含义**（AUDIT §0.4）：
+     * 握手期是节点下发的节奏值（AmA8tU 写进 AZkASS），稳态才是按键掩码
+     * （B25kr6.AYUAbz case 0 → `peer.BI9f7h.setKeys`）。握手期把节奏值当按键
+     * 喂下去，会让镜像核收到「按键 60」这种垃圾掩码。
+     */
+    private func handle(_ body: Data, steady: Bool) {
+        let type = LobbyFrames.type(of: body)
+        if type == LobbyFrames.typeKeys {
+            if steady {
+                deliverKeys(bareKeysSenderSlot, body)
+            } else {
+                // 握手期的节奏值：官方 AaHO0E.AZkASS，我们只记录不喂键。
+                let pace = LobbyFrames.intValue(of: body)
+                status("中继节奏值 \(pace)")
+            }
+            return
+        }
+        switch type {
+        case LobbyFrames.typeKeysLocal:
             deliverKeys(bareKeysSenderSlot, body)
         case LobbyFrames.typeInput2:
             deliverKeys(2, body)
@@ -800,26 +816,24 @@ final class LobbyLink {
                 remoteRtt = rtt
                 lock.unlock()
             }
-        case LobbyFrames.typeFps:
-            // 官方 type 0：AzWtSf:174-179 / AmA8tU:213-221 收到后直接设
-            // 帧率上限（AaHO0E.f4302AZkASS）。0 和离谱值当「没有上限」，不然
-            // 一颗坏包就能把本机帧率钉死。
-            let fps = Int(LobbyFrames.intValue(of: body))
-            if fps > 0, fps <= 240 {
+        case LobbyFrames.typeSpeed:
+            // 官方 9：倍速（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。官方收到后
+            // 直接写 AaHO0E.AZkASS 并重算帧闸；iOS 交给帧循环按倍率缩放。
+            let speed = Int(LobbyFrames.intValue(of: body))
+            if speed == 1 || speed == -1 || speed == 2 || speed == 4 {
                 lock.lock()
-                remoteFps = fps
+                remoteSpeed = speed
                 lock.unlock()
-                onRemotePacing(fps)
+                onRemoteSpeed(speed)
             }
-        case LobbyFrames.typeReset:
+        case LobbyFrames.typeReset, LobbyFrames.typeResetLegacy:
+            // 官方 5 = 复位全部核（EmulatorActivity:1333）；13 是自家旧号。
+            // 旧实现把 5 当 ready-ack 吞掉，导致官方的重置帧永远不生效。
             onRemoteReset()
         case LobbyFrames.typeState:
             if let state = LobbyFrames.state(of: body), !state.isEmpty {
                 onRemoteState(state)
             }
-        case LobbyFrames.typeReadyAck:
-            // 就绪确认（B25kr6:141），握手阶段已经处理，这里只吞掉。
-            break
         default:
             break
         }
@@ -1082,7 +1096,7 @@ final class LobbyLink {
         closedFlag = true
         lock.unlock()
         onRemoteKeys(0)
-        onRemotePacing(0)   // 同上：链路没了就别再按对端要求的上限慢放
+        onRemoteSpeed(1)   // 同上：链路没了就把倍速还原成 1x
         status(text)
     }
 

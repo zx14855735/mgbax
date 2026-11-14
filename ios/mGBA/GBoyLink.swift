@@ -12,16 +12,25 @@ import Foundation
  * `[u32 payload length][payload]` and the payload starts with a `u16`
  * message type.
  *
- * 消息号逐条对齐官方客户端（KpHwm4.B25kr6 的 ARc23Z 调用、KpHwm4/AmA8tU.java）：
+ * 消息号按官方**字节码**核对（tmp_gboy_apk/NETPLAY_AUDIT.md §0 与 A.14；
+ * .workbuddy/gboy/dd/p1/p2.txt）：
  *
- *   0 PACING    u16 type + int32 fps；帧率上限，接收方据此限本机帧率。
+ *   0 KEYS      u16 type + u32 GBA 按键掩码（稳态每帧/每对端一条）。
  *   1 HELLO     u16 type + u32 6；客户端先发，服务端原样回。
  *   2 ROMINFO   u16 type + 32 字节 ASCII MD5 + u16 名字长度 + 名字。
  *   3 READY     u16 type（官方还允许带 int32 rtt，见 B25kr6:131）。
- *   5 READY_ACK u16 type；就绪确认，只有客户端路径发。
+ *   5 RESET     u16 type + int32 0；复位全部核。
  *   6 STATE     u16 type + u32 size + 整份 mGBA 即时存档。
- *   9 KEYS      u16 type + u32 GBA 按键掩码（与 mGBA 同一位序）。
- *  13 RESET     u16 type；自家扩展（官方没有复位消息）。
+ *   9 SPEED     u16 type + int32 倍率（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
+ *  13 RESET_OLD u16 type；自家旧版复位号，收到同样执行复位（只发 5）。
+ * 100 RECONNECT u16 type + int32 rtt（裸 10 字节，AmA8tU.ARc23Z(Socket)）。
+ *
+ * **曾经的错表**（0 = 帧率 / 9 = 按键 / 5 = ready-ack）已在本次修正：
+ * `B25kr6.AYUAbz` 的 switch 里 case 0 → `peer.BI9f7h.setKeys(getInt())`
+ * （p2.txt:379f24-379f36），模拟线程 `D8MqeW.run` 每帧把按键打成
+ * `ARc23Z(0,4).putInt(keys)`（p1.txt:34821a / 348364）；case 9 → 写
+ * `AaHO0E.AZkASS` 倍速并重算帧闸；case 5 → 可见核 + 全部镜像核 reset(false)。
+ * 官方没有 fps/pacing 帧，也没有 ready-ack。
  *
  * 断线重连另有官方私有包：裸 10 字节 `int32 6 + int16 100 + int32 rtt`
  * （AmA8tU.ARc23Z(Socket):263-272），按帧格式读出来就是「长度 6 + type 100 +
@@ -56,18 +65,20 @@ final class GBoyLink {
         var timeout = false
     }
 
-    // 消息号必须与官方客户端（KpHwm4.B25kr6 的 ARc23Z 调用）以及 PC/Android
-    // 两端的 GBoyFrames 完全一致：0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT /
-    // 5 就绪确认 / 6 状态 / 9 按键。自家扩展一律用 11 以上的号。
-    private static let msgPacing = 0
+    // 消息号必须与官方客户端（KpHwm4.B25kr6 / AYUAbz 字节码）以及 PC/Android
+    // 两端的 GBoyFrames 完全一致：0 按键 / 1 握手 / 2 名字 / 3 就绪+RTT /
+    // 5 复位 / 6 状态 / 9 倍速。自家扩展一律用 11 以上的号。
+    private static let msgKeys = 0
     private static let msgHello = 1
     private static let msgRomInfo = 2
     private static let msgReady = 3
-    private static let msgReadyAck = 5
+    /// 官方 5：复位全部核（EmulatorActivity:1333 发 int 0；AYUAbz case 5）。
+    private static let msgReset = 5
     private static let msgState = 6
-    private static let msgKeys = 9
-    /// 复位是我们自己的扩展（官方没有这条消息），放在 11 以上避免撞号。
-    private static let msgReset = 13
+    /// 官方 9：模拟倍速（B25kr6.AZOQYO，调用者是倍速菜单）。
+    private static let msgSpeed = 9
+    /// 自家旧版复位号，保留兼容（只收不发）。
+    private static let msgResetLegacy = 13
     /// 官方断线重连握手（AmA8tU.ARc23Z(Socket):263-272）：type 100 + int32 rtt。
     private static let msgReconnect = 100
 
@@ -95,9 +106,10 @@ final class GBoyLink {
     var onRemoteReset: () -> Void = {}
     /// 收到对端 type 6 的整份存档：交给镜像核（代表对端那个玩家）载入。
     var onRemoteState: ([UInt8]) -> Void = { _ in }
-    /// 官方 type 0（节奏）：对端下发的帧率上限。0 或越界值表示「没有上限」，
-    /// 由上层按 1000/fps 调整帧循环的目标间隔。Called from the reader thread.
-    var onRemotePacing: (Int) -> Void = { _ in }
+    /// 官方 type 9（倍速）：对端切换了模拟速度（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
+    /// 上层按倍率缩放帧循环（官方收到后写 AaHO0E.AZkASS 并重算帧闸）。
+    /// Called from the reader thread.
+    var onRemoteSpeed: (Int) -> Void = { _ in }
 
     private let lock = NSLock()
     /// 用户主动断开（只有 close() 会置位）。只有它能让 host 的 accept 循环退出：
@@ -226,7 +238,7 @@ final class GBoyLink {
             Darwin.close(listenFd)
         }
         onRemoteKeys(0)
-        onRemotePacing(0)   // 断开就撤销对端的帧率上限（同 drop）
+        onRemoteSpeed(1)   // 断开就把倍速还原成 1x（官方断开时速度归 1）
     }
 
     private func run(asHost: Bool, ip: String?, port: Int) {
@@ -467,18 +479,19 @@ final class GBoyLink {
                 let frame = try readFrame(fd)
                 let messageType = Self.type(frame)
                 if messageType == Self.msgKeys, frame.count >= 6 {
-                    let keys = Int32(frame[2]) << 24 | Int32(frame[3]) << 16 | Int32(frame[4]) << 8 | Int32(frame[5])
+                    // 官方 0 = 按键掩码（AYUAbz case 0 → peer.BI9f7h.setKeys）。
+                    let keys = Self.intValue(frame)
                     onRemoteKeys(keys)
                     onRemoteKeysForSlot(1, keys)
-                } else if messageType == Self.msgReset {
+                } else if messageType == Self.msgReset || messageType == Self.msgResetLegacy {
+                    // 官方 5 = 复位全部核（EmulatorActivity:1333 / AYUAbz case 5）；
+                    // 13 是自家旧版号，一并接受。
                     onRemoteReset()
-                } else if messageType == Self.msgPacing {
-                    // 官方 type 0（AzWtSf:174-179 / AmA8tU:213-221）：收到就把
-                    // 本机帧率上限设成这个值（AaHO0E.f4302AZkASS）。0 和离谱
-                    // 值当「没有上限」，一颗坏包不该把本机帧率钉死。
-                    let fps = Self.intValue(frame)
-                    if fps > 0, fps <= 240 {
-                        onRemotePacing(Int(fps))
+                } else if messageType == Self.msgSpeed {
+                    // 官方 9 = 倍速（AYUAbz case 9 → AaHO0E.AZkASS + 重算帧闸）。
+                    let speed = Int(Self.intValue(frame))
+                    if speed == 1 || speed == -1 || speed == 2 || speed == 4 {
+                        onRemoteSpeed(speed)
                     }
                 } else if messageType == Self.msgReady {
                     // 官方 type 3：就绪 + 上报 RTT（B25kr6:131）。
@@ -544,9 +557,9 @@ final class GBoyLink {
         shutdown(session.fd, SHUT_RDWR)
         Darwin.close(session.fd)
         onRemoteKeys(0)
-        // 会话结束：撤销对端的帧率上限（0 = 无上限），否则本机会一直按
-        // 对端最后要求的 30fps 慢放。onRemotePacing 的 0 与「没收到」等价。
-        onRemotePacing(0)
+        // 会话结束：把倍速还原成 1x（官方断开时速度归 1），否则对端切过 2x/4x
+        // 之后本机会一直按那个倍率跑。
+        onRemoteSpeed(1)
         status(text)
     }
 
@@ -813,7 +826,8 @@ final class GBoyLink {
                 }
                 return true
             }
-            if messageType == Self.msgKeys || messageType == Self.msgReset {
+            if messageType == Self.msgKeys || messageType == Self.msgReset
+                || messageType == Self.msgResetLegacy || messageType == Self.msgSpeed {
                 continue
             }
             guard messageType == Self.msgHello else {
@@ -836,8 +850,8 @@ final class GBoyLink {
     /**
      * Reads frames until one of the wanted type shows up. The peer's key pump
      * keeps running while we are still shaking hands, so KEYS/RESET frames can
-     * slip in; they are dropped here. 官方节奏包（type 0）与重连包（type 100）
-     * 也可能在握手途中到达，一并吞掉。
+     * slip in; they are dropped here. 官方重连包（type 100）、复位（5/13）与
+     * 倍速（9）也可能在握手途中到达，一并吞掉。
      */
     private func nextFrame(_ fd: Int32, want: Int) throws -> [UInt8] {
         while true {
@@ -846,10 +860,11 @@ final class GBoyLink {
             if messageType == want {
                 return frame
             }
-            if messageType == Self.msgPacing || messageType == Self.msgReconnect {
+            if messageType == Self.msgReconnect || messageType == Self.msgSpeed {
                 continue
             }
-            if messageType != Self.msgKeys && messageType != Self.msgReset {
+            if messageType != Self.msgKeys && messageType != Self.msgReset
+                && messageType != Self.msgResetLegacy {
                 throw LinkError(message: "对方不是联机大厅会话")
             }
         }
@@ -877,10 +892,11 @@ final class GBoyLink {
                 guard size > 0, frame.count >= 6 + size else { return nil }
                 return Array(frame[6..<(6 + size)])
             }
-            if messageType == Self.msgPacing || messageType == Self.msgReconnect {
+            if messageType == Self.msgReconnect || messageType == Self.msgSpeed {
                 continue
             }
-            if messageType != Self.msgKeys && messageType != Self.msgReset {
+            if messageType != Self.msgKeys && messageType != Self.msgReset
+                && messageType != Self.msgResetLegacy {
                 throw LinkError(message: "对方不是联机大厅会话")
             }
         }

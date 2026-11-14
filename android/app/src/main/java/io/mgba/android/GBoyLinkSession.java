@@ -359,9 +359,32 @@ public final class GBoyLinkSession {
         transport.send(GBoyFrames.registerFrame(playerCount, baseStateCount));
     }
 
-    /** Official socket handshake: type 1 carrying int 6. */
+    /**
+     * 官方 type 2 自我介绍（{@code AZkASS:136}，双向、握手第 4 步）。
+     * 云端中继/直连两条路都在 type 1 之后立刻发这一条。
+     */
+    public void sendName(String romHash, String romName) {
+        byte[] frame = GBoyFrames.nameFrame(romHash, romName);
+        nameFrame = frame;
+        transport.send(frame);
+    }
+
+    /**
+     * 预先绑定自我介绍帧：socket 直连的两端（服务端回声、客户端首发）都会在
+     * {@link #sendSocketHandshake()} 里把 type 1 和紧随其后的 type 2 一起发出，
+     * 顺序与官方 {@code 1 → 2 → 3 → 6} 一致。
+     */
+    public void setIdentity(byte[] nameFrame) {
+        this.nameFrame = nameFrame;
+    }
+
+    /** Official socket handshake: type 1 carrying int 6, then the type 2 identity. */
     public void sendSocketHandshake() {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_REGISTER, SOCKET_HANDSHAKE_VALUE));
+        byte[] identity = nameFrame;
+        if (identity != null) {
+            transport.send(identity);
+        }
     }
 
     /** TYPE_STATE = int length followed by the save-state blob. */

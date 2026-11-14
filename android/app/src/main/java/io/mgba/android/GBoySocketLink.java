@@ -156,79 +156,37 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
      * Connects to the peer and sends the official registration frame
      * ({@code type 1, int 6}).
      *
-     * <p>首次连接按官方 {@code AmA8tU.A4TApA()} 的 connect 循环处理：每次失败
-     * 等 2 秒再试，累计 50 秒仍连不上才放弃；握手阶段的异常则立即抛出
-     * （官方 {@code if (!f4332B9tovu) throw e2}，首次会话直接失败）。</p>
+     * <p>官方 {@code AmA8tU.A4TApA()} 的首次连接是<b>单次</b>：connect 失败时
+     * {@code if (!f4332B9tovu) throw e}（95-98 行）直接抛出，不进入 2s/50s
+     * 窗口；那个窗口只用于「曾经连上过、之后掉线」的重连（{@code ARc23Z}）。
+     * 所以这里首次也只用 10 秒连接超时，失败立刻交给上层报错。</p>
      */
     public void startJoin(String host, int port) throws IOException {
-        startJoin(host, port, true);
-    }
-
-    /**
-     * @param retryFirstConnect false 时首次 connect 失败立刻返回。主线程调用的
-     *        入口（本地联机广播）必须用它，否则 50 秒阻塞会直接 ANR；云端
-     *        TCP 入口在工作线程里，走默认的 true。
-     */
-    public void startJoin(String host, int port, boolean retryFirstConnect) throws IOException {
         running.set(true);
         peerHost = host;
         peerPort = port;
-        // 官方的 50 秒窗口从「第一次失败」开始算（f4333BChYOn 在 catch 里赋值）。
-        final long[] windowDeadline = {0L};
         final Socket[] connected = new Socket[1];
         final IOException[] failure = new IOException[1];
         Thread connector = new Thread(() -> {
-            while (running.get()) {
-                Socket peer = new Socket();
+            Socket peer = new Socket();
+            try {
+                peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                // 官方 AmA8tU:93-94
+                peer.setSoTimeout(READ_TIMEOUT_MS);
+                peer.setTcpNoDelay(true);
+                connected[0] = peer;
+            } catch (IOException e) {
+                failure[0] = e;
                 try {
-                    peer.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-                    // 官方 AmA8tU:93-94
-                    peer.setSoTimeout(READ_TIMEOUT_MS);
-                    peer.setTcpNoDelay(true);
-                    if (!running.get()) {
-                        // 等待窗口已经超时、调用方已放弃：别留下半条连接。
-                        try {
-                            peer.close();
-                        } catch (IOException ignored) {
-                        }
-                        return;
-                    }
-                    connected[0] = peer;
-                    return;
-                } catch (IOException e) {
-                    failure[0] = e;
-                    try {
-                        peer.close();
-                    } catch (IOException ignored) {
-                    }
-                    long now = System.currentTimeMillis();
-                    if (!retryFirstConnect) {
-                        return;
-                    }
-                    if (windowDeadline[0] == 0L) {
-                        windowDeadline[0] = now + RECONNECT_WINDOW_MS;
-                    }
-                    if (now + RECONNECT_DELAY_MS >= windowDeadline[0]) {
-                        return;
-                    }
-                    Log.i(TAG, "connect failed (" + e.getMessage() + "), retry in 2s");
-                    try {
-                        Thread.sleep(RECONNECT_DELAY_MS);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
+                    peer.close();
+                } catch (IOException ignored) {
                 }
             }
         }, "gboy-socket-connect");
         connector.setDaemon(true);
         connector.start();
-        // 窗口从首次失败起算 50s，最后一次尝试自己还可能再耗时 10s。
-        long waitMs = retryFirstConnect
-                ? RECONNECT_WINDOW_MS + CONNECT_TIMEOUT_MS + 2000L
-                : CONNECT_TIMEOUT_MS + 1000L;
         try {
-            connector.join(waitMs);
+            connector.join(CONNECT_TIMEOUT_MS + 1000L);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             running.set(false);
