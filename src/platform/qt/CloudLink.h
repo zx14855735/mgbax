@@ -166,12 +166,9 @@ private:
 	GBoyLinkSession* m_gboySession = nullptr;
 	/* 与 Android GBoyConsoleSet 对称：1 可见核 + 3 镜像核凑满 4 人多人对战。
 	 * 游戏要求 4 名玩家才放开球场走位并进入 battle_main.o，2 核会把角色
-	 * 锁在原地（实测 cb2 恒为 08170A81）。网络仍然只传按键。 */
-	/* 云端 2P：每端 2 核（1 可见核 + 1 镜像核）。镜像核经网络收对端真人按键
-	 * 进 slot 2，本地跑一个 2 人 SIO 完成 1v1。历史曾用 4 核/设备（MIRROR_COUNT=3）
-	 * 但只有 localSlot=1 发键、slot3/4 永无发送方 → 2 真人 + 2 空镜像，对战
-	 * 形态不成立；改回 2 核/设备才是正确的「网络只传按键、本机多核 lockstep」。 */
-	static constexpr int MIRROR_COUNT = 1;
+	 * 锁在原地（11-14 实测 2 核 st=4 pc=2 后 pos 恒 5,8/6,8、cb2 恒 08170A81，
+	 * 两端模拟线程同时 park）。网络仍然只传按键。 */
+	static constexpr int MIRROR_COUNT = 3;
 	GBoyMirror* m_mirrors[MIRROR_COUNT] = {nullptr};
 	quint16 m_mirrorSioPort = 0;
 	long m_officialFrame = 0;

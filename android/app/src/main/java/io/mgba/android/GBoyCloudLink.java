@@ -1916,10 +1916,10 @@ public final class GBoyCloudLink {
                     current.send(frame);
                 }
             }
-        /* 2 核/设备：本机可见核 slot 1，1 个镜像核 slot 2（对端真人按键经网络
-         * 进 slot 2）。网络只传真人按键，对端按键进 slot 2；两端各跑一个 2 人
-         * 本地 SIO，干净 1v1。 */
-        }, sessionEvents, 1, 2);
+        /* 4 槽位：本机可见核 slot 1，对手 slot 2（对端真人按键经网络进来），
+         * slot 3/4 恒 0 作 NPC 队位——大竞技场要求 4 人，2 核时游戏锁位。
+         * 网络只传真人按键，镜像核 keysForSlot 取任意槽位。 */
+        }, sessionEvents, 1, 4);
     }
 
     /** The onConnected callback is posted to the UI thread, so the session has

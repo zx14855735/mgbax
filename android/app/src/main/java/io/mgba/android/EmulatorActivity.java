@@ -2028,10 +2028,11 @@ public class EmulatorActivity extends AppCompatActivity {
          * 可供协调器会合时，模拟线程从房间建立那一刻起完全停止输出 FRM，
          * 画面冻结、按键无效。本机锁步的 59.7fps 实测是 GBOY_LOCAL_LINK +
          * busgame 帧脚本驱动的组合，云端路径缺这套帧驱动，不能直接套用。 */
-        /* 云端 2P：每端 2 核（1 可见核 + 1 镜像核）。只有 localSlot=1 的发键方
-         * 存在，4 核时 slot3/4 永无发送者 → 2 真人 + 2 空镜像，对战形态不成立；
-         * 改 2 核/设备后两端各跑一个 2 人本地 SIO，干净 1v1，pc=2 两端玩家都活跃。 */
-        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port, 2, 1, true);
+        /* 云端 2P：每端 4 核（1 可见核 + 3 镜像核）。大竞技场要求 4 名玩家才放开
+         * 球场走位并进入 battle_main.o；11-14 实测 2 核 st=4 pc=2 后角色锁位
+         * （pos 恒 5,8/6,8、cb2 恒 08170A81）、两端模拟线程同时 park。
+         * slot3/4 作 NPC 队位，槽位恒 0 不发键，只提供人数。 */
+        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port, 4, 1, true);
         boolean ok = set.start(core, session);
         if (!ok) {
             /* 锁步房间起不来就退回旧的环回 TCP 布局，至少还能单核+镜像跑起来。 */
@@ -2358,10 +2359,10 @@ public class EmulatorActivity extends AppCompatActivity {
                                 ? defaultStateDir : new File(getFilesDir(), "state");
                         GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
                         GBoyConsoleSet rebuilt = new GBoyConsoleSet(
-                                new File(currentRomPath), save, state, 18781, 2, 1, true);
+                                new File(currentRomPath), save, state, 18781, 4, 1, true);
                         if (rebuilt.start(core, session)) {
                             consoleSet = rebuilt;
-                            Log.i(TAG, "cloud arm: 2-core room rebuilt, visible slot="
+                            Log.i(TAG, "cloud arm: 4-core room rebuilt, visible slot="
                                     + rebuilt.visibleSlotIdx());
                         } else {
                             Log.e(TAG, "cloud arm: rebuild failed: " + rebuilt.failure());

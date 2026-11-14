@@ -1697,12 +1697,9 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	        },
 	        /* 4 槽位：本机可见核占 slot 1，3 个镜像占 slot 2/3/4。会话只把
 	         * 真人按键跨网络送出去（对端按键进 slot 2），slot 3/4 恒 0 作为
-	         * NPC 陪位；keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
-	        /* 2 核/设备：本机可见核占 slot 1，1 个镜像占 slot 2（对端真人按键
-	         * 经网络进 slot 2）。会话只把本机真人按键跨网络送出去（裸 TYPE_KEYS
-	         * 落到对端 slot 2），对端镜像核 keysForSlot(2) 即拿到对方操作；两端
-	         * 各跑一个 2 人本地 SIO，干净 1v1。 */
-	        events, 1, 2);
+	         * NPC 陪位——大竞技场要求 4 人，2 核时游戏锁位不进对战；
+	         * keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
+	        events, 1, 4);
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{

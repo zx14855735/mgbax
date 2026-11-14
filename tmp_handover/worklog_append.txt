@@ -1,0 +1,43 @@
+
+## 20:xx-23:xx 接手会话（ios 会话移交的「iOS 云端 2P 移植」）
+
+### 已完成
+1. **iOS 云端 2P 移植全部落地**（只动 Swift，主仓 d8afa8c6f 前的卷入提交
+   7f7c7cdfe/f98f2f874/d8b997bd3 + c2a71e3d6；镜像 cb19d1f→0a4e879）：
+   - `armCloudMulticore`（onConnected → 抑制自动读档 + pendingCloudRearm +
+     触发重载）→ emu 线程重载后 `rebuildCloudConsoleSet` 重建房间（当前
+     **players=2 对齐 20:15 的 Android 终态**；回退 4 核时只改这个参数，
+     路由层已兼容 4 核语义）。
+   - `LobbyLink`：裸 TYPE_KEYS 走 `bareKeysSenderSlot`（localSlot=1 → slot 2
+     = 对手镜像核，GBoyLinkSession.defaultSenderSlot 同构）；删房主初始
+     TYPE_STATE 种子（两端同存档冷启动）；新增 onDisconnected 拆房间。
+   - `GBoyConsoleSet.swift`：初始存档静态缓存（reset/restore 与 Android
+     d09514f9b 同构）+ snapshotState/applyRemoteState（对端状态进镜像核）。
+   - `userKeys`：consoleSet 活跃时远端按键不再直注可见核（防双吃）。
+2. **CI #40-#43 排障链（顺手修掉一个预存在的严重竞态）**：
+   - #41：terminate 竞态（launch 只激活旧实例、参数全不生效）→ launch 加
+     `--terminate-running-process`；诊断 cp 同名文件在 bash -e 下杀步骤 → 换名。
+   - #43 抓到 .ips（SIGSEGV@0x0）：**emu 循环跑进半初始化核**——
+     `mgbaMobileLoad` 在 `mCoreLoadFile` 之前就 `emu->core = core`（不加
+     coreMutex），`mgbaMobileIsLoaded` 只判非空，16ms 轮询必踩加载窗口。
+     预存在竞态（#39 全绿是运气）；iOS autoload 是唯一跨线程加载方。
+   - 修复：Swift 侧 `loadInFlight` 闸门（loadRom 入口置位/defer 复位，emu
+     循环未加载分支追加判据）。**C 层隐患未修**：mgba_mobile.c 的
+     `emu->core = core` 早置 + 加载不持锁——Android/PC 加载都在各自 emu
+     线程暂未踩中，谁先引入跨线程加载谁先修 C。
+   - **iOS #44 全绿**（head 0a4e879，三工作流同轮全绿）。
+
+### 现场/注意事项
+- 排障产物与脚本：tmp_handover/{poll_ci,fetch_ios4x,ios4x_*}.ps1、
+  ios4x_runtime/（lockstep 日志 + mgbax-thread-sample + mgbax-crash.log）。
+- **镜像同步大坑**：`.github/workflows/` 三个 yml 只在 mgbax 镜像存在，
+  对 .github 做 robocopy /MIR 会删光工作流（已踩，git checkout 恢复）；
+  白名单 /MIR 只许 src/ include/ res/ ios/ android/，根文件用 copy。
+- GitHub 夜间通道劣化：API/下载需 token + 重试环（tmp_handover/poll_ci.ps1
+  可复用）；gh CLI 本机没有。
+
+### 遗留
+- **云端架构摇摆中（你们 14:5x 的结论：2 核游戏层不成立，拟回退 4 核+NPC）**：
+  Android 改回 4 核时 iOS 同步只动 `rebuildCloudConsoleSet` 的 players 参数，
+  其余（裸键路由/快照/状态应用）已兼容 4 槽位语义。
+- iOS 真机运行时、WSS 真机抓包（frida 工具链就绪）——待真机。
