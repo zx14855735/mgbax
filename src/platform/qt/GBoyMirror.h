@@ -9,6 +9,7 @@
 #include <QString>
 #include <QThread>
 #include <atomic>
+#include <mutex>
 
 #include "platform/mobile/mgba_mobile.h"
 
@@ -53,8 +54,19 @@ public:
 	/** Closes the loopback link, stops the pump thread and destroys the core. */
 	void stopMirror();
 
-	/** Applies a peer TYPE_STATE blob to the mirror core (thread safe). */
+	/**
+	 * 把对端的 TYPE_STATE 交给镜像核（线程安全）。
+	 *
+	 * GBoy 的 case 6 是在**联机线开始跑之前**用对端的可见核存档覆盖「代表
+	 * 那个玩家的控制台」，之后两边才 arm SIO。本类有自己的帧线程，直接在
+	 * CloudLink 线程里 mgbaMobileLoadStateFromMemory 会与正在跑帧的核心抢
+	 * 状态（实测偶发死循环/画面花屏），所以这里只入队，真正的载入发生在
+	 * 镜像线程的帧边界上。返回是否受理（不代表已经载入）。
+	 */
 	bool applyRemoteState(const QByteArray& state);
+
+	/** 已受理并真正载入的状态包计数（诊断用）。 */
+	int appliedStateCount() const { return m_appliedStates.load(std::memory_order_relaxed); }
 
 	bool isRunningMirror() const { return m_running.load(std::memory_order_relaxed); }
 
@@ -62,11 +74,18 @@ protected:
 	void run() override;
 
 private:
+	/** 取走待载入的状态；没有则返回 false。 */
+	bool takePendingState(QByteArray* out);
+
 	struct MgbaMobile* m_emu = nullptr;
 	GBoyLinkSession* m_session = nullptr;
 	int m_slot = 2;
 	int m_players = 2;
 	std::atomic<bool> m_running{false};
+	std::mutex m_stateMutex;
+	QByteArray m_pendingState;
+	bool m_hasPendingState = false;
+	std::atomic<int> m_appliedStates{0};
 	/* 云端 4P 闭环导航的同步闸门：镜像核不再在 start() 里立即武装脚本，而是
 	 * 记下 navIdx，等到 <scriptDir>/nav_at 出现（CloudLink 在三个镜像核都就绪
 	 * 后才写该文件）才在本线程的 run() 里调用 mgbaMobileBusGameStart。这样

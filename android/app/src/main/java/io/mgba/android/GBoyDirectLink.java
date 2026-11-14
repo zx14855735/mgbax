@@ -752,7 +752,7 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
                 return;
             }
             if (target != null) {
-                sendPacket(TYPE_DATA, out.seq, out.payload, target);
+                sendPacket(out.kind, out.seq, out.payload, target);
             }
             out.lastSent = now;
             if (out.firstSent == 0) {

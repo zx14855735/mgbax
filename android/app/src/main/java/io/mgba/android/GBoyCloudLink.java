@@ -950,11 +950,24 @@ public final class GBoyCloudLink {
                     ? "隧道等待对方超时" : link.errorMessage());
         }
         if (officialMode) {
-            ensureSession(link);
+            // 照抄 GBoy：游戏数据一律 P2P 直连，WSS 只做房间信令。第 6 号
+            // 消息是整份 savestate（约 790 KiB），大厅隧道单条被限到 100
+            // 字符，状态包发不出去 → 两端镜像核停在不同的一幕，4P 都认到了
+            // 也会在进入对战时被判「请确认玩家数量」。直连通道有分片与可靠
+            // 层，状态能完整送达；打不通（对称 NAT）才退回隧道。
+            Link chosen = link;
+            GBoyDirectLink direct = tryDirectLink(link, room);
+            if (direct != null) {
+                chosen = direct;
+            }
+            ensureSession(chosen);
             status("云端联机已连接，你是 " + (asHost ? "1P" : "2P")
-                    + "（本机多核，服务器隧道）");
+                    + (direct != null ? "（直连 P2P）" : "（本机多核，服务器隧道）"));
             hooks.onConnected(asHost, null);
-            serve(link);
+            serve(chosen);
+            if (direct != null) {
+                direct.close();
+            }
             return;
         }
         GBoyDirectLink direct = tryDirectLink(link, room);

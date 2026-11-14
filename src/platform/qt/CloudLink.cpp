@@ -1336,9 +1336,25 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		return;
 	}
 	if (m_officialMode) {
-		// 镜像按键布局不搞 P2P 直连：按键流走隧道就已经是全速，不值得为
-		// 它再开一条直连（MGBAX_NO_DIRECT 场景下也不允许）。
-		startOfficialMatch(link, room);
+		/* 照抄 GBoy：游戏数据一律走 P2P 直连，WSS 只负责房间信令。
+		 *
+		 * 原注释写「按键流走隧道就已经是全速」，那只在「网络只传按键」时成立。
+		 * 官方协议的第 6 号消息是整份 savestate（约 790 KiB），握手和周期纠偏
+		 * 都要用它；而大厅隧道单条消息被服务器限到 100 字符，一个状态包都发
+		 * 不完，两端的镜像核永远停在不同的一幕 —— 实测就是「4P 都认到了，
+		 * 一按确认就报请确认玩家数量」。直连通道自带分片与可靠层，整份状态
+		 * 能完整送达；打不通（对称 NAT / 企业网）才退回隧道，此时至少按键
+		 * 联机还能用。 */
+		ILink* chosen = link;
+		DirectLink* direct = static_cast<DirectLink*>(tryDirectLink(sig, token, room, link, asHost));
+		if (direct) {
+			chosen = direct;
+		}
+		startOfficialMatch(chosen, room);
+		if (direct) {
+			direct->close();
+			delete direct;
+		}
 		cleanupTunnel();
 		m_tunnelUp = false;
 		return;
