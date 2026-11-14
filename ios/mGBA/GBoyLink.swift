@@ -310,6 +310,38 @@ final class GBoyLink {
                     onRemoteKeysForSlot(1, keys)
                 } else if messageType == Self.msgReset {
                     onRemoteReset()
+                } else if messageType == Self.msgPacing {
+                    // 官方 type 0（AzWtSf:174-179 / AmA8tU:213-221）：收到就把
+                    // 本机帧率上限设成这个值（AaHO0E.f4302AZkASS）。0 和离谱
+                    // 值当「没有上限」，一颗坏包不该把本机帧率钉死。
+                    let fps = Self.rttValue(frame)
+                    if fps > 0, fps <= 240 {
+                        onRemotePacing(fps)
+                    }
+                } else if messageType == Self.msgReady {
+                    // 官方 type 3：就绪 + 上报 RTT（B25kr6:131）。
+                    let rtt = Self.rttValue(frame)
+                    if rtt >= 0 {
+                        lock.lock()
+                        lastRttValue = rtt
+                        lock.unlock()
+                    }
+                } else if messageType == Self.msgReconnect {
+                    // 对端重连：只带 rtt，没有别的语义，记下即可。
+                    let rtt = Self.rttValue(frame)
+                    if rtt >= 0 {
+                        lock.lock()
+                        lastRttValue = rtt
+                        lock.unlock()
+                    }
+                } else if messageType == Self.msgState, frame.count >= 6 {
+                    // 会话中途再收到整份存档（官方客户端重连后会补发）：按
+                    // type 6 的边界取 body 交给镜像核。
+                    let size = Int(frame[2]) << 24 | Int(frame[3]) << 16
+                             | Int(frame[4]) << 8 | Int(frame[5])
+                    if size > 0, frame.count >= 6 + size {
+                        onRemoteState(Array(frame[6..<(6 + size)]))
+                    }
                 }
             }
         } catch {

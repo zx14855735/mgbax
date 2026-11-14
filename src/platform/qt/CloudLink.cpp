@@ -1334,9 +1334,9 @@ ILink* CloudLink::tryEnvTcpLink(QString* error) {
 			delete link;
 			return nullptr;
 		}
-		status(QStringLiteral("TCP 直连已建立（%1 → %2，本机端口 %3）\n")
-		               .arg(QString::number(link->localPort()), peer)
-		               .arg(link->localPort()));
+		status(QStringLiteral("TCP 直连已建立（本机端口 %1 → %2）\n")
+		               .arg(link->localPort())
+		               .arg(peer));
 		return link;
 	}
 	bool ok = false;
@@ -1447,11 +1447,39 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		 * 能完整送达；打不通（对称 NAT / 企业网）才退回隧道，此时至少按键
 		 * 联机还能用。 */
 		ILink* chosen = link;
-		DirectLink* direct = static_cast<DirectLink*>(tryDirectLink(sig, token, room, link, asHost));
-		if (direct) {
-			chosen = direct;
+		DirectLink* direct = nullptr;
+		/* 候选顺序（官方模式专用，默认仍是「UDP 直连 → 隧道」不变）：
+		 *   1. 蓝牙（仅当显式给了 MGBAX_BT：用户点名要用蓝牙，不该被 UDP 抢走）
+		 *   2. DirectLink 的 UDP 打洞
+		 *   3. TcpDirectLink（仅当显式给了 MGBAX_TCP_PEER / MGBAX_TCP_LISTEN）
+		 *   4. 服务器隧道
+		 */
+		ILink* extra = nullptr;
+		QString extraError;
+		extra = tryBtLink(&extraError);
+		if (extra) {
+			chosen = extra;
+		} else {
+			if (!extraError.isEmpty()) {
+				GbCloud::debugLog(QStringLiteral("[bt] %1").arg(extraError));
+			}
+			direct = static_cast<DirectLink*>(tryDirectLink(sig, token, room, link, asHost));
+			if (direct) {
+				chosen = direct;
+			} else {
+				extra = tryEnvTcpLink(&extraError);
+				if (extra) {
+					chosen = extra;
+				} else if (!extraError.isEmpty()) {
+					GbCloud::debugLog(QStringLiteral("[tcp-direct] %1").arg(extraError));
+				}
+			}
 		}
 		startOfficialMatch(chosen, room);
+		if (extra && extra != link) {
+			extra->close();
+			delete extra;
+		}
 		if (direct) {
 			direct->close();
 			delete direct;
