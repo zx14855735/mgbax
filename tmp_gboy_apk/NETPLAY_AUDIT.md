@@ -430,7 +430,48 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | `com/game/boy/emu/gba/Console.A2egSU()` | 68-92 | **自动槽位**：同 ROM 的核里取最低空闲 0..3；slot>0 时电池存档名追加 `slot+1` |
 | `com/game/boy/emu/gba/Link` | 43-92 | `allocateBuffer/deallocateBuffer/openConsole(native)/runFrame(boolean)/loadRom/unloadRom` |
 
-## A.13 官方消息总表（按阶段区分语义）
+## A.13 全部帧构造 / 帧读取调用点（穷举，一条不漏）
+
+### A.13.1 构造一条消息：`B25kr6.ARc23Z(short type, int payloadLen)` 的全部调用点
+
+（`ARc23Z` 是按字面常量枚举 + 字节码 `method@1ca7/0494` 交叉核对过的；`D8MqeW` 那两条
+的 type 在寄存器 `v11=0` 里，所以字面量 grep 抓不到。）
+
+| # | 类:方法 | 行号 | type | payload 字段顺序 | 触发时机 |
+|---|---|---|---|---|---|
+| 1 | `KpHwm4.B25kr6.A4TApA` | 122 | 1 | `int32 6` | 直连握手，`!AMqCpz`（发起方）连上即发 |
+| 2 | `KpHwm4.B25kr6.A4TApA` | 128 | 1 | `int32 6` | 收到对端 `type1` 且值 6、本端 `AMqCpz` 时回 |
+| 3 | `KpHwm4.B25kr6.AZOQYO` | 255 | 9 | `int32 speed` | 用户切倍速（0.5x/1x/2x/4x） |
+| 4 | `KpHwm4.AmA8tU.A5SV6n` | 173 | 1 | `int32 playerCount`（==1 时再 `int16 0` + `int32 listSize`） | TCP 客户端连上后第一帧 |
+| 5 | `KpHwm4.AmA8tU.A5SV6n` | 204 | 1 | 空（len=0） | 某槽 `loadStateFromMemory` 失败 → 断开 |
+| 6 | `KpHwm4.AmA8tU.A5SV6n` | 211 | 3 | 空（4 字节 0） | 全部槽载入成功 → "我灌完了" |
+| 7 | `KpHwm4.AmA8tU.A5SV6n` | 226 | 1 | 空（len=0） | 读循环退出（会话结束） |
+| 8 | `KpHwm4.AzWtSf.A4TApA` | 166 | 3 | 空 | KCP 客户端各槽载入成功 |
+| 9 | `KpHwm4.AzWtSf.A4TApA` | 183 | 1 | 空 | KCP 握手完成、进转发前 |
+| 10 | `ADYaiT.AZkASS.handleMessage` | 136 | 2 | `byte[32] romHash` + `int16 n` + `byte[n] romName` | 直连握手第 4 步（收到对端 type1 后 msg3） |
+| 11 | `ADYaiT.AZkASS.handleMessage` | 194 | 6 | `int32 size` + `byte[size]` | 握手第 6 步（`!AMqCpz`）或第 8 步（`AMqCpz`），msg5 |
+| 12 | `ADYaiT.DUi7mC.B4ZgIw` | 345 | 1 | `int32 playerCount`（==1 时再 `int16 0` + `int32 listSize`） | KCP 收到 `"HK"`、建好通道后 |
+| 13 | `com.game.boy.activity.EmulatorActivity.B9tovu` | 1037 | 3 | 4 字节 0 | 直连模式建好"对端核"后（解阻塞前） |
+| 14 | `com.game.boy.activity.EmulatorActivity.BmvVmW` | 1333 | 5 | `int32 0` | 用户点"重置游戏" |
+| 15 | `ADYaiT.D8MqeW.run`（模拟线程，`p1.txt:34821a`） | 字节码 0x01e5 | 0 | `int32 keys` | **房间模式：每帧 × 每个对端** |
+| 16 | `ADYaiT.D8MqeW.run`（模拟线程，`p1.txt:348364`） | 字节码 0x028a | 0 | `int32 keys` | **直连模式：每 5 帧 × 每个对端** |
+
+### A.13.2 读一帧：`BTvldC.ADYaiT.ADYaiT()` 的全部调用点
+
+| # | 类:方法 | 行号 | 期望 type | 读到什么 | 失败分支 |
+|---|---|---|---|---|---|
+| 1 | `B25kr6.A4TApA` | 124 | 1 | `int32`（6 才回） | 非 1 → `return 2` |
+| 2 | `B25kr6.A4TApA` | 132 | 2 | `byte[32]` + `int16 n` + `byte[n]` | 非 2 → 退出方法 `return 2` |
+| 3 | `B25kr6.A4TApA` | 139 | 3 | 空 | 非 3 → `return 2` |
+| 4 | `B25kr6.A4TApA` | 143 | 6 | `int32 size` + blob | 非 6 → `return 2`；load 非 0 → 返回 1/3 |
+| 5 | `B25kr6.A4TApA` | 160 | 任意 | 整帧 → `peer.BIYEnU` | `IOException`/EOF → 抛出，线程结束（msg2） |
+| 6 | `AmA8tU.A5SV6n` | 183 | 3 / 0 | type3: `int32 rtt`；type0: `int32 v` | 其它 → `return 2`（断开） |
+| 7 | `AmA8tU.ARc23Z` | 287 | 任意 | 整帧 → `peer.BIYEnU` | 抛出 → 重连循环 |
+| 8 | `AzWtSf.A4TApA` | 142 | 3 | `int32 rtt` + 载入各槽 | 载入非 0 → 直接 `return` 错误码 |
+| 9 | `AzWtSf.A4TApA` | 173 | 0 | `int32 v` → `AZkASS` | 非 0 → 继续循环（**没有退出**，靠 `ASJ6gh` 结束） |
+| 10 | `B25kr6.AYUAbz` | 226 | 任意（队列 `take()`，不是 ADYaiT） | `while remaining>=6` 按 type 分发（见 A.1 表） | `InterruptedException` 直接结束 |
+
+## A.14 官方消息总表（按阶段区分语义）
 
 ### 握手阶段（直连 A4TApA / 客户端 AmA8tU / KCP AzWtSf）
 
@@ -458,7 +499,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 10 | ← | 无 | 断开通知（转 UI msg 2） | 收 `p2.txt:379d46` |
 | 1..4 | ← | `int32 keys` | 玩家 N 的按键（中继/遗留，本机不发） | 收 `p2.txt:379eca` |
 
-### A.14 常量汇总
+## A.15 常量汇总
 
 | 项 | 值 | 出处 |
 |---|---|---|
