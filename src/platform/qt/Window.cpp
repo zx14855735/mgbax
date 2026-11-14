@@ -607,6 +607,28 @@ void Window::showMenu(bool show) {
 	menuBar()->setVisible(show);
 }
 
+void Window::tileWindows() {
+	QList<Window*> windows = GBAApp::app()->windows();
+	if (windows.size() < 2) {
+		return;
+	}
+	QScreen* target = screen();
+	if (!target) {
+		target = QGuiApplication::primaryScreen();
+	}
+	if (!target) {
+		return;
+	}
+	const QRect avail = target->availableGeometry();
+	const int count = windows.size();
+	const int width = avail.width() / count;
+	for (int i = 0; i < count; ++i) {
+		Window* window = windows[i];
+		window->showNormal();
+		window->setGeometry(avail.x() + i * width, avail.y(), width, avail.height());
+	}
+}
+
 void Window::loadCamImage() {
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select image"), tr("Image file (*.png *.gif *.jpg *.jpeg);;All files (*)"));
 	if (!filename.isEmpty()) {
@@ -1700,6 +1722,7 @@ void Window::setupMenu(QMenuBar* menubar) {
 
 	m_actions.addSeparator("file");
 	m_multiWindow = m_actions.addAction(tr("New multiplayer window"), "multiWindow", GBAApp::app(), &GBAApp::newWindow, "file");
+	m_actions.addAction(tr("Tile windows side by side"), "tileWindows", this, &Window::tileWindows, "file");
 
 #ifdef M_CORE_GBA
 	auto dolphin = m_actions.addAction(tr("Connect to Dolphin..."), "connectDolphin", openNamedTView<DolphinConnector>(&m_dolphinView, true, this), "file");

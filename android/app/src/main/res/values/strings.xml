@@ -432,6 +432,11 @@
     <string name="undo_unavailable">不可用</string>
     <string name="frame_step">帧进</string>
     <string name="frame_step_paused">已暂停，点「帧进」逐帧前进</string>
+    <string name="frame_back">逐帧倒带（长按「帧进」后退一帧）</string>
+    <string name="frame_back_off">先在 设置-输入 里打开「逐帧倒带」</string>
+    <string name="frame_back_link">联机中不能逐帧倒带（会把对端进度甩开）</string>
+    <string name="frame_back_empty">没有可回退的快照，运行一会儿再试</string>
+    <string name="frame_back_failed">回退失败：快照不可用</string>
 
     <!-- Keyboard / gamepad remap -->
     <string name="key_remap">键盘映射…</string>
@@ -584,4 +589,18 @@
     <string name="video_record_saved">录像已保存到 Movies/mGBAx/%1$s（%2$d 秒）</string>
     <string name="video_record_empty">录像过短，已丢弃</string>
     <string name="video_record_no_rom">请先加载 ROM 再录像</string>
+
+    <!-- Video layer toggles -->
+    <string name="layer_toggle">图层显隐</string>
+    <string name="layer_obj">OBJ（精灵）</string>
+    <string name="layer_all">全部显示</string>
+    <string name="layer_applied">图层设置已保存</string>
+    <string name="layer_hint">用 DISPCNT 的使能位在每帧前强制写回。个别游戏会在 VBlank 重写 DISPCNT，运行时可能出现闪烁；想稳定看单帧请先暂停再点「帧进」。</string>
+
+    <!-- Map viewer + frame inspector -->
+    <string name="map_view">地图查看器</string>
+    <string name="map_bitmap_mode">当前是位图模式 %1$d，没有图块地图；请用「图层查看器」看画面。</string>
+    <string name="map_info">BG%1$d · %2$s\n优先级 %3$d · 图块基址 0x%4$X · 映射基址 0x%5$X · %6$d bpp</string>
+    <string name="frame_view">帧检查器</string>
+    <string name="frame_oam">OBJ: 可见 %1$d 个 · 旋转/缩放 %2$d 个\n</string>
 </resources>

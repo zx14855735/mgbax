@@ -112,10 +112,12 @@ final class DebugViewers {
                 activity.getString(R.string.memory_view),
                 activity.getString(R.string.watch_view),
                 activity.getString(R.string.bg_view),
+                activity.getString(R.string.map_view),
                 activity.getString(R.string.oam_view),
                 activity.getString(R.string.palette_view),
                 activity.getString(R.string.tile_view),
                 activity.getString(R.string.io_view),
+                activity.getString(R.string.frame_view),
         };
         new AlertDialog.Builder(activity)
                 .setTitle(R.string.debug_tools)
@@ -129,13 +131,17 @@ final class DebugViewers {
                     } else if (which == 2) {
                         showBg(activity, core);
                     } else if (which == 3) {
-                        showOam(activity, core);
+                        showMap(activity, core);
                     } else if (which == 4) {
-                        showPalette(activity, core);
+                        showOam(activity, core);
                     } else if (which == 5) {
+                        showPalette(activity, core);
+                    } else if (which == 6) {
                         showTiles(activity, core);
-                    } else {
+                    } else if (which == 7) {
                         showIo(activity, core);
+                    } else {
+                        showFrame(activity, core);
                     }
                 })
                 .show();
@@ -1262,6 +1268,239 @@ final class DebugViewers {
             out.append("  (").append(value).append(")\n");
         }
         return out.toString();
+    }
+
+    // == Map (tilemap) viewer ==============================================
+
+    /**
+     * Whole background tilemap with an 8x8 grid, PC's mapWindow. Only text
+     * layers have a tilemap; bitmap modes are reported instead of faked.
+     */
+    static void showMap(EmulatorActivity activity, MgbaCore core) {
+        int dispcnt = core.busRead(16, 0x04000000);
+        int mode = dispcnt & 7;
+        LinearLayout box = column(activity);
+        final TextView info = label(activity, 0);
+        info.setTextColor(0xFFD6E8D6);
+        if (mode >= 3) {
+            info.setText(activity.getString(R.string.map_bitmap_mode, mode));
+            box.addView(info);
+            ScrollView only = new ScrollView(activity);
+            only.addView(box);
+            new AlertDialog.Builder(activity)
+                    .setTitle(R.string.map_view)
+                    .setView(only)
+                    .setPositiveButton(R.string.close, null)
+                    .show();
+            return;
+        }
+        final ImageView2 image = new ImageView2(activity);
+        final int[] selected = {0};
+        LinearLayout tabs = row(activity);
+        for (int bg = 0; bg < 4; bg++) {
+            final int index = bg;
+            Button button = smallButton(activity, 0);
+            button.setText("BG" + bg);
+            button.setOnClickListener(v -> {
+                selected[0] = index;
+                image.set(mapBitmap(core, index, info, activity));
+            });
+            tabs.addView(button);
+        }
+        Button export = smallButton(activity, R.string.export);
+        export.setOnClickListener(v -> {
+            if (image.bitmap != null) {
+                exportImage(activity, image.bitmap, "map");
+            }
+        });
+        tabs.addView(export);
+        HorizontalScrollView hScroll = new HorizontalScrollView(activity);
+        hScroll.addView(image);
+        box.addView(tabs);
+        box.addView(info);
+        box.addView(hScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(activity, 260)));
+        image.set(mapBitmap(core, 0, info, activity));
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+        new AlertDialog.Builder(activity)
+                .setTitle(R.string.map_view)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .show();
+    }
+
+    /** Renders one text layer's tilemap at 8x8 per tile with a 1px grid. */
+    private static Bitmap mapBitmap(MgbaCore core, int bg, TextView info, EmulatorActivity activity) {
+        int cnt = core.busRead(16, 0x04000008 + bg * 2);
+        int priority = cnt & 3;
+        int charBase = ((cnt >> 2) & 3) * 0x4000;
+        boolean pal256 = (cnt & 0x80) != 0;
+        int screenBase = ((cnt >> 8) & 31) * 0x800;
+        int size = (cnt >> 14) & 3;
+        int wTiles = (size & 1) != 0 ? 64 : 32;
+        int hTiles = (size & 2) != 0 ? 64 : 32;
+        int width = wTiles * 8;
+        int height = hTiles * 8;
+        Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        int[] pixels = new int[width * height];
+        byte[] vram = core.busReadBlock(0x06000000, 0x18000);
+        byte[] pal = core.busReadBlock(0x05000000, 512);
+        byte[] map = core.busReadBlock(0x06000000 + screenBase, wTiles * hTiles * 2);
+        int bpp = pal256 ? 8 : 4;
+        for (int ty = 0; ty < hTiles; ty++) {
+            for (int tx = 0; tx < wTiles; tx++) {
+                int entryIndex = (ty * wTiles + tx) * 2;
+                if (entryIndex + 1 >= map.length) {
+                    continue;
+                }
+                int entry = (map[entryIndex] & 0xFF) | (map[entryIndex + 1] & 0xFF) << 8;
+                int tile = entry & 0x3FF;
+                int palette = (entry >> 12) & 15;
+                int tileAddr = charBase + tile * (bpp == 4 ? 32 : 64);
+                int baseX = tx * 8;
+                int baseY = ty * 8;
+                for (int row = 0; row < 8; row++) {
+                    for (int col = 0; col < 8; col++) {
+                        int index;
+                        if (bpp == 4) {
+                            int addr = tileAddr + row * 4 + (col >> 1);
+                            if (addr >= vram.length) {
+                                index = 0;
+                            } else {
+                                int value = vram[addr] & 0xFF;
+                                index = ((col & 1) != 0 ? (value >> 4) : (value & 0xF))
+                                        + palette * 16;
+                            }
+                        } else {
+                            int addr = tileAddr + row * 8 + col;
+                            index = addr < vram.length ? vram[addr] & 0xFF : 0;
+                        }
+                        int colour = 0;
+                        int off = index * 2;
+                        if (off + 1 < pal.length) {
+                            int bgr = (pal[off] & 0xFF) | (pal[off + 1] & 0xFF) << 8;
+                            colour = bgr == 0 ? 0 : bgr15(bgr);
+                        }
+                        int px = baseX + col;
+                        int py = baseY + row;
+                        boolean grid = col == 0 || row == 0;
+                        pixels[py * width + px] = grid ? 0xFF404040
+                                : colour == 0 ? 0xFF101010 : colour;
+                    }
+                }
+            }
+        }
+        bitmap.setPixels(pixels, 0, width, 0, 0, width, height);
+        info.setText(activity.getString(R.string.map_info, bg, width + "×" + height,
+                priority, charBase, screenBase, bpp));
+        return bitmap;
+    }
+
+    // == Frame inspector ===================================================
+
+    /**
+     * Decoded DISPCNT / DISPSTAT / per-layer state for the frame on screen,
+     * PC's frameWindow in read-only form. 「帧进」steps one frame and re-reads.
+     */
+    static void showFrame(EmulatorActivity activity, MgbaCore core) {
+        LinearLayout box = column(activity);
+        final TextView out = new TextView(activity);
+        out.setTypeface(Typeface.MONOSPACE);
+        out.setTextSize(12);
+        out.setTextColor(0xFFE0E0E0);
+        out.setTextIsSelectable(true);
+        LinearLayout tabs = row(activity);
+        Button refresh = smallButton(activity, R.string.io_refresh);
+        refresh.setOnClickListener(v -> out.setText(frameDump(core, activity)));
+        Button step = smallButton(activity, R.string.frame_step);
+        step.setOnClickListener(v -> {
+            activity.stepOneFrame();
+            out.postDelayed(() -> out.setText(frameDump(core, activity)), 120);
+        });
+        tabs.addView(refresh);
+        tabs.addView(step);
+        out.setText(frameDump(core, activity));
+        box.addView(tabs);
+        box.addView(out);
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+        new AlertDialog.Builder(activity)
+                .setTitle(R.string.frame_view)
+                .setView(scroll)
+                .setPositiveButton(R.string.close, null)
+                .show();
+    }
+
+    private static String frameDump(MgbaCore core, EmulatorActivity activity) {
+        int dispcnt = core.busRead(16, 0x04000000);
+        int dispstat = core.busRead(16, 0x040004);
+        int vcount = core.busRead(16, 0x040006);
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format(Locale.US, "DISPCNT %04X  mode=%d  blank=%s  obj1d=%s  forcedBlank=%s\n",
+                dispcnt, dispcnt & 7,
+                (dispcnt & 0x80) != 0 ? "on" : "off",
+                (dispcnt & 0x40) != 0 ? "1D" : "2D",
+                (dispcnt & 0x80) != 0 ? "yes" : "no"));
+        sb.append(String.format(Locale.US, "DISPSTAT %04X  vblank=%s hblank=%s vmatch=%s\n",
+                dispstat,
+                (dispstat & 1) != 0 ? "1" : "0",
+                (dispstat & 2) != 0 ? "1" : "0",
+                (dispstat & 4) != 0 ? "1" : "0"));
+        sb.append(String.format(Locale.US, "VCOUNT %d\n", vcount & 0xFF));
+        sb.append("layers:");
+        for (int bg = 0; bg < 4; bg++) {
+            if ((dispcnt & (0x100 << bg)) != 0) {
+                sb.append(" BG").append(bg);
+            }
+        }
+        if ((dispcnt & 0x1000) != 0) {
+            sb.append(" OBJ");
+        }
+        if ((dispcnt & 0x2000) != 0) {
+            sb.append(" WIN0");
+        }
+        if ((dispcnt & 0x4000) != 0) {
+            sb.append(" WIN1");
+        }
+        if ((dispcnt & 0x8000) != 0) {
+            sb.append(" OBJWIN");
+        }
+        sb.append('\n');
+        for (int bg = 0; bg < 4; bg++) {
+            int cnt = core.busRead(16, 0x04000008 + bg * 2);
+            int hofs = core.busRead(16, 0x04000010 + bg * 4) & 0x1FF;
+            int vofs = core.busRead(16, 0x04000012 + bg * 4) & 0x1FF;
+            int size = (cnt >> 14) & 3;
+            int wTiles = (size & 1) != 0 ? 64 : 32;
+            int hTiles = (size & 2) != 0 ? 64 : 32;
+            sb.append(String.format(Locale.US,
+                    "BG%d %s pin=%d map=%03X char=%04X %dx%d %s scroll=%d,%d\n",
+                    bg,
+                    (dispcnt & (0x100 << bg)) != 0 ? "on " : "off",
+                    cnt & 3,
+                    ((cnt >> 8) & 31) * 0x800,
+                    ((cnt >> 2) & 3) * 0x4000,
+                    wTiles * 8, hTiles * 8,
+                    (cnt & 0x80) != 0 ? "256c" : "16c ",
+                    hofs, vofs));
+        }
+        byte[] oam = core.busReadBlock(0x07000000, 0x400);
+        int visible = 0;
+        int affine = 0;
+        for (int i = 0; i < 128; i++) {
+            int attr0 = (oam[i * 8] & 0xFF) | (oam[i * 8 + 1] & 0xFF) << 8;
+            boolean disabled = (attr0 & 0x0200) != 0;
+            int y = attr0 & 0xFF;
+            if (!disabled && y < 160) {
+                visible++;
+            }
+            if ((attr0 & 0x0100) != 0) {
+                affine++;
+            }
+        }
+        sb.append(activity.getString(R.string.frame_oam, visible, affine));
+        return sb.toString();
     }
 
     // == Export ============================================================

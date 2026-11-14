@@ -125,6 +125,11 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int CMD_UNDO_SAVE = 7;
     /** Advances a single emulated frame; used while paused. */
     private static final int CMD_STEP = 8;
+    /** Steps one frame backwards by replaying the newest in-memory snapshot. */
+    private static final int CMD_FRAME_BACK = 9;
+    /** How often a rewind snapshot is taken for 逐帧倒带 (frames). */
+    private static final int FRAME_SNAPSHOT_EVERY = 8;
+    private static final int FRAME_SNAPSHOT_MAX = 4;
     /** Desktop-shortcut intent (PC's "create forwarder"). */
     private static final String ACTION_OPEN_ROM = "io.mgba.android.OPEN_ROM";
     private static final String EXTRA_ROM_PATH = "rom_path";
@@ -706,6 +711,19 @@ public class EmulatorActivity extends AppCompatActivity {
     /** MP4 recorder; null unless recording. Touched from UI and emulation threads. */
     private volatile VideoRecorder recorder;
     private long recordStartedAt;
+    /** Frame snapshots backing 「帧退」, newest last. Only used with no link running. */
+    private final ArrayList<FrameSnapshot> frameSnapshots = new ArrayList<>();
+
+    /** One captured state plus the frame number it belongs to. */
+    private static final class FrameSnapshot {
+        final long frame;
+        final byte[] blob;
+
+        FrameSnapshot(long frame, byte[] blob) {
+            this.frame = frame;
+            this.blob = blob;
+        }
+    }
     /** Hidden mirror core; null until the ported GBoy link is started. */
     private volatile GBoyConsoleSet consoleSet;
     /** 3/4 人本机多核时改用进程内锁步 SIO（默认关，走共享内存总线）。 */
@@ -958,6 +976,10 @@ public class EmulatorActivity extends AppCompatActivity {
         View frameButton = findViewById(R.id.btn_frame);
         if (frameButton != null) {
             frameButton.setOnClickListener(v -> stepFrame());
+            frameButton.setOnLongClickListener(v -> {
+                stepFrameBack();
+                return true;
+            });
         }
         findViewById(R.id.btn_reset).setOnClickListener(v -> confirmReset());
         findViewById(R.id.btn_video).setOnClickListener(v -> showVideoDialog());
@@ -2696,6 +2718,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 int framesToRun = (int) frameDebt;
                 if (framesToRun > 0) {
                     frameDebt -= framesToRun;
+                    // 逐帧倒带的快照：只在一次跑一帧、且没有联机时记录。
+                    if (framesToRun == 1) {
+                        maybeSnapshotFrame();
+                    }
                     // Run in a few steps, pumping audio in between: a
                     // fast-forward burst produces several frames of audio at
                     // once and the core's audio buffer only holds a little
@@ -2950,6 +2976,7 @@ public class EmulatorActivity extends AppCompatActivity {
         synchronized (macroRecord) {
             macroRecord.clear();
         }
+        frameSnapshots.clear();
         String undoRom = getPreferences(MODE_PRIVATE).getString("undo_save_rom", null);
         undoSaveSlot = path.equals(undoRom)
                 ? getPreferences(MODE_PRIVATE).getInt("undo_save_slot", -1) : -1;
@@ -3173,6 +3200,30 @@ public class EmulatorActivity extends AppCompatActivity {
             // takes, so cheats/logic see the held buttons.
             applyLayerMask();
             core.runFrames(userKeys(), 1);
+            ++netFrameNo;
+            presentFrame();
+        } else if (cmd == CMD_FRAME_BACK) {
+            FrameSnapshot snapshot = null;
+            for (int i = frameSnapshots.size() - 1; i >= 0; i--) {
+                if (frameSnapshots.get(i).frame < netFrameNo) {
+                    snapshot = frameSnapshots.get(i);
+                    break;
+                }
+            }
+            if (snapshot == null) {
+                toast(getString(R.string.frame_back_empty));
+                return;
+            }
+            long target = netFrameNo - 1;
+            if (!core.loadStateFromMemory(snapshot.blob)) {
+                toast(getString(R.string.frame_back_failed));
+                return;
+            }
+            for (long f = snapshot.frame; f < target; f++) {
+                core.runFrames(userKeys(), 1);
+            }
+            netFrameNo = target;
+            core.clearAudio();
             presentFrame();
         } else if (cmd == CMD_RESET) {
             core.reset();
@@ -3903,6 +3954,58 @@ public class EmulatorActivity extends AppCompatActivity {
         if (wanted != dispcnt) {
             core.busWrite(16, 0x04000000, wanted);
         }
+    }
+
+    private boolean frameBackEnabled() {
+        return getPreferences(MODE_PRIVATE).getBoolean("frame_back", false);
+    }
+
+    /** True while any link is up: stepping the core back would desync it. */
+    private boolean linkActive() {
+        return consoleSet != null || localLink != null || cloudLink != null || busLinkActive;
+    }
+
+    /**
+     * Emulation thread: captures a state every {@link #FRAME_SNAPSHOT_EVERY}
+     * frames so 「帧退」 can replay up to eight frames. Off by default because
+     * it copies a state blob several times per second.
+     */
+    private void maybeSnapshotFrame() {
+        if (!frameBackEnabled() || linkActive() || paused) {
+            return;
+        }
+        if (netFrameNo % FRAME_SNAPSHOT_EVERY != 0) {
+            return;
+        }
+        if (!frameSnapshots.isEmpty()
+                && frameSnapshots.get(frameSnapshots.size() - 1).frame == netFrameNo) {
+            return;
+        }
+        byte[] blob = core.saveStateToMemory();
+        if (blob == null || blob.length == 0) {
+            return;
+        }
+        frameSnapshots.add(new FrameSnapshot(netFrameNo, blob));
+        while (frameSnapshots.size() > FRAME_SNAPSHOT_MAX) {
+            frameSnapshots.remove(0);
+        }
+    }
+
+    /** Entry for the long press on 「帧进」. */
+    private void stepFrameBack() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        if (!frameBackEnabled()) {
+            toast(getString(R.string.frame_back_off));
+            return;
+        }
+        if (linkActive()) {
+            toast(getString(R.string.frame_back_link));
+            return;
+        }
+        command.set(CMD_FRAME_BACK);
     }
 
     private Bitmap decodePreview(int index) {
@@ -6200,6 +6303,13 @@ public class EmulatorActivity extends AppCompatActivity {
         keyMacro.setAllCaps(false);
         keyMacro.setText(R.string.key_macro);
         keyMacro.setOnClickListener(v -> showKeyMacroDialog());
+        final CheckBox frameBack = check(R.string.frame_back, frameBackEnabled());
+        frameBack.setOnCheckedChangeListener((v, checked) -> {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("frame_back", checked).apply();
+            if (!checked) {
+                frameSnapshots.clear();
+            }
+        });
         final Button rewindTap = new Button(this);
         rewindTap.setAllCaps(false);
         rewindTap.setText(getString(R.string.rewind_tap, rewindTapSeconds()));
@@ -6269,6 +6379,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(extras);
         box.addView(keyRemap);
         box.addView(keyMacro);
+        box.addView(frameBack);
         box.addView(rewindTap);
         box.addView(cKey);
         box.addView(c2Key);

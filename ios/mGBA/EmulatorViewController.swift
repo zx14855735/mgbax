@@ -2013,6 +2013,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             importStickerFolder(url)
         case 11:
             addCustomRomFolder(url)
+        case 12:
+            importSps(url)
         case 10:
             installShader(url)
         case 9:
@@ -3769,7 +3771,58 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         add.setTitle("新增", for: .normal)
         add.addAction(UIAction { [weak self] _ in self?.showCheatEdit() }, for: .touchUpInside)
         box.addArrangedSubview(add)
+        let importSps = UIButton(type: .system)
+        importSps.setTitle("导入 .sps（GameShark 存档文件）", for: .normal)
+        importSps.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.pickerKind = 12
+            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.plainText, UTType.data],
+                                                        asCopy: false)
+            picker.delegate = self
+            self.presentSheet(picker)
+        }, for: .touchUpInside)
+        box.addArrangedSubview(importSps)
         presentSheet(sheet)
+    }
+
+    /// 导入 VisualBoyAdvance / My Boy 的 `.sps`（GameShark）代码文件：
+    /// 每行一对 `XXXXXXXX YYYYYYYY`，逐条加成 type 2（GameShark）。
+    private func importSps(_ url: URL) {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let secured = url.startAccessingSecurityScopedResource()
+        defer { if secured { url.stopAccessingSecurityScopedResource() } }
+        let content = (try? String(contentsOf: url, encoding: .utf8))
+            ?? (try? String(contentsOf: url, encoding: .isoLatin1))
+            ?? ""
+        guard !content.isEmpty else {
+            toast("读取 .sps 失败")
+            return
+        }
+        let base = url.deletingPathExtension().lastPathComponent
+        var added = 0
+        for raw in content.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            let lower = trimmed.lowercased()
+            if lower.hasPrefix("gameshark") || lower.hasPrefix("par") { continue }
+            let parts = trimmed.split(separator: " ").filter { !$0.isEmpty }
+            guard parts.count >= 2,
+                  parts[0].count == 8, parts[1].count == 8,
+                  UInt32(parts[0], radix: 16) != nil, UInt32(parts[1], radix: 16) != nil else { continue }
+            let name = "\(base) #\(added + 1)"
+            let line = "\(parts[0]) \(parts[1])"
+            let ok = name.withCString { namePtr in
+                line.withCString { linePtr in
+                    mgbaMobileCheatAdd(core, namePtr, linePtr, 2)
+                }
+            }
+            if ok { added += 1 }
+        }
+        RunLog.shared.add(".sps 导入 \(added) 条（\(url.lastPathComponent)）")
+        toast(added > 0 ? "已导入 \(added) 条金手指，回到金手指列表勾选生效" : "没有找到可导入的 GameShark 代码")
     }
 
     private func showCheatEdit() {
