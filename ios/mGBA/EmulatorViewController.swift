@@ -218,6 +218,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var stepFrameWanted = false
     /** 逐帧倒带：暂停时由帧循环消费一次（gate 保护）。 */
     private var rewindFrameWanted = false
+    /** 调试页「I/O 与帧状态」要求强制关闭的图层位（gate 保护，见 applyForcedLayers）。 */
+    private var forcedLayerMask: UInt32 = 0
     /** 逐帧倒带回放用的本地按键历史（环形，emu 线程读写）。 */
     private static let keyHistorySize = 240
     private var keyHistory = [UInt32](repeating: 0, count: 240)
@@ -489,8 +491,6 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         applyVideo()
     }
 
-    override var prefersStatusBarHidden: Bool { true }
-    override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var shouldAutorotate: Bool { true }
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
         // Sensor-style masks: the chosen mode is requested on entry, the
@@ -1270,6 +1270,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     for k in 0..<n {
                         keyHistory[(frameIndex + k) % Self.keyHistorySize] = frameMask
                     }
+                    // 调试页关掉的图层：每帧重写，游戏自己改 DISPCNT 也压回去。
+                    applyForcedLayers(core)
                     _ = mgbaMobileRunFrames(core, Int32(n))
                     pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: !wantSound && mult > 1)
                     done += n
@@ -1771,6 +1773,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         dropUndoState()
         toast(ok ? "已撤销\(label)" : "撤销失败（快照无效）")
         DispatchQueue.main.async { self.refreshSlotButton() }
+    }
+
+    /// 调试页的图层开关：每帧把要关闭的位从 DISPCNT 清掉（PC Video layers 的粗粒度等价）。
+    private func applyForcedLayers(_ core: OpaquePointer) {
+        gate.lock()
+        let mask = forcedLayerMask
+        gate.unlock()
+        guard mask != 0 else { return }
+        let dispcnt = mgbaMobileBusRead(core, 16, 0x04000000)
+        _ = mgbaMobileBusWrite(core, 16, 0x04000000, dispcnt & ~mask)
     }
 
     /**
@@ -5881,7 +5893,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("请先打开一个游戏")
             return
         }
-        DebugViewers.showHub(core: core, presenter: topmostPresenter)
+        DebugViewers.showHub(core: core, presenter: topmostPresenter) { [weak self] mask in
+            guard let self else { return }
+            self.gate.lock()
+            self.forcedLayerMask = mask & 0x1F00
+            self.gate.unlock()
+        }
     }
 
     /// WebDAV 云同步的账号设置。
