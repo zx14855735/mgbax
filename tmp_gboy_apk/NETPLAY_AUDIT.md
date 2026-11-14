@@ -607,14 +607,33 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 50 | 帧循环阻塞收包不得压低帧率（官方帧闸与收包解耦，`KpHwm4/A5SV6n`+`AmA8tU`） | `recv` 超时按 `tickMs` 收窄（`CloudLink.cpp:2037-2039`），否则 60fps 被压到 33fps | 独立读线程 | 独立读线程+睡眠节拍 | ⚠️等价（PC 单线程结构导致，已修） |
 | 51 | `type 6` 与 SIO 中继桥共用 6 的判别（官方无此问题） | `GBoyFrames::stateOf` 用"u32 头是否放得下"区分（`GBoyFrames.cpp:72-84`） | 同 | 同 | ⚠️等价（我们自造的分层，官方没有桥） |
 | 52 | 交付实测状态 | 编译+回归绿（`buslocal`、`frames` 4 条）；`dual` 单次可 PASS（00:42 一次全绿），但**同一二进制 5 跑 3 次无诊断退出**、`bus test.gba 4` FAIL（SIOMULTI0=ffff）→ 判 harness/4P 既有状态，**未稳定**；蓝牙仅编译（无适配器） | `assembleDebug` PASS；未真机 | `swiftc -parse` 通过；**未编译未真机** | ⚠️等价（**已实现未实测**：iOS 全部、PC/Android 蓝牙、4P 稳定性） |
-| 53 | **直连通道也必须发握手 type 1(6)**：两端互发，`case TYPE_KEYS` 的握手期门控才放行按键（`B25kr6:122/128`；门控见 `GBoyLinkSession.cpp:113`） | 已补：`CloudLink.cpp:1905` 在 `startOfficialMatch` 里 `sendSocketHandshake()`（直连/TCP-peer/蓝牙都走这里）。**修前直连路径一次没发，两端 `m_ready` 恒 false，每帧 type 0 被当"节奏信号"丢弃 → 对端按键全无响应** | `GBoySocketLink.java:196/320` 连上/回包即发 `sendSocketHandshake` | `GBoyLink.swift:735-737` `helloFrame()`，宿主收到值 6 回发（`expectHello`） | ✅一致（2026-11-15 01:2x 由 g5 补上；**只有端到端对局能验，`buslocal`/`frames`/`dual` 覆盖不到**） |
-| 54 | **握手顺序必须 `1 → 2 → 3 → 6`**（官方 `A4TApA` 按此顺序硬读，任何一步不符 `return 2`；`B25kr6:122-144`） | 线上是 **2 → 1 → 6**：`CloudLink.cpp:1901` 先发 name，`:1905` 才发 1；**从不发 3**（`TYPE_READY` 只在 relay 的 `handshake():2208` 发） | **1 → 2 → 6**：`GBoySocketLink:196/320` 发 1，`GBoyLinkSession.sendSocketHandshake()` 紧跟 2；**直连不发 3**（只有 relay `GBoyCloudLink:1909` 发） | **1 → 2 → 3 → 6 完整**（`GBoyLink.swift:377-420`：hello→romInfo→msgReady→state） | ❌不一致（PC 顺序错且缺 3；Android 缺 3；iOS 正确。**对官方房主/官方客户端都会在第一/三步断开**，自家三端不受影响） |
+| 53 | **直连通道也必须发握手 type 1(6)**：两端互发，`case TYPE_KEYS` 的握手期门控才放行按键（`B25kr6:122/128`；门控见 `GBoyLinkSession.cpp:113`） | 已补：`CloudLink.cpp:1904` 在 `startOfficialMatch` 里 `sendSocketHandshake()`（直连/TCP-peer/蓝牙都走这里）。**修前直连一次没发，两端 `m_ready` 恒 false，每帧 type 0 被当"节奏信号"丢弃 → 对端按键全无响应** | `GBoySocketLink.java:196/320` 连上/回包即发 `sendSocketHandshake` | `GBoyLink.swift:735-737` `helloFrame()`，宿主收到值 6 回发 | ✅一致（2026-11-15 由 g5 补上；**会话层已被 `gboylink_test.cpp:1229-1253` 覆盖，通道层仍需端到端**） |
+| 54 | **握手发送序列必须 `1 → 2 → 3 → 6`**（官方 `A4TApA` 按此顺序硬读，任何一步不符 `return 2`；`B25kr6:122-144`）。第三步 `type 3` 是 **10 字节**（`int 0`，`B9tovu:1037` 的 `ARc23Z(3,4)`），与"灌完了"的 **6 字节空体 3**（`AmA8tU:211`）是两种形态 | **发送侧已对齐**：`CloudLink.cpp:1903` 发 1 → `:1907` 发 2 → `:1915` 发 `frame(TYPE_READY, 0)` → 之后 type 6 | **1 → 2 →（缺 3）→ 6**：`GBoySocketLink:196/320` 发 1、session 紧跟 2，直连不发 3（`frame(TYPE_READY)` 只在 relay `GBoyCloudLink:1909`） | **1 → 2 → 3 → 6** 完整（`GBoyLink.swift:377-422`，且 `nextFrame(want:)` 按序等待、容忍噪声帧） | ❌不一致（**只剩 Android 缺第三帧**；另：接收侧 PC/Android 无阶段状态机，iOS 有） |
 
 **已知偏差（4P 槽位键）**：官方稳态用 `type 1..4` 表示"第 N 号玩家的按键"（`AYUAbz` 前半段按 playerCount 算槽位），
 我们三端用自家扩展 `11/12/17`。APK 内**没有**任何代码发送 1..4，它们只可能来自中继节点（节点给按键打玩家标签）；
 我们自己的中继不打标签，所以内部自洽但与官方 4P 房不互通。**不要**为了"对齐"去发 1..4：
 那会和握手期的 `1=注册`、`3=RTT` 撞号，必须做阶段二义（风险高、收益低）。真要与官方 4P 互通，
 正确做法是"只发 `type 0`，让节点打标签"。
+
+**附：出站消息发送点覆盖（负结果，2026-11-15 01:5x 已核）**
+
+PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"接收侧无阶段状态机（PC/Android）"外，没有第三处缺口**。
+
+| type | 直连 / TCP / 蓝牙 | 中继 |
+|---|---|---|
+| 1 | `CloudLink.cpp:1903` `sendSocketHandshake()` | `sendRegister()`（`1001/2573/2591`） |
+| 2 | `:1907` `nameFrame` | 同一函数内 |
+| 3 | `:1915` `frame(TYPE_READY, 0)`（10 字节握手形态） | `handshake()` 里的 6 字节 ack |
+| 5 | `serveOfficial:2061` → `sendReset()` | `serve:2268` 的 `TYPE_RESET` |
+| 6 | `maybeSendInitialState`（`:2011`） | （`:2259`） |
+| 9 | 不发（无倍速 UI，收到只记录 `remoteSpeed`） | 不发 |
+| 11/12/17 | 3/4 人房按键（2 人只用 `type 0`） | 同 |
+| 100 | 仅 `TcpDirectLink` 重连（客户端侧） | 无（官方也是如此） |
+
+两条**已核、不计缺口**的 nit：
+1. `remoteRtt` 会被 `(3,4)` 里的 `int 0` 覆盖成 0 —— **已处理**：`GBoyLinkSession.cpp:145-154` 只在 `rtt > 0` 时记录，其余保持 -1。
+2. `handle()`（拆分控制 / SIO 桥）不处理 `type 3` —— 官方没有这条通道，不计。
 
 **争议行说明（5/6/9/10）**：PC 侧主张「0=帧率、9=按键、5=就绪确认」，依据是 `NETPLAY_SPEC.md`。
 本节坚持相反结论，依据是**发送端全量枚举**（12 处 `ARc23Z` 调用，类型只有 0/1/2/3/5/6/9，`type9` 的唯一调用者是倍速菜单）
@@ -630,7 +649,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 # C. 缺口清单（按修复量从小到大）
 
 > **进度（2026-11-15 01:2x）**：C1/C2/C3/C5/C6/C7 **三端已完成**；另有一条不在 C 清单里的 P0 已修——
-> 直连路径此前从不发握手 `type 1(6)`（第 53 行，已修）、且**握手顺序不是 `1→2→3→6`**（第 54 行 / C13，**未修**）；
+> 直连路径此前从不发握手 `type 1(6)`（第 53 行，已修）；握手序列 `1→2→3→6` PC 已补全、**Android 仍缺第三帧 3**（第 54 行 / C13-A1）；
 > C4 **三端已完成**（PC 00:34 撤掉两处；`ninja mgba-qt` / `test-gboylink` / `frames` / `buslocal` 全绿）；
 > C8/C9/C11/C12 暂不动（team-lead 决定）。下表保留原始描述与证据，行内标注现状。
 
@@ -765,20 +784,27 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 - **风险**：低（端口可配，保持兼容）。
 - **验证**：官方客户端直连我们的监听端口。
 
-### C13. 握手顺序 `1 → 2 → 3 → 6`（P0 互通项，PC + Android）
-- **缺什么**：官方 `A4TApA` 是**按顺序硬读**的：`122` 发 1(6) → `124/125` 必须读到 1 → `132/133` 必须读到 2
+### C13. 握手序列 `1 → 2 → 3 → 6` 与接收侧状态机（P0 互通项）
+- **官方**：`A4TApA` 是**按顺序硬读**的：`122` 发 1(6) → `124/125` 必须读到 1 → `132/133` 必须读到 2
   → `139` 必须读到 3 → `143/144` 必须读到 6；任何一步不符直接 `return 2`，会话结束。
-- **现状**：PC 直连是 **2 → 1 → 6**（`CloudLink.cpp:1901/1905` 顺序反了，且从发 3）；
-  Android 直连是 **1 → 2 → 6**（缺 3）；iOS 是 **1 → 2 → 3 → 6**（`GBoyLink.swift:377-420`，正确）。
-- **影响**：我们 ↔ 官方，**两个方向都会断**——官方房主收到我们的 2（PC）或 6（Android）就 `return 2`；
-  我们作为房主时，官方客户端读循环期望 3，收到 2 也 `return 2`。自家三端互不校验顺序，所以测试全绿。
-- **证据强度**：「顺序必须 1→2→3→6」是**硬证据**（`122-152` 是顺序 `getShort()` 判断，错一步 `return 2`）；
-  「必须回空体 3」依据是 `AmA8tU:211` 的发送 + 服务端 `139` 的 `getShort()==3`，强度次之但成立。
-- **改哪（最小）**：`sendSocketHandshake()` 提到 `nameFrame` 之前 → 收到/发出 2 之后补一条**空体 type 3**
-  （`AmA8tU:211` `ARc23Z((short)3,0)`）→ 再发 type 6。PC `CloudLink.cpp:1898-1905` + `serveOfficial`；
-  Android `GBoyLinkSession.sendSocketHandshake()`（现在只发 1+2，补 3）。
-- **风险**：低（自家三端都不校验顺序，插一条空体 3 不会破坏现有流程；PC 的 `onFrameBody` 已把 3 当 ready）。
-- **验证**：**只有端到端对局能验**——与官方客户端互连，观察是否还停在第一帧；单测/`buslocal`/`frames`/`dual` 覆盖不到。
+- **`type 3` 有两种形态，别混**：
+  - **握手第三步**：`ARc23Z((short)3, 4)` = **10 字节**（type 3 + `int 0`），发送点 `EmulatorActivity.B9tovu:1037`（建好对端核之后）；
+  - **"我灌完了" ack**：`ARc23Z((short)3, 0)` = **6 字节**空体，`AmA8tU:211`。
+  - `A4TApA:139` 只校验类型、不读 payload，所以两种都能过；但补握手那一步应该发 **10 字节**那种（`frame(TYPE_READY, 0)`）。
+- **现状（2026-11-15 01:4x）**：
+  - **PC 已补全**：`CloudLink.cpp:1904` 发 1 → `:1909` 发 2 → `:1915` 发 `frame(TYPE_READY, 0)`（10 字节）→ 之后 type 6；
+  - **Android 仍缺第三帧**：`GBoySocketLink:196/320` 发 1、session 紧跟 2，直连不发 3（`frame(TYPE_READY)` 只在 relay `GBoyCloudLink:1909`）；
+  - **iOS 完整**（`GBoyLink.swift:377-420`）。
+- **影响（发送侧）**：只剩 Android——它连官方房主时，房主读到第三帧是 6 而不是 3 → `return 2`。
+- **接收侧缺口（A2，仅 PC/Android）**：PC/Android 按类型分发，没有"等对方 2/3 再回自己的 3/6"的阶段状态机；
+  官方客户端 `AmA8tU:183-222` 是状态机式读（只接受 3 或 0，其它 `return 2`），**iOS 已等价**（`nextFrame(want:)` 按序等待、只吞掉按键/重连/倍速等噪声帧）。
+- **反向风险（待真机确认，证据偏弱）**：我们当房主时在 1 之后无条件发 **type 2（名字）**，而官方客户端 `AmA8tU` 的读循环只认 3/0。
+  但官方**房主自己也会发 2**（`B25kr6:131` → `AZkASS:136`），官方↔官方能跑通，说明客户端要么容忍 2、要么到达时已过了那段读循环。
+  结论：**不要按 bug 改**；真机抓一次"官方客户端连我们"的字节流即可定性。
+- **建议拆成两步**：
+  - **A1（发送序列，零风险）**：Android 在 2 之后补一条 `frame(TYPE_READY, 0)` 再发 6。自家三端都不校验顺序，插一帧不影响现有流程。
+  - **A2（接收状态机 + 超时降级）**：三端同改，先等对方 2/3 再发自己的 3/6；需超时兜底，否则会互相等死。风险中，收益是"我们当房主也能被官方客户端正确握手"。
+- **验证**：A1 只能端到端（与官方房主互连，看是否还停在第三帧）；接收侧状态机可以补在 `gboylink_test.cpp` 的会话层用例里（已有 `1229-1253` 可扩展）。
 
 ---
 
@@ -791,20 +817,21 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
   照抄会 `memset` 掉 EWRAM/IWRAM —— 这条已在代码与本文里都写了"勿修回去"。
 - `type 6` 失败即断链并区分 `3 / 1`（C5）、注册帧恒 16 字节（C6）、`type 2` 三端都发（C7）：均已闭环。
 - 直连/蓝牙路径的**握手 `type 1(6)`** 此前从未发出，导致 ready 恒 false、按键被门控丢弃（第 53 行）；g5 已补。
-- **握手顺序**仍不是官方的 `1→2→3→6`（PC `2→1→6`、Android `1→2→6`，iOS 正确）——这是目前唯一还会挡住与官方互连的项（第 54 行 / C13）。
+- **握手序列**：PC 已补齐 `1→2→3(4)→6`、iOS 本来完整，**只剩 Android 缺第三帧 3**——这是目前唯一还会挡住与官方互连的项（第 54 行 / C13-A1）。
 
 **照抄率（54 条）**：`✅20 / ⚠️27 / ❌缺失 3 / ❌不一致 4`；
 "逐字节互通"口径 **37%**，"行为等价"口径 **87%**。
 
 **验证边界（对外表述请带上）**：iOS 只过 `swiftc -parse`，未编译未真机；PC/Android 蓝牙只有编译验证（无适配器）；
 PC 的 `dual` 同一二进制 5 跑 3 次无诊断退出、`bus test.gba 4` 失败（SIOMULTI0=ffff），属 harness/4P 既有状态，
-所以 **4 人房不可宣称"已验证"**。`buslocal`、`frames`（FRAMES/KCP/RECONNECT/TCPDIRECT）是稳定门禁。
+所以 **4 人房不可宣称"已验证"**。`buslocal`、`frames`（FRAMES/KCP/RECONNECT/TCPDIRECT）是稳定门禁；
+**`dist` 需晚于 `mGBA.exe`**：改过 `startOfficialMatch` 后必须重新部署（当前 `CloudLink.cpp` 00:58:30 / `mGBA.exe` 00:59:01 / `dist` 01:00:13，已对齐）。
 
 **剩余 7 条**
 
 | # | 差异 | 是否会挡住"与官方互连" | 建议 |
 |---|---|---|---|
-| 54 | 握手顺序：官方硬读 `1→2→3→6`；PC 是 `2→1→6`、Android 是 `1→2→6`、iOS 正确 | **会**（官方房主/客户端都会在第一或第三步断） | **C13，P0，优先修** |
+| 54 | 握手序列：官方硬读 `1→2→3→6`；PC 已补全（`:1904/1909/1915`）、iOS 正确、**Android 仍缺第三帧 3** | **会**（Android 连官方房主时在第三帧被 `return 2`） | **C13-A1，P0**（Android 补 10 字节 `type 3`）；接收侧状态机另算 A2 |
 | 9 | `type 3` 在官方是"rtt + 载入指令 / 空 ack / 稳态玩家3键"三重语义，我们只当 ready+RTT | 可能会（与 54 同源，修完 54 再看） | C8，按阶段重构，风险中 |
 | 34 | 槽位映射：官方 `A2egSU(pc,index)` 表 vs 我们"除本机升序" | 3/4 人房会 | C9，改动小但要回归 4 核 |
 | 46 | `type 7`（本机可见核按键）我们用自研 14 号 | 不会（APK 内无发送方） | 可不动 |

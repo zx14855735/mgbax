@@ -382,13 +382,21 @@ public final class GBoyLinkSession {
         this.nameFrame = nameFrame;
     }
 
-    /** Official socket handshake: type 1 carrying int 6, then the type 2 identity. */
+    /**
+     * Official socket handshake: type 1 (int 6) → type 2 identity → type 3.
+     *
+     * <p>官方直连是硬读顺序 {@code 1 → 2 → 3 → 6}（{@code B25kr6.A4TApA:122-144}，
+     * 每步 {@code getShort()} 校验、不符即 {@code return 2}）。第 3 帧是
+     * {@code ARc23Z((short)3, 4)} 的 10 字节形态（type 3 + int32 0），不是
+     * 「灌完存档」那种 6 字节空体（{@code AmA8tU:211}）。每次连接只发一次。</p>
+     */
     public void sendSocketHandshake() {
         transport.send(GBoyFrames.frame(GBoyFrames.TYPE_REGISTER, SOCKET_HANDSHAKE_VALUE));
         byte[] identity = nameFrame;
         if (identity != null) {
             transport.send(identity);
         }
+        transport.send(GBoyFrames.frame(GBoyFrames.TYPE_READY, 0));
     }
 
     /** TYPE_STATE = int length followed by the save-state blob. */

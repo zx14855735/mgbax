@@ -313,22 +313,25 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             byte[] body;
             while ((body = reader.next()) != null) {
                 received.incrementAndGet();
-                session.onFrameBody(body);
                 int type = GBoyFrames.typeOf(body);
-                if (type == GBoyFrames.TYPE_READY || type == GBoyFrames.TYPE_RECONNECT) {
-                    // 两条路都带 RTT：type 3 是正常就绪，type 100 是重连握手。
-                    lastRtt = GBoyFrames.intOf(body);
-                }
+                /* 先回握手（1→2→3）再交给 session：session 收到 type 1 会触发
+                 * onReady，上层通常在 onReady 里发首帧 type 6。官方直连是硬读
+                 * 顺序 1→2→3→6（B25kr6:122-144），先 dispatch 会把 6 排到 1/2/3
+                 * 前面。只有监听端回声；客户端发起方不回声。 */
                 if (type == GBoyFrames.TYPE_REGISTER) {
                     boolean wasHost = server != null;
                     boolean first = handshakeDone.compareAndSet(false, true);
-                    /* 只有监听端回声；客户端发起方不回声。官方 B25kr6:122-130：
-                     * 首次发 type 1(6)；已在房内（重连走完整握手而非 type 100）
-                     * 时，只有收到 type 1 且值为 6 才再回一次。 */
+                    /* 官方 B25kr6:122-130：首次发 type 1(6)；已在房内（重连走
+                     * 完整握手而非 type 100）时，只有收到 type 1 且值为 6 才再回。 */
                     if (wasHost && (first
                             || GBoyFrames.intOf(body) == GBoyLinkSession.SOCKET_HANDSHAKE_VALUE)) {
                         session.sendSocketHandshake();
                     }
+                }
+                session.onFrameBody(body);
+                if (type == GBoyFrames.TYPE_READY || type == GBoyFrames.TYPE_RECONNECT) {
+                    // 两条路都带 RTT：type 3 是正常就绪，type 100 是重连握手。
+                    lastRtt = GBoyFrames.intOf(body);
                 }
             }
         }

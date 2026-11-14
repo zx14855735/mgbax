@@ -310,10 +310,18 @@ public final class GBoyLinkSessionTest {
         byte[] reg = sink.frames.get(sink.frames.size() - 1);
         check(reg.length == 16, "cloud registration frame is 16 bytes");
         check(GBoyFrames.getShort(reg, 4) == GBoyFrames.TYPE_REGISTER, "registration type 1");
+        int mark = sink.frames.size();
         session.sendSocketHandshake();
-        byte[] hs = sink.frames.get(sink.frames.size() - 1);
+        check(sink.frames.size() == mark + 2,
+                "socket handshake sends type 1 + type 3 when no identity is set");
+        byte[] hs = sink.frames.get(mark);
         check(hs.length == 10 && GBoyFrames.getInt(hs, 6) == 6,
                 "socket handshake is type 1 with int 6");
+        byte[] ready = sink.frames.get(mark + 1);
+        check(ready.length == 10
+                        && GBoyFrames.getShort(ready, 4) == GBoyFrames.TYPE_READY
+                        && GBoyFrames.getInt(ready, 6) == 0,
+                "third handshake frame is the 10-byte type 3 (ARc23Z(3, 4))");
         session.sendReset();
         byte[] rst = sink.frames.get(sink.frames.size() - 1);
         check(GBoyFrames.getShort(rst, 4) == GBoyFrames.TYPE_RESET, "reset frame type 5");

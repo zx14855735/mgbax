@@ -1250,6 +1250,10 @@ static int gboySessionSlotTest(void) {
 		a.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x21));
 		check(a.keysForSlot(2) == 0x21,
 		      "keys flow after the type 1 handshake on the direct path");
+		/* 握手第三步的 type3 带 int 0，不能把 remoteRtt 从 -1 改成 0。 */
+		check(a.remoteRtt() == -1, "a zero-rtt handshake frame is not recorded");
+		a.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_READY, 37));
+		check(a.remoteRtt() == 37, "a real type 3 rtt is recorded");
 	}
 	/* 官方 9 = 倍速、5 = 复位（NETPLAY_AUDIT.md C1/C3）。 */
 	{

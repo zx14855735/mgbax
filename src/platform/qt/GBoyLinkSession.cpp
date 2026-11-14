@@ -144,7 +144,13 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 			first = !m_ready;
 			m_ready = true;
 			if (GBoyFrames::payloadOf(body).size() >= 4) {
-				m_remoteRtt = GBoyFrames::intOf(body);
+				/* 握手第三步的 type3 带的是 int 0（B9tovu:1037 的
+				 * ARc23Z((short)3, 4)），不是真实 RTT；0 一律当「未测」，
+				 * 保持 remoteRtt() == -1 的契约，避免 UI 显示 0ms。 */
+				const int rtt = GBoyFrames::intOf(body);
+				if (rtt > 0) {
+					m_remoteRtt = rtt;
+				}
 			}
 		}
 		if (type == GBoyFrames::TYPE_RECONNECT && m_events.onStatus) {
