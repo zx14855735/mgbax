@@ -58,6 +58,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 线程还在 mCoreLoadConfig、emu 线程已进 ARMStep）——加载期间 emu
     /// 循环必须留在未加载分支。
     private var loadInFlight = false
+    /// 当前 consoleSet 是否云端 4 核房间（gate 保护）。NPC 槽位注入只在
+    /// 云端生效：本机多核锁步的真人对局里 slot3/4 是真实玩家位，注入会
+    /// 覆盖他们的按键（Android 侧以 cloudLink 判空同款门控）。
+    private var cloudConsoleActive = false
     private var command = 0
     private let stopped = DispatchSemaphore(value: 0)
     private let audio = AudioOut()
@@ -1629,6 +1633,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         var mask = userKeys()
         if turboB { mask &= ~ControlsView.B }
         mgbaMobileSetKeys(core, UInt32(mask))
+        // 云端 4 核：本机只有可见核有真人按键源，slot3/4 的 NPC 陪位恒 0
+        // 会永远停在柜台大厅，大竞技场就不放开走位（要求 4 人就位）。把
+        // 可见核的同一掩码灌进 3/4，让 NPC 跟着走完同一段对话/菜单。
+        // slot2 是跨网对端真人，不能覆盖（Android injectKeysForSlot /
+        // PC injectNpcKeys 同构）。
+        gate.lock()
+        let cloudActive = cloudConsoleActive
+        gate.unlock()
+        if cloudActive {
+            consoleSet?.setRemoteKeys(slot: 2, mask: UInt32(mask))
+            consoleSet?.setRemoteKeys(slot: 3, mask: UInt32(mask))
+        }
     }
 
     /** Vibration strength for on-screen key presses, 0-3. */
@@ -5858,6 +5874,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         consoleSet?.stop()
         consoleSet = set
+        gate.lock()
+        cloudConsoleActive = false   // 本机多核锁步不是云端房间，NPC 注入必须关闭
+        gate.unlock()
         status.text = "进程内锁步已启用：本机 \(n) 核，SIO 不跨网络\n网络仍只传按键"
         return nil
     }
@@ -5892,6 +5911,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private func rebuildCloudConsoleSet(romPath: String, visible: OpaquePointer) {
         consoleSet?.stop()
         consoleSet = nil
+        gate.lock()
+        cloudConsoleActive = false   // 重建失败也要掉标志，成功后才重新置位
+        gate.unlock()
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
         guard let set = GBoyConsoleSet(romPath: romPath, saveDir: saves, stateDir: states,
@@ -5907,6 +5929,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast("四核联机启动失败：\(error)")
         } else {
             consoleSet = set
+            gate.lock()
+            cloudConsoleActive = true
+            gate.unlock()
             NSLog("GBOY_RT cloud arm rebuilt players=4 visible slot=1")
         }
         gate.lock()
@@ -6007,6 +6032,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.gate.lock()
                 self.pendingCloudRearm = false
                 self.suppressAutoLoadState = false
+                self.cloudConsoleActive = false
                 self.gate.unlock()
                 self.toast("云端联机已断开")
             }
