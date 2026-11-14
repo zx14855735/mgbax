@@ -67,6 +67,8 @@ public final class GBoyLinkSession {
     private boolean ready;
     private int remoteCounter = -1;
     private int remoteFps = -1;
+    /** 官方 type 3 带回的对端 RTT（毫秒），-1 = 还没收到。 */
+    private int remoteRtt = -1;
     private int lastLocalKeys;
     /** 上一次真正发出去的按键掩码；边沿立即发送靠它判变化（-1 = 强制首帧）。 */
     private int lastSentKeys = -1;
@@ -161,7 +163,7 @@ public final class GBoyLinkSession {
             case 2:
                 return GBoyFrames.frame(GBoyFrames.TYPE_INPUT_2, keys);
             case 3:
-                return GBoyFrames.frame(GBoyFrames.TYPE_READY, keys);
+                return GBoyFrames.frame(GBoyFrames.TYPE_INPUT_3, keys);
             case 4:
                 return GBoyFrames.frame(GBoyFrames.TYPE_INPUT_4, keys);
             default:
