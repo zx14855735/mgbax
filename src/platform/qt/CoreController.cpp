@@ -1723,6 +1723,24 @@ void CoreController::updatePlayerSave() {
 	}
 }
 
+void CoreController::setNetSpeed(float speed) {
+	/* 官方 type 9 的四个值：0.5 / 1 / 2 / 4；其它输入按 1x。 */
+	if (!(speed > 0.f)) {
+		speed = 1.f;
+	}
+	if (speed != 0.5f && speed != 1.f && speed != 2.f && speed != 4.f) {
+		speed = 1.f;
+	}
+	if (m_netSpeed == speed) {
+		return;
+	}
+	m_netSpeed = speed;
+	if (!m_threadContext.core) {
+		return;
+	}
+	updateFastForward();
+}
+
 void CoreController::updateFastForward() {
 	// If we have "Fast forward" checked in the menu (m_fastForwardForced)
 	// or are holding the fast forward button (m_fastForward):
@@ -1751,14 +1769,18 @@ void CoreController::updateFastForward() {
 			// If we aren't holding the fast forward button
 			// then use the non "(held)" ratio
 			if (m_fastForwardRatio > 0) {
-				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_fastForwardRatio;
+				/* 临时快进优先，但不低于网络倍速：联机 4x 时按住 2x 快进
+				 * 不应反而变慢；松开后回落到 m_netSpeed。 */
+				const float ratio = m_fastForwardRatio > m_netSpeed ? m_fastForwardRatio : m_netSpeed;
+				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * ratio;
 				m_threadContext.impl->sync.audioWait = true;
 			}
 		} else {
 			// If we are holding the fast forward button,
 			// then use the held ratio
 			if (m_fastForwardHeldRatio > 0) {
-				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_fastForwardHeldRatio;
+				const float ratio = m_fastForwardHeldRatio > m_netSpeed ? m_fastForwardHeldRatio : m_netSpeed;
+				m_threadContext.impl->sync.fpsTarget = m_fpsTarget * ratio;
 				m_threadContext.impl->sync.audioWait = true;
 			}
 		}
@@ -1773,7 +1795,8 @@ void CoreController::updateFastForward() {
 		if (m_userMute) {
 			m_threadContext.core->opts.mute = true;
 		}
-		m_threadContext.impl->sync.fpsTarget = m_fpsTarget;
+		/* 稳态：官方 type 9 的倍速直接写进帧目标（AaHO0E 的帧闸）。 */
+		m_threadContext.impl->sync.fpsTarget = m_fpsTarget * m_netSpeed;
 		setSync(true);
 	}
 

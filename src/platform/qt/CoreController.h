@@ -159,6 +159,12 @@ public slots:
 
 	void setFastForward(bool);
 	void forceFastForward(bool);
+	/**
+	 * 联机倍速（官方 type 9）：0.5 / 1 / 2 / 4。只改本机的帧目标，
+	 * 与「按住快进」解耦——快进时取两者较大值，松开后回到网络倍速。
+	 * 传 <= 0 或非法值按 1x。
+	 */
+	void setNetSpeed(float speed);
 
 	void changePlayer(int id);
 
@@ -400,6 +406,8 @@ private:
 	float m_fastForwardRatio = -1.f;
 	float m_fastForwardHeldRatio = -1.f;
 	float m_fpsTarget;
+	/** 联机倍速（1.0 = 正常）；与 m_fastForwardRatio 分开保存。 */
+	float m_netSpeed = 1.f;
 
 	bool m_mute = false;
 	int m_userVolume = -1;      // -1 = 跟随配置；否则为用户显式设定

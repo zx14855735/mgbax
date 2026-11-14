@@ -107,6 +107,10 @@ public slots:
 	void replaceROM();
 
 	void multiplayerChanged();
+	/** 联机倍速（官方 type 9）：本地菜单选中 0.5x/1x/2x/4x（-1/1/2/4）。 */
+	void setNetSpeed(int wireValue);
+	/** 只同步菜单勾选（收到对端倍速或断开回 1x 时用），不广播。 */
+	void reflectNetSpeed(int wireValue);
 
 	void importSharkport();
 	void exportSharkport();
@@ -217,6 +221,7 @@ private:
 
 	// TODO: Move these to a new class
 	ActionMapper m_actions;
+	std::shared_ptr<Action> m_netSpeedActions[4];
 	QList<std::shared_ptr<Action>> m_gameActions;
 	QList<std::shared_ptr<Action>> m_nonMpActions;
 	QMultiMap<mPlatform, std::shared_ptr<Action>> m_platformActions;

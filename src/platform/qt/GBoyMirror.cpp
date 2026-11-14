@@ -180,7 +180,8 @@ void GBoyMirror::stopMirror() {
 }
 
 void GBoyMirror::run() {
-	auto nextFrame = QDateTime::currentMSecsSinceEpoch();
+	/* 用微秒累计，倍速 4x 的 4.17ms 帧间隔不会被整数毫秒截成 4ms。 */
+	qint64 nextFrame = QDateTime::currentMSecsSinceEpoch() * 1000;
 	while (m_running.load(std::memory_order_relaxed) && m_emu) {
 		/* 云端 4P 闭环导航的同步闸门：脚本未武装前，本核只用网络按键（本地
 		 * 4 人房间中镜像核的 slot 无远端输入，等效空操作），停在标题画面等待。
@@ -245,13 +246,17 @@ void GBoyMirror::run() {
 		mgbaMobileSetKeys(m_emu, quint32(keys));
 		mgbaMobilePumpLink(m_emu);
 		mgbaMobileRunFrames(m_emu, 1);
-		nextFrame += FRAME_INTERVAL_US / 1000;
-		long sleep = long(nextFrame - QDateTime::currentMSecsSinceEpoch());
+		/* 官方 AaHO0E 的帧闸对所有本机核一致：可见核 4x 时镜像核也必须 4x，
+		 * 否则 SIO 两端推进速度不同，很快卡死/花屏。 */
+		const double speed = m_netSpeed.load(std::memory_order_relaxed);
+		nextFrame += qint64(FRAME_INTERVAL_US / (speed > 0 ? speed : 1.0));
+		const qint64 nowUs = QDateTime::currentMSecsSinceEpoch() * 1000;
+		long sleep = long((nextFrame - nowUs) / 1000);
 		if (sleep > 0) {
 			QThread::msleep(unsigned(sleep));
 		} else {
 			// Fell behind: resync the pace instead of bursting frames.
-			nextFrame = QDateTime::currentMSecsSinceEpoch();
+			nextFrame = nowUs;
 		}
 	}
 }
@@ -276,6 +281,10 @@ int GBoyMirror::applyRemoteState(const QByteArray& state, std::function<void(int
 
 void GBoyMirror::requestReset() {
 	m_resetRequested.store(true, std::memory_order_relaxed);
+}
+
+void GBoyMirror::setNetSpeed(float speed) {
+	m_netSpeed.store(speed > 0.f ? speed : 1.f, std::memory_order_relaxed);
 }
 
 bool GBoyMirror::takePendingState(QByteArray* out, std::function<void(int)>* result) {

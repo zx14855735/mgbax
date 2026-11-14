@@ -1279,6 +1279,12 @@ static int gboySessionSlotTest(void) {
 		check(GBoyLinkSession::effectiveSpeed(0) == 1.0
 		      && GBoyLinkSession::effectiveSpeed(7) == 1.0,
 		      "an unset or invalid speed falls back to 1x");
+		/* 菜单四个值 → 实际倍率（0.5x/1x/2x/4x）。 */
+		check(GBoyLinkSession::effectiveSpeed(-1) == 0.5
+		      && GBoyLinkSession::effectiveSpeed(1) == 1.0
+		      && GBoyLinkSession::effectiveSpeed(2) == 2.0
+		      && GBoyLinkSession::effectiveSpeed(4) == 4.0,
+		      "0.5x/1x/2x/4x map to the official multipliers");
 		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
 		check(reset, "type 5 is a reset, not a ready ack");
 		reset = false;

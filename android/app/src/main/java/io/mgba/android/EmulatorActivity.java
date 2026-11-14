@@ -117,6 +117,10 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int CMD_RESET = 3;
     private static final int CMD_AUTOSAVE = 4;
     private static final int CMD_REWIND = 5;
+    private static final int CMD_UNDO_LOAD = 6;
+    private static final int CMD_UNDO_SAVE = 7;
+    /** Advances a single emulated frame; used while paused. */
+    private static final int CMD_STEP = 8;
     private static final int TURBO_ARM_MS = 200;
     /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
     private static final int AUTO_SLOT = 0;
@@ -2438,7 +2442,14 @@ public class EmulatorActivity extends AppCompatActivity {
         if (session == null) {
             return 0L;
         }
-        return GBoyLinkSession.paceNanosForSpeed(session.remoteSpeed());
+        int speed = session.remoteSpeed();
+        /* 1x 不覆盖：本机原始节拍就是 1x（GBA 16.742ms / 59.73fps）。
+         * 用官方 1e9/60=16.667ms 会把单机速度再抬高 0.45%，联机时能和单机
+         * 完全对齐；2x/4x/0.5x 再按官方公式缩放。 */
+        if (speed == 1) {
+            return 0L;
+        }
+        return GBoyLinkSession.paceNanosForSpeed(speed);
     }
 
     /** Empty on success, otherwise the setup error of the last start. */

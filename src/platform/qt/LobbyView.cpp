@@ -255,6 +255,7 @@ void LobbyView::startRoom(bool asHost) {
 	connect(m_link, &CloudLink::linkEnded, this, &LobbyView::ended);
 	connect(m_link, &CloudLink::remoteKeys, m_controller.get(), &CoreController::setRemoteKeys);
 	connect(m_link, &CloudLink::remoteReset, m_controller.get(), &CoreController::reset);
+	connect(m_link, &CloudLink::remoteSpeedChanged, this, &LobbyView::applyNetSpeed);
 	connect(m_controller.get(), &CoreController::stopping, this, &LobbyView::disconnect);
 	m_link->startLink(config);
 
@@ -281,10 +282,37 @@ void LobbyView::disconnect() {
 	m_link = nullptr;
 	if (m_controller) {
 		m_controller->setRemoteKeys(0);
+		/* 断开后回到 1x，否则下一次单机会带着上一局的 4x/0.5x 起来。 */
+		m_controller->setNetSpeed(1.f);
 		m_controller.reset();
+	}
+	if (m_window) {
+		m_window->reflectNetSpeed(0);
 	}
 	m_ui.status->appendPlainText(tr("已断开"));
 	updateRunning();
+}
+
+void LobbyView::sendNetSpeed(int wireValue) {
+	if (m_link) {
+		m_link->sendSpeed(wireValue);
+	}
+}
+
+void LobbyView::applyNetSpeed(int wireValue) {
+	/* 官方 9 的线上值 → 实际倍率；0 = 未收到 → 1x。 */
+	float speed = 1.f;
+	if (wireValue == -1) {
+		speed = 0.5f;
+	} else if (wireValue == 2 || wireValue == 4) {
+		speed = float(wireValue);
+	}
+	if (m_controller) {
+		m_controller->setNetSpeed(speed);
+	}
+	if (m_window) {
+		m_window->reflectNetSpeed(wireValue);
+	}
 }
 
 void LobbyView::status(const QString& message) {

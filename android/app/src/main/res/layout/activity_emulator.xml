@@ -85,6 +85,11 @@
                     android:text="@string/pause" />
 
                 <Button
+                    android:id="@+id/btn_frame"
+                    style="@style/MgbaButton"
+                    android:text="@string/frame_step" />
+
+                <Button
                     android:id="@+id/btn_fast"
                     style="@style/MgbaButton"
                     android:text="@string/speed_1" />
@@ -108,6 +113,11 @@
                     android:id="@+id/btn_load"
                     style="@style/MgbaButton"
                     android:text="@string/load_state" />
+
+                <Button
+                    android:id="@+id/btn_undo"
+                    style="@style/MgbaButton"
+                    android:text="@string/undo" />
 
                 <Button
                     android:id="@+id/btn_bios"

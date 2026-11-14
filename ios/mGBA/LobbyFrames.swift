@@ -304,11 +304,16 @@ enum GBoySpeed {
         return nil
     }
 
-    /// 官方帧闸 `1e9 / (speed * 60)`。这里以核心自己的帧长为基准除以倍率：
-    /// GBA/GB 的帧长不是刚好 1e9/60（约 16.74ms），用基准值能把「倍速 = 帧
-    /// 间隔 ÷ 倍率」保持住，不被 60fps 取整污染。
-    static func sliceNanos(base: Int64, rate: Double) -> Int64 {
-        guard base > 0, rate > 0 else { return base }
-        return max(1, Int64(Double(base) / rate))
+    /// 官方帧闸：`1e9 / (speed * 60)`（`AaHO0E.AYUAbz`）—— 1x=16.667ms、
+    /// 0.5x=33.333ms、2x=8.333ms、4x=4.167ms。
+    ///
+    /// **不要改成「核心帧长 / speed」**：GBA 的实际帧长是 16.742ms，两种写法
+    /// 差 0.45%，三端与验收断言会逐位对不上（PC `tickMsForSpeed`、Android
+    /// `paceNanosForSpeed`、team-lead 的验收数值都用本式）。1x 时本函数不被
+    /// 调用（调用点有 `rate != 1` 判断），所以单机/联机的 1x 节拍仍是核心帧长，
+    /// 不存在 16.742→16.667 的跳变。
+    static func sliceNanos(rate: Double) -> Int64 {
+        guard rate > 0 else { return 1_000_000_000 / 60 }
+        return max(1, Int64(1_000_000_000 / (rate * 60)))
     }
 }

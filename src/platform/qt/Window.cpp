@@ -476,6 +476,33 @@ void Window::multiplayerChanged() {
 	}
 }
 
+void Window::setNetSpeed(int wireValue) {
+	/* 本机菜单切换：立即改本机帧目标；联机中时广播官方 type 9。 */
+	float speed = 1.f;
+	if (wireValue == -1) {
+		speed = 0.5f;
+	} else if (wireValue == 2 || wireValue == 4) {
+		speed = float(wireValue);
+	}
+	if (m_controller) {
+		m_controller->setNetSpeed(speed);
+	}
+	if (m_lobbyView) {
+		m_lobbyView->sendNetSpeed(wireValue);
+	}
+	reflectNetSpeed(wireValue);
+}
+
+void Window::reflectNetSpeed(int wireValue) {
+	const int wires[4] = {-1, 1, 2, 4};
+	const int effective = (wireValue == -1 || wireValue == 2 || wireValue == 4) ? wireValue : 1;
+	for (int i = 0; i < 4; ++i) {
+		if (m_netSpeedActions[i]) {
+			m_netSpeedActions[i]->setActive(wires[i] == effective);
+		}
+	}
+}
+
 void Window::selectPatch() {
 	QString filename = GBAApp::app()->getOpenFileName(this, tr("Select patch"), tr("Patches (*.ips *.ups *.bps)"));
 	if (!filename.isEmpty()) {
@@ -1825,6 +1852,21 @@ void Window::setupMenu(QMenuBar* menubar) {
 #endif
 
 	m_actions.addMenu(tr("&Tools"), "tools");
+	/* 联机倍速（官方 type 9）：Tools → Speed。未联机时只改本机；联机中
+	 * 由 LobbyView/CloudLink 广播 0.5x/1x/2x/4x（-1/1/2/4）。 */
+	m_actions.addMenu(tr("Speed"), "netSpeed", "tools");
+	auto addNetSpeed = [this](const QString& label, const QString& name, int wire) {
+		auto action = m_actions.addBooleanAction(label, name, [this, wire](bool) {
+			setNetSpeed(wire);
+		}, "netSpeed");
+		action->setExclusive(true);
+		return action;
+	};
+	m_netSpeedActions[0] = addNetSpeed(tr("0.5x"), "netSpeed05", -1);
+	m_netSpeedActions[1] = addNetSpeed(tr("1x"), "netSpeed1", 1);
+	m_netSpeedActions[2] = addNetSpeed(tr("2x"), "netSpeed2", 2);
+	m_netSpeedActions[3] = addNetSpeed(tr("4x"), "netSpeed4", 4);
+	reflectNetSpeed(1);
 	m_actions.addAction(tr("View &logs..."), "viewLogs", static_cast<QWidget*>(m_logView), &QWidget::show, "tools");
 
 	m_actions.addAction(tr("Game &overrides..."), "overrideWindow", [this]() {

@@ -30,6 +30,10 @@ public:
 
 public slots:
 	void disconnect();
+	/** 本机倍速菜单：广播官方 type 9（1 / -1 / 2 / 4）。 */
+	void sendNetSpeed(int wireValue);
+	/** 收到对端 type 9（或本机切换）：把 CoreController 的帧目标切过去。 */
+	void applyNetSpeed(int wireValue);
 
 private slots:
 	void sendCode();

@@ -646,6 +646,8 @@ void CloudLink::sendSpeed(int speed) {
 	/* 只接受官方倍速菜单的值域；0 保留给「无待发送」。 */
 	if (speed == 1 || speed == -1 || speed == 2 || speed == 4) {
 		m_sendSpeed.store(speed, std::memory_order_relaxed);
+		/* 本机切换立即生效（官方菜单同样直接写 AaHO0E），不等回环。 */
+		m_speedWire.store(speed, std::memory_order_relaxed);
 	}
 }
 
@@ -2052,9 +2054,10 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 				}
 			}
 		}
-		/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
-		 * 1x=16.7ms、0.5x=33.3ms、2x=8.3ms、4x=4.2ms；没收到时按 1x。 */
-		const double tickMs = GBoyLinkSession::tickMsForSpeed(m_gboySession->remoteSpeed());
+	/* 官方帧闸：type 9 的倍率决定节拍（nanos = 1e9/(speed*60)）。
+	 * 1x=16.7ms、0.5x=33.3ms、2x=8.3ms、4x=4.2ms。本地切换与对端 type 9
+	 * 都写 m_speedWire（等价官方共享的 AaHO0E 字段），没设置时按 1x。 */
+		const double tickMs = GBoyLinkSession::tickMsForSpeed(m_speedWire.load(std::memory_order_relaxed));
 		if (now - lastTick >= tickMs) {
 			lastTick = now;
 			/* 脚本注入（MGBAX_SCRIPT_DIR/keys）走的是 ScriptedControl 的
@@ -2089,7 +2092,19 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		}
 		if (int speed = m_sendSpeed.exchange(0, std::memory_order_relaxed)) {
 			m_gboySession->sendSpeed(speed);
+			applyMirrorSpeed(speed);
 			GbCloud::debugLog(QStringLiteral("[gboy] type 9 speed sent: %1").arg(speed));
+		}
+		/* 对端倍速变化 → 前端把 CoreController 的帧目标切过去（官方
+		 * AaHO0E.f4302AZkASS 的等价物）。只在变化时 emit。 */
+		{
+			const int wireSpeed = m_gboySession->remoteSpeed();
+			if (wireSpeed != m_lastSpeedWire) {
+				m_lastSpeedWire = wireSpeed;
+				m_speedWire.store(wireSpeed, std::memory_order_relaxed);
+				applyMirrorSpeed(wireSpeed);
+				emit remoteSpeedChanged(wireSpeed);
+			}
 		}
 		/* 官方 type 6 失败即断链：-5（尺寸不符）对应错误码 3，其它对应 1。
 		 * 镜像核在帧边界载入后写标记，这里在主循环收口。 */
@@ -2133,12 +2148,24 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	}
 }
 
+void CloudLink::applyMirrorSpeed(int wireValue) {
+	const float speed = float(GBoyLinkSession::effectiveSpeed(wireValue));
+	for (int i = 0; i < MIRROR_COUNT; ++i) {
+		if (m_mirrors[i]) {
+			m_mirrors[i]->setNetSpeed(speed);
+		}
+	}
+}
+
 void CloudLink::stopOfficialMatch() {
 	/* 下一次连接必须重新走「镜像就绪 → 写文件 → 四核同时起跑」；残留的
 	 * nav_at 会让可见核在镜像核创建之前就独自开跑，四核相位错开。 */
 	m_mirrorStateError.store(0, std::memory_order_relaxed);
 	/* 倍速复位：新会话的 type 9 是 0（未收到）→ 1x，避免上一局的 4x 带进来。 */
 	m_sendSpeed.store(0, std::memory_order_relaxed);
+	m_speedWire.store(0, std::memory_order_relaxed);
+	m_lastSpeedWire = 0;
+	emit remoteSpeedChanged(0);
 	const QString scriptDir = QString::fromLocal8Bit(qgetenv("MGBAX_SCRIPT_DIR"));
 	if (!scriptDir.isEmpty()) {
 		QFile::remove(scriptDir + QStringLiteral("/nav_at"));

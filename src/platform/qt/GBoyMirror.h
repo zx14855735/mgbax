@@ -75,6 +75,10 @@ public:
 	/** 官方 type 5：复位本核。线程安全，真正的 reset 在帧边界执行。 */
 	void requestReset();
 
+	/** 联机倍速（1 / 0.5 / 2 / 4）：镜像核与可见核跑同一个帧闸，否则 4x 时
+	 *  可见核会把镜像核甩开、SIO 立刻不同步。 */
+	void setNetSpeed(float speed);
+
 	/** 已受理并真正载入的状态包计数（诊断用）。 */
 	int appliedStateCount() const { return m_appliedStates.load(std::memory_order_relaxed); }
 
@@ -98,6 +102,8 @@ private:
 	std::function<void(int)> m_pendingResult;
 	/** 官方 type 5：帧边界上复位本核。 */
 	std::atomic<bool> m_resetRequested{false};
+	/** 联机倍速；run() 每帧按它缩放帧间隔。 */
+	std::atomic<float> m_netSpeed{1.f};
 	std::atomic<int> m_appliedStates{0};
 	/* 云端 4P 闭环导航的同步闸门：镜像核不再在 start() 里立即武装脚本，而是
 	 * 记下 navIdx，等到 <scriptDir>/nav_at 出现（CloudLink 在三个镜像核都就绪

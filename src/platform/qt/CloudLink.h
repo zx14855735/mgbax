@@ -78,6 +78,8 @@ signals:
 	void statusMessage(const QString& message);
 	void remoteKeys(int mask);
 	void remoteReset();
+	/** 对端倍速变化（官方 type 9 的线上值：1/-1/2/4；0 = 复位到 1x）。 */
+	void remoteSpeedChanged(int wireValue);
 	/** Peer sent a save-state blob; the UI loads it into the local core. */
 	void remoteState(const QByteArray& state);
 	void linkEnded(const QString& message);
@@ -135,6 +137,8 @@ private:
 	void startOfficialMatch(ILink* link, Room* room);
 	void serveOfficial(ILink* link, Room* room);
 	void stopOfficialMatch();
+	/** 把倍速同步到所有镜像核（官方 AaHO0E 帧闸对所有本机核一致）。 */
+	void applyMirrorSpeed(int wireValue);
 	void closeSio();
 
 	// wire handshake
@@ -175,6 +179,9 @@ private:
 	std::atomic<bool> m_sendReset{false};
 	/** 待发送的倍速（0 = 无；1 / -1 / 2 / 4 见 type 9）。 */
 	std::atomic<int> m_sendSpeed{0};
+	/** 当前生效的倍速线上值（0 = 1x）。本地切换与收到的 type 9 共同写它，
+	 *  等价官方两端共享的 AaHO0E.f4302AZkASS。 */
+	std::atomic<int> m_speedWire{0};
 	std::atomic<int> m_localKeys{0};
 	std::function<QByteArray()> m_stateSnapshot;
 	std::atomic<bool> m_initialStateSent{false};
@@ -190,6 +197,8 @@ private:
 	GBoyMirror* m_mirrors[MIRROR_COUNT] = {nullptr};
 	quint16 m_mirrorSioPort = 0;
 	long m_officialFrame = 0;
+	/** 上一次已上报给前端的倍速线上值，避免每 tick 重复 emit。 */
+	int m_lastSpeedWire = 0;
 	/** 镜像核载入对端 type 6 的结果（0 = 无错误；-5 = 尺寸不符；1 = 其它失败）。
 	 *  镜像线程写入，serveOfficial 循环在下一 tick 按官方语义断链。 */
 	std::atomic<int> m_mirrorStateError{0};

@@ -141,6 +141,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private let cmdRewind = 5
     /** Separate command for the extra one-tap rewind key. */
     private let cmdRewindQuick = 6
+    /** Undo the last state save/load (PC's undoLoadState/undoSaveState). */
+    private let cmdUndoState = 7
     private let layoutBar = UIView()
     private let bar = UIScrollView()
     private let rewindBar = UIScrollView()
@@ -196,11 +198,43 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var doubleTapShot: UITapGestureRecognizer?
     private var stickerEditing = false
     private var pendingPreview: UIImage?
+    /**
+     * 撤销上次即时存档操作（PC `undoLoadState` / `undoSaveState` 的等价物）。
+     * `undoStateData` 是操作**前**的整核快照；存档还要把被覆盖的槽文件
+     * （`.ssN` 与预览 `.png`）留一份，撤销时写回。只在 emu 线程读写。
+     */
+    private var undoStateData: Data?
+    private var undoStateFiles: [(URL, Data?)] = []
+    private var undoStateLabel = ""
+    /** 「撤销」是否可用（gate 保护；UI 线程只读这个，不看快照本体）。 */
+    private var undoAvailable = false
+    /** 逐帧前进：暂停时由帧循环消费一次（gate 保护）。 */
+    private var stepFrameWanted = false
     private static let menuHideSeconds: TimeInterval = 4
     private static let audioStepFrames = 4
     private static let audioReadFrames: Int32 = 8192
     /** Speed presets on the tier bar; anything else goes through 自定义. */
     private static let speedTiers: [Double] = [0.25, 0.5, 1, 2, 4, 8, 16]
+    /**
+     * 手柄按键映射（PC Settings → Controllers 页的等价物）。
+     * `padTargets` 是 GBA 侧的键，`padInputs` 是可选的物理输入，`padDefaults`
+     * 与改造前的硬编码映射逐位等价（L/R 仍接受肩键与扳机两种）。
+     */
+    private static let padTargets: [(String, Int)] = [
+        ("A", ControlsView.A), ("B", ControlsView.B),
+        ("L", ControlsView.l), ("R", ControlsView.r),
+        ("START", ControlsView.start), ("SELECT", ControlsView.select),
+        ("上", ControlsView.up), ("下", ControlsView.down),
+        ("左", ControlsView.left), ("右", ControlsView.right)
+    ]
+    private static let padInputs = ["A", "B", "X", "Y", "L1", "L2", "R1", "R2",
+                                    "L1/L2", "R1/R2", "MENU", "OPTIONS",
+                                    "上", "下", "左", "右", "无"]
+    private static let padDefaults: [String: String] = [
+        "A": "A", "B": "B", "L": "L1/L2", "R": "R1/R2",
+        "START": "MENU", "SELECT": "OPTIONS",
+        "上": "上", "下": "下", "左": "左", "右": "右"
+    ]
     /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
     private static let autoSlot = 0
     /** GIF capture pacing and length cap (GIF_MAX_FRAMES at ~20 fps). */
@@ -519,6 +553,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("槽位 1", #selector(cycleSlot)),
             ("存档", #selector(saveState)),
             ("读档", #selector(loadState)),
+            ("撤销", #selector(undoStateAction)),
+            ("逐帧", #selector(stepFrame)),
             ("BIOS", #selector(openBios)),
             ("画质", #selector(showVideo)),
             ("联机", #selector(showLink)),
@@ -1049,6 +1085,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 fpsStamp = DispatchTime.now().uptimeNanoseconds
                 frameDebt = 0
                 gate.lock()
+                let step = stepFrameWanted
+                stepFrameWanted = false
+                gate.unlock()
+                if step && !loading && mgbaMobileIsLoaded(core) {
+                    // 逐帧前进：暂停时只推进一帧并立刻显示（PC 的 Next frame）。
+                    _ = mgbaMobileRunFrames(core, 1)
+                    mgbaMobileClearAudio(core)
+                    present(core, &video, &videoCap)
+                }
+                gate.lock()
                 let until = Date(timeIntervalSinceNow: 0.016)
                 gate.wait(until: until)
                 gate.unlock()
@@ -1199,9 +1245,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             var sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000 / 60
             // 官方 type 9：对端切倍速时本机的帧闸跟着缩放（官方收到后写
             // AaHO0E.AZkASS 并重算 1e9/(speed*60)，两端速度必须一致，否则
-            // 子状态会越走越开）。1x 时这里等于不缩放。
+            // 子状态会越走越开）。1x 时这里等于不缩放，保持核心帧长。
             if linkRate > 0.01, abs(linkRate - 1) > 0.01 {
-                sliceNanos = GBoySpeed.sliceNanos(base: sliceNanos, rate: linkRate)
+                sliceNanos = GBoySpeed.sliceNanos(rate: linkRate)
             }
             // Schedule slices against an absolute next start. A gate wait that
             // oversleeps then cannot accumulate into a loop that runs (and
@@ -1546,6 +1592,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         let current = slot
         if cmd == cmdSave {
+            rememberUndoState(label: "存档 \(current)", slot: current)
             let ok = mgbaMobileSaveState(core, Int32(current))
             if ok {
                 writePreview(current)
@@ -1555,6 +1602,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast(ok ? "已保存即时存档 \(current)" : "即时存档失败")
             DispatchQueue.main.async { self.refreshSlotButton() }
         } else if cmd == cmdLoad {
+            rememberUndoState(label: "读档 \(current)", slot: nil)
             let ok = mgbaMobileLoadState(core, Int32(current))
             mgbaMobileClearAudio(core)
             if ok {
@@ -1562,6 +1610,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             toast(ok ? "已读取即时存档 \(current)" : "没有即时存档 \(current)")
             DispatchQueue.main.async { self.refreshSlotButton() }
+        } else if cmd == cmdUndoState {
+            undoLastState(core: core)
         } else if cmd == cmdReset {
             if let set = consoleSet, set.isReady {
                 /* 4 核房间要连镜像核一起复位：只复位可见核会让镜像停在旧的一幕，
@@ -1601,6 +1651,64 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 toast("没有可倒带的历史")
             }
         }
+    }
+
+    /**
+     * 记下「操作前」的整核快照，供顶栏「撤销」回滚（PC undoLoadState/undoSaveState）。
+     * 存档还要留一份旧槽文件与预览图，撤销时一并写回；读档只回滚内存。
+     * 只在 emu 线程调用（`runCommand` 内），与 core 的调用顺序一致。
+     */
+    private func rememberUndoState(label: String, slot: Int?) {
+        guard let core, mgbaMobileIsLoaded(core) else { return }
+        var raw: UnsafeMutableRawPointer?
+        var size = 0
+        guard mgbaMobileSaveStateToMemory(core, &raw, &size), let raw, size > 0 else { return }
+        undoStateData = Data(bytes: raw, count: size)
+        mgbaMobileFreeState(raw)
+        var files: [(URL, Data?)] = []
+        if let slot {
+            let state = stateURL(slot)
+            files.append((state, try? Data(contentsOf: state)))
+            let preview = state.appendingPathExtension("png")
+            files.append((preview, try? Data(contentsOf: preview)))
+        }
+        undoStateFiles = files
+        undoStateLabel = label
+        gate.lock()
+        undoAvailable = true
+        gate.unlock()
+    }
+
+    /// 回滚 `rememberUndoState` 记下的那一次操作。
+    private func undoLastState(core: OpaquePointer) {
+        guard let data = undoStateData else {
+            toast("没有可撤销的存档操作")
+            return
+        }
+        for (url, previous) in undoStateFiles {
+            if let previous {
+                try? previous.write(to: url)
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        let ok = data.withUnsafeBytes { buffer -> Bool in
+            guard let base = buffer.baseAddress, buffer.count > 0 else { return false }
+            return mgbaMobileLoadStateFromMemory(core, base, buffer.count)
+        }
+        if ok {
+            mgbaMobileClearAudio(core)
+            _ = mgbaMobileRunFrames(core, 1)
+        }
+        let label = undoStateLabel
+        undoStateData = nil
+        undoStateFiles = []
+        undoStateLabel = ""
+        gate.lock()
+        undoAvailable = false
+        gate.unlock()
+        toast(ok ? "已撤销\(label)" : "撤销失败（快照无效）")
+        DispatchQueue.main.async { self.refreshSlotButton() }
     }
 
     /// Drops every locally held key after the touch stream or focus was lost.
@@ -2336,6 +2444,10 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         extras.contentHorizontalAlignment = .left
         extras.setTitle("虚拟按键开关（连发/宏/快存/快读/倍速/截图）", for: .normal)
         extras.addAction(UIAction { [weak self] _ in self?.showExtraKeysDialog() }, for: .touchUpInside)
+        let padMapping = UIButton(type: .system)
+        padMapping.contentHorizontalAlignment = .left
+        padMapping.setTitle("手柄按键映射", for: .normal)
+        padMapping.addAction(UIAction { [weak self] _ in self?.showPadMapping() }, for: .touchUpInside)
         let cKey = UIButton(type: .system)
         cKey.contentHorizontalAlignment = .left
         cKey.setTitle("C 键组合宏：\(macroTitle(controls.macro(0)))", for: .normal)
@@ -2415,6 +2527,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(keypadVisible.0)
         box.addArrangedSubview(keypadDetect.0)
         box.addArrangedSubview(extras)
+        box.addArrangedSubview(padMapping)
         box.addArrangedSubview(cKey)
         box.addArrangedSubview(c2Key)
         box.addArrangedSubview(shotFormat)
@@ -2427,6 +2540,47 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         hint.numberOfLines = 0
         box.addArrangedSubview(hint)
         presentSheet(SheetController(title: "输入", content: box))
+    }
+
+    /// 设置 → 输入 → 手柄按键映射：逐行点按循环切换物理按键，立即生效。
+    private func showPadMapping() {
+        let box = UIStackView()
+        box.axis = .vertical
+        box.spacing = 6
+        let note = UILabel()
+        note.numberOfLines = 0
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabel
+        note.text = "点一行循环切换这个游戏键对应的手柄按键。L1/L2 表示两个左肩键都行；「无」= 不映射。改完立即生效。"
+        box.addArrangedSubview(note)
+        var map = padMap()
+        for (target, _) in Self.padTargets {
+            let button = UIButton(type: .system)
+            button.contentHorizontalAlignment = .left
+            button.setTitle("\(target) ← \(map[target] ?? "无")", for: .normal)
+            button.addAction(UIAction { [weak self] _ in
+                guard let self else { return }
+                let now = map[target] ?? "无"
+                let index = Self.padInputs.firstIndex(of: now) ?? 0
+                let next = Self.padInputs[(index + 1) % Self.padInputs.count]
+                map[target] = next
+                self.defaults.set(map, forKey: "pad_map")
+                button.setTitle("\(target) ← \(next)", for: .normal)
+                // 映射改了，按住的键不能继续锁在旧位上。
+                self.releaseInput()
+            }, for: .touchUpInside)
+            box.addArrangedSubview(button)
+        }
+        let reset = UIButton(type: .system)
+        reset.setTitle("恢复默认映射", for: .normal)
+        reset.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.defaults.removeObject(forKey: "pad_map")
+            self.releaseInput()
+            self.toast("已恢复默认手柄映射，重新打开本页查看")
+        }, for: .touchUpInside)
+        box.addArrangedSubview(reset)
+        presentSheet(SheetController(title: "手柄按键映射", content: box))
     }
 
     private func showExtraKeysDialog() {
@@ -5095,6 +5249,43 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     @objc private func saveState() { chooseSlot(save: true) }
     @objc private func loadState() { chooseSlot(save: false) }
 
+    /// 撤销上一次读档 / 存档（PC 的 Undo load state / Undo save state）。
+    @objc private func undoStateAction() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        gate.lock()
+        let canUndo = undoAvailable
+        gate.unlock()
+        if !canUndo {
+            toast("没有可撤销的存档操作")
+            return
+        }
+        postCommand(cmdUndoState)
+        armMenuAutoHide()
+    }
+
+    /// 逐帧前进：PC 的 Next frame（Ctrl+N）。先暂停，再单帧推进并显示。
+    @objc private func stepFrame() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        if let set = consoleSet, set.isReady {
+            toast("联机中不能逐帧前进")
+            return
+        }
+        if !paused {
+            togglePause()
+        }
+        gate.lock()
+        stepFrameWanted = true
+        gate.signal()
+        gate.unlock()
+        armMenuAutoHide()
+    }
+
     private func postCommand(_ cmd: Int) {
         gate.lock()
         command = cmd
@@ -6369,18 +6560,42 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         UNUserNotificationCenter.current().add(request, withCompletionHandler: nil)
     }
 
+    /// 手柄映射表：用户改过的键覆盖默认表；键名见 `padTargets`。
+    private func padMap() -> [String: String] {
+        let stored = defaults.dictionary(forKey: "pad_map") as? [String: String] ?? [:]
+        var map = Self.padDefaults
+        for (key, value) in stored { map[key] = value }
+        return map
+    }
+
+    private func padInputPressed(_ pad: GCExtendedGamepad, _ input: String) -> Bool {
+        switch input {
+        case "A": return pad.buttonA.isPressed
+        case "B": return pad.buttonB.isPressed
+        case "X": return pad.buttonX.isPressed
+        case "Y": return pad.buttonY.isPressed
+        case "L1": return pad.leftShoulder.isPressed
+        case "L2": return pad.leftTrigger.isPressed
+        case "R1": return pad.rightShoulder.isPressed
+        case "R2": return pad.rightTrigger.isPressed
+        case "MENU": return pad.buttonMenu.isPressed
+        case "OPTIONS": return pad.buttonOptions?.isPressed == true
+        case "上": return pad.dpad.up.isPressed
+        case "下": return pad.dpad.down.isPressed
+        case "左": return pad.dpad.left.isPressed
+        case "右": return pad.dpad.right.isPressed
+        default: return false
+        }
+    }
+
     private func padMask(_ pad: GCExtendedGamepad) -> Int {
         var mask = 0
-        if pad.buttonA.isPressed { mask |= ControlsView.A }
-        if pad.buttonB.isPressed { mask |= ControlsView.B }
-        if pad.leftShoulder.isPressed || pad.leftTrigger.isPressed { mask |= ControlsView.l }
-        if pad.rightShoulder.isPressed || pad.rightTrigger.isPressed { mask |= ControlsView.r }
-        if pad.buttonMenu.isPressed { mask |= ControlsView.start }
-        if pad.buttonOptions?.isPressed == true { mask |= ControlsView.select }
-        if pad.dpad.up.isPressed { mask |= ControlsView.up }
-        if pad.dpad.down.isPressed { mask |= ControlsView.down }
-        if pad.dpad.left.isPressed { mask |= ControlsView.left }
-        if pad.dpad.right.isPressed { mask |= ControlsView.right }
+        for (target, input) in padMap() {
+            guard let bit = Self.padTargets.first(where: { $0.0 == target })?.1 else { continue }
+            if input.split(separator: "/").contains(where: { padInputPressed(pad, String($0)) }) {
+                mask |= bit
+            }
+        }
         return mask
     }
 

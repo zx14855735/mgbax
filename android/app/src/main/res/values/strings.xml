@@ -406,6 +406,60 @@
     <string name="oam_n">贴图 %1$d</string>
     <string name="oam_empty">画面上没有可见贴图</string>
     <string name="palette_info">编号:%1$d\n红:%2$d 绿:%3$d 蓝:%4$d\n内存地址:0x%5$s</string>
+    <string name="tile_view">图块(Tile)查看器</string>
+    <string name="tile_4bpp">4bpp</string>
+    <string name="tile_8bpp">8bpp</string>
+    <string name="tile_info">VRAM 图块 0x06000000 · %1$d bpp · 共 %2$d 个 · %3$d×%4$d</string>
+    <string name="tile_bank">调色板组 %1$d</string>
+    <string name="io_view">I/O 寄存器</string>
+    <string name="io_refresh">刷新</string>
+    <string name="io_info">按下刷新读取当前值；0x04000000 起的 I/O 区，逐项释义。</string>
+
+    <!-- Undo state / frame advance -->
+    <string name="undo">撤销</string>
+    <string name="undo_title">撤销存档操作</string>
+    <string name="undo_load">撤销上一次读档</string>
+    <string name="undo_save">撤销上一次存档</string>
+    <string name="undo_none_load">没有可撤销的读档(读档前的状态只在本次运行内保留)</string>
+    <string name="undo_none_save">没有可撤销的存档(该槽位上次是空的)</string>
+    <string name="undo_load_done">已恢复到读档前的进度</string>
+    <string name="undo_load_failed">恢复失败：读档前的状态已失效</string>
+    <string name="undo_save_done">槽 %1$d 的旧存档已还原，重新读档即可回到旧进度</string>
+    <string name="undo_save_failed">还原失败：备份文件不可用</string>
+    <string name="undo_load_hint">读档前会自动缓存当前进度，仅本次运行有效</string>
+    <string name="undo_save_hint">存档前会备份槽位旧内容(.bak)，重启后仍可撤销</string>
+    <string name="frame_step">帧进</string>
+    <string name="frame_step_paused">已暂停，点「帧进」逐帧前进</string>
+
+    <!-- Keyboard / gamepad remap -->
+    <string name="key_remap">键盘映射…</string>
+    <string name="key_remap_title">键盘 / 手柄按键映射</string>
+    <string name="key_remap_hint_text">点一项后按下要绑定的键(支持蓝牙手柄)。动手改动只影响实体按键，虚拟按键不受影响。</string>
+    <string name="key_remap_capture">为「%1$s」按下新按键</string>
+    <string name="key_remap_waiting">正在等待按键…</string>
+    <string name="key_remap_reset">恢复默认</string>
+    <string name="key_remap_reset_one">已恢复「%1$s」的默认按键</string>
+    <string name="key_remap_done">「%1$s」已绑定到 %2$s</string>
+    <string name="key_remap_reset_all">全部恢复默认</string>
+    <string name="key_remap_row">%1$s　←　%2$s</string>
+    <string name="key_a_up">十字键上</string>
+    <string name="key_a_down">十字键下</string>
+    <string name="key_a_left">十字键左</string>
+    <string name="key_a_right">十字键右</string>
+    <string name="key_a_a">A 键</string>
+    <string name="key_a_b">B 键</string>
+    <string name="key_a_l">L 键</string>
+    <string name="key_a_r">R 键</string>
+    <string name="key_a_start">START</string>
+    <string name="key_a_select">SELECT</string>
+    <string name="key_none">未绑定</string>
+
+    <!-- ROM info -->
+    <string name="rom_info">ROM 信息</string>
+    <string name="rom_info_title">ROM 信息</string>
+    <string name="rom_info_none">还没有加载 ROM</string>
+    <string name="rom_info_header">卡带头</string>
+    <string name="rom_info_runtime">运行状态</string>
 
     <!-- External shaders -->
     <string name="shader_external">外部渲染器</string>
