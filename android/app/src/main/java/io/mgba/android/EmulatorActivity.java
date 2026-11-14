@@ -718,8 +718,13 @@ public class EmulatorActivity extends AppCompatActivity {
         } else {
             registerReceiver(noRelayReceiver, noRelayFilter);
         }
-        IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");
+        IntentFilter btFilter = new IntentFilter("io.mgba.android.action.BT");
         if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(btReceiver, btFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(btReceiver, btFilter);
+        }
+        IntentFilter signalFilter = new IntentFilter("io.mgba.android.action.SIGNAL");        if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(signalReceiver, signalFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(signalReceiver, signalFilter);
