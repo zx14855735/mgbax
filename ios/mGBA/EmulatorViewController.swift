@@ -1365,6 +1365,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         } else {
             romCrc = nil
         }
+        NSLog("GBOY_RT load: crc ok")
         let ok = mgbaMobileLoad(core, path)
         // 进出游戏时自动同步（设置里可关）
         if defaults.bool(forKey: "sync_auto") {
@@ -1385,12 +1386,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         var title = [CChar](repeating: 0, count: 32)
         mgbaMobileTitle(core, &title, 32)
         let name = String(cString: title).trimmingCharacters(in: .whitespaces)
+        NSLog("GBOY_RT load: native ok name=%@", name)
         // The core converts its own stream to the rate the device runs at; the
         // queue level then steers that resampler (see AudioOut.rateDrift).
         if !silentMode {
             audio.start()
             _ = mgbaMobileSetAudioOutput(core, Int32(audio.outputRate))
         }
+        NSLog("GBOY_RT load: audio ok")
         // Do not let the previous game's overrides colour the global pass; the
         // per-game pass below loads this ROM's own overrides.
         perRomFilter = nil
@@ -1403,6 +1406,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.lock()
         paused = false
         gate.unlock()
+        NSLog("GBOY_RT load: done")
         // 进入游戏时自动读档：上次退出的进度。
         if defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
             mgbaMobileClearAudio(core)
