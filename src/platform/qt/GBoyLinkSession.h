@@ -139,6 +139,8 @@ private:
 	bool m_ready = false;
 	int m_remoteCounter = -1;
 	int m_remoteFps = -1;
+	/** 官方 type 3 带回的对端 RTT（毫秒），-1 = 还没收到。 */
+	int m_remoteRtt = -1;
 	int m_lastLocalKeys = 0;
 	/** 上一次真正发出去的按键掩码；边沿立即发送靠它判变化（-1 = 强制首帧）。 */
 	int m_lastSentKeys = -1;

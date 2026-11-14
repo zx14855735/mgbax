@@ -41,8 +41,19 @@ QByteArray payloadOf(const QByteArray& body) {
 	return body.mid(2);
 }
 
-QByteArray stateFrame(const QByteArray& state) {
-	QByteArray body;
+/** 官方 type 2：自我介绍 = 32 字节定长名字 + int16 长度 + 描述串（房间/ROM）。
+ *  名字短于 32 字节时右侧补 0，对端按 32 字节固定宽度读。 */
+QByteArray nameFrame(const QByteArray& name, const QByteArray& desc) {
+	QByteArray body(32, '\0');
+	const int n = qMin(32, name.size());
+	memcpy(body.data(), name.constData(), size_t(n));
+	body.append(char((desc.size() >> 8) & 0xFF));
+	body.append(char(desc.size() & 0xFF));
+	body.append(desc);
+	return frame(TYPE_NAME, body);
+}
+
+QByteArray stateFrame(const QByteArray& state) {	QByteArray body;
 	body.resize(int(4 + state.size()));
 	putInt(&body, 0, quint32(state.size()));
 	if (!state.isEmpty()) {

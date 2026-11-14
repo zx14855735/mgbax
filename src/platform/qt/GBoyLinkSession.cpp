@@ -73,7 +73,7 @@ QByteArray GBoyLinkSession::keyFrameForLocalSlot(int keys) {
 	case 2:
 		return GBoyFrames::frame(GBoyFrames::TYPE_INPUT_2, keys);
 	case 3:
-		return GBoyFrames::frame(GBoyFrames::TYPE_READY, keys);
+		return GBoyFrames::frame(GBoyFrames::TYPE_INPUT_3, keys);
 	case 4:
 		return GBoyFrames::frame(GBoyFrames::TYPE_INPUT_4, keys);
 	default:
@@ -110,25 +110,29 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		pushKeys(senderSlot, GBoyFrames::intOf(body));
 		break;
 	case GBoyFrames::TYPE_INPUT_2:
-	case GBoyFrames::TYPE_READY:
+	case GBoyFrames::TYPE_INPUT_3:
 	case GBoyFrames::TYPE_INPUT_4: {
-		// The official client reuses type 3: bare frame = handshake
-		// READY, frame with an int = key mask for console slot 3.
-		if (type == GBoyFrames::TYPE_READY && GBoyFrames::payloadOf(body).size() < 4) {
-			bool first = false;
-			{
-				std::lock_guard<std::mutex> locker(m_mutex);
-				first = !m_ready;
-				m_ready = true;
-			}
-			if (first && m_events.onReady) {
-				m_events.onReady();
-			}
-			break;
-		}
 		int target = type == GBoyFrames::TYPE_INPUT_2 ? 2
-		           : type == GBoyFrames::TYPE_READY ? 3 : 4;
+		           : type == GBoyFrames::TYPE_INPUT_3 ? 3 : 4;
 		pushKeys(target, GBoyFrames::intOf(body));
+		break;
+	}
+	case GBoyFrames::TYPE_READY:
+	case GBoyFrames::TYPE_READY_ACK:
+	{
+		// 官方语义：type 3 = 就绪 + RTT（int32），type 5 = 就绪确认（空体）。
+		bool first = false;
+		{
+			std::lock_guard<std::mutex> locker(m_mutex);
+			first = !m_ready;
+			m_ready = true;
+			if (type == GBoyFrames::TYPE_READY && GBoyFrames::payloadOf(body).size() >= 4) {
+				m_remoteRtt = GBoyFrames::intOf(body);
+			}
+		}
+		if (first && m_events.onReady) {
+			m_events.onReady();
+		}
 		break;
 	}
 	case GBoyFrames::TYPE_REGISTER:
@@ -141,6 +145,26 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		}
 		if (first && m_events.onReady) {
 			m_events.onReady();
+		}
+		break;
+	}
+	case GBoyFrames::TYPE_NAME:
+	{
+		// 官方 type 2：32 字节定长名字 + int16 长度 + 描述串。只用于显示。
+		QByteArray payload = GBoyFrames::payloadOf(body);
+		if (payload.size() >= 34) {
+			QByteArray name = payload.left(32);
+			int at = name.indexOf('\0');
+			if (at >= 0) {
+				name.truncate(at);
+			}
+			int n = (quint8(payload[32]) << 8) | quint8(payload[33]);
+			QByteArray desc = payload.mid(34, n);
+			if (m_events.onStatus) {
+				m_events.onStatus(QStringLiteral("peer %1 (%2)")
+				                          .arg(QString::fromUtf8(name),
+				                               QString::fromUtf8(desc)));
+			}
 		}
 		break;
 	}

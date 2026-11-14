@@ -210,25 +210,46 @@ public final class GBoyLinkSession {
                 pushKeys(senderSlot, GBoyFrames.intOf(body));
                 break;
             case GBoyFrames.TYPE_INPUT_2:
-            case GBoyFrames.TYPE_READY:
+            case GBoyFrames.TYPE_INPUT_3:
             case GBoyFrames.TYPE_INPUT_4: {
-                // The official client reuses type 3: bare frame = handshake
-                // READY, frame with an int = key mask for console slot 3.
-                if (type == GBoyFrames.TYPE_READY
-                        && GBoyFrames.payloadOf(body).length < 4) {
-                    boolean first;
-                    synchronized (lock) {
-                        first = !ready;
-                        ready = true;
-                    }
-                    if (first) {
-                        events.onReady();
-                    }
-                    break;
-                }
                 int target = type == GBoyFrames.TYPE_INPUT_2 ? 2
-                        : type == GBoyFrames.TYPE_READY ? 3 : 4;
+                        : type == GBoyFrames.TYPE_INPUT_3 ? 3 : 4;
                 pushKeys(target, GBoyFrames.intOf(body));
+                break;
+            }
+            case GBoyFrames.TYPE_READY:
+            case GBoyFrames.TYPE_READY_ACK: {
+                // 官方语义：3 = 就绪 + RTT（int32），5 = 就绪确认（空体）。
+                boolean first;
+                synchronized (lock) {
+                    first = !ready;
+                    ready = true;
+                    if (type == GBoyFrames.TYPE_READY
+                            && GBoyFrames.payloadOf(body).length >= 4) {
+                        remoteRtt = GBoyFrames.intOf(body);
+                    }
+                }
+                if (first) {
+                    events.onReady();
+                }
+                break;
+            }
+            case GBoyFrames.TYPE_NAME: {
+                // 官方 2：32 字节定长名字 + int16 长度 + 描述串，只用于显示。
+                byte[] payload = GBoyFrames.payloadOf(body);
+                if (payload.length >= 34) {
+                    int len = ((payload[32] & 0xFF) << 8) | (payload[33] & 0xFF);
+                    int end = 32;
+                    for (int i = 0; i < 32; i++) {
+                        if (payload[i] == 0) {
+                            end = i;
+                            break;
+                        }
+                    }
+                    String name = new String(payload, 0, end);
+                    String desc = new String(payload, 34, Math.min(len, payload.length - 34));
+                    events.onStatus("peer " + name + " (" + desc + ")");
+                }
                 break;
             }
             case GBoyFrames.TYPE_REGISTER:

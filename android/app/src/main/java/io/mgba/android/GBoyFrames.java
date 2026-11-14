@@ -35,30 +35,37 @@ final class GBoyFrames {
      */
     static final int MAX_FRAME_LENGTH = 16 * 1024 * 1024;
 
-    /** Key bitmask for the console this session owns. */
-    static final int TYPE_KEYS = 0;
-    /** Session registration (ten byte body) and the plain acknowledgement. */
-    static final int TYPE_REGISTER = 1;
-    /** Key bitmask aimed at another console slot. */
-    static final int TYPE_INPUT_2 = 2;
-    /**
-     * "Ready" in the handshake, the key bitmask of console slot 3 while the
-     * game runs - the official client reuses the type for both.
+    /*
+     * 类型号与官方客户端逐条对齐（KpHwm4.B25kr6 里的 ARc23Z 调用）：
+     * 0 节奏 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 就绪确认 / 6 状态 / 9 按键。
+     * 官方没用到 4、7、8、10 之后的号，我们自家的「多槽位按键」扩展一律放
+     * 到 11 以上，避免再把 0 当按键、9 当 FPS 那样和官方语义错位。
      */
+
+    /** 官方 0：节奏 / 帧率上限（int32）。 */
+    static final int TYPE_FPS = 0;
+    /** 官方 1：握手（int32 playerCount；长度 0 = 断开）。 */
+    static final int TYPE_REGISTER = 1;
+    /** 官方 2：名字（32 字节定长 + int16 长度 + 描述串）。 */
+    static final int TYPE_NAME = 2;
+    /** 官方 3：就绪 + RTT（int32）。 */
     static final int TYPE_READY = 3;
-    static final int TYPE_INPUT_4 = 4;
-    /** Reset request, the body is an int (0). */
-    static final int TYPE_RESET = 5;
-    /** Save state transfer, the body is an int length plus the blob. */
+    /** 官方 5：就绪确认（空体，只有客户端路径发）。 */
+    static final int TYPE_READY_ACK = 5;
+    /** 官方 6：整份 savestate（u32 长度 + blob）。 */
     static final int TYPE_STATE = 6;
-    /** Key bitmask for the console the local player drives. */
-    static final int TYPE_KEYS_LOCAL = 7;
-    /** Free running counter. */
-    static final int TYPE_COUNTER = 8;
-    /** Frames per second report. */
-    static final int TYPE_FPS = 9;
-    /** Out of band event. */
-    static final int TYPE_EVENT = 10;
+    /** 官方 9：按键掩码（int32）。 */
+    static final int TYPE_KEYS = 9;
+
+    // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
+    static final int TYPE_INPUT_2 = 11;
+    static final int TYPE_INPUT_4 = 12;
+    static final int TYPE_RESET = 13;
+    static final int TYPE_KEYS_LOCAL = 14;
+    static final int TYPE_COUNTER = 15;
+    static final int TYPE_EVENT = 16;
+    /** 槽位 3 的按键掩码（早先借 TYPE_READY 夹带，与官方「3 = RTT」冲突）。 */
+    static final int TYPE_INPUT_3 = 17;
 
     private GBoyFrames() {
     }

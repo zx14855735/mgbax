@@ -141,3 +141,29 @@ AmA8tU.A4TApA():
 > 三端对照：PC `src/platform/qt/{KcpChannel,DirectLink,CloudLink,GBoyLinkSession}.cpp`、
 > Android `io.mgba.android.{KcpChannel,GBoyDirectLink,GBoyCloudLink,GBoyLinkSession}`、
 > iOS `ios/mGBA/GBoyLink.swift`。任何一端改线格式，三端必须同时改。
+
+## 6. 逐项对照审计（2026-11-14 23:2x）
+
+「照抄全了没有」——下面每一行都能落到代码位置。**❌ 的都是还没对齐的**。
+
+| # | GBoy 做什么 | 我们的实现 | 结论 |
+|---|---|---|---|
+| 1 | WSS 房间信令 `join_room`/`send_message`/`leave_room`/`update_room_settings`，字段 `action`+`token`+`uuid`+`roomID`（`LLYwnm.AYUAbz`） | `CloudLink.cpp:737/793/795/818`、`GbCloud` | ✅ 同名同字段，后端就是 gboy.top |
+| 2 | 帧封装 `4B 大端长度 + u16 type + payload`，上限 8 MiB（`BTvldC.ADYaiT`） | `GBoyFrames::Reader`，上限 16 MiB | ✅（上限放宽，语义一致） |
+| 3 | **type 编号**：0 节奏 / 1 握手 / 2 名字 / 3 ready+RTT / 5 ready-ack / 6 状态 / 9 按键 | PC+Android：0 按键 / 1 注册 / 2 槽2键 / 3 ready / 4 槽4键 / 5 reset / 6 状态 / 9 FPS；**iOS 又是另一套**（4 按键、5 reset） | ❌ **三端三套编号，且都不等于官方** |
+| 4 | 握手时序 1 → 2 → 3 → 6 → reset → 开始转发（`B25kr6.A4TApA`） | 官方模式直接进 serve，只发 1（int 6）与 6 | ❌ 缺 2 名字、3 RTT、5 ack，也没有「6 之后 reset 两核」 |
+| 5 | type 0 下发帧率上限，接收方设 `AaHO0E.f4302AZkASS` | 发 `TYPE_FPS(60)`，但号是 9，且收到不生效 | ❌ |
+| 6 | 每对端一路通道（`McNXgv.A5SV6n`）+ 一个镜像核 | `GBoyLinkSession` 4 槽位 + `GBoyMirror`/`GBoyConsoleSet` | ⚠️ 等价（我们用单连接 + 槽位路由） |
+| 7 | type 6 整份 savestate 只灌「该对端的镜像核」 | PC `CloudLink.cpp:1682` mirror slot 2；Android `GBoyConsoleSet.applyRemoteState` 只灌 index 0；都在帧边界载入 | ✅（今晚修好；原来 Android 灌全部核） |
+| 8 | 状态包按 KCP `frg` 分片（MTU 512）；TCP 直连靠流 | `DirectLink` 加 `TYPE_FRAG`（1000B/片，窗口 48），PC+Android 线格式一致 | ✅（今晚新增，实测 44071 字节送达） |
+| 9 | 游戏数据 P2P，WSS 只做信令 | 官方模式先协商 `DirectLink`，失败才回落隧道 | ✅（今晚改，实测 RTT 22ms） |
+| 10 | TCP 直连：一端 `ServerSocket.accept`，一端 `Socket.connect`（`A2egSU`/`AmA8tU`） | Android `GBoySocketLink.startHost/join` 有；**PC 只有 `KcpChannel::openTcp` 客户端**，没有监听侧 | ❌ PC 缺服务端 |
+| 11 | KCP-over-UDP 打洞，线程 `KCP-Receive/Update/Connect/Heartbeat`，`PING`/`PONG`/`DISC` 心跳（`AzWtSf`） | `KcpChannel` 实现同一套 KCP 参数（大端头、MTU 512、wnd 128、30ms）但只当**中继客户端**；打洞用的是自研 `DirectLink`（`MBLD` v1 + PROBE/RESP） | ⚠️ 分层等价、魔数不同 |
+| 12 | 断线重连：裸 10 字节 `int32 6 + int16 100 + int32 rtt`（`AmA8tU:263`） | 无 | ❌ |
+| 13 | 蓝牙 RFCOMM：UUID `3a1f7b2e-…`、服务名 `GBoy`、`listenUsingRfcommWithServiceRecord` / `createRfcommSocketToServiceRecord`、`cancelDiscovery`、线程 -19 | Android 新增 `GBoyBluetoothLink` + 清单权限 + `action.BT` 广播 | ⚠️ Android 有；PC/iOS 无（iOS 无 RFCOMM API） |
+| 14 | 每端 1 可见核 + (N−1) 镜像核 | 固定 4 核（本作 2 核被锁位） | ⚠️ 有意偏离，slot 3/4 是 NPC |
+| 15 | 槽位映射 `A2egSU(int,int)` | `GBoyLinkSession::mirrorSlotFor` | ✅ |
+| 16 | `Console.setKeys/loadStateFromMemory/saveStateToMemory` | `mgbaMobileSetKeys/LoadStateFromMemory/SaveStateToMemory` | ✅ |
+
+**结论：链路层（P2P + 分片 + 状态同步 + 按槽位灌核 + 信令）已经照抄到位并且在真机上跑通；
+协议层（type 编号、握手 1→2→3→5→6 的完整时序、帧率下发、重连包）还没照抄，这一条是下一步。**

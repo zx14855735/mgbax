@@ -35,18 +35,34 @@ namespace GBoyFrames {
  */
 static constexpr quint32 maxFrameLength = 16u * 1024u * 1024u;
 
+/* 帧类型号**必须和官方客户端一致**（KpHwm4.B25kr6 的 ARc23Z 调用）。
+ *
+ * 官方用的是 0/1/2/3/5/6/9，中间空号不是笔误：4 与 7/8 在官方里没有被
+ * 使用，我们早先把它们占成「槽位按键」后，0 被当成按键、9 被当成 FPS，
+ * 与官方的语义正好错位（官方 0 = 节奏/帧率上限，9 = 按键掩码）。这样
+ * 一来自家两端能通、却与官方客户端互不相认，而且 iOS 又是第三套编号。
+ *
+ * 现在：0..9 严格照抄官方；我们自己的多槽位扩展一律放到 11 以上。
+ */
 enum Type {
-	TYPE_KEYS = 0,        // Key bitmask for the console this session owns.
-	TYPE_REGISTER = 1,    // Session registration (ten byte body) and the plain acknowledgement.
-	TYPE_INPUT_2 = 2,     // Key bitmask aimed at another console slot.
-	TYPE_READY = 3,       // "Ready" in the handshake; slot 3's key mask while running.
-	TYPE_INPUT_4 = 4,
-	TYPE_RESET = 5,       // Reset request, the body is an int (0).
-	TYPE_STATE = 6,       // Save state transfer, the body is an int length plus the blob.
-	TYPE_KEYS_LOCAL = 7,  // Key bitmask for the console the local player drives.
-	TYPE_COUNTER = 8,
-	TYPE_FPS = 9,
-	TYPE_EVENT = 10,
+	TYPE_FPS = 0,         // 官方 0：节奏/帧率上限（int32）
+	TYPE_REGISTER = 1,    // 官方 1：握手（int32 playerCount；长度 0 = 断开）
+	TYPE_NAME = 2,        // 官方 2：名字（32B name + int16 n + n 字节）
+	TYPE_READY = 3,       // 官方 3：就绪 + RTT（int32）
+	TYPE_READY_ACK = 5,   // 官方 5：就绪确认（空体，仅客户端路径发）
+	TYPE_STATE = 6,       // 官方 6：整份 savestate（u32 长度 + blob）
+	TYPE_KEYS = 9,        // 官方 9：按键掩码（int32）
+
+	// ---- 以下是我们自己的扩展，编号从 11 起，绝不与官方撞号 ----
+	TYPE_INPUT_2 = 11,    // 指向全局槽位 2 的按键掩码
+	TYPE_INPUT_4 = 12,    // 指向全局槽位 4 的按键掩码
+	TYPE_RESET = 13,      // 复位请求（官方没有这条消息）
+	TYPE_KEYS_LOCAL = 14, // 本机可见核的按键（用于本地回放/诊断）
+	TYPE_COUNTER = 15,    // 对端帧计数（诊断）
+	TYPE_EVENT = 16,      // 事件通知（诊断）
+	/** 槽位 3 的按键掩码。**必须单独占号**：早先借 TYPE_READY(3) 带 int
+	 *  的形态夹带，与官方的「3 = RTT」互斥。 */
+	TYPE_INPUT_3 = 17,
 };
 
 /** Bare frame: length = 2, no payload. */
@@ -59,11 +75,13 @@ QByteArray frame(int type, int value);
 QByteArray frame(int type, const QByteArray& payload);
 
 /**
- * TYPE_STATE = a big endian u32 blob length followed by the save-state bytes.
- * This is the sending half of the save-state synchronisation that Android has
+ * TYPE_STATE = a big endian u32 blob length followed by the save-state bytes. * This is the sending half of the save-state synchronisation that Android has
  * in GBoyLinkSession.sendState(); the host sends one right after the link is
  * up so both cores start from the same deterministic point.
  */
+/** 官方 type 2：32 字节定长名字 + int16 长度 + 描述串（房间号 / ROM 名）。 */
+QByteArray nameFrame(const QByteArray& name, const QByteArray& desc = QByteArray());
+
 QByteArray stateFrame(const QByteArray& state);
 
 /** Reverse of stateFrame(). Returns empty when the length header does not fit

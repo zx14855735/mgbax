@@ -1727,6 +1727,10 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	         * NPC 陪位——大竞技场要求 4 人，2 核时游戏锁位不进对战；
 	         * keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
 	        events, 1, 4);
+	/* 官方握手第二步是 type 2（32 字节名字 + 描述串），对端拿到后才知道
+	 * 「对面是谁」。我们以前整条消息没发过，对端只能当作未知类型丢掉。 */
+	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
+	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{
