@@ -1505,6 +1505,14 @@ static uint32_t busGameKeys(struct MgbaMobile* emu) {
 						if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
 					}
 					keys = ((f % 12) < 2) ? A : 0u;
+				} else if (ready2 && !ready4) {
+					/* 2P 单打：进了球场图之后角色被游戏锁住，不能走位
+					 * （实测 BUSGAME f=1800→4800 两核 pos 恒为 5,6 / 6,6）。
+					 * 此时游戏等的是 sMenu 的双项确认（cur=0/1、pt=0），
+					 * 4P 那套「走到座位再按 A」永远到不了座位，于是永远
+					 * 不发 A，画面就冻在球场图上。2P 直接脉冲 A 推进，
+					 * 等 ptype==4 弹出队伍菜单后再由上面的分支注入选怪。 */
+					keys = ((f % 40) < 25) ? A : 0u;
 				} else {
 					/* 队伍菜单未弹出：闭环走位到 4P 座位。 */
 					static const int seatX[4] = {3, 10, 3, 10};
