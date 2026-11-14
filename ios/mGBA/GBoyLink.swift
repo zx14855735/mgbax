@@ -563,10 +563,12 @@ final class GBoyLink {
          UInt8(truncatingIfNeeded: keys >> 8), UInt8(truncatingIfNeeded: keys)]
     }
 
-    /// 官方断线重连包：`int32 6 + int16 100 + int32 rtt`（AmA8tU:263-272）。
-    /// send() 会给它补上 4 字节大端长度 6，合起来正好是官方 write() 的 10 字节。
+    /// 官方断线重连包：**完整的 10 字节线格式** `int32 6 + int16 100 + int32 rtt`
+    /// （AmA8tU:263-272 是 `ByteBuffer.allocate(10)` 后直接 write，没有单独的长度
+    /// 头 —— 因为长度 6 本身就是头）。所以这里直接给 sendAll()，不要再过 send()。
     private static func reconnectFrame(rtt: Int32) -> [UInt8] {
-        [0, UInt8(msgReconnect),
+        [0, 0, 0, 6,
+         0, UInt8(msgReconnect),
          UInt8(truncatingIfNeeded: rtt >> 24), UInt8(truncatingIfNeeded: rtt >> 16),
          UInt8(truncatingIfNeeded: rtt >> 8), UInt8(truncatingIfNeeded: rtt)]
     }

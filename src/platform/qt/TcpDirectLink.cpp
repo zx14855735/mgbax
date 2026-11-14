@@ -39,12 +39,6 @@ constexpr int CONNECT_TIMEOUT_MS = 10000;
 constexpr qint64 RETRY_INTERVAL_MS = 2000;
 constexpr qint64 RETRY_WINDOW_MS = 50000;
 
-void put32(char* p, quint32 v) {
-	p[0] = char((v >> 24) & 0xFF);
-	p[1] = char((v >> 16) & 0xFF);
-	p[2] = char((v >> 8) & 0xFF);
-	p[3] = char(v & 0xFF);
-}
 
 int lastSocketError() {
 #ifdef _WIN32
@@ -370,7 +364,7 @@ int TcpDirectLink::readSomeLocked(int timeoutMs, bool* dropped) {
 		return 0;
 	}
 	char buffer[4096];
-	int n = int(recv(socket_t(m_socket), buffer, sizeof(buffer), 0));
+	int n = int(::recv(socket_t(m_socket), buffer, sizeof(buffer), 0));
 	if (n == 0) {
 		*dropped = true;
 		return 0;
@@ -402,7 +396,7 @@ void TcpDirectLink::drainFrames() {
 		m_buffer.remove(0, total);
 		{
 			std::lock_guard<std::mutex> locker(m_mutex);
-			m_inbox.append(frame);
+			m_inbox.push_back(frame);
 		}
 		m_inboxCv.notify_one();
 	}

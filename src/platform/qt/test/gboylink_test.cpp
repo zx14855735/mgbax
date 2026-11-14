@@ -38,6 +38,7 @@
 #include "GbCloud.h"
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
+#include "TcpDirectLink.h"
 #endif
 #include "sio_link.h"
 #include "../mobile/link_net.h"
@@ -2946,6 +2947,168 @@ static int kcpFrameTest() {
 	return failures;
 }
 
+/**
+ * 官方断线重连握手包（KpHwm4.AmA8tU.java:263-272）：
+ * {@code int32 6 + int16 100 + int32 rtt}，10 字节；它同时是一条合法线帧
+ * （长度 6 = 2 字节类型 + 4 字节 RTT），接收侧必须按握手处理。
+ */
+static int reconnectFrameTest() {
+	int failures = 0;
+	auto check = [&](bool ok, const char* what) {
+		if (!ok) {
+			fprintf(stderr, "RECONNECT TEST: FAIL %s\n", what);
+			++failures;
+		}
+	};
+	QByteArray wire = GBoyFrames::reconnectFrame(37);
+	check(wire.size() == 10, "reconnect handshake is a bare 10 byte frame");
+	check(GBoyFrames::getInt(wire, 0) == 6, "length field is 6 (type 2 + rtt 4)");
+	check((int) GBoyFrames::getShort(wire, 4) == GBoyFrames::TYPE_RECONNECT,
+	      "type is 100");
+	check((int) GBoyFrames::getInt(wire, 6) == 37, "payload carries the last RTT");
+
+	GBoyFrames::Reader reader;
+	reader.append(wire.constData(), wire.size());
+	QByteArray body = reader.next();
+	check(!body.isNull(), "the reader still frames it instead of desyncing");
+	check(GBoyFrames::typeOf(body) == GBoyFrames::TYPE_RECONNECT,
+	      "reader reports type 100");
+
+	// 接收侧语义：收到就当对端已经重连完成（ready + RTT），不能落进 unknown。
+	bool ready = false;
+	int unknown = 0;
+	GBoyLinkSession::Events events;
+	events.onReady = [&ready]() { ready = true; };
+	events.onStatus = [&unknown](const QString& text) {
+		if (text.contains(QStringLiteral("unknown"))) {
+			++unknown;
+		}
+	};
+	GBoyLinkSession session([](const QByteArray&) {}, events, 1, 4);
+	check(!session.isReady(), "session starts not ready");
+	session.onWireFrame(wire);
+	check(session.isReady(), "a reconnect frame marks the peer ready");
+	check(session.remoteRtt() == 37, "the reconnect RTT is recorded");
+	check(ready, "onReady fires on the reconnect handshake");
+	check(unknown == 0, "a reconnect frame is not reported as an unknown type");
+
+	if (failures == 0) {
+		fprintf(stderr, "RECONNECT TEST: PASS (10 byte handshake recognised as a handshake)\n");
+	}
+	return failures;
+}
+
+/**
+ * TcpDirectLink：官方 WiFi 直连的 TCP 版。本机环回实测
+ *   1) 帧按「4B 大端长度 + 类型 + 载荷」双向完整到达（含 800 KiB 存档帧）；
+ *   2) 对端掉线后客户端自己重连，并先补 10 字节重连握手包。
+ */
+static int tcpDirectLinkTest() {
+	int failures = 0;
+	auto check = [&](bool ok, const char* what) {
+		if (!ok) {
+			fprintf(stderr, "TCPDIRECT TEST: FAIL %s\n", what);
+			++failures;
+		}
+	};
+	// 借 QTcpServer 拿一个空闲端口，再交给 TcpDirectLink 自己 listen。
+	quint16 port = 0;
+	{
+		QTcpServer probe;
+		if (probe.listen(QHostAddress::LocalHost, 0)) {
+			port = probe.serverPort();
+			probe.close();
+		}
+	}
+	if (!port) {
+		qInfo() << "TCPDIRECT TEST: FAIL (no free port)";
+		return 1;
+	}
+
+	TcpDirectLink host;
+	QString hostError;
+	std::atomic<bool> hostUp{false};
+	std::thread hostThread([&]() { hostUp = host.listenAndAccept(port, 5000, &hostError); });
+
+	TcpDirectLink client;
+	QString clientError;
+	bool connected = false;
+	for (int i = 0; i < 50 && !connected; ++i) {
+		connected = client.connectTo(QStringLiteral("127.0.0.1"), port, 1000, &clientError);
+		if (!connected) {
+			QThread::msleep(100);
+		}
+	}
+	if (hostThread.joinable()) {
+		hostThread.join();
+	}
+	if (!connected || !hostUp) {
+		qInfo().noquote() << QString("TCPDIRECT TEST: FAIL (connect=%1 listen=%2 %3 %4)")
+		                         .arg(connected).arg(hostUp.load()).arg(clientError, hostError);
+		client.close();
+		host.close();
+		return 1;
+	}
+
+	// 1) 普通按键帧：双向完整。
+	QByteArray keys = GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x0A0B);
+	client.send(keys);
+	QByteArray got;
+	check(host.recv(&got, 3000), "client frame reaches the host");
+	check(got == keys, "the key frame survives byte for byte");
+
+	// 2) 800 KiB 存档帧（官方 type 6 的真实尺寸）：分帧拼接、不截断。
+	const int blobSize = 800 * 1024;
+	QByteArray blob(blobSize, '\0');
+	for (int i = 0; i < blobSize; ++i) {
+		blob[i] = char((i * 31 + (i >> 7)) & 0xFF);
+	}
+	QByteArray state = GBoyFrames::stateFrame(blob);
+	host.send(state);
+	QByteArray stateGot;
+	check(client.recv(&stateGot, 10000), "the 800 KiB state frame arrives");
+	check(stateGot.size() == state.size(), "the state frame keeps its length");
+	check(stateGot == state, "the state frame keeps its bytes");
+	check(!GBoyFrames::stateOf(stateGot.mid(4)).isEmpty(), "the state blob is recoverable");
+
+	// 3) 连续两帧：流不能错位。
+	QByteArray one = GBoyFrames::frame(GBoyFrames::TYPE_COUNTER, 1);
+	QByteArray two = GBoyFrames::frame(GBoyFrames::TYPE_EVENT, 2);
+	client.send(one);
+	client.send(two);
+	QByteArray first;
+	QByteArray second;
+	check(host.recv(&first, 3000), "first of two back-to-back frames arrives");
+	check(host.recv(&second, 3000), "second of two back-to-back frames arrives");
+	check(first == one && second == two, "back-to-back frames stay aligned");
+
+	// 4) 掉线重连：客户端应自己连回来，并先补一个重连握手包。
+	const int connectsBefore = client.connectCount();
+	host.close();
+	TcpDirectLink host2;
+	QString host2Error;
+	std::atomic<bool> host2Up{false};
+	std::thread host2Thread([&]() { host2Up = host2.listenAndAccept(port, 15000, &host2Error); });
+	QByteArray reconnect;
+	bool sawReconnect = host2.recv(&reconnect, 12000);
+	if (host2Thread.joinable()) {
+		host2Thread.join();
+	}
+	check(host2Up.load(), "the host listens again on the same port");
+	check(sawReconnect, "the client reconnects on its own");
+	check(reconnect.size() == 10, "the reconnect frame is 10 bytes");
+	check(GBoyFrames::typeOf(reconnect.mid(4)) == GBoyFrames::TYPE_RECONNECT,
+	      "the reconnect frame carries type 100");
+	check(client.connectCount() == connectsBefore + 1, "the client counted one reconnect");
+
+	client.close();
+	host2.close();
+	if (failures == 0) {
+		fprintf(stderr, "TCPDIRECT TEST: PASS (framing, 800 KiB state, auto reconnect + 10 byte handshake)\n");
+	}
+	return failures;
+}
+
 static int lanSioLatTest(const QString& rom, int delayMs) {
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
@@ -3978,6 +4141,8 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("frames")) {
 		int failures = framesTest();
 		failures += kcpFrameTest();
+		failures += reconnectFrameTest();
+		failures += tcpDirectLinkTest();
 		return failures;
 	}
 	if (mode == QStringLiteral("bus")) {

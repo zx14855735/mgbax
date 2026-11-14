@@ -5821,6 +5821,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 lobby.close()
             }
             self.gboyRemoteKeys = 0
+            // 链路断了就撤销对端下发的帧率上限，否则本机会一直按 30fps
+            // 慢放（上限是会话级的，不是本机设置）。
+            self.setLinkPacing(0)
             // Mirror the Android disconnect path: republish the (now empty)
             // key mask so the last remote peer's buttons don't linger on the
             // core until the next local key event.
@@ -5988,9 +5991,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let self else { return 0 }
             return Int32(self.touchKeys | self.hwKeys | self.padKeys)
         }
-            /* 官方 type 6：把本机可见核的即时存档整包发给对端（与 PC
-             * mgbaMobileSaveStateToMemory、Android MgbaCore.saveStateToMemory 同一份
-             * 字节）。没有这条，对端「代表本机这个玩家」的镜像核永远停在电池存档上。 */
+        /* 官方 type 6：把本机可见核的即时存档整包发给对端（与 PC
+         * mgbaMobileSaveStateToMemory、Android MgbaCore.saveStateToMemory 同一份
+         * 字节）。没有这条，对端「代表本机这个玩家」的镜像核永远停在电池存档上。 */
         link.saveState = { [weak self] in
             guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return nil }
             var out: UnsafeMutableRawPointer?
@@ -6110,6 +6113,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // 会话结束就丢掉没来得及灌的对端存档，别让它漏进下一局。
                 self.pendingPeerState = nil
                 self.gate.unlock()
+                self.setLinkPacing(0)   // 见「断开」按钮：上限是会话级的
                 self.toast("云端联机已断开")
             }
         }

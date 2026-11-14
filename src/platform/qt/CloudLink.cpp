@@ -2035,7 +2035,7 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		/* 收包等待不能超过「到下一帧还剩多久」，否则 recv 的固定 30ms 会变成
 		 * 真正的节拍上限（帧率上限再高也跑不出来，60fps 会被压到 33fps）。 */
 		const qint64 remaining = tickMs - (now - lastTick);
-		const int waitMs = int(qBound<qint64>(0, remaining, 30));
+		const int waitMs = int(qBound<qint64>(qint64(0), remaining, qint64(30)));
 		if (!link->recv(&message, waitMs)) {
 			continue;
 		}

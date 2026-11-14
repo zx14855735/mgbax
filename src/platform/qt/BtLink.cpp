@@ -44,12 +44,6 @@ const GUID kServiceGuid = {
 /** 官方服务名（A2egSU(listenUsingRfcommWithServiceRecord("GBoy", uuid))）。 */
 const wchar_t kServiceName[] = L"GBoy";
 
-void put32(char* p, quint32 v) {
-	p[0] = char((v >> 24) & 0xFF);
-	p[1] = char((v >> 16) & 0xFF);
-	p[2] = char((v >> 8) & 0xFF);
-	p[3] = char(v & 0xFF);
-}
 
 bool wouldBlock(int code) {
 	return code == WSAEWOULDBLOCK || code == WSAEINPROGRESS || code == WSAEINTR;
@@ -183,7 +177,7 @@ bool BtLink::openHost(int timeoutMs, QString* error) {
 	std::memset(&query, 0, sizeof(query));
 	query.dwSize = sizeof(query);
 	query.lpServiceClassId = const_cast<GUID*>(&kServiceGuid);
-	query.lpServiceName = const_cast<wchar_t*>(kServiceName);
+	query.lpszServiceInstanceName = const_cast<wchar_t*>(kServiceName);
 	query.dwNameSpace = NS_BTH;
 	query.dwNumberOfCsAddrs = 1;
 	query.lpcsaBuffer = &csaddr;
@@ -322,7 +316,7 @@ int BtLink::readSomeLocked(int timeoutMs, bool* dropped) {
 		return 0;
 	}
 	char buffer[1024];
-	int n = int(recv(SOCKET(m_socket), buffer, sizeof(buffer), 0));
+	int n = int(::recv(SOCKET(m_socket), buffer, sizeof(buffer), 0));
 	if (n == 0) {
 		*dropped = true;
 		return 0;
@@ -353,7 +347,7 @@ void BtLink::drainFrames() {
 		m_buffer.remove(0, total);
 		{
 			std::lock_guard<std::mutex> locker(m_mutex);
-			m_inbox.append(frame);
+			m_inbox.push_back(frame);
 		}
 		m_inboxCv.notify_one();
 	}
@@ -452,7 +446,7 @@ void BtLink::close() {
 		std::memset(&query, 0, sizeof(query));
 		query.dwSize = sizeof(query);
 		query.lpServiceClassId = const_cast<GUID*>(&kServiceGuid);
-		query.lpServiceName = const_cast<wchar_t*>(kServiceName);
+		query.lpszServiceInstanceName = const_cast<wchar_t*>(kServiceName);
 		query.dwNameSpace = NS_BTH;
 		query.dwNumberOfCsAddrs = 1;
 		query.lpcsaBuffer = &csaddr;
