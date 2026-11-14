@@ -75,6 +75,15 @@ public final class GBoyConsoleSet {
     private volatile State state = State.NEW;
     private volatile String failure = "";
 
+    /* 一轮云联机会 start() 两次：onConnected 先建房间，紧接着 pendingPath
+     * 触发可见核 reload 再重建一次。两次之间游戏可能把「保存确认」写回
+     * /sdcard/rom.sav，第二次快照就变成新进度，四份存档分叉（实测
+     * mirror1=57893cd4、mirror2/3=bbfa7890，idx=1 停在保存菜单、SIO 不启动，
+     * pc 恒 0）。整轮只取一次初始快照并缓存，之后每次 start() 都复用。 */
+    private static final Object SNAPSHOT_LOCK = new Object();
+    private static byte[] s_initialSnapshot;
+    private static String s_initialSnapshotName;
+
     private long targetFrame = -1L;
     private long frameTimeouts;
     private int linkPort;
