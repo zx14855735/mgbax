@@ -48,6 +48,17 @@ final class GBoyLink {
 
     var romPath: () -> String? = { nil }
     var localKeys: () -> Int32 = { 0 }
+    /**
+     * 取本机可见核的即时存档（mGBA 格式，和 PC 的
+     * `mgbaMobileSaveStateToMemory` / Android 的 `MgbaCore.saveStateToMemory`
+     * 同一份字节）。GBoy 的 type 6 就是把这个东西整包发给对端，对端灌进
+     * 「代表本机这个玩家」的镜像核。
+     *
+     * 没接线时返回 nil，此时**不再**回落到早先那个「合成一份 900KB 全零
+     * GBASTATE」的假实现：那种包在 PC/Android 上会被 loadState 拒绝
+     * （格式不同），只会掩盖问题。
+     */
+    var saveState: () -> [UInt8]? = { nil }
     /// Key mask received from the peer; called from the reader thread.
     var onRemoteKeys: (Int32) -> Void = { _ in }
     /// Slot-tagged variant for the N-core layout. This 2-player protocol has
@@ -57,6 +68,8 @@ final class GBoyLink {
     var onStatus: (String) -> Void = { _ in }
     /// Peer asked for a console reset; called from the reader thread.
     var onRemoteReset: () -> Void = {}
+    /// 收到对端 type 6 的整份存档：交给镜像核（代表对端那个玩家）载入。
+    var onRemoteState: ([UInt8]) -> Void = { _ in }
 
     private let lock = NSLock()
     private var isClosedFlag = false
@@ -559,29 +572,19 @@ final class GBoyLink {
      * GBoy's loadStateFromMemory expects. The peer's link console loads it and
      * that game then simply starts from a fresh boot.
      */
-    private func stateFrame() throws -> [UInt8] {
-        var raw = [UInt8](repeating: 0, count: 32 + Self.statePad)
-        let magic = Array("GBASTATE".utf8)
-        for (index, byte) in magic.enumerated() {
-            raw[index] = byte
-        }
-        raw[11] = 4
-        if let path = romPath(), FileManager.default.fileExists(atPath: path),
-           let handle = FileHandle(forReadingAtPath: path) {
-            defer { try? handle.close() }
-            if (try? handle.seek(toOffset: 0xA0)) != nil,
-               let head = try? handle.read(upToCount: 16), head.count == 16 {
-                for (index, byte) in head.enumerated() {
-                    raw[12 + index] = byte
-                }
-            }
-        }
-        let compressed = Self.zlibCompress(Data(raw))
-        let size = compressed.count
+    /**
+     * type 6：整份即时存档。优先用 {@link saveState} 提供的**真实**存档
+     * （mGBA 格式，与 PC/Android 一致）。拿不到就返回 nil，由调用方跳过这一
+     * 步 —— 以前这里合成一份 900KB 全零的 GBASTATE 假包，对端要么拒收、要么
+     * 把游戏灌成未初始化状态，比不发更糟。
+     */
+    private func stateFrame() throws -> [UInt8]? {
+        guard let raw = saveState(), !raw.isEmpty else { return nil }
+        let size = raw.count
         var frame: [UInt8] = [0, UInt8(Self.msgState),
                               UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF),
                               UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF)]
-        frame += [UInt8](compressed)
+        frame += raw
         return frame
     }
 
