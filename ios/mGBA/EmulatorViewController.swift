@@ -1,5 +1,6 @@
 ﻿import AVFoundation
 import CoreMotion
+import QuartzCore
 import Darwin
 import GameController
 import Photos
@@ -116,6 +117,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var videoWriter: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
     private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    /** 录像音轨（AAC）；取不到音频时留空，降级成纯视频。 */
+    private var audioWriterInput: AVAssetWriterInput?
+    private var audioTapActive = false
+    /** 音视频共用的时间基准（CACurrentMediaTime，切 ROM/停录时清零）。 */
+    private var recordStart: CFTimeInterval?
     private var videoURL: URL?
     private var videoFrames: Int64 = 0
     private var lastVideoAt: TimeInterval = 0
@@ -3799,7 +3805,43 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             self.presentSheet(picker)
         }, for: .touchUpInside)
         box.addArrangedSubview(importSps)
+        let exportSps = UIButton(type: .system)
+        exportSps.setTitle("导出 .sps（本版本记录的金手指）", for: .normal)
+        exportSps.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let lines = self.defaults.stringArray(forKey: self.cheatStoreKey()) ?? []
+            guard !lines.isEmpty else {
+                self.toast("没有可导出的代码（只导出本版本新增/导入的）")
+                return
+            }
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("mGBAx-\(Self.fileStamp()).sps")
+            let text = "GameShark\n" + lines.joined(separator: "\n") + "\n"
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                self.toast("导出失败")
+                return
+            }
+            self.presentSheet(UIDocumentPickerViewController(forExporting: [url], asCopy: true))
+        }, for: .touchUpInside)
+        box.addArrangedSubview(exportSps)
         presentSheet(sheet)
+    }
+
+    /// 本 ROM 的金手指原始代码（供 .sps 导出；core 只回名字/开关，不回代码文本）。
+    private func cheatStoreKey() -> String {
+        "cheat_codes_\(romCrc.map { String($0) } ?? "0")"
+    }
+
+    private func rememberCheatLines(_ lines: [String]) {
+        let valid = lines.filter { !$0.isEmpty }
+        guard !valid.isEmpty else { return }
+        var all = defaults.stringArray(forKey: cheatStoreKey()) ?? []
+        for line in valid where !all.contains(line) {
+            all.append(line)
+        }
+        defaults.set(all, forKey: cheatStoreKey())
     }
 
     /// 导入 VisualBoyAdvance / My Boy 的 `.sps`（GameShark）代码文件：
@@ -3820,6 +3862,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         let base = url.deletingPathExtension().lastPathComponent
         var added = 0
+        var imported: [String] = []
         for raw in content.split(whereSeparator: { $0 == "\n" || $0 == "\r" }) {
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty { continue }
@@ -3837,7 +3880,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 }
             }
             if ok { added += 1 }
+            if ok { imported.append(line) }
         }
+        rememberCheatLines(imported)
         RunLog.shared.add(".sps 导入 \(added) 条（\(url.lastPathComponent)）")
         toast(added > 0 ? "已导入 \(added) 条金手指，回到金手指列表勾选生效" : "没有找到可导入的 GameShark 代码")
     }
@@ -3897,6 +3942,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self.toast("作弊码无效，请检查格式")
                 return
             }
+            // 记下原始代码，供「导出 .sps」使用（core 只回名字/开关，不回代码）。
+            self.rememberCheatLines(codeLines.split(whereSeparator: { $0 == "\n" || $0 == "\r" })
+                .map { String($0).trimmingCharacters(in: .whitespaces) })
             self.toast("已添加：\(codeName)")
             self.dismiss(animated: true)
         }, for: .touchUpInside)
@@ -5461,7 +5509,30 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             return
         }
         writer.add(input)
+        // 音轨：先确认能拿到 PCM 再决定加不加轨道，拿不到就纯视频。
+        // 采样率跟随当前输出（核心已重采样到 audio.outputRate），声道按核心
+        // 实际输出（立体声 2）；切倍速只改帧率，不改这两个值。
+        let tapReady = audio.installRecordingTap({ [weak self] buffer in
+            self?.appendAudioBuffer(buffer)
+        })
+        var audioTrack: AVAssetWriterInput?
+        let sampleRate = Int(audio.outputRate)
+        if tapReady, sampleRate > 0 {
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 2,
+                AVEncoderBitRateKey: 128_000
+            ]
+            let candidate = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            candidate.expectsMediaDataInRealTime = true
+            if writer.canAdd(candidate) {
+                writer.add(candidate)
+                audioTrack = candidate
+            }
+        }
         guard writer.startWriting() else {
+            if tapReady { audio.removeRecordingTap() }
             toast("录像初始化失败")
             return
         }
@@ -5469,25 +5540,51 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         videoWriter = writer
         videoInput = input
         videoAdaptor = adaptor
+        audioWriterInput = audioTrack
         videoURL = url
         videoFrames = 0
         lastVideoAt = 0
+        recordStart = CACurrentMediaTime()
+        audioTapActive = audioTrack != nil
+        if tapReady && audioTrack == nil {
+            audio.removeRecordingTap()
+        }
+        if !audioTapActive {
+            RunLog.shared.add("录像：音频轨不可用，降级为纯视频")
+        }
         recordButton?.setTitle("停止录像", for: .normal)
-        toast("开始录像（当前版本无音轨）")
+        toast(audioTapActive ? "开始录像（含音轨）" : "开始录像（无音轨）")
     }
 
     private func stopVideoRecording() {
-        guard let writer = videoWriter, let input = videoInput else { return }
+        guard let writer = videoWriter else { return }
+        if audioTapActive {
+            audio.removeRecordingTap()
+            audioTapActive = false
+        }
         videoWriter = nil
-        videoInput = nil
         videoAdaptor = nil
+        videoInput?.markAsFinished()
+        audioWriterInput?.markAsFinished()
+        videoInput = nil
+        audioWriterInput = nil
+        recordStart = nil
         recordButton?.setTitle("录像", for: .normal)
-        input.markAsFinished()
         let url = videoURL
         videoURL = nil
+        // finishWriting 卡住时 3 秒收尾，避免「停止录像」永远转圈。
+        let watchdog = DispatchWorkItem {
+            guard writer.status != .completed, writer.status != .failed,
+                  writer.status != .cancelled else { return }
+            writer.cancelWriting()
+            RunLog.shared.add("录像：收尾超时 3s，文件丢弃")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: watchdog)
         writer.finishWriting { [weak self] in
+            watchdog.cancel()
             guard let self else { return }
             guard writer.status == .completed, let url else {
+                RunLog.shared.add("录像失败（status=\(writer.status.rawValue)）")
                 DispatchQueue.main.async { self.toast("录像失败") }
                 return
             }
@@ -5502,10 +5599,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     }
 
     /// 把一帧 BGRA 像素写进 H.264 轨（30 fps 上限，主线程调用）。
+    /// 时间戳用录像起点的墙钟差，和音轨同基准。
     private func appendVideoFrame(_ data: Data, width: Int, height: Int) {
         guard let adaptor = videoAdaptor, let input = videoInput,
-              input.isReadyForMoreMediaData, videoWriter?.status == .writing else { return }
-        let now = Date().timeIntervalSince1970
+              input.isReadyForMoreMediaData, videoWriter?.status == .writing,
+              let start = recordStart else { return }
+        let now = CACurrentMediaTime()
         guard now - lastVideoAt >= 1.0 / 30.0 else { return }
         lastVideoAt = now
         guard let pool = adaptor.pixelBufferPool else { return }
@@ -5529,9 +5628,54 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }
         CVPixelBufferUnlockBaseAddress(buffer, [])
-        if adaptor.append(buffer, withPresentationTime: CMTime(value: videoFrames, timescale: 30)) {
+        let stamp = CMTime(seconds: max(0, now - start), preferredTimescale: 600)
+        if adaptor.append(buffer, withPresentationTime: stamp) {
             videoFrames += 1
         }
+    }
+
+    /// 音频 tap 回调（音频线程）：把 PCM 包成 CMSampleBuffer 写进 AAC 轨。
+    private func appendAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard audioTapActive, let input = audioWriterInput, let writer = videoWriter,
+              writer.status == .writing, input.isReadyForMoreMediaData,
+              let start = recordStart, buffer.frameLength > 0 else { return }
+        guard let sample = makeAudioSampleBuffer(buffer, elapsed: CACurrentMediaTime() - start) else {
+            return
+        }
+        _ = input.append(sample)
+    }
+
+    private func makeAudioSampleBuffer(_ buffer: AVAudioPCMBuffer, elapsed: TimeInterval) -> CMSampleBuffer? {
+        guard let format = buffer.format.formatDescription else { return nil }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return nil }
+        let rate = buffer.format.sampleRate
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(rate)),
+            presentationTimeStamp: CMTime(seconds: max(0, elapsed - Double(frames) / rate),
+                                          preferredTimescale: 600),
+            decodeTimeStamp: .invalid
+        )
+        var sample: CMSampleBuffer?
+        let status = CMSampleBufferCreate(allocator: kCFAllocatorDefault,
+                                          dataBuffer: nil,
+                                          dataReady: false,
+                                          makeDataReadyCallback: nil,
+                                          refcon: nil,
+                                          formatDescription: format,
+                                          sampleCount: CMItemCount(frames),
+                                          sampleTimingEntryCount: 1,
+                                          sampleTimingArray: &timing,
+                                          sampleSizeEntryCount: 0,
+                                          sampleSizeArray: nil,
+                                          sampleBufferOut: &sample)
+        guard status == noErr, let sample else { return nil }
+        let attached = CMSampleBufferSetDataBufferFromAudioBufferList(sample,
+                                                                     blockBufferAllocator: kCFAllocatorDefault,
+                                                                     blockBufferMemoryAllocator: kCFAllocatorDefault,
+                                                                     flags: 0,
+                                                                     bufferList: buffer.audioBufferList)
+        return attached == noErr ? sample : nil
     }
 
     /** Starts recording the presented frames into a GIF. */

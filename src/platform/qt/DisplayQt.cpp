@@ -7,6 +7,7 @@
 #include "moc_DisplayQt.cpp"
 
 #include "CoreController.h"
+#include "Filters.h"
 #include "utils.h"
 
 #include <QPainter>
@@ -131,6 +132,14 @@ void DisplayQt::setBackgroundImage(const QImage& image) {
 	update();
 }
 
+void DisplayQt::setCpuFilter(int id, float brightness, float contrast, float scanlines) {
+	m_cpuFilterId = id;
+	m_cpuBrightness = brightness;
+	m_cpuContrast = contrast;
+	m_cpuScanlines = scanlines;
+	update();
+}
+
 void DisplayQt::paintEvent(QPaintEvent*) {
 	QPainter painter(this);
 	painter.fillRect(QRect(QPoint(), size()), Qt::black);
@@ -172,7 +181,8 @@ void DisplayQt::paintEvent(QPaintEvent*) {
 	painter.save();
 	painter.translate(full.topLeft());
 
-	if (m_cpuFilterId != 0 && !m_layers[VIDEO_LAYER_IMAGE].isNull() && full.width() > 0 && full.height() > 0) {
+	if ((m_cpuFilterId != 0 || m_cpuBrightness != 1.f || m_cpuContrast != 1.f || m_cpuScanlines > 0.f)
+	    && !m_layers[VIDEO_LAYER_IMAGE].isNull() && full.width() > 0 && full.height() > 0) {
 		/* 软件后端的滤镜：按 GL 路径同一套公式在输出分辨率上采样（见 Filters.cpp）。 */
 		QImage filtered = Filters::applyCpu(m_layers[VIDEO_LAYER_IMAGE], m_cpuFilterId, full.size(),
 		                                    m_cpuBrightness, m_cpuContrast, m_cpuScanlines);

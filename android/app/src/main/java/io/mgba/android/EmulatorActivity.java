@@ -3204,10 +3204,12 @@ public class EmulatorActivity extends AppCompatActivity {
             presentFrame();
         } else if (cmd == CMD_FRAME_BACK) {
             FrameSnapshot snapshot = null;
-            for (int i = frameSnapshots.size() - 1; i >= 0; i--) {
-                if (frameSnapshots.get(i).frame < netFrameNo) {
-                    snapshot = frameSnapshots.get(i);
-                    break;
+            synchronized (frameSnapshots) {
+                for (int i = frameSnapshots.size() - 1; i >= 0; i--) {
+                    if (frameSnapshots.get(i).frame < netFrameNo) {
+                        snapshot = frameSnapshots.get(i);
+                        break;
+                    }
                 }
             }
             if (snapshot == null) {
@@ -3977,17 +3979,19 @@ public class EmulatorActivity extends AppCompatActivity {
         if (netFrameNo % FRAME_SNAPSHOT_EVERY != 0) {
             return;
         }
-        if (!frameSnapshots.isEmpty()
-                && frameSnapshots.get(frameSnapshots.size() - 1).frame == netFrameNo) {
-            return;
-        }
         byte[] blob = core.saveStateToMemory();
         if (blob == null || blob.length == 0) {
             return;
         }
-        frameSnapshots.add(new FrameSnapshot(netFrameNo, blob));
-        while (frameSnapshots.size() > FRAME_SNAPSHOT_MAX) {
-            frameSnapshots.remove(0);
+        synchronized (frameSnapshots) {
+            if (!frameSnapshots.isEmpty()
+                    && frameSnapshots.get(frameSnapshots.size() - 1).frame == netFrameNo) {
+                return;
+            }
+            frameSnapshots.add(new FrameSnapshot(netFrameNo, blob));
+            while (frameSnapshots.size() > FRAME_SNAPSHOT_MAX) {
+                frameSnapshots.remove(0);
+            }
         }
     }
 
@@ -6344,7 +6348,9 @@ public class EmulatorActivity extends AppCompatActivity {
         frameBack.setOnCheckedChangeListener((v, checked) -> {
             getPreferences(MODE_PRIVATE).edit().putBoolean("frame_back", checked).apply();
             if (!checked) {
-                frameSnapshots.clear();
+                synchronized (frameSnapshots) {
+                    frameSnapshots.clear();
+                }
             }
         });
         final Button rewindTap = new Button(this);

@@ -188,6 +188,7 @@ private:
 	void setupOptions();
 	void openStateWindow(LoadSave);
 	void takeScreenshot();
+	void applyFilters();
 	QString perGameSpeedKey() const;
 	void storePerGameSpeed();
 	void applyPerGameSpeed();
@@ -265,6 +266,8 @@ private:
 	QString m_pendingState;
 	bool m_pendingPause = false;
 	bool m_pendingClose = false;
+	/** 当前画面是否由内置滤镜着色器接管（用于「None」时恢复用户外部 shader）。 */
+	bool m_builtinFilterActive = false;
 
 	bool m_hitUnimplementedBiosCall;
 

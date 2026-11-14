@@ -46,6 +46,7 @@
 #include "ScriptedControl.h"
 #include "CoreController.h"
 #include "ForwarderView.h"
+#include "Filters.h"
 #include "FrameView.h"
 #include "GBAApp.h"
 #include "GDBController.h"
@@ -1440,6 +1441,67 @@ void Window::takeScreenshot() {
 	}
 }
 
+void Window::applyFilters() {
+	if (!m_display) {
+		return;
+	}
+	const int id = m_config->getOption("filter").toInt();
+	const float brightness = std::max(1, m_config->getOption("filterBrightness", 100).toInt()) / 100.f;
+	const float contrast = std::max(1, m_config->getOption("filterContrast", 100).toInt()) / 100.f;
+	const float scanlines = std::max(0, std::min(100, m_config->getOption("filterScanlines", 0).toInt())) / 100.f;
+
+	if (!m_display->supportsShaders()) {
+		/* 软件后端：交给 DisplayQt 在 paintEvent 里做 CPU 后处理。 */
+		m_display->setCpuFilter(id, brightness, contrast, scanlines);
+		return;
+	}
+
+	m_display->setCpuFilter(0, 1.f, 1.f, 0.f);
+	const bool noFilter = id == Filters::FILTER_NONE && brightness == 1.f && contrast == 1.f && scanlines == 0.f;
+	if (noFilter) {
+		if (m_builtinFilterActive) {
+			m_display->clearShaders();
+			m_builtinFilterActive = false;
+			/* 恢复用户自己的外部 shader（如果配过）。 */
+			const QString userShader = m_config->getOption("shader");
+			if (!userShader.isEmpty()) {
+				struct VDir* dir = VFileDevice::openArchive(userShader);
+				if (!dir) {
+					dir = VFileDevice::openDir(userShader);
+				}
+				if (dir) {
+					m_display->setShaders(dir);
+					dir->close(dir);
+				}
+			}
+		}
+		return;
+	}
+
+	const QString dir = QString("%1/filters/%2_%3_%4_%5")
+	                        .arg(ConfigController::configDir())
+	                        .arg(id)
+	                        .arg(int(brightness * 100))
+	                        .arg(int(contrast * 100))
+	                        .arg(int(scanlines * 100));
+	QString error;
+	if (!Filters::buildShaderDir(id, dir, brightness, contrast, scanlines, &error)) {
+		LOG(QT, WARN) << tr("滤镜着色器生成失败：%1").arg(error);
+		return;
+	}
+	struct VDir* shader = VFileDevice::openDir(dir);
+	if (!shader) {
+		LOG(QT, WARN) << tr("滤镜着色器目录打不开：%1").arg(dir);
+		return;
+	}
+	if (m_display->setShaders(shader)) {
+		m_builtinFilterActive = true;
+	} else {
+		LOG(QT, WARN) << tr("滤镜着色器加载失败（渲染器不支持？）");
+	}
+	shader->close(shader);
+}
+
 QString Window::perGameSpeedKey() const {
 	if (!m_controller) {
 		return QString();
@@ -2018,6 +2080,64 @@ void Window::setupMenu(QMenuBar* menubar) {
 		}
 	}, this);
 	m_config->updateOption("resampleVideo");
+
+	/* 内置滤镜（对齐 Android Shaders.java）：GL 走着色器，软件后端走 CPU 后处理。 */
+	m_actions.addMenu(tr("Filters"), "filters", "av");
+	ConfigOption* filter = m_config->addOption("filter");
+	const QStringList filterNames = Filters::names();
+	for (int i = 0; i < filterNames.size(); ++i) {
+		filter->addValue(filterNames[i], i, &m_actions, "filters");
+	}
+	if (m_config->getOption("filter").isEmpty()) {
+		m_config->setOption("filter", 0);
+	} else {
+		m_config->updateOption("filter");
+	}
+	filter->connect([this](const QVariant&) {
+		applyFilters();
+	}, this);
+
+	m_actions.addMenu(tr("Brightness"), "filterBrightness", "filters");
+	ConfigOption* filterBrightness = m_config->addOption("filterBrightness");
+	for (int v : {70, 85, 100, 115, 130, 150}) {
+		filterBrightness->addValue(QString("%1%").arg(v), v, &m_actions, "filterBrightness");
+	}
+	if (m_config->getOption("filterBrightness").isEmpty()) {
+		m_config->setOption("filterBrightness", 100);
+	} else {
+		m_config->updateOption("filterBrightness");
+	}
+	filterBrightness->connect([this](const QVariant&) {
+		applyFilters();
+	}, this);
+
+	m_actions.addMenu(tr("Contrast"), "filterContrast", "filters");
+	ConfigOption* filterContrast = m_config->addOption("filterContrast");
+	for (int v : {70, 85, 100, 115, 130, 150}) {
+		filterContrast->addValue(QString("%1%").arg(v), v, &m_actions, "filterContrast");
+	}
+	if (m_config->getOption("filterContrast").isEmpty()) {
+		m_config->setOption("filterContrast", 100);
+	} else {
+		m_config->updateOption("filterContrast");
+	}
+	filterContrast->connect([this](const QVariant&) {
+		applyFilters();
+	}, this);
+
+	m_actions.addMenu(tr("Scanline strength"), "filterScanlines", "filters");
+	ConfigOption* filterScanlines = m_config->addOption("filterScanlines");
+	for (int v : {0, 25, 50, 75, 100}) {
+		filterScanlines->addValue(QString("%1%").arg(v), v, &m_actions, "filterScanlines");
+	}
+	if (m_config->getOption("filterScanlines").isEmpty()) {
+		m_config->setOption("filterScanlines", 0);
+	} else {
+		m_config->updateOption("filterScanlines");
+	}
+	filterScanlines->connect([this](const QVariant&) {
+		applyFilters();
+	}, this);
 
 	m_actions.addMenu(tr("Frame&skip"),"skip", "av");
 	ConfigOption* skip = m_config->addOption("frameskip");

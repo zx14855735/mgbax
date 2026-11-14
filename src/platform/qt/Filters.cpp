@@ -513,7 +513,7 @@ QStringList Filters::names() {
 }
 
 bool Filters::buildShaderDir(int id, const QString& dir, float brightness, float contrast, float scanlines, QString* error) {
-	if (id <= FILTER_NONE || id >= FILTER_COUNT) {
+	if (id < FILTER_NONE || id >= FILTER_COUNT) {
 		if (error) {
 			*error = QStringLiteral("unknown filter");
 		}
@@ -564,7 +564,7 @@ QImage Filters::applyCpu(const QImage& src, int id, const QSize& outSize, float 
 	if (src.isNull() || outSize.width() < 1 || outSize.height() < 1) {
 		return QImage();
 	}
-	if (id <= FILTER_NONE || id >= FILTER_COUNT) {
+	if (id < FILTER_NONE || id >= FILTER_COUNT) {
 		return src.scaled(outSize, Qt::IgnoreAspectRatio, Qt::FastTransformation)
 		    .convertToFormat(QImage::Format_RGB32);
 	}
