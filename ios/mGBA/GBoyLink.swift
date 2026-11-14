@@ -192,16 +192,25 @@ final class GBoyLink {
         try send(fd, Self.frame(Self.msgReady))
         _ = try nextFrame(fd, want: Self.msgReady)
 
+        /* type 6 双向交换，而且是**照抄官方**的用法：收到的存档要灌进
+         * 「代表对端那个玩家」的镜像核，不是收下就扔。以前这里把对端存档
+         * 丢掉并写"本机继续用本机进度"，两端的镜像核因此停在不同的一幕。 */
         if asHost {
-            _ = try nextFrame(fd, want: Self.msgState)
-            note = Self.appendNote(note, "已收到对方即时存档（本机继续用本机进度）")
-            try send(fd, try stateFrame())
+            if let peer = try readState(fd) {
+                onRemoteState(peer)
+            }
+            if let mine = try stateFrame() {
+                try send(fd, mine)
+            }
         } else {
-            try send(fd, try stateFrame())
-            _ = try nextFrame(fd, want: Self.msgState)
-            note = Self.appendNote(note, "已收到对方即时存档（本机继续用本机进度）")
+            if let mine = try stateFrame() {
+                try send(fd, mine)
+            }
+            if let peer = try readState(fd) {
+                onRemoteState(peer)
+            }
         }
-        return note
+        return Self.appendNote(note, "已交换即时存档")
     }
 
     private static func appendNote(_ note: String, _ extra: String) -> String {
@@ -483,6 +492,25 @@ final class GBoyLink {
             let messageType = Self.type(frame)
             if messageType == want {
                 return frame
+            }
+            if messageType != Self.msgKeys && messageType != Self.msgReset {
+                throw LinkError(message: "对方不是联机大厅会话")
+            }
+        }
+    }
+
+    /// 读一帧 type 6 并取出存档体（body = u16 type + u32 长度 + blob）。
+    /// 对端没发（或先发了别的）时返回 nil，不抛错 —— 状态同步是可选步骤。
+    private func readState(_ fd: Int32) throws -> [UInt8]? {
+        while true {
+            let frame = try readFrame(fd)
+            let messageType = Self.type(frame)
+            if messageType == Self.msgState {
+                guard frame.count >= 6 else { return nil }
+                let size = (Int(frame[2]) << 24) | (Int(frame[3]) << 16)
+                         | (Int(frame[4]) << 8) | Int(frame[5])
+                guard size > 0, frame.count >= 6 + size else { return nil }
+                return Array(frame[6..<(6 + size)])
             }
             if messageType != Self.msgKeys && messageType != Self.msgReset {
                 throw LinkError(message: "对方不是联机大厅会话")

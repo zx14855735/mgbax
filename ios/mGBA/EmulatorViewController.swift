@@ -5947,6 +5947,28 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             guard let self else { return 0 }
             return Int32(self.touchKeys | self.hwKeys | self.padKeys)
         }
+        /* 官方 type 6：把本机可见核的即时存档整包发给对端（与 PC
+         * mgbaMobileSaveStateToMemory、Android MgbaCore.saveStateToMemory 同一份
+         * 字节）。没有这条，对端「代表本机这个玩家」的镜像核永远停在电池存档上。 */
+        link.saveState = { [weak self] in
+            guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return nil }
+            var out: UnsafeMutableRawPointer?
+            var size = 0
+            guard mgbaMobileSaveStateToMemory(core, &out, &size), let buffer = out, size > 0 else {
+                return nil
+            }
+            defer { free(buffer) }
+            return [UInt8](Data(bytes: buffer, count: size))
+        }
+        /* 收到对端存档：交给多核集合，由镜像线程在帧边界灌进槽位 2 那颗核。 */
+        link.onRemoteState = { [weak self] state in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if self.consoleSet?.applyRemoteState(state) != true {
+                    NSLog("GBOY_RT peer state not applied (consoles not ready, %d bytes)", state.count)
+                }
+            }
+        }
         link.onRemoteKeys = { [weak self] keys in
             DispatchQueue.main.async {
                 guard let self else { return }

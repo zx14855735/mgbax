@@ -39,6 +39,9 @@ final class GBoyConsoleSet {
     private var mirrorThreads: [Thread] = []
     private var finished: [DispatchSemaphore] = []
     private var remoteKeys: [UInt32]
+    /// 待灌进镜像核 1（= 槽位 2，对端那个玩家）的整份存档。由网络线程入队，
+    /// 镜像线程在帧边界取走 —— 在别的线程直接 loadState 会与 runFrames 抢核。
+    private var pendingRemoteState: [UInt8]?
     private var visibleCore: OpaquePointer?
     private var running = false
     private let lock = NSLock()
@@ -239,6 +242,23 @@ final class GBoyConsoleSet {
                     self.frameCond.unlock()
                     guard self.isRunning else { break }
                     guard let core = self.cores[index] else { break }
+                    /* 对端存档：只喂镜像核 1（= 全局槽位 2，代表对端玩家），
+                     * 而且只在帧边界载入。与 Android GBoyConsoleSet.applyRemoteState
+                     * / PC GBoyMirror.applyRemoteState 同一条规则：绝不喂可见核
+                     * （那是本机玩家自己的进度），也绝不喂 slot 3/4 的 NPC 陪位。 */
+                    if index == 1 {
+                        self.lock.lock()
+                        let pending = self.pendingRemoteState
+                        self.pendingRemoteState = nil
+                        self.lock.unlock()
+                        if let state = pending, !state.isEmpty {
+                            let ok = state.withUnsafeBytes { raw in
+                                mgbaMobileLoadStateFromMemory(core, raw.baseAddress, raw.count)
+                            }
+                            NSLog("GBOY_RT peer state applied bytes=%d ok=%d",
+                                  state.count, ok ? 1 : 0)
+                        }
+                    }
                     var done = self.mirrorFrames[index]
                     while self.isRunning && done < ceiling {
                         let slot = self.slotOfCore[index]
@@ -297,6 +317,18 @@ final class GBoyConsoleSet {
         lock.lock()
         remoteKeys[slot] = mask
         lock.unlock()
+    }
+
+    /// 收到对端 type 6 的整份存档：入队，由镜像线程在帧边界载入。
+    /// 只作用于镜像核 1（槽位 2 = 对端玩家）；可见核与 NPC 陪位都不碰。
+    /// 与 Android `GBoyConsoleSet.applyRemoteState` 同一规则。
+    @discardableResult
+    func applyRemoteState(_ state: [UInt8]) -> Bool {
+        guard !state.isEmpty, cores.count > 1 else { return false }
+        lock.lock()
+        pendingRemoteState = state
+        lock.unlock()
+        return true
     }
 
     /// 可见核的即时存档快照（TYPE_STATE 来源，与 Android snapshotState()
