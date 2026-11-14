@@ -72,7 +72,17 @@ final class GBoyConsoleSet {
         let primarySave = (saveDir as NSString).appendingPathComponent(romName + ".sav")
         let fm = FileManager.default
 
-        // 镜像核从可见核存档的副本启动，保证 4 核初始状态一致（同 Android
+        // 先把可见核的电池存档一次性读成快照，再分发给所有镜像目录。
+        // 旧实现在循环里每轮重新复制同一个源文件：云连接重建房间时可见核
+        // 会在循环期间写回存档，实测四个存档内容各不相同，四核从不同的
+        // 游戏进度冷启动，SIO 握手永远凑不齐 playerCount（Android 侧同坑
+        // 同修：save snapshot）。同一份字节数组保证起点一致。
+        var saveSnapshot: Data?
+        if fm.fileExists(atPath: primarySave) {
+            saveSnapshot = try? Data(contentsOf: URL(fileURLWithPath: primarySave))
+        }
+
+        // 镜像核从可见核存档的快照启动，保证 4 核初始状态一致（同 Android
         // GBoyConsoleSet.copyPrimarySave）。
         for i in 1...count {
             let mirrorSave = (saveDir as NSString).appendingPathComponent("mirror\(i)")
@@ -85,9 +95,9 @@ final class GBoyConsoleSet {
                 return "无法创建镜像存档目录 \(i): \(error.localizedDescription)"
             }
             let target = (mirrorSave as NSString).appendingPathComponent(romName + ".sav")
-            if fm.fileExists(atPath: primarySave) {
+            if let snapshot = saveSnapshot {
                 try? fm.removeItem(atPath: target)
-                try? fm.copyItem(atPath: primarySave, toPath: target)
+                try? snapshot.write(to: URL(fileURLWithPath: target))
             }
             guard let core = mgbaMobileCreate(mirrorSave, mirrorState, "iosmirror\(i)") else {
                 cleanupCores()
