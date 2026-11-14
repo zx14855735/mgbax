@@ -1181,7 +1181,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             } else {
                 pumpAudio(core: core, buffer: audioIn, speed: audioSpeed, drop: false)
             }
-            if mult <= 1.5 {
+            if playRate <= 1.5 {
                 present(core, &video, &videoCap)
             } else {
                 let now = DispatchTime.now().uptimeNanoseconds
@@ -1258,7 +1258,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 let shown = frames
                 let cycles = slices
                 let elapsed = now &- fpsStamp
-                let shownSpeed = mult
+                let shownSpeed = playRate
                 frames = 0
                 slices = 0
                 fpsStamp = now

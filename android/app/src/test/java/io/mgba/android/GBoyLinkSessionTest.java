@@ -315,7 +315,8 @@ public final class GBoyLinkSessionTest {
         check(GBoyLinkSession.paceNanosForSpeed(3) == 0L, "3 is not an official speed");
     }
 
-    private static void registrationAndSocketHandshake() {        fresh();
+    private static void registrationAndSocketHandshake() {
+        fresh();
         session.sendRegistration(3);
         byte[] reg = sink.frames.get(sink.frames.size() - 1);
         check(reg.length == 16, "cloud registration frame is 16 bytes");
