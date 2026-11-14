@@ -267,3 +267,48 @@ enum LobbyFrames {
         }
     }
 }
+
+/**
+ * 官方倍速（type 9）的纯函数表 —— 三端对齐用。
+ *
+ * 线上值域只有 `{1, -1, 2, 4}`（`KpHwm4/B25kr6.AZOQYO` 的四个调用点，
+ * 分别对应菜单里的 1x / 0.5x / 2x / 4x），接收侧 `AYUAbz` case 9 直接写
+ * `AaHO0E.AZkASS` 并重算帧闸。**`-1` 是 0.5x，不是 1x**；其它值/没收到
+ * 一律按 1x（官方只在 `i > 0` 时取 `i`，`i <= 0` 落 0.5f，但线上不会出现
+ * 0，所以这里把非法值当 1x 更安全）。
+ *
+ * 放在这个文件里而不是新建文件：它属于帧协议层，且 Xcode 工程是逐文件登记
+ * 的，新增 .swift 还要改 project.pbxproj，没必要。
+ */
+enum GBoySpeed {
+    /// 线上合法值，发送侧做白名单用。
+    static let wireValues: [Int32] = [1, -1, 2, 4]
+
+    /// 线上值 → 本地倍率。非法值回落 1.0。
+    static func rate(_ wire: Int32) -> Double {
+        switch wire {
+        case -1: return 0.5
+        case 2: return 2
+        case 4: return 4
+        default: return 1
+        }
+    }
+
+    /// 本地倍率 → 线上值；不在 {0.5, 1, 2, 4} 里返回 nil（本机自定义倍速不广播，
+    /// 免得把对端拖进 0.05x/16x 这种官方帧闸表达不了的节奏）。
+    static func wireValue(forRate rate: Double) -> Int32? {
+        if abs(rate - 0.5) < 0.001 { return -1 }
+        if abs(rate - 1) < 0.001 { return 1 }
+        if abs(rate - 2) < 0.001 { return 2 }
+        if abs(rate - 4) < 0.001 { return 4 }
+        return nil
+    }
+
+    /// 官方帧闸 `1e9 / (speed * 60)`。这里以核心自己的帧长为基准除以倍率：
+    /// GBA/GB 的帧长不是刚好 1e9/60（约 16.74ms），用基准值能把「倍速 = 帧
+    /// 间隔 ÷ 倍率」保持住，不被 60fps 取整污染。
+    static func sliceNanos(base: Int64, rate: Double) -> Int64 {
+        guard base > 0, rate > 0 else { return base }
+        return max(1, Int64(Double(base) / rate))
+    }
+}

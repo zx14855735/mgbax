@@ -106,12 +106,24 @@ public:
 	static QByteArray stateOf(const QByteArray& body);
 
 	void sendReset();
-	/** 官方 9 = 速度倍率（1 / -1 / 2 / 4）；官方没有帧率下发消息。 */
+	/** 官方 9 = 速度倍率（1 / -1 / 2 / 4，-1 = 0.5x）；官方没有帧率下发消息。 */
 	void sendSpeed(int speed);
+
+	/**
+	 * 官方 9 的线上值 → 实际倍率：1 → 1.0、-1 → 0.5、2 → 2.0、4 → 4.0，
+	 * 其它值 / 未收到（0）→ 1.0。
+	 */
+	static double effectiveSpeed(int wireValue);
+	/**
+	 * 官方帧闸的周期（毫秒）：{@code 1000 / (60 * effectiveSpeed(v))}。
+	 * 1x=16.7、0.5x=33.3、2x=8.3、4x=4.2。抽成纯函数便于断言。
+	 */
+	static double tickMsForSpeed(int wireValue);
 
 	long frameNo();
 	bool isReady();
 	int remoteCounter();
+	/** 对端当前的倍速线上值；0 = 还没收到（按 1x 处理）。 */
 	int remoteSpeed();
 	/** 对端上报的 RTT（毫秒），-1 = 还没收到（type 3 / type 100）。 */
 	int remoteRtt();
@@ -141,7 +153,8 @@ private:
 	int m_sampleCountdown = 1;
 	bool m_ready = false;
 	int m_remoteCounter = -1;
-	int m_remoteSpeed = -1;
+	/** 对端倍速的线上原值（1 / -1 / 2 / 4）；0 = 还没收到，按 1x。 */
+	int m_remoteSpeed = 0;
 	/** 官方 type 3 带回的对端 RTT（毫秒），-1 = 还没收到。 */
 	int m_remoteRtt = -1;
 	int m_lastLocalKeys = 0;

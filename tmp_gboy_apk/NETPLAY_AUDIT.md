@@ -620,16 +620,16 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 
 PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"接收侧无阶段状态机（PC/Android）"外，没有第三处缺口**。
 
-| type | 直连 / TCP / 蓝牙 | 中继 |
+| 类型 | 直连 / TCP / 蓝牙 | 中继 |
 |---|---|---|
-| 1 | `CloudLink.cpp:1903` `sendSocketHandshake()` | `sendRegister()`（`1001/2573/2591`） |
-| 2 | `:1907` `nameFrame` | 同一函数内 |
-| 3 | `:1915` `frame(TYPE_READY, 0)`（10 字节握手形态） | `handshake()` 里的 6 字节 ack |
-| 5 | `serveOfficial:2061` → `sendReset()` | `serve:2268` 的 `TYPE_RESET` |
-| 6 | `maybeSendInitialState`（`:2011`） | （`:2259`） |
-| 9 | 不发（无倍速 UI，收到只记录 `remoteSpeed`） | 不发 |
-| 11/12/17 | 3/4 人房按键（2 人只用 `type 0`） | 同 |
-| 100 | 仅 `TcpDirectLink` 重连（客户端侧） | 无（官方也是如此） |
+| `1` | `CloudLink.cpp:1903` `sendSocketHandshake()` | `sendRegister()`（`1001/2573/2591`） |
+| `2` | `:1907` `nameFrame` | 同一函数内 |
+| `3` | `:1915` `frame(TYPE_READY, 0)`（10 字节握手形态） | `handshake()` 里的 6 字节 ack |
+| `5` | `serveOfficial:2061` → `sendReset()` | `serve:2268` 的 `TYPE_RESET` |
+| `6` | `maybeSendInitialState`（`:2011`） | （`:2259`） |
+| `9` | 不发（无倍速 UI，收到只记录 `remoteSpeed`） | 不发 |
+| `11/12/17` | 3/4 人房按键（2 人只用 `type 0`） | 同 |
+| `100` | 仅 `TcpDirectLink` 重连（客户端侧） | 无（官方也是如此） |
 
 两条**已核、不计缺口**的 nit：
 1. `remoteRtt` 会被 `(3,4)` 里的 `int 0` 覆盖成 0 —— **已处理**：`GBoyLinkSession.cpp:145-154` 只在 `rtt > 0` 时记录，其余保持 -1。
@@ -803,8 +803,11 @@ PC 各类型的发送点按通道穷举过，**除"Android 缺第三帧 3"与"�
   结论：**不要按 bug 改**；真机抓一次"官方客户端连我们"的字节流即可定性。
 - **建议拆成两步**：
   - **A1（发送序列，零风险）**：Android 在 2 之后补一条 `frame(TYPE_READY, 0)` 再发 6。自家三端都不校验顺序，插一帧不影响现有流程。
-  - **A2（接收状态机 + 超时降级）**：三端同改，先等对方 2/3 再发自己的 3/6；需超时兜底，否则会互相等死。风险中，收益是"我们当房主也能被官方客户端正确握手"。
-- **验证**：A1 只能端到端（与官方房主互连，看是否还停在第三帧）；接收侧状态机可以补在 `gboylink_test.cpp` 的会话层用例里（已有 `1229-1253` 可扩展）。
+  - **A2（接收状态机 + 超时降级，只需 PC + Android；iOS 已有 `nextFrame(want:)`）**：先等对方 2/3 再发自己的 3/6；需超时兜底，否则会互相等死。风险中，收益是"我们当房主也能被官方客户端正确握手"。
+    - **实现建议（g1 提，建议采纳）**：把握手序列**搬进 `GBoyLinkSession`**（新增 `beginHandshake(name, roomId)`），用已有的 `Transport` 注入 —— 单测可直接断言前三帧类型，`CloudLink::startOfficialMatch` 只剩一句调用；**不要另造一个平行的"握手工具类"**，否则测试还得绕。
+    - **注意 `type 6` 的触发是角色相关的**：客户端在**读到房主的 type 3 之后**才发 6（`B25kr6:139-142`，`!AMqCpz → msg5`）；房主在**读到客户端的 type 6 之后**才发自己的 6（`:143-155`，`AMqCpz → msg5`）。FSM 里不要写成"发完自己的 3 就发 6"。
+    - **灰度风险**：若只在一端先上 A2，必须靠超时降级放行（对端可能永远不发 3，例如未升级的 Android）；否则两端版本不一致会互相等死。
+- **验证**：A1 只能端到端（与官方房主互连，看是否还停在第三帧）；A2 若按上面的搬法做，发送序列会被 `gboylink_test.cpp:1229-1253` 这类注入 transport 的用例顺手覆盖。
 
 ---
 

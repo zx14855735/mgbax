@@ -215,8 +215,9 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 	}
 	case GBoyFrames::TYPE_SPEED:
 	{
-		/* 官方 9 = 速度倍率（1 / -1 / 2 / 4）。收下备用，不改变本机节拍：
-		 * 我们的帧率由前端固定 60fps，倍速只在官方客户端 UI 里有意义。 */
+		/* 官方 9 = 速度倍率（1 / -1 / 2 / 4，-1 = 0.5x）。接收侧写
+		 * AaHO0E.f4302AZkASS 并重算帧闸（p2.txt 0x379d5a）；PC 由
+		 * serveOfficial 用 remoteSpeed() 驱动自己的帧闸。 */
 		std::lock_guard<std::mutex> locker(m_mutex);
 		m_remoteSpeed = GBoyFrames::intOf(body);
 		break;
@@ -328,6 +329,23 @@ int GBoyLinkSession::remoteCounter() {
 int GBoyLinkSession::remoteSpeed() {
 	std::lock_guard<std::mutex> locker(m_mutex);
 	return m_remoteSpeed;
+}
+
+double GBoyLinkSession::effectiveSpeed(int wireValue) {
+	/* 官方倍速菜单的值域：1 / -1 / 2 / 4（-1 = 0.5x）。其它值（含 0 =
+	 * 还没收到）按 1x，避免坏包把帧闸拖到极端值。 */
+	if (wireValue == -1) {
+		return 0.5;
+	}
+	if (wireValue == 1 || wireValue == 2 || wireValue == 4) {
+		return double(wireValue);
+	}
+	return 1.0;
+}
+
+double GBoyLinkSession::tickMsForSpeed(int wireValue) {
+	/* 官方 AaHO0E 收到 type 9 后按 nanos = 1e9 / (speed * 60) 重算帧闸。 */
+	return 1000.0 / (60.0 * effectiveSpeed(wireValue));
 }
 
 int GBoyLinkSession::remoteRtt() {
