@@ -96,6 +96,12 @@ struct MgbaMobile {
 	pthread_mutex_t coreMutex;
 	bool coreMutexReady;
 	struct mCore* core;
+	/* 仅在 mCoreLoadFile 成功后置位：core 指针在加载中途就挂进 emu（供
+	 * 失败路径 destroyCore 兜底），但 config/board 尚未就绪——isLoaded 若
+	 * 只判 core 非空，emu 循环会在加载窗口内跑帧打到半初始化核
+	 * （iOS CI #40/42/43 崩溃报告实证：autoload 线程还在 mCoreLoadConfig、
+	 * emu 线程已进 ARMStep 空指针）。加载线程写 / emu 线程读，用原子序。 */
+	bool romLoaded;
 	mColor* video;
 	uint32_t* prev;
 	bool havePrev;
@@ -1022,6 +1028,7 @@ static void destroyCore(struct MgbaMobile* emu) {
 	if (!emu->core) {
 		return;
 	}
+	__atomic_store_n(&emu->romLoaded, false, __ATOMIC_RELAXED);
 	detachLink(emu);
 	resetAudioOutput(emu);
 	mCoreConfigDeinit(&emu->core->config);
@@ -1286,6 +1293,9 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 	}
 	mCoreConfigSetOverrideIntValue(&core->config, "sgb.borders", emu->sgbBorders ? 1 : 0);
 	emu->core = core;
+	/* 加载窗口开始：emu->core 已挂上（失败路径靠 destroyCore 兜底），但
+	 * isLoaded 必须仍返回 false——见 struct MgbaMobile.romLoaded 注释。 */
+	__atomic_store_n(&emu->romLoaded, false, __ATOMIC_RELAXED);
 	mCoreLoadConfig(core);
 
 	if (!mCoreLoadFile(core, filename)) {
@@ -1293,6 +1303,9 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 		destroyCore(emu);
 		return false;
 	}
+	/* 加载窗口结束：board/config 就绪，emu 循环从此可以跑帧（release 配
+	 * emu->core 的写入次序，见 struct MgbaMobile.romLoaded 注释）。 */
+	__atomic_store_n(&emu->romLoaded, true, __ATOMIC_RELEASE);
 	// Per-channel gains are front-end state: re-apply them to the fresh core.
 	if (emu->core->platform(core) == mPLATFORM_GBA) {
 		struct GBA* gba = (struct GBA*) core->board;
@@ -1369,7 +1382,8 @@ bool mgbaMobileLoad(struct MgbaMobile* emu, const char* filename) {
 }
 
 bool mgbaMobileIsLoaded(const struct MgbaMobile* emu) {
-	return emu && emu->core;
+	return emu && emu->core
+		&& __atomic_load_n(&emu->romLoaded, __ATOMIC_ACQUIRE);
 }
 
 static uint32_t loadHeld(struct MgbaMobile* emu) {
