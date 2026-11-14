@@ -258,13 +258,6 @@ void GBoyLinkSession::sendSocketHandshake() {
 	m_transport(GBoyFrames::frame(GBoyFrames::TYPE_REGISTER, SOCKET_HANDSHAKE_VALUE));
 }
 
-/* 官方 AmA8tU.ARc23Z(Socket) 在重连成功后直接往 socket 写这 10 个字节：
- *   putInt(6); putShort((short) 100); putInt(上次的 rtt)
- * rtt 在对端还没有记录时是 -1，这里保持一致。 */
-void GBoyLinkSession::sendReconnectHandshake(int rtt) {
-	m_transport(GBoyFrames::reconnectFrame(rtt));
-}
-
 void GBoyLinkSession::sendState(const QByteArray& state) {
 	QByteArray body(4 + state.size(), 0);
 	GBoyFrames::putInt(&body, 0, quint32(state.size()));

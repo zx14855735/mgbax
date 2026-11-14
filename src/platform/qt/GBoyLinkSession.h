@@ -99,13 +99,6 @@ public:
 	/** Official socket handshake: type 1 carrying int 6. */
 	void sendSocketHandshake();
 
-	/**
-	 * 官方断线重连握手包（KpHwm4.AmA8tU.java:263-272）：裸 10 字节
-	 * {@code int32 6 + int16 100 + int32 rtt}，重连成功后先发一次再进入读循环。
-	 * 对端按 GBoyFrames::TYPE_RECONNECT 识别，不当作未知类型丢弃。
-	 */
-	void sendReconnectHandshake(int rtt = -1);
-
 	/** TYPE_STATE = int length followed by the save-state blob. */
 	void sendState(const QByteArray& state);
 
