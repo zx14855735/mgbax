@@ -2315,11 +2315,30 @@ public class EmulatorActivity extends AppCompatActivity {
                         pendingBusGameMenuAt = -1;
                     } else if (pendingCloudRearm) {
                         pendingCloudRearm = false;
-                        GBoyConsoleSet set = consoleSet;
-                        if (set != null) {
-                            set.rearmLockstepVisible();
-                            Log.i(TAG, "cloud reload: visible lockstep re-armed slot="
-                                    + set.visibleSlotIdx());
+                        /* 重建整个 2 核房间，而不是 rearmLockstepVisible()。
+                         * rearm 走的是 join，协调器的 runner 是 attachedPlayers[0]，
+                         * 可见核 detach 再 join 之后它会排到镜像核后面 —— runner
+                         * 变成镜像核，而镜像核一旦被 park 就再没人推进回合，
+                         * 两核同时停摆（实测：镜像核 32 秒只跑 1 帧、之后整块
+                         * 不推进）。重建时可见核重新当 host（先 attach），两核
+                         * 又都在第 0 帧，起点一致。 */
+                        GBoyConsoleSet old = consoleSet;
+                        if (old != null) {
+                            old.stop();
+                        }
+                        consoleSet = null;
+                        File save = defaultSaveDir != null ? defaultSaveDir : getFilesDir();
+                        File state = defaultStateDir != null
+                                ? defaultStateDir : new File(getFilesDir(), "state");
+                        GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
+                        GBoyConsoleSet rebuilt = new GBoyConsoleSet(
+                                new File(currentRomPath), save, state, 18781, 2, 1, true);
+                        if (rebuilt.start(core, session)) {
+                            consoleSet = rebuilt;
+                            Log.i(TAG, "cloud arm: 2-core room rebuilt, visible slot="
+                                    + rebuilt.visibleSlotIdx());
+                        } else {
+                            Log.e(TAG, "cloud arm: rebuild failed: " + rebuilt.failure());
                         }
                         /* 可见核已被复位到第 0 帧，和镜像核起点一致；放开帧闸门，
                          * 两核从现在开始同步起跑。 */
