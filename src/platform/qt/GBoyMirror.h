@@ -82,8 +82,8 @@ protected:
 	void run() override;
 
 private:
-	/** 取走待载入的状态；没有则返回 false。 */
-	bool takePendingState(QByteArray* out);
+	/** 取走待载入的状态与结果回调；没有则返回 false。 */
+	bool takePendingState(QByteArray* out, std::function<void(int)>* result);
 
 	struct MgbaMobile* m_emu = nullptr;
 	GBoyLinkSession* m_session = nullptr;

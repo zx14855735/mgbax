@@ -172,14 +172,20 @@ final class GBoyLink {
         run(asHost: false, ip: ip, port: port)
     }
 
-    /** Sends the reset notice to the peer (user pressed 复位). */
+    /**
+     * Sends the reset notice to the peer (user pressed 复位).
+     *
+     * 官方 5 的 payload 是 `int32 0`（`ARc23Z((short)5, 4).putInt(0)`），
+     * 接收侧 `AYUAbz` 的循环入口要求 `remaining >= 6` 才分发，所以**空体
+     * type 5 会被官方直接忽略**。这里必须带 4 字节。
+     */
     func sendReset() {
         lock.lock()
         let fd = currentFd
         let dead = userClosedFlag || sessionClosedFlag
         lock.unlock()
         if fd >= 0 && !dead {
-            try? Self.sendAll(fd, Self.frame(Self.msgReset))
+            try? Self.sendAll(fd, Self.intFrame(Self.msgReset, 0))
         }
     }
 

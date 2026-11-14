@@ -75,6 +75,8 @@ public final class GBoyLinkSession {
     private int lastSentKeys = -1;
     private int sentFrames;
     private long droppedFrames;
+    /** 预先构造好的 type 2 自我介绍帧（socket 直连握手时跟在 type 1 后发）。 */
+    private volatile byte[] nameFrame;
 
     @SuppressWarnings("unchecked")
     public GBoyLinkSession(Transport transport, Events events, int localSlot, int playerCount) {
