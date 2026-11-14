@@ -2058,6 +2058,8 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         audio.flush()
         if let core { mgbaMobileClearAudio(core) }
         armMenuAutoHide()
+        // 联机中把倍速同步给对端（官方 type 9 就是倍速菜单那四个分支）。
+        broadcastLinkSpeed(speed)
     }
 
     @objc private func toggleMenu() {

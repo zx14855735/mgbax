@@ -2013,6 +2013,10 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	 * 子状态（实测 pc 恒 0）。官方客户端用 case 6 周期纠偏，这里照做。 */
 	qint64 lastStateSync = 0;
 	qint64 lastStatePoll = 0;
+	/* 倍速联机的无 UI 验证入口：设置 MGBAX_SPEED_9 后，把
+	 * <MGBAX_SCRIPT_DIR>/speed 的内容（1 / -1 / 2 / 4）当作一次「本机切倍速」，
+	 * 广播 type 9 后删除文件。正常玩家路径不受影响。 */
+	const bool speedHook = qEnvironmentVariableIsSet("MGBAX_SPEED_9");
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);

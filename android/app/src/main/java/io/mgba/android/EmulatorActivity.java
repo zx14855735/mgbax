@@ -8416,6 +8416,10 @@ public class EmulatorActivity extends AppCompatActivity {
             unregisterReceiver(tcpReceiver);
         } catch (Exception ignored) {
         }
+        try {
+            unregisterReceiver(speedReceiver);
+        } catch (Exception ignored) {
+        }
         stopTimedSave();
         if (cloudLink != null) {
             cloudLink.close();
