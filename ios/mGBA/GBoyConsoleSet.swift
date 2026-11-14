@@ -12,9 +12,10 @@ import Foundation
  * 非 lockstep 模式仍走 iOS 原有的单核跨设备联机（mgbaMobileLinkHost/Join），
  * 本类只在显式勾选「本机多核锁步」或云端对战武装时创建；2/3/4 人均支持
  * （与 Android 2026-11-13 修复后的行为一致）。云端 2P（官方镜像布局）由
- * EmulatorViewController 在 onConnected 后重载 ROM 并以 players=2、
- * localSlot=1 重建本类（每端 1 可见核 + 1 对手镜像核，干净 1v1），两端
- * 同构——网络只传按键，对端按键落 slot 2 镜像核。
+ * EmulatorViewController 在 onConnected 后重载 ROM 并以 players=4、
+ * localSlot=1 重建本类（每端 1 可见核 + 3 镜像核：大竞技场要求 4 名玩家，
+ * slot 2 = 对手真人按键、slot 3/4 = NPC 陪位），两端同构——网络只传按键，
+ * 对端按键落 slot 2 镜像核。
  *
  * 镜像线程自由推进（不按帧放行、不 sleep）：native 协调器在 SIO 传输轮次
  * 上会合各核，跑太快的核会被 park 住等最慢者，这正是锁步语义。
