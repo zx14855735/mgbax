@@ -46,7 +46,8 @@ public:
 	bool start(const QString& romPath, const QString& primarySavePath,
 	           const QString& mirrorRoot, quint16 primaryPort,
 	           GBoyLinkSession* session, int slot, int players,
-	           int navIdx, int navMenuAt, int navModeDowns, QString* error);
+	           int navIdx, int navMenuAt, int navModeDowns,
+	           const QByteArray& saveSnapshot, QString* error);
 
 	/** Closes the loopback link, stops the pump thread and destroys the core. */
 	void stopMirror();

@@ -39,7 +39,8 @@ GBoyMirror::GBoyMirror(QObject* parent)
 bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
                        const QString& mirrorRoot, quint16 primaryPort,
                        GBoyLinkSession* session, int slot, int players,
-                       int navIdx, int navMenuAt, int navModeDowns, QString* error) {
+                       int navIdx, int navMenuAt, int navModeDowns,
+                       const QByteArray& saveSnapshot, QString* error) {
 	if (m_running.load(std::memory_order_relaxed)) {
 		if (error) {
 			*error = QStringLiteral("镜像控制台已在运行");
@@ -61,14 +62,29 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
 	}
 	QString stateRoot = root.filePath(QStringLiteral("state"));
 	QDir().mkpath(stateRoot);
-	// Determinism: the mirror boots from a copy of the local save, the same
-	// trick the Android GBoyConsoleSet uses (copyPrimarySave).
+	// Determinism: every mirror boots from the SAME byte-for-byte snapshot of
+	// the local save. The old code called QFile::copy() per mirror: it fails
+	// when the target already exists (so a stale save from the previous session
+	// was silently reused), and re-reads a source that the visible core may
+	// have rewritten between iterations. Four cores with different starting
+	// progress never complete the SIO handshake (Android showed this too).
 	QString saveTarget = root.filePath(saveNameFor(romPath));
-	QFile saveSource(primarySavePath);
-	if (!primarySavePath.isEmpty() && saveSource.exists()) {
-		if (!saveSource.copy(saveTarget)) {
-			// A copy from a previous session is still a usable starting point.
-			if (!QFileInfo::exists(saveTarget)) {
+	if (!saveSnapshot.isEmpty()) {
+		QFile::remove(saveTarget);
+		QFile out(saveTarget);
+		if (!out.open(QIODevice::WriteOnly)
+		    || out.write(saveSnapshot) != saveSnapshot.size()) {
+			if (error) {
+				*error = QStringLiteral("无法把存档快照写入镜像目录：")
+				         + out.errorString();
+			}
+			return false;
+		}
+	} else {
+		QFile saveSource(primarySavePath);
+		if (!primarySavePath.isEmpty() && saveSource.exists()) {
+			QFile::remove(saveTarget);
+			if (!saveSource.copy(saveTarget)) {
 				if (error) {
 					*error = QStringLiteral("无法复制本机存档到镜像目录：")
 					         + saveSource.errorString();

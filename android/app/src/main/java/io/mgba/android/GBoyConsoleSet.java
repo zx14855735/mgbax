@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 package io.mgba.android;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -163,6 +164,35 @@ public final class GBoyConsoleSet {
         mirrors = new MgbaCore[count];
         mirrorThreads = new Thread[count];
         mirrorFrames = new long[count];
+
+        /* 先把可见核的电池存档一次性读成快照，再分发给所有镜像目录。
+         * 旧实现在循环里每轮重新打开同一个源文件：云连接重建房间时可见核
+         * 会在循环期间写回存档，实测四个存档 md5 各不相同（mirror1 与
+         * mirror2/3 内容不同），四核从不同的游戏进度冷启动，SIO 握手永远
+         * 凑不齐 playerCount、cb2 也随之分裂。同一份字节数组保证起点一致。 */
+        byte[] saveSnapshot = null;
+        String saveSnapshotName = null;
+        String primarySavePath = primary.saveFile();
+        if (primarySavePath != null && !primarySavePath.isEmpty()) {
+            File primarySaveFile = new File(primarySavePath);
+            if (primarySaveFile.isFile()) {
+                saveSnapshotName = primarySaveFile.getName();
+                try (InputStream in = new FileInputStream(primarySaveFile)) {
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[8192];
+                    int n;
+                    while ((n = in.read(buffer)) > 0) {
+                        bos.write(buffer, 0, n);
+                    }
+                    saveSnapshot = bos.toByteArray();
+                } catch (IOException e) {
+                    return fail("读取初始存档失败: " + e.getMessage());
+                }
+            }
+        }
+        final byte[] snapshot = saveSnapshot;
+        final String snapshotName = saveSnapshotName;
+
         for (int i = 0; i < count; ++i) {
             String dir = MIRROR_DIR_PREFIX + (i + 1);
             File mirrorSave = new File(saveDir, dir);
@@ -170,9 +200,11 @@ public final class GBoyConsoleSet {
             if (!mkdirs(mirrorSave) || !mkdirs(mirrorState)) {
                 return fail("无法创建镜像存档目录 " + dir);
             }
-            String saveError = copyPrimarySave(primary.saveFile(), mirrorSave);
-            if (saveError != null) {
-                return fail(saveError);
+            if (snapshot != null && snapshotName != null) {
+                String saveError = writeSaveSnapshot(snapshot, snapshotName, mirrorSave);
+                if (saveError != null) {
+                    return fail(saveError);
+                }
             }
             MgbaCore core = new MgbaCore(mirrorSave, mirrorState);
             if (!core.load(rom.getAbsolutePath())) {
@@ -731,22 +763,11 @@ public final class GBoyConsoleSet {
         return dir.isDirectory() || dir.mkdirs();
     }
 
-    private static String copyPrimarySave(String savePath, File mirrorSave) {
-        if (savePath == null || savePath.isEmpty()) {
-            return null;
-        }
-        File source = new File(savePath);
-        if (!source.isFile()) {
-            return null;
-        }
-        File target = new File(mirrorSave, source.getName());
-        try (InputStream in = new FileInputStream(source);
-             OutputStream out = new FileOutputStream(target)) {
-            byte[] buffer = new byte[8192];
-            int n;
-            while ((n = in.read(buffer)) > 0) {
-                out.write(buffer, 0, n);
-            }
+    /** 把 start() 里读到的同一份快照写进一个镜像目录（覆盖任何残留）。 */
+    private static String writeSaveSnapshot(byte[] snapshot, String name, File mirrorSave) {
+        File target = new File(mirrorSave, name);
+        try (OutputStream out = new FileOutputStream(target)) {
+            out.write(snapshot);
             return null;
         } catch (IOException e) {
             return "复制初始存档失败: " + e.getMessage();
