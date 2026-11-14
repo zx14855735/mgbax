@@ -40,7 +40,8 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
                        const QString& mirrorRoot, quint16 primaryPort,
                        GBoyLinkSession* session, int slot, int players,
                        int navIdx, int navMenuAt, int navModeDowns,
-                       const QByteArray& saveSnapshot, QString* error) {
+                       const QByteArray& saveSnapshot, const QString& scriptDir,
+                       QString* error) {
 	if (m_running.load(std::memory_order_relaxed)) {
 		if (error) {
 			*error = QStringLiteral("镜像控制台已在运行");
@@ -112,13 +113,18 @@ bool GBoyMirror::start(const QString& romPath, const QString& primarySavePath,
 		}
 		return false;
 	}
+	m_scriptDir = scriptDir;
+	m_fallbackNavMenuAt = navMenuAt > 0 ? navMenuAt : 1500;
+	m_fallbackNavModeDowns = navModeDowns >= 0 ? navModeDowns : 2;
 	if (navIdx >= 0) {
-		/* 与 Android GBoyConsoleSet.setBusGame() 对称：四个核各自从 ROM 加载
-		 * 后的第 0 帧起跑同一份 busgame 导航，navIdx 决定 4P 座位。native 的
-		 * beginFrameKeys 在脚本激活时完全覆盖 mgbaMobileSetKeys 的值；连续
-		 * 120 帧命中 battle_main.o 后脚本自释放，此后 loadHeld() 立刻拿到
-		 * 这里每帧写入的网络按键，不再需要外部广播或额外 JNI。 */
-		mgbaMobileBusGameStart(m_emu, navIdx, navMenuAt, navModeDowns);
+		/* 与 Android GBoyConsoleSet.setBusGame() 对称：四个核从同一瞬间起跑
+		 * 同一份 busgame 导航，navIdx 决定 4P 座位。但这里不再立即武装脚本——
+		 * 立即武装会让镜像核各自比可见核早跑几百~上千帧（start() 里还隔着 3 次
+		 * ROM 加载与 LINK_CONNECTED 等待），四核一进菜单子状态就分裂。改成
+		 * 记下 pending，run() 里轮询 <scriptDir>/nav_at，CloudLink 在三个镜像核
+		 * 都就绪后才写它，可见核也读同一文件武装：四核同一帧起跑，相位一致。
+		 * 可见核（ScriptedControl）读完 nav_at 不删文件，镜像核随后也能读到。 */
+		m_pendingNavIdx = navIdx;
 	}
 	// The primary listens (SioLinkHost::sioHost, pumped by the core thread's
 	// finishFrame); the mirror connects out to it, same as the Android set.
@@ -174,6 +180,35 @@ void GBoyMirror::stopMirror() {
 void GBoyMirror::run() {
 	auto nextFrame = QDateTime::currentMSecsSinceEpoch();
 	while (m_running.load(std::memory_order_relaxed) && m_emu) {
+		/* 云端 4P 闭环导航的同步闸门：脚本未武装前，本核只用网络按键（本地
+		 * 4 人房间中镜像核的 slot 无远端输入，等效空操作），停在标题画面等待。
+		 * nav_at 一旦被 CloudLink 写好，四核（可见核 + 3 镜像）在同一次轮询窗口
+		 * 内全部武装，从帧 0 同相位起跑 busgame 导航。 */
+		if (m_pendingNavIdx >= 0 && !m_scriptDir.isEmpty()) {
+			QFile navAt(m_scriptDir + QStringLiteral("/nav_at"));
+			if (navAt.exists() && navAt.open(QIODevice::ReadOnly)) {
+				const QList<QByteArray> parts = navAt.readAll().trimmed().split(' ');
+				navAt.close();
+				int menuAt = m_fallbackNavMenuAt;
+				int modeDowns = m_fallbackNavModeDowns;
+				bool ok = false;
+				const int v = parts.value(0).toInt(&ok);
+				if (ok) {
+					menuAt = v;
+				}
+				if (parts.size() > 1) {
+					ok = false;
+					const int d = parts.value(1).toInt(&ok);
+					if (ok) {
+						modeDowns = d;
+					}
+				}
+				mgbaMobileBusGameStart(m_emu, m_pendingNavIdx, menuAt, modeDowns);
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] nav armed idx=%1 menuAt=%2 modeDowns=%3")
+				                            .arg(m_pendingNavIdx).arg(menuAt).arg(modeDowns);
+				m_pendingNavIdx = -1;
+			}
+		}
 		GBoyLinkSession* session = m_session;
 		int keys = session ? session->keysForSlot(m_slot) : 0;
 		mgbaMobileSetKeys(m_emu, quint32(keys));

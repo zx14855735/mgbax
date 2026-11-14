@@ -29,6 +29,12 @@ struct BusGameNavState {
 	uint32_t battleHits;/* callback2 连续落在战斗区的帧数 */
 	bool navOnly;
 	bool released;      /* 已进对战区：应把按键控制权交还网络/真人 */
+	/* 纯状态驱动导航的防抖闸门：屏幕签名(lastSig)每次变化都重置脉冲，
+	 * 四核同屏时相位一致，杜绝「帧号盲推」导致的四人子状态分裂。 */
+	int lastSig;        /* 上一帧的屏幕签名（scr/cur/maxCur/ptype/lt 组合） */
+	int pulseRemain;    /* A/START 脉冲剩余按住帧数 */
+	int pulseOff;       /* A/START 脉冲剩余松开帧数 */
+	int pulseArm;       /* 1=允许发起下一次脉冲 */
 };
 
 /** 初始化一份导航状态；menuAt<0 会转成 nav-only 并把 menuAt 归零。 */

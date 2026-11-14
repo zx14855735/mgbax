@@ -1578,6 +1578,21 @@ uint32_t mgbaMobileBusGameNavKeys(struct BusGameNavState* st, struct GBA* g) {
 	}
 busgame_tail:
 	;
+	{
+		static int _dbgF = 0;
+		int _pt = (int) GBAView8(g->cpu, 0x02032A90u) & 0x0F;
+		int _mb = (int) GBAView8(g->cpu, 0x020219D0u);
+		if (idx == 0 && (_pt == 4 || _mb != 0) && (_dbgF++ % 10) == 0) {
+			int _s0 = (int) GBAView8(g->cpu, 0x02032AD0u);
+			int _s1 = (int) GBAView8(g->cpu, 0x02032AD1u);
+			int _slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
+			int _lt = (int) GBAView16(g->cpu, 0x02027B82u);
+			int _v8 = (int) GBAView16(g->cpu, 0x0202196Cu);
+			int _fpc = (int) GBAView8(g->cpu, 0x03004A39u);
+			fprintf(stderr, "NAV f=%u pt=%d s0=%d s1=%d slot=%d mb=%d lt=%04X v8=%d fpc=%d cb2=%08X keys=%02X\n",
+			        f, _pt, _s0, _s1, _slot, _mb, _lt, _v8, _fpc, (unsigned) cb2, keys);
+		}
+	}
 	/* 内存驱动的确定性导航：战斗模式菜单（maxCursorPos==4）把光标钳到 2
 	 * （多人/4P）。联机服务菜单 4 项不能钳。 */
 	if (f >= menuAt) {

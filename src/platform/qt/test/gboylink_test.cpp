@@ -2007,23 +2007,29 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 				 * 取消选择（实测 sel 在 0/1 只间震荡）。gPartyMenu.slotId
 				 * @0x02032A91。选满 2 只后游戏自动 MoveCursorToConfirm()，
 				 * 再按 A 即验证关闭菜单。每个动作只按 1 帧产生单次 JOY_NEW。 */
-				int slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
-				g_partySlot[idx].store(slot);
-				/* 直接用内存完成「选 2 只」这个 UI 步骤：写
-				 * gSelectedOrderFromParty[0..1]={1,2}，并把 slotId 置为
-				 * PARTY_SIZE(6)=确认位。校验(Task_ValidateChosenHalfParty)、
-				 * 关闭菜单、后续开战仍由游戏自己的代码执行，不绕过游戏逻辑。
-				 * 这样避开「选择窗口 / CursorCb_NoEntry 取消 / 按键相位」的全部
-				 * 时序坑（实测按键方案总有一半核卡在 1 只）。 */
-				if (s0 == 0 || s1 == 0 || slot != 6) {
-					int cc = 0;
-					if (s0 == 0) { GBAStore8(g->cpu, 0x02032AD0u, (int8_t) 1, &cc); }
-					if (s1 == 0) { GBAStore8(g->cpu, 0x02032AD1u, (int8_t) 2, &cc); }
-					if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
+			int slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
+			g_partySlot[idx].store(slot);
+			{
+				static int _pd = 0;
+				if (idx == 0 && (_pd++ % 8) == 0) {
+					fprintf(stderr, "PARTY f=%d s0=%d s1=%d slot=%d keys=%02X mb=%d\n",
+					        f, s0, s1, slot, keys, (int) GBAView8(g->cpu, 0x020219D0u));
 				}
-				/* 按 A 让游戏走 HandleChooseMonSelection → slotPtr==PARTY_SIZE
-				 * → gPartyMenu.task = Task_ValidateChosenHalfParty → 关菜单。 */
-				keys = ((f % 12) < 2) ? A : 0u;
+			}
+			/* 内存旁路完成「选 2 只」这一 UI 步骤：写 gSelectedOrderFromParty
+			 * [0..1]={1,2}，并把 slotId 置为 PARTY_SIZE(6)=确认位。校验
+			 * (Task_ValidateChosenHalfParty)、关闭菜单、后续开战仍由游戏自己的
+			 * 代码执行，不绕过任何游戏逻辑；只填「已选」让 A 在 CONFIRM 位时
+			 * 走 HandleChooseMonSelection→slotPtr==PARTY_SIZE→校验关菜单。
+			 * 仅当未填好时才写，避免每帧覆写打断校验流程（之前每帧写 slotId=6
+			 * 会粘住校验、菜单永不关闭）。 */
+			if (s0 == 0 || s1 == 0 || slot != 6) {
+				int cc = 0;
+				if (s0 == 0) { GBAStore8(g->cpu, 0x02032AD0u, (int8_t) 1, &cc); }
+				if (s1 == 0) { GBAStore8(g->cpu, 0x02032AD1u, (int8_t) 2, &cc); }
+				if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
+			}
+			keys = ((f % 12) < 2) ? A : 0u;
 			} else {
 				/* 队伍菜单未弹出：闭环走位到 4P 座位（后备）。 */
 				static const int seatX[4] = {3, 10, 3, 10};

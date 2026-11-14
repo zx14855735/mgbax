@@ -301,7 +301,11 @@ if(TARGET ${QT}::WebSockets)
 	endif()
 	target_include_directories(test-gboylink PRIVATE ${PROJECT_SOURCE_DIR}/include ${CMAKE_BINARY_DIR}/include ${PROJECT_SOURCE_DIR}/src)
 	target_compile_definitions(test-gboylink PRIVATE BUILD_QT_CLOUD ENABLE_VFS ENABLE_VFS_FD ENABLE_DIRECTORIES)
-	list(APPEND QT_DEFINES BUILD_QT_CLOUD)
+	# The product (mgba-qt) merges ScriptedControl's script-injected key mask into
+	# the wire frame so online peers see the same keys. The headless test harness
+	# drives keys via the busgame nav instead and must NOT link ScriptedControl.
+	# QT_DEFINES flows into the mgba-qt target only, not into test-gboylink.
+	list(APPEND QT_DEFINES BUILD_QT_CLOUD MGBAX_SCRIPTED_MASK)
 endif()
 
 if(NOT AUDIO_SRC)

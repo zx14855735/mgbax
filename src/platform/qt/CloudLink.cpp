@@ -1738,7 +1738,7 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		if (!mirror->start(m_config.romPath, savePath, mirrorDir.path(), port,
 		                   m_gboySession, i + 2, MIRROR_COUNT + 1,
 		                   navMenuAt > 0 ? i + 1 : -1, navMenuAt, navModeDowns,
-		                   saveSnapshot, &error)) {
+		                   saveSnapshot, scriptDir, &error)) {
 			mirror->stopMirror();
 			delete mirror;
 			stopOfficialMatch();
@@ -1805,7 +1805,10 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 			 * addKey/clearKey，不进本对象的 m_localKeys（GUI 的 keyFeed 喂的
 			 * 可能是另一个实例）。这里并进进程级掩码，保证线上帧带着真实按键。 */
 			int keys = m_localKeys.load(std::memory_order_relaxed)
-			         | ScriptedControl::globalMask();
+#ifdef MGBAX_SCRIPTED_MASK
+			         | ScriptedControl::globalMask()
+#endif
+			         ;
 			{
 				static qint64 lastDiagKeys = 0;
 				if (now - lastDiagKeys >= 500) {
@@ -1814,7 +1817,12 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 					if (f.open(QIODevice::Append | QIODevice::Text)) {
 						f.write(QStringLiteral("frame=%1 local=%2 scripted=%3 keys=%4\n")
 						            .arg(m_officialFrame).arg(m_localKeys.load())
-						            .arg(ScriptedControl::globalMask()).arg(keys).toUtf8());
+#ifdef MGBAX_SCRIPTED_MASK
+						            .arg(ScriptedControl::globalMask())
+#else
+						            .arg(0)
+#endif
+									.arg(keys).toUtf8());
 					}
 				}
 			}

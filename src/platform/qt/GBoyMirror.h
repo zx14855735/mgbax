@@ -47,7 +47,8 @@ public:
 	           const QString& mirrorRoot, quint16 primaryPort,
 	           GBoyLinkSession* session, int slot, int players,
 	           int navIdx, int navMenuAt, int navModeDowns,
-	           const QByteArray& saveSnapshot, QString* error);
+	           const QByteArray& saveSnapshot, const QString& scriptDir,
+	           QString* error);
 
 	/** Closes the loopback link, stops the pump thread and destroys the core. */
 	void stopMirror();
@@ -66,6 +67,15 @@ private:
 	int m_slot = 2;
 	int m_players = 2;
 	std::atomic<bool> m_running{false};
+	/* 云端 4P 闭环导航的同步闸门：镜像核不再在 start() 里立即武装脚本，而是
+	 * 记下 navIdx，等到 <scriptDir>/nav_at 出现（CloudLink 在三个镜像核都就绪
+	 * 后才写该文件）才在本线程的 run() 里调用 mgbaMobileBusGameStart。这样
+	 * 四个核（可见核 + 3 镜像）在 nav_at 写好的同一瞬间全部起跑，相位完全一致
+	 * —— 否则镜像核各自早跑几百~上千帧，进菜单后四人子状态分裂、SIO 握手卡死。 */
+	QString m_scriptDir;
+	int m_pendingNavIdx = -1;
+	int m_fallbackNavMenuAt = 1500;
+	int m_fallbackNavModeDowns = 2;
 };
 
 }
