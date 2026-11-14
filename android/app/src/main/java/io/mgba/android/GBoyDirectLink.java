@@ -69,6 +69,22 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     private static final int TYPE_DATA = 3;
     private static final int TYPE_CTRL = 4;
     private static final int TYPE_BYE = 5;
+    /**
+     * 分片载荷：一个逻辑消息拆成多个包。GBoy 侧由 KCP 的 frg 字段完成
+     * （MTU 512），这里 DirectLink 自带按序可靠层，只需「首片带总长 + 续片」
+     * 就能拼回来。整份 savestate 约 790 KiB，不分片一个 UDP 包发不出去。
+     * 线格式必须与 PC 侧 {@code DirectLink.cpp} 完全一致。
+     */
+    private static final int TYPE_FRAG = 6;
+
+    /** 单包数据上限：18 头 + 5 分片头 + 1000 = 1023，远小于 1500 MTU。 */
+    private static final int FRAG_CHUNK = 1000;
+    /** 已发未确认的包上限：800+ 片一次性全推会淹掉重传循环。 */
+    private static final int SEND_WINDOW = 48;
+    private static final int FRAG_HEAD = 5;
+    private static final int FRAG_HEAD_CONT = 1;
+    private static final int FRAG_START = 0;
+    private static final int FRAG_CONT = 1;
 
     /** 打洞阶段探针间隔。 */
     private static final long PROBE_MS = 100;
@@ -99,17 +115,31 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     /** 已发送、等待确认的数据包。 */
     private static final class Outgoing {
         final int seq;
+        /** 包类型：TYPE_DATA（整包）或 TYPE_FRAG（分片）。 */
+        final int kind;
         final byte[] payload;
         long firstSent;
         long lastSent;
         int tries;
 
-        Outgoing(int seq, byte[] payload, long now) {
+        Outgoing(int seq, int kind, byte[] payload, long now) {
             this.seq = seq;
+            this.kind = kind;
             this.payload = payload;
             this.firstSent = 0;
             this.lastSent = now;
             this.tries = 1;
+        }
+    }
+
+    /** 重排缓存里的条目：载荷 + 它原本的包类型。 */
+    private static final class Incoming {
+        final int kind;
+        final byte[] payload;
+
+        Incoming(int kind, byte[] payload) {
+            this.kind = kind;
+            this.payload = payload;
         }
     }
 
@@ -131,7 +161,12 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
 
     private int nextSeq;
     private final ArrayDeque<Outgoing> outgoing = new ArrayDeque<>();
-    private final Map<Integer, byte[]> incoming = new HashMap<>();
+    /** 超出窗口压着的包，ACK 放行后逐片推上去。 */
+    private final ArrayDeque<Outgoing> pending = new ArrayDeque<>();
+    private final Map<Integer, Incoming> incoming = new HashMap<>();
+    /** 正在拼的分片载荷。按序交付保证分片不交错，攒够 total 即为一个消息。 */
+    private byte[] fragBuf;
+    private int fragTotal;
     private int rcvNext;
     private boolean rcvStarted;
     private final ArrayDeque<byte[]> inbox = new ArrayDeque<>();
