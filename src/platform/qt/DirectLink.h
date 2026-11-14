@@ -84,7 +84,24 @@ private:
 		TYPE_DATA = 3,
 		TYPE_CTRL = 4,
 		TYPE_BYE = 5,
+		/** 分片载荷：一个逻辑消息拆成多个包。GBoy 侧的 KCP 用 frg 字段做
+		 *  同一件事（MTU 512），这里因为 DirectLink 自带可靠层，只需按序
+		 *  拼接即可。整份 savestate 约 790 KiB，不拆根本发不出去。 */
+		TYPE_FRAG = 6,
 	};
+
+	/** 一片的最大数据量：18 字节头 + 5 字节分片头 + 1000 = 1023，接收缓冲
+	 *  2048，留足余量；同时保证单包远小于 IPv4 最小 MTU 576 之外的常见
+	 *  1500，不会在路径上被二次分片。 */
+	static constexpr int FRAG_CHUNK = 1000;
+	/** 已发未确认的包上限：整份存档要 800+ 片，一次性全推出去会把重传
+	 *  循环变成风暴，也塞爆对端。窗口满了先压回待发队列，等 ACK 放行。 */
+	static constexpr int SEND_WINDOW = 48;
+	/** 分片头：kind(1) + 首片附带 total(4)。 */
+	static constexpr int FRAG_HEAD = 5;
+	static constexpr int FRAG_HEAD_CONT = 1;
+	static constexpr quint8 FRAG_START = 0;
+	static constexpr quint8 FRAG_CONT = 1;
 
 	struct Candidate {
 		quint32 ip = 0; // network order
@@ -93,10 +110,17 @@ private:
 
 	struct Outgoing {
 		quint16 seq = 0;
+		quint8 kind = TYPE_DATA; // TYPE_DATA 或 TYPE_FRAG
 		QByteArray payload;
 		qint64 firstSent = 0;
 		qint64 lastSent = 0;
 		int tries = 0;
+	};
+
+	/** 收包重排缓存里的一个条目：载荷 + 它原本的包类型。 */
+	struct Incoming {
+		quint8 kind = TYPE_DATA;
+		QByteArray payload;
 	};
 
 	qint64 nowMs() const;
@@ -106,6 +130,12 @@ private:
 	void sendPacket(Type type, quint16 seq, const QByteArray& payload, const Candidate& to);
 	void sendControl(const Candidate& to);
 	void flushRetransmits(qint64 now);
+	/** 把一个逻辑消息排进发送队列（超过 FRAG_CHUNK 自动拆片）。 */
+	void enqueue(quint8 kind, const QByteArray& payload);
+	/** 窗口放行：把待发队列里的包按 SEND_WINDOW 上限推上线。 */
+	void pumpSend();
+	/** 按序交付一片载荷；分片拼齐后才进 inbox。 */
+	void deliverFrame(quint8 kind, const QByteArray& payload);
 	void noteReceived(quint16 seq);
 	void noteAck(quint16 ackSeq, quint32 ackBits);
 
@@ -128,8 +158,14 @@ private:
 	quint16 m_probeSeq = 0;
 
 	quint16 m_nextSeq = 0;
+	/** 已上线、等确认的包（重传看这张表）。 */
 	QQueue<Outgoing> m_outgoing;
-	QMap<quint16, QByteArray> m_incoming; // 乱序缓存
+	/** 窗口之外压着的包，ACK 放行后逐片推上去。 */
+	QQueue<Outgoing> m_pending;
+	QMap<quint16, Incoming> m_incoming; // 乱序缓存
+	/** 正在拼的分片载荷。按序交付保证分片不会交错，攒够 total 就是一个消息。 */
+	QByteArray m_fragBuf;
+	int m_fragTotal = 0;
 	quint16 m_rcvNext = 0;
 	bool m_rcvStarted = false;
 	QQueue<QByteArray> m_inbox;

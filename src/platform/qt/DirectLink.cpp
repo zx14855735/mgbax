@@ -381,6 +381,7 @@ void DirectLink::noteAck(quint16 ackSeq, quint32 ackBits) {
 		keep.append(out);
 	}
 	m_outgoing = keep;
+	pumpSend(); // 腾出的窗口立刻给压着的分片
 }
 
 void DirectLink::handlePacket(const char* data, int len, const Candidate& from) {
@@ -405,13 +406,15 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 		sendPacket(TYPE_RESP, seq, payload, from);
 		return;
 	}
-	if (!m_connected && (type == TYPE_RESP || type == TYPE_DATA || type == TYPE_CTRL)) {
+	if (!m_connected
+	    && (type == TYPE_RESP || type == TYPE_DATA || type == TYPE_CTRL || type == TYPE_FRAG)) {
 		m_connected = true;
 		m_punching = false;
 		m_peer = from;
 		m_peerText = candidateText(from.ip, from.port);
 		m_havePeer = true;
 		m_lastRecv = nowMs();
+		pumpSend(); // 打通前攒下的消息（含整份存档的分片）立刻放行
 	}
 	m_peer = from;
 	m_havePeer = true;
@@ -431,7 +434,7 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 
 	noteAck(ackSeq, ackBits);
 
-	if (type == TYPE_DATA) {
+	if (type == TYPE_DATA || type == TYPE_FRAG) {
 		noteReceived(seq);
 		if (!m_rcvStarted) {
 			m_rcvStarted = true;
@@ -439,10 +442,14 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 		}
 		int delta = int(qint16(seq - m_rcvNext));
 		if (delta >= 0 && !m_incoming.contains(seq)) {
-			m_incoming.insert(seq, payload);
+			Incoming item;
+			item.kind = quint8(type);
+			item.payload = payload;
+			m_incoming.insert(seq, item);
 		}
 		while (m_incoming.contains(m_rcvNext)) {
-			m_inbox.append(m_incoming.take(m_rcvNext));
+			const Incoming item = m_incoming.take(m_rcvNext);
+			deliverFrame(item.kind, item.payload);
 			++m_rcvNext;
 		}
 		// 立刻单独回一个控制包：联机线是一问一答，这个 ACK 直接决定
@@ -550,15 +557,84 @@ void DirectLink::send(const QByteArray& payload) {
 	if (m_closed || m_sock < 0) {
 		return;
 	}
-	Outgoing out;
-	out.seq = m_nextSeq++;
-	out.payload = payload;
-	out.firstSent = 0;
-	out.lastSent = nowMs();
-	out.tries = 1;
-	m_outgoing.append(out);
-	if (m_havePeer) {
-		sendPacket(TYPE_DATA, out.seq, payload, m_peer);
+	enqueue(TYPE_DATA, payload);
+}
+
+/** 拆片入队。GBoy 的 KCP 在 512 MTU 上做同样的事（frg 字段），这里由
+ *  DirectLink 自己的可靠层按序交付，所以分片只需「先 START 带总长，再 CONT」。
+ *  单包消息（按键、节奏、联机线 20 字节包）仍走 TYPE_DATA，延迟特性不变。 */
+void DirectLink::enqueue(quint8 kind, const QByteArray& payload) {
+	if (payload.size() <= FRAG_CHUNK) {
+		Outgoing out;
+		out.seq = m_nextSeq++;
+		out.kind = kind;
+		out.payload = payload;
+		m_pending.append(out);
+		pumpSend();
+		return;
+	}
+	const int total = payload.size();
+	int offset = 0;
+	bool start = true;
+	while (offset < total) {
+		const int head = start ? FRAG_HEAD : FRAG_HEAD_CONT;
+		const int take = qMin(FRAG_CHUNK, total - offset);
+		QByteArray chunk(head + take, '\0');
+		chunk[0] = char(start ? FRAG_START : FRAG_CONT);
+		if (start) {
+			put32(chunk.data() + 1, quint32(total));
+		}
+		std::memcpy(chunk.data() + head, payload.constData() + offset, size_t(take));
+		Outgoing out;
+		out.seq = m_nextSeq++;
+		out.kind = TYPE_FRAG;
+		out.payload = chunk;
+		m_pending.append(out);
+		offset += take;
+		start = false;
+	}
+	pumpSend();
+}
+
+void DirectLink::pumpSend() {
+	if (!m_havePeer) {
+		return; // 还没打通：包先攒着，连通后一起放行
+	}
+	while (!m_pending.isEmpty() && m_outgoing.size() < SEND_WINDOW) {
+		Outgoing out = m_pending.dequeue();
+		out.firstSent = 0;
+		out.lastSent = nowMs();
+		out.tries = 1;
+		m_outgoing.append(out);
+		sendPacket(Type(out.kind), out.seq, out.payload, m_peer);
+	}
+}
+
+/** 按序交付：小消息直接进 inbox；分片拼进 m_fragBuf，攒够 total 才交付。
+ *  重排缓存保证了分片严格按发送顺序到达这里，因此不需要偏移量。 */
+void DirectLink::deliverFrame(quint8 kind, const QByteArray& payload) {
+	if (kind != TYPE_FRAG) {
+		m_inbox.append(payload);
+		return;
+	}
+	if (payload.isEmpty()) {
+		return;
+	}
+	const quint8 flag = quint8(payload[0]);
+	if (flag == FRAG_START) {
+		if (payload.size() < FRAG_HEAD) {
+			return;
+		}
+		m_fragTotal = int(get32(payload.constData() + 1));
+		m_fragBuf = payload.mid(FRAG_HEAD);
+	} else {
+		m_fragBuf.append(payload.mid(FRAG_HEAD_CONT));
+	}
+	if (m_fragTotal > 0 && m_fragBuf.size() >= m_fragTotal) {
+		QByteArray whole = m_fragBuf.left(m_fragTotal);
+		m_fragBuf.clear();
+		m_fragTotal = 0;
+		m_inbox.append(whole);
 	}
 }
 
