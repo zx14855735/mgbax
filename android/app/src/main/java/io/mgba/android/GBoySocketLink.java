@@ -91,27 +91,37 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
     }
 
     /**
-     * Listens on {@code port} and accepts one peer. Pass 0 to let the OS pick a
-     * free port; {@link #port()} reports the actual one. Non-blocking.
+     * Listens on {@code port} and accepts peers until {@link #close()}.
+     * Pass 0 to let the OS pick a free port; {@link #port()} reports the actual
+     * one. Non-blocking.
      *
      * <p>官方 {@code A2egSU.java:64-67}：accept 之后立刻 {@code setSoTimeout(500)}
      * 与 {@code setTcpNoDelay(true)}。</p>
+     *
+     * <p>与官方的一次性 accept 有一处有意扩展：这里循环 accept，对端掉线后
+     * 新连接仍能接进来，否则客户端 {@code AmA8tU} 的 50 秒重连窗口会连到一个
+     * 「TCP 握手成功但没人读」的监听 socket 上，表现为连上却永远收不到帧。
+     * 退出条件只有 {@link #close()}；对端掉线不会结束 accept 线程。</p>
      */
     public int startHost(int port) throws IOException {
         ServerSocket listener = new ServerSocket(port);
         server = listener;
         running.set(true);
+        final int boundPort = listener.getLocalPort();
         Thread accept = new Thread(() -> {
             try {
-                Socket peer = listener.accept();
-                peer.setSoTimeout(READ_TIMEOUT_MS);
-                peer.setTcpNoDelay(true);
-                if (running.get()) {
-                    open(peer);
-                } else {
-                    peer.close();
+                while (running.get()) {
+                    Socket peer = listener.accept();
+                    peer.setSoTimeout(READ_TIMEOUT_MS);
+                    peer.setTcpNoDelay(true);
+                    if (!running.get()) {
+                        peer.close();
+                        break;
+                    }
+                    attach(peer);
                 }
             } catch (IOException e) {
+                // close() 会关掉 listener 让 accept 抛异常；此时 running 已为 false。
                 if (running.get()) {
                     lastError = String.valueOf(e.getMessage());
                 }
@@ -120,7 +130,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         accept.setDaemon(true);
         acceptThread = accept;
         accept.start();
-        return listener.getLocalPort();
+        return boundPort;
     }
 
     /**
@@ -165,15 +175,25 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             running.set(false);
             throw failure[0] != null ? failure[0] : new IOException("connect timed out");
         }
-        open(peer);
+        attach(peer);
         session.sendSocketHandshake();
     }
 
-    /** Attaches a live socket and starts the I/O threads (only once). */
-    private synchronized void open(Socket peer) throws IOException {
+    /**
+     * Attaches a live socket (first connection or a re-accepted one) and starts
+     * the I/O threads on first use.
+     *
+     * <p>重连时旧读线程可能正卡在已关闭的旧 socket 上，靠 {@link #drop} 的
+     * {@code socket == peer} 身份比较避免它去清理新会话。新流上可能残留旧连接
+     * 的半帧，必须 {@link GBoyFrames.Reader#reset()}，否则会被当新帧解析。</p>
+     */
+    private synchronized void attach(Socket peer) throws IOException {
+        InputStream in = peer.getInputStream();
+        OutputStream out = peer.getOutputStream();
         socket = peer;
-        input = peer.getInputStream();
-        output = peer.getOutputStream();
+        input = in;
+        output = out;
+        reader.reset();
         if (readThread != null) {
             return;
         }
@@ -187,6 +207,17 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
         write.start();
     }
 
+    /** 服务端等 accept 线程挂上新 socket；最多睡 50ms，close() 会中断。 */
+    private boolean awaitAcceptedSocket() {
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        return running.get();
+    }
+
     private void pumpInput() {
         byte[] buffer = new byte[READ_BUFFER];
         int silent = 0;
@@ -194,8 +225,16 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             Socket peer = socket;
             InputStream in = input;
             if (peer == null || in == null) {
-                if (!reconnect()) {
-                    break;
+                // 服务端：accept 线程会挂上新连接，这里只等，不退出；客户端：
+                // 按官方 AmA8tU 的 2s×50s 窗口重连。
+                if (server != null) {
+                    if (!awaitAcceptedSocket()) {
+                        break;
+                    }
+                } else {
+                    if (!reconnect()) {
+                        break;
+                    }
                 }
                 silent = 0;
                 continue;
@@ -206,8 +245,8 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 silent = 0;
             } catch (SocketTimeoutException e) {
                 // 官方 ADYaiT.A5SV6n:85-92：500ms 静默累计 8 次判对端不可达。
-                // 只有客户端能重连，服务端断掉就没人再 accept 了，所以这里只对
-                // 客户端执行「判死」，服务端继续等（避免暂停几秒就自断链路）。
+                // 服务端继续等（掉线后 accept 线程会接新连接），客户端按官方判死
+                // 并进入重连窗口。
                 if (++silent >= SILENT_TIMEOUT_LIMIT) {
                     silent = 0;
                     if (peerHost != null) {
@@ -223,7 +262,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
                 }
                 lastError = String.valueOf(e.getMessage());
                 drop(peer);
-                if (!reconnect()) {
+                if (server == null && !reconnect()) {
                     break;
                 }
                 silent = 0;
@@ -231,7 +270,7 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             }
             if (n <= 0) {
                 drop(peer);
-                if (!reconnect()) {
+                if (server == null && !reconnect()) {
                     break;
                 }
                 silent = 0;
@@ -242,15 +281,19 @@ public final class GBoySocketLink implements GBoyLinkSession.Transport {
             while ((body = reader.next()) != null) {
                 received.incrementAndGet();
                 session.onFrameBody(body);
-                if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_READY) {
+                int type = GBoyFrames.typeOf(body);
+                if (type == GBoyFrames.TYPE_READY || type == GBoyFrames.TYPE_RECONNECT) {
+                    // 两条路都带 RTT：type 3 是正常就绪，type 100 是重连握手。
                     lastRtt = GBoyFrames.intOf(body);
                 }
-                if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_REGISTER) {
+                if (type == GBoyFrames.TYPE_REGISTER) {
                     boolean wasHost = server != null;
                     boolean first = handshakeDone.compareAndSet(false, true);
-                    // Only the listening side answers; the joining side
-                    // started the exchange. Both then consider it ready.
-                    if (wasHost && first) {
+                    /* 只有监听端回声；客户端发起方不回声。官方 B25kr6:122-130：
+                     * 首次发 type 1(6)；已在房内（重连走完整握手而非 type 100）
+                     * 时，只有收到 type 1 且值为 6 才再回一次。 */
+                    if (wasHost && (first
+                            || GBoyFrames.intOf(body) == GBoyLinkSession.SOCKET_HANDSHAKE_VALUE)) {
                         session.sendSocketHandshake();
                     }
                 }

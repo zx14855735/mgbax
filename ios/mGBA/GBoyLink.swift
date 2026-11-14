@@ -95,18 +95,41 @@ final class GBoyLink {
     var onRemotePacing: (Int) -> Void = { _ in }
 
     private let lock = NSLock()
-    private var isClosedFlag = false
+    /// 用户主动断开（只有 close() 会置位）。只有它能让 host 的 accept 循环退出：
+    /// 对端掉线后监听口要继续听，等对方按官方时序重连回来。
+    private var userClosedFlag = false
+    /// 本代会话已经结束（对端掉线 / 读写出错）。每次 store() 开新会话时清掉。
+    private var sessionClosedFlag = false
     private var currentFd: Int32 = -1
+    /// 会话代号：每 store() 一次 +1。
+    /// fd 是 Int32 且 close 之后会被内核复用，光比数值无法判断「这条 fd 还是不是
+    /// 我这代会话的」（旧读线程醒来时可能已经撞上新会话复用的同一个 fd）。Android
+    /// 那边直接用 socket 对象身份做同一件事，Swift 只有裸 fd，所以加代号。
+    private var currentGeneration = 0
     /// 对端上报的 RTT（官方 type 3 / 重连包里的 int32），-1 = 未知。lock 保护。
     private var lastRttValue: Int32 = -1
 
-    private var closed: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return isClosedFlag
+    /// 一条已建立的连接。读线程、写线程和 drop() 都带上它做代次校验。
+    private struct Session {
+        let fd: Int32
+        let generation: Int
     }
 
-    /** Starts hosting on the given port; the peer connects to this device. */
+    /// 线程该不该退：用户断开，或者本代会话已死。
+    private var stopRequested: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return userClosedFlag || sessionClosedFlag
+    }
+
+    /// 用户是否按了「断开」。accept / connect 循环只认这个。
+    private var userClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return userClosedFlag
+    }
+
+    /// Starts hosting on the given port; the peer connects to this device. */
     func host(_ port: Int) {
         run(asHost: true, ip: nil, port: port)
     }
@@ -120,7 +143,7 @@ final class GBoyLink {
     func sendReset() {
         lock.lock()
         let fd = currentFd
-        let dead = isClosedFlag
+        let dead = userClosedFlag || sessionClosedFlag
         lock.unlock()
         if fd >= 0 && !dead {
             try? Self.sendAll(fd, Self.frame(Self.msgReset))
