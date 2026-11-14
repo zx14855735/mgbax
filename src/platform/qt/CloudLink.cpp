@@ -1696,23 +1696,20 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	GBoyLinkSession::Events events;
 	events.onReset = [this]() { emit remoteReset(); };
 	events.onState = [this](const QByteArray& state) {
-		// 官方语义：TYPE_STATE 只灌进镜像核（对方的控制台在本机的映像），
-		// 绝不能灌进可见核——后者是玩家自己的进度。多个镜像核里只有「对端
-		// 占的那个槽位」该吃这份状态，其余是本机 NPC 队位，喂进去会把 NPC
-		// 的存档覆盖掉。这里按槽位顺序找到第一个镜像核并记录实际落点。
-		int applied = -1;
-		for (int i = 0; i < MIRROR_COUNT; ++i) {
-			if (m_mirrors[i] && m_mirrors[i]->applyRemoteState(state)) {
-				applied = i;
-				break;
-			}
-		}
-		if (applied < 0) {
-			GbCloud::debugLog(QStringLiteral("TYPE_STATE not applied (no mirror console)"));
-		} else {
-			GbCloud::debugLog(QStringLiteral("TYPE_STATE applied to mirror %1 (%2 bytes)")
-			                          .arg(applied)
+		/* 官方语义（GBoy KpHwm4.B25kr6:144-152）：type 6 的 savestate 只灌进
+		 * 「代表那个玩家的控制台」。本机布局是可见核 slot 1 + 镜像核 slot 2/3/4
+		 * （GBoyLinkSession::mirrorSlotFor(1, 4, i) = i + 2），而对端按键走
+		 * defaultSenderSlot() = 2，所以代表对端的就是第 0 个镜像核。
+		 *
+		 * slot 3/4 是本机 NPC 陪位（大竞技场要求 4 人），喂对端存档进去会把
+		 * 它们的进度覆盖成对端的，四人子状态立刻分裂 —— Android 老版本
+		 * 「灌全部镜像核」就是这么坏的。 */
+		const int kPeerMirror = 0; // 槽位 2
+		if (m_mirrors[kPeerMirror] && m_mirrors[kPeerMirror]->applyRemoteState(state)) {
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE queued for mirror slot 2 (%1 bytes)")
 			                          .arg(state.size()));
+		} else {
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE dropped (no mirror console)"));
 		}
 	};
 	events.onReady = [this]() { status(QStringLiteral("对方已就绪")); };
