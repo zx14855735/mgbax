@@ -397,8 +397,13 @@ void BtLink::send(const QByteArray& wireFrame) {
 }
 
 void BtLink::dropSocket() {
+	// 先 shutdown 唤醒卡在 send 的写线程，再拿锁关闭，避免互相等锁。
+	const intptr_t fd = m_socket;
+	if (fd >= 0) {
+		shutdown(SOCKET(fd), SD_BOTH);
+	}
 	std::lock_guard<std::mutex> locker(m_sendMutex);
-	if (m_socket >= 0) {
+	if (m_socket == fd && m_socket >= 0) {
 		closesocket(SOCKET(m_socket));
 		m_socket = -1;
 	}
@@ -423,10 +428,9 @@ bool BtLink::isClosed() const {
 
 void BtLink::close() {
 	m_closed.store(true, std::memory_order_relaxed);
-	if (m_socket >= 0) {
-		shutdown(SOCKET(m_socket), SD_BOTH);
-		closesocket(SOCKET(m_socket));
-		m_socket = -1;
+	const intptr_t fd = m_socket;
+	if (fd >= 0) {
+		shutdown(SOCKET(fd), SD_BOTH);
 	}
 	if (m_listener >= 0) {
 		closesocket(SOCKET(m_listener));
@@ -456,6 +460,13 @@ void BtLink::close() {
 		query.lpBlob = &blob;
 		WSASetServiceW(&query, RNRSERVICE_DELETE, 0);
 		m_sdpRegistered = false;
+	}
+	{
+		std::lock_guard<std::mutex> locker(m_sendMutex);
+		if (m_socket == fd && m_socket >= 0) {
+			closesocket(SOCKET(m_socket));
+			m_socket = -1;
+		}
 	}
 	if (m_threadStarted && m_thread.joinable()) {
 		m_thread.join();

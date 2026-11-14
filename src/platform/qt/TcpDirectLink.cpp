@@ -56,8 +56,10 @@ bool wouldBlock(int code) {
 #endif
 }
 
-/** 带超时的阻塞 connect（官方 setSoTimeout 之外那 10 秒 connect 窗口）。 */
-intptr_t connectSocketNow(const QString& host, quint16 port, int timeoutMs, QString* error) {
+/** 带超时的阻塞 connect（官方 setSoTimeout 之外那 10 秒 connect 窗口）。
+ *  {@code cancel} 非空时每 100ms 检查一次，close() 可以立刻叫停重连。 */
+intptr_t connectSocketNow(const QString& host, quint16 port, int timeoutMs, QString* error,
+                          const std::atomic<bool>* cancel = nullptr) {
 	QByteArray hostUtf8 = host.toUtf8();
 	addrinfo hints;
 	std::memset(&hints, 0, sizeof(hints));
@@ -102,15 +104,31 @@ intptr_t connectSocketNow(const QString& host, quint16 port, int timeoutMs, QStr
 		return -1;
 	}
 	if (rc != 0) {
-		fd_set wset;
-		FD_ZERO(&wset);
-		FD_SET(fd, &wset);
-		timeval tv{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
+		// 100ms 一片地等：这样 close() 能立刻打断正在重连的线程，
+		// 不必让 UI 陪着等满整个 connect 窗口。
+		qint64 deadline = QDateTime::currentMSecsSinceEpoch() + timeoutMs;
+		int ready = 0;
+		while (QDateTime::currentMSecsSinceEpoch() < deadline) {
+			if (cancel && cancel->load()) {
+				closesocket(fd);
+				if (error) {
+					*error = QStringLiteral("已取消");
+				}
+				return -1;
+			}
+			fd_set wset;
+			FD_ZERO(&wset);
+			FD_SET(fd, &wset);
+			timeval tv{0, 100 * 1000};
 #ifdef _WIN32
-		int ready = select(0, nullptr, &wset, nullptr, &tv);
+			ready = select(0, nullptr, &wset, nullptr, &tv);
 #else
-		int ready = select(int(fd) + 1, nullptr, &wset, nullptr, &tv);
+			ready = select(int(fd) + 1, nullptr, &wset, nullptr, &tv);
 #endif
+			if (ready > 0) {
+				break;
+			}
+		}
 		if (ready <= 0) {
 			closesocket(fd);
 			if (error) {
@@ -277,9 +295,14 @@ void TcpDirectLink::adoptSocket(intptr_t fd, const QString& peer, bool reconnect
 }
 
 void TcpDirectLink::dropSocket() {
+	/* 先 shutdown 再拿锁：写线程可能正卡在 send（对端不读），
+	 * shutdown 能让它立刻返回，否则会互相等锁。 */
+	const intptr_t fd = m_socket;
+	if (fd >= 0) {
+		shutdown(socket_t(fd), 2);
+	}
 	std::lock_guard<std::mutex> locker(m_sendMutex);
-	if (m_socket >= 0) {
-		shutdown(socket_t(m_socket), 2);
+	if (m_socket == fd && m_socket >= 0) {
 		closesocket(socket_t(m_socket));
 		m_socket = -1;
 	}
@@ -323,7 +346,7 @@ bool TcpDirectLink::reconnectOnce() {
 	qint64 started = QDateTime::currentMSecsSinceEpoch();
 	while (!m_closed.load(std::memory_order_relaxed)) {
 		QString error;
-		intptr_t fd = connectSocketNow(m_host, m_port, CONNECT_TIMEOUT_MS, &error);
+		intptr_t fd = connectSocketNow(m_host, m_port, CONNECT_TIMEOUT_MS, &error, &m_closed);
 		if (fd >= 0) {
 			sockaddr_in local;
 			std::memset(&local, 0, sizeof(local));
@@ -492,11 +515,14 @@ void TcpDirectLink::close() {
 		closesocket(socket_t(m_listener));
 		m_listener = -1;
 	}
+	// 先 shutdown（不拿锁）唤醒可能阻塞在 recv/send 的读线程与写线程。
+	const intptr_t fd = m_socket;
+	if (fd >= 0) {
+		shutdown(socket_t(fd), 2);
+	}
 	{
 		std::lock_guard<std::mutex> locker(m_sendMutex);
-		if (m_socket >= 0) {
-			// shutdown 让阻塞中的 recv 立刻返回，读线程才能退出并 join。
-			shutdown(socket_t(m_socket), 2);
+		if (m_socket == fd && m_socket >= 0) {
 			closesocket(socket_t(m_socket));
 			m_socket = -1;
 		}
