@@ -100,6 +100,9 @@ public final class GBoyConsoleSet {
     /* 调试用：置位时镜像线程在锁外暂停，好让别的线程安全地给镜像核存档
      * （「隐藏镜像核到底走到哪一步」只能把它的状态倒出来在 PC 上回放看）。 */
     private volatile boolean mirrorHold;
+    /* 待灌进镜像核 0（= 对端那个玩家，slot 2）的 TYPE_STATE 存档。入队由
+     * 网络线程做，真正 loadStateFromMemory 在镜像线程的帧边界执行。 */
+    private byte[] pendingRemoteState;
     /* beginFrame 传入的是 activity 启动以来的全局帧号（可达数万），而镜像从
      * -1 起步：不重基线的话镜像要空追上万帧，追上之前 endFrame 每帧都吃满
      * FRAME_WAIT_MS 超时（外观就是 8fps + 镜像几百 fps 空转）。 */
@@ -586,16 +589,35 @@ public final class GBoyConsoleSet {
 
     /** Applies a peer state blob to every hidden mirror console. */
     public boolean applyRemoteState(byte[] state) {
-        if (mirrors == null) {
+        if (mirrors == null || mirrors.length == 0 || state == null || state.length == 0) {
             return false;
         }
-        boolean applied = false;
-        for (MgbaCore core : mirrors) {
-            if (core != null && core.loadStateFromMemory(state)) {
-                applied = true;
-            }
+        /* 只给「代表对端的那个镜像核」：本机布局是可见核 slot 1 + 镜像核
+         * slot 2/3/4（GBoyLinkSession.mirrorSlotFor(1, players, i) = i + 2），
+         * 对端按键走 slot 2，所以是第 0 个镜像。GBoy 的 case 6 同样是
+         * list.get(A2egSU(slot)) 按槽位取那一颗控制台。
+         *
+         * 老实现把整份存档灌进**全部**镜像核，slot 3/4 这两个 NPC 陪位的
+         * 进度被覆盖成对端的，四人子状态当场分裂（SIO 报「请确认玩家数量」）。
+         *
+         * 载入本身延到镜像线程的帧边界执行：这里直接 load 会和正在跑帧的
+         * 核心抢状态。 */
+        synchronized (lock) {
+            pendingRemoteState = state;
         }
-        return applied;
+        return true;
+    }
+
+    /** 镜像线程在帧边界取走待载入的对端存档（只有 slot 2 那颗吃）。 */
+    private byte[] takePendingRemoteState(int index) {
+        if (index != 0) {
+            return null;
+        }
+        synchronized (lock) {
+            byte[] state = pendingRemoteState;
+            pendingRemoteState = null;
+            return state;
+        }
     }
 
     public State state() {
@@ -699,6 +721,15 @@ public final class GBoyConsoleSet {
             }
             if (state != State.READY) {
                 return;
+            }
+            /* 对端存档：只在帧边界载入。GBoy 的 case 6 也是「载入 → reset →
+             * 开始跑」，载入点永远落在一帧结束后。 */
+            byte[] incomingState = takePendingRemoteState(index);
+            if (incomingState != null) {
+                MgbaCore target = mirrors[index];
+                boolean ok = target != null && target.loadStateFromMemory(incomingState);
+                android.util.Log.i("mGBA-App", "applied peer state bytes="
+                        + incomingState.length + " index=" + index + " ok=" + ok);
             }
             long ceiling;
             synchronized (lock) {
