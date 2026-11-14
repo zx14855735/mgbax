@@ -122,9 +122,9 @@ public final class GBoySocketLinkTest {
         host.session().sendReset();
         check(waitFor(() -> guestEvents.resets == 1, 3000),
                 "TYPE_RESET arrives on the guest");
-        host.session().sendFps(59);
-        check(waitFor(() -> guest.session().remoteFps() == 59, 3000),
-                "TYPE_FPS is recorded by the peer session");
+        host.session().sendSpeed(2);
+        check(waitFor(() -> guest.session().remoteSpeed() == 2, 3000),
+                "TYPE_SPEED is recorded by the peer session");
     }
 
     /**
@@ -146,8 +146,8 @@ public final class GBoySocketLinkTest {
                 "large save-state payload is byte-for-byte identical");
         // The stream must still be aligned after the large frame: a small
         // frame sent right afterwards has to decode normally.
-        host.session().sendFps(61);
-        check(waitFor(() -> guest.session().remoteFps() == 61, 3000),
+        host.session().sendSpeed(4);
+        check(waitFor(() -> guest.session().remoteSpeed() == 4, 3000),
                 "stream stays aligned after a large state frame");
     }
 

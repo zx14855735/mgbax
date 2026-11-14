@@ -342,10 +342,17 @@ public final class GBoyCloudLink {
         worker = thread;
     }
 
-    /** Asks the peer to reset its game. */
-    public void sendReset() {        KcpChannel current = channel;
+    /** Asks the peer to reset its game (official type 5, int32 0 payload). */
+    public void sendReset() {
+        KcpChannel current = channel;
         if (current != null && !closed) {
             current.send(GBoyFrames.frame(GBoyFrames.TYPE_RESET, 0));
+            return;
+        }
+        // TCP / 蓝牙路径没有 KcpChannel，走会话自己的 transport。
+        GBoyLinkSession session = linkSession;
+        if (session != null && !closed) {
+            session.sendReset();
         }
     }
 
@@ -2163,8 +2170,9 @@ public final class GBoyCloudLink {
                 break;
             }
             case GBoyFrames.TYPE_RESET:
+            case GBoyFrames.TYPE_RESET_LEGACY:
                 /* 会话事件 onReset() 已经把复位转发给 UI；这里只留日志，
-                 * 避免同一条 type 5 复位两次（第二次会把刚启动的游戏再打回开机）。 */
+                 * 避免同一条复位帧处理两次（第二次会把刚启动的游戏再打回开机）。 */
                 Log.i(TAG, "rx TYPE_RESET");
                 break;
             case GBoyFrames.TYPE_RECONNECT:

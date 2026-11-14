@@ -66,7 +66,9 @@ public:
 	 *
 	 * 返回值按官方 type 6 的错误码：0 = 已受理（真正载入的结果走
 	 * {@code result} 回调），-5 = 尺寸不符（当场拒绝，不入队），1 = 参数
-	 * 非法。载入成功后镜像线程按官方语义 {@code reset(false)} 本核。
+	 * 非法。载入成功**不复位**本核：mCoreLoadStateNamed 已完整恢复状态，
+	 * 再 mgbaMobileReset 会 memset 掉 EWRAM/IWRAM（清零刚载入的存档）。
+	 * 复位只由官方 type 5 的 requestReset() 触发。
 	 */
 	int applyRemoteState(const QByteArray& state, std::function<void(int)> result = {});
 

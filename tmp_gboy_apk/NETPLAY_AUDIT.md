@@ -1,4 +1,4 @@
-# GBoy 联机栈逐方法清点 + 三端对照审计（2026-11-14）
+# GBoy 联机栈逐方法清点 + 三端对照审计（2026-11-14 起草，2026-11-15 01:1x 按三端最终代码复核）
 
 > 对象：官方客户端 `GBoy_261018.Apk`（dpt-shell，已静态脱壳）。
 > 官方源码：`tmp_gboy_apk/decompiled_all/sources/`（jadx 1.5.1，`decoded/classes*.dex`）。
@@ -60,6 +60,10 @@
   `com/game/boy/activity/EmulatorActivity.BmvVmW`（`EmulatorActivity.java:1333`，
   `ARc23Z((short) 5, 4).putInt(0)`），由"重置游戏"菜单触发；接收侧 `case 5`
   做 `Link.A2egSU.reset(false)` + 遍历镜像核 `reset(false)`（`p2.txt:379e76-379ec8`）。
+
+> **独立复核**：general-purpose-1 用 `jadx --show-bad-code` 另行反编译了 `D8MqeW.run` 与 `AYUAbz`，
+> 看到的是同一组指令（`ARc23Z((short)0,4).putInt(keys)` 紧跟 `console.setKeys(keys)`；`case 0/5/9` =
+> `setKeys` / 双核 `reset` / `AaHO0E.AYUAbz(speed)`），结论一致。两条独立路径互证，不再是单点判断。
 
 > **后果（三端全中）**：我们把 `0` 当帧率、把 `9` 当按键。于是
 > (a) 我们发出的每一帧按键，在官方客户端眼里都是"改倍速"，按键掩码 `0x0001/0x0002…`
@@ -246,7 +250,8 @@ jadx 反编译失败（"Method dump skipped"），从 `p2.txt:379ca4-379f3a` 字
 |---|---|
 | 88 | 循环条件 `session.ASJ6gh && !interrupted()` |
 | 90-94 | `new Socket()`；`connect(InetSocketAddress, 10000)`；`setSoTimeout(500)`；`setTcpNoDelay(true)` |
-| 99-118 | 失败分支：`f4335BIYEnU`（上次成功时刻）距今 ≥ **10000ms** 则把 50 秒窗口起点 `f4333BChYOn` 清零；窗口 ≥ **50000ms** → `ADYaiT()`(发 msg8) + 抛异常；否则 `msg7`(带剩余毫秒) + `sleep(2000)` |
+| 95-98 | **首次连接失败直接抛**：`if (!f4332B9tovu) throw e;`——`f4332B9tovu` 只在握手成功后才置真（`:228`），所以"2s×50s 重试"**只作用于掉线重连**，不作用于首连 |
+| 99-118 | 重连失败分支：`f4335BIYEnU`（上次成功时刻）距今 ≥ **10000ms** 则把 50 秒窗口起点 `f4333BChYOn` 清零；窗口 ≥ **50000ms** → `ADYaiT()`(发 msg8) + 抛异常；否则 `msg7`(带剩余毫秒) + `sleep(2000)` |
 | 120-123 | 若已是重连状态 → `ARc23Z(socket)`（发 10 字节握手包）后进入转发 |
 | 124-126 | 否则 `A5SV6n(socket)`（首次握手） |
 
@@ -255,7 +260,7 @@ jadx 反编译失败（"Method dump skipped"），从 `p2.txt:379ca4-379f3a` 字
 | 行号 | 内容 |
 |---|---|
 | 168-171 | 帧读器 + 对端通道；登记进 session 两个列表 |
-| 173-178 | 发 `type1`：`int playerCount`；**仅当 `playerCount == 1`** 再 `short 0` + `int listSize`（`ARc23Z(1,10)`，10 字节 payload；否则实际只填 4 字节、其余 0 上线） |
+| 173-178 | 发 `type1`：`int playerCount`；**仅当 `playerCount == 1`** 再 `short 0` + `int listSize`。`ARc23Z(1,10)` 分配 **16 字节**（长度字段 12 = 2 类型 + 10 payload），发送线程写整个 `array()`，所以**帧长恒 16**；pc≠1 时尾部 6 字节为 0 |
 | 179-222 | 读循环：<br>`type 3` → `int rtt` 存 `peer.B9tovu`；`for i2 in 0..listSize-2`：msg4（建镜像核，阻塞）→ 从 `states[A2egSU(rtt,i2)]` 取 blob 灌进 `peer.B2KMhB.get(i2)`；任一失败 → 发 `type1` 空体 + 返回错误码（3/1）；全成功 → 发 **`type3` 空体**<br>`type 0` → `int v` → `AaHO0E.BPw6Q8=false; AZkASS=v`<br>其它 → `return 2` |
 | 224-228 | 循环结束：发 `type1` 空体（"我走了"）、`msg1`、`f4332B9tovu=true`（以后掉线走 `ARc23Z(Socket)`） |
 | 229-237 | 转发循环：`readFrame()` → `peer.BIYEnU.put()` |
@@ -461,7 +466,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 1 | `KpHwm4.B25kr6.A4TApA` | 122 | 1 | `int32 6` | 直连握手，`!AMqCpz`（发起方）连上即发 |
 | 2 | `KpHwm4.B25kr6.A4TApA` | 128 | 1 | `int32 6` | 收到对端 `type1` 且值 6、本端 `AMqCpz` 时回 |
 | 3 | `KpHwm4.B25kr6.AZOQYO` | 255 | 9 | `int32 speed` | 用户切倍速（0.5x/1x/2x/4x） |
-| 4 | `KpHwm4.AmA8tU.A5SV6n` | 173 | 1 | `int32 playerCount`（==1 时再 `int16 0` + `int32 listSize`） | TCP 客户端连上后第一帧 |
+| 4 | `KpHwm4.AmA8tU.A5SV6n` | 173 | 1 | `int32 playerCount` +（仅 pc==1 才填）`int16 0` + `int32 listSize`；**帧长恒 16**（`ARc23Z(1,10)`） | TCP 客户端连上后第一帧 |
 | 5 | `KpHwm4.AmA8tU.A5SV6n` | 204 | 1 | 空（len=0） | 某槽 `loadStateFromMemory` 失败 → 断开 |
 | 6 | `KpHwm4.AmA8tU.A5SV6n` | 211 | 3 | 空（4 字节 0） | 全部槽载入成功 → "我灌完了" |
 | 7 | `KpHwm4.AmA8tU.A5SV6n` | 226 | 1 | 空（len=0） | 读循环退出（会话结束） |
@@ -497,7 +502,7 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | type | 方向 | payload | 语义 | 代码 |
 |---|---|---|---|---|
 | 1 | 双向 | `int32 6` | "我在等你 / 我到了" | `B25kr6:122/128` |
-| 1 | 发起方→接受方 | `int32 playerCount`（==1 时再 `short 0` + `int32 listSize`） | 注册 | `AmA8tU:173-178`、`DUi7mC:345` |
+| 1 | 发起方→接受方 | `int32 playerCount`（**线上恒 16 字节**，长度字段 12；仅 pc==1 时才填 `short 0` + `int32 listSize`，否则尾 6 字节为 0） | 注册 | `AmA8tU:173-178`、`DUi7mC:345` |
 | 1 | 任意 | 空体（len=0） | 断开/结束 | `AmA8tU:204/226`、`AzWtSf:183` |
 | 2 | 双向 | `byte[32] name` + `int16 n` + `byte[n] desc` | 自我介绍（ROM 名 / 房间） | `AZkASS:136` |
 | 3 | 接受方→发起方 | `int32 rtt` | "RTT 给你，**现在把各槽存档灌进镜像核**" | `AmA8tU:185`、`AzWtSf:143` |
@@ -554,21 +559,21 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 2 | 帧长上限 8 MiB（`BTvldC/ADYaiT:107`） | 16 MiB（`GBoyFrames.h:36`） | 16 MiB（`GBoyFrames.java:36`） | 16 MiB（`LobbyFrames.swift:31`） | ⚠️等价（放宽一倍，仍能拒掉明显错位） |
 | 3 | 非法长度 → 抛 `IOException` 断链（`BTvldC/ADYaiT:107-109`） | 清空缓冲继续读（`GBoyFrames.cpp:152-156`）；TCP 层判 closed（`TcpDirectLink.cpp:409-412`） | 丢弃缓冲 | 丢弃缓冲 | ⚠️等价（不崩，但不像官方那样立刻断） |
 | 4 | 8×500ms 静默判对端不可达（`BTvldC/ADYaiT:85-92`） | **有意偏离**：`SO_KEEPALIVE` 2s+1s / 2/1/3（`TcpDirectLink.cpp:57-80`），约 5s 判死 | `GBoySocketLink.java:56-57/270-274` 8 次 | `GBoyLink.swift` 无（靠 EOF/写失败） | ⚠️等价（PC 换成 keepalive，理由见 C10；iOS 仍是缺口） |
-| 5 | **type 0 = 按键掩码**（`p1.txt:34821a`） | `TYPE_FPS`（`GBoyFrames.h:48`），收下写 `m_remoteFps`（`GBoyLinkSession.cpp:195-200`） | `TYPE_FPS`（`GBoyFrames.java:46`） | `typeFps`（`LobbyFrames.swift:44`） | ❌不一致（**输入通道整条错位**） |
-| 6 | **type 9 = 速度倍率**（`B25kr6:253-258`） | `TYPE_KEYS`（`GBoyFrames.h:54`） | `TYPE_KEYS`（`GBoyFrames.java:58`） | `typeKeys`（`LobbyFrames.swift:56`） | ❌不一致（发给官方=改他倍速） |
-| 7 | type 2 自我介绍双向发送（`AZkASS:136`） | 仅 `startOfficialMatch` 发一次（`CloudLink.cpp:1861`） | 只解析不发送（`GBoyFrames.java:50` 无发送点） | 握手内发送（`GBoyLink.swift:391-395`） | ⚠️等价（Android 缺发送） |
+| 5 | **type 0 = 按键掩码**（`p1.txt:34821a`） | `TYPE_KEYS=0`（`GBoyFrames.h:57`），收 → `pushKeys` | 同（`GBoyFrames.java:49`、`GBoyLinkSession.java:285-300`） | 同（`LobbyFrames.swift:57`） | ✅一致（2026-11-15 三端已改） |
+| 6 | **type 9 = 速度倍率**（`B25kr6:253-258`） | `TYPE_SPEED=9`（`GBoyFrames.h:66`），收下存 `m_remoteSpeed`（`GBoyLinkSession.cpp:205-210`）**但没人用** | 同（`GBoyLinkSession.java:296-300`、`:456-459`），`GBoyCloudLink`/`EmulatorActivity` 无消费点 | 同（`GBoyLink.swift:534`、`LobbyLink.swift:859-866`），只记录 | ⚠️等价（号对了、也识别了，但没像官方那样改帧闸/倍率，见 C11） |
+| 7 | type 2 自我介绍双向发送（`AZkASS:136`） | `startOfficialMatch` 发一次（`CloudLink.cpp:1861`） | 已发（`GBoyCloudLink.java:1929`、会话身份 `:301`/`:371-381`） | 握手内发送（`GBoyLink.swift:391-395`） | ✅一致（2026-11-15 三端都会发） |
 | 8 | type 2 payload：`32B name + int16 n + n字节` | `nameFrame`（`GBoyFrames.cpp:46-54`） | `nameFrame` 同 | `romInfo()`（`GBoyLink.swift:931`） | ✅一致 |
 | 9 | type 3 语义（就绪/载入指令/空 ack/稳态=玩家3键，四处复用） | 当"ready+RTT"（`GBoyLinkSession.cpp:120-145`） | 同（`GBoyLinkSession.java:222-238`） | 同（`GBoyLink.swift:476-483`） | ❌不一致（丢了"载入指令"与"ack"） |
-| 10 | type 5 = 重置（`EmulatorActivity:1333`；收 `379e76`） | 当 ready-ack（`GBoyFrames.h:52`） | 同 | 同（`GBoyLink.swift:66`） | ❌不一致（官方 reset 帧被我们当 ack 吃掉） |
-| 11 | 重置用自研 type 13（我们扩展） | `TYPE_RESET=13`（`GBoyFrames.h:59`） | 同 | `typeReset=13`（`LobbyFrames.swift:65`） | ❌不一致（与官方 type5 互不相认） |
+| 10 | type 5 = 重置（`EmulatorActivity:1333`；收 `379e76`） | `TYPE_RESET=5`（`GBoyFrames.h:61`），`sendReset` 发 5（`GBoyLinkSession.cpp:294-296`） | 同（`GBoyFrames.java:57`；`sendReset` 覆盖 KCP / TCP / 蓝牙 / WS 隧道四路） | 同（`LobbyFrames.swift:65`、`GBoyLink.swift:185-191`） | ✅一致（2026-11-15 三端已改） |
+| 11 | 不再使用自研 type 13（官方没有） | 仅保留 `TYPE_RESET_LEGACY=13` 接收兼容（`GBoyFrames.h:71`、`GBoyLinkSession.cpp:188`），不发送 | 同（`GBoyFrames.java:79`、`GBoyLinkSession.java:283`） | 同（`LobbyFrames.swift:80`、`LobbyLink.swift:869`） | ✅一致（13 只收不发） |
 | 12 | type 6 payload：`int32 size + blob` | `stateFrame`（`GBoyFrames.cpp:56-63`） | 同 | `GBoyLink.swift:947` | ✅一致 |
 | 13 | type 6 时机：握手第 7 步各发一次（`B25kr6:143-155`） | 连上后一次 + 按需（`CloudLink.cpp:2269-2287`、`1966-1976`） | 连上后一次（`GBoyCloudLink.java:2095`） | 握手内双向（`GBoyLink.swift:400-420`） | ⚠️等价（时机近似，无周期补发） |
 | 14 | type 6 落地目标 = **对端那颗粒**（`B25kr6:144-152` 用 `peer.BI9f7h`） | 镜像核 slot2（`CloudLink.cpp:1830-1842`） | 镜像 slot2（`GBoyConsoleSet.java:591-611`） | 镜像 slot2（`GBoyConsoleSet.swift:328-350`） | ⚠️等价（我们用"对端=slot2"固定约定，官方按位置表） |
-| 15 | load 后 `reset(false)` 两颗粒（`B25kr6:156-157`） | 无 | 无 | 无 | ❌缺失 |
-| 16 | load 返回码 `-5→3 / 其它→1 / 0→成功`（`B25kr6:148-152`） | 未检查返回值 | 未检查 | 未检查 | ❌缺失（存档尺寸不符会静默继续） |
+| 15 | load 后 `reset(false)` 两颗粒（`B25kr6:156-157`） | 已撤（`GBoyMirror.cpp` 载入后只 load+计数；`emit remoteReset` 只剩 1837 的 type5 与 2286 的 `handle()`） | 已撤（仅 `type5` 的 `onReset/onRemoteReset` 调 `requestMirrorResets`） | 有意不跟（`GBoyConsoleSet.swift:379-388`） | ⚠️等价（三端一致：**只载入不复位**；官方 `reset(false)` 语义不可复现，照抄会清零 EWRAM/IWRAM。**有意偏离，勿“修回去”**） |
+| 16 | load 返回码 `-5→3 / 其它→1 / 0→成功`，失败即断（`B25kr6:148-152`） | 已接：帧边界结果 → `m_mirrorStateError` → `CloudLink.cpp:2049-2054` 断链 | 已接：`EmulatorActivity:2282-2283` / `:4944-4945` 非 0 关链路 | 已接：`onStateLoadResult` → `abortSession(errorCode:)`（`EmulatorViewController.swift:5969-5980`） | ✅一致（2026-11-15 三端已接） |
 | 17 | 握手顺序 `1→2→3→6` 且每步阻塞（`B25kr6:116-173`） | 只有 1/3/6，无 2（云端模式补发 2）（`CloudLink.cpp:2151-2175`） | 只有 1/3/6（`GBoyCloudLink.java:1886-1904`） | 2→3→6 完整，且 type1 校验 `==6`、宿主回 6（`GBoyLink.swift:795-822`） | ⚠️等价（PC/Android 缺 type2 阶段；iOS 最接近官方） |
 | 18 | type 1 握手值 6（`B25kr6:122/128`） | `sendSocketHandshake`（`GBoyLinkSession.cpp:257-259`） | 同（`GBoyLinkSession.java:359-362`） | `helloFrame()`（`GBoyLink.swift:735-737`） | ✅一致 |
-| 19 | type 1 注册体：`pc`，**仅 pc==1** 再跟 `short 0 + int listSize` | 永远 12 字节（`GBoyFrames.cpp:86-94`） | 同 | 同（`LobbyFrames.swift:127`） | ❌不一致（对官方客户端会多 6 字节） |
+| 19 | type 1 注册帧：**线上恒 16 字节**（长度字段 12）；`pc` 之后那 6 字节**仅 pc==1 才填** `short 0 + int listSize`，否则保持 0（`AmA8tU:173-178` + `ARc23Z(1,10)` 分配 16 + 发送线程写整个 `array()`） | 恒 16、pc==1 才填（`GBoyFrames.cpp:99-108`） | 恒 16、pc==1 才填（`GBoyFrames.java:126-136`） | 恒 16、pc==1 才填（`LobbyFrames.swift:150-165`） | ✅一致（2026-11-15 01:1x 三端逐字节一致） |
 | 20 | type 1 空体 = 断开（`AmA8tU:204/226`） | 未发 | 未发 | 未发 | ❌缺失 |
 | 21 | 重连裸 10 字节 `int32 6 + int16 100 + int32 rtt`（`AmA8tU:263-272`） | 有（`GBoyFrames.cpp:68-70`、`TcpDirectLink.cpp:288-295`） | 有（`GBoySocketLink.java:196/320`） | 有（`GBoyLink.swift:742-760`） | ⚠️等价（官方只发不收；我们收下当 ready） |
 | 22 | TCP 服务端：6374 / backlog 1 / 0.0.0.0（`EmulatorActivity:1505`） | 端口由 UI 传、backlog 4、`INADDR_ANY`（`TcpDirectLink.cpp:205-208`） | `new ServerSocket(port)`（`GBoySocketLink.java:107`） | 默认 6374（`GBoyLink.swift:50`，UI 可改，`EmulatorViewController.swift:5664`） | ⚠️等价（参数不同，能互通） |
@@ -593,15 +598,15 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 | 41 | 断开清理：速度归 1 / 存 slot9 / 关全部镜像核（`EmulatorActivity.C2rE4F:1349-1400`） | 部分（`CloudLink` 停镜像） | 部分 | 部分 | ⚠️等价 |
 | 42 | WSS 四动作 `create_game_room/join_room/send_message/update_room_settings`（+`leave_room`） | 全有（`CloudLink.cpp:92/103/112/741/799`） | 全有 | 全有 | ✅一致 |
 | 43 | 房间状态分发：JSON 里带 `node ip/port/udp` + `states[]/names[]`（`B4ZgIw.run:26-48`） | 用自定义 `gboy_node` marker + WS 隧道（`CloudLink.cpp:2300-2320`） | 同思路 | 同 | ⚠️等价（不是官方那套字段，但自成闭环；与官方客户端不同房） |
-| 44 | `type 10` 断开通知 → UI msg2（`p2.txt:379d46`） | 无 | 无 | 无 | ❌缺失 |
+| 44 | `type 10` 断开通知 → 结束会话（`p2.txt:379d46`；APK 内无发送方，应来自中继） | 无（未知类型仅记日志） | 无 | **有**：`typeDisconnect=10`，收到即正常收尾（`LobbyFrames.swift:71`、`LobbyLink.swift:877`、`GBoyLink.swift` drop） | ⚠️等价（iOS 仅接收侧；三端都不主动发，关闭走 socket） |
 | 45 | `type 8` 每帧推进次数（`p2.txt:379e20`） | 无 | 无 | 无 | ❌缺失（官方只在多对端时用） |
 | 46 | `type 7` 本机可见核按键（`p2.txt:379e30`） | 用自研 14（`TYPE_KEYS_LOCAL`） | 同 | 同 | ❌不一致（无发送方，仅语义差异） |
 | 47 | 服务端 accept 单次（`A2egSU:64`） | 循环 accept（`TcpDirectLink.cpp:428-440`） | 循环 accept（`GBoySocketLink.java:111-147`） | 每会话一次、掉线后重新 select+accept（`GBoyLink.swift:665-690`） | ⚠️等价（有意扩展） |
 | 48 | 大存档分片：TCP 靠流、KCP 靠 `frg`（`MdiDtx`） | `DirectLink` 加 `TYPE_FRAG`（1000B/48 窗） | 同 | 同 | ⚠️等价（官方原生分片，我们自研） |
-| 49 | 首次连接也走 2s×50s 重试窗（`AmA8tU:104-118`） | **有意偏离**：TCP 只是隧道连通后的加速候选（BT→UDP→TCP→WS），首连失败立即回落（`CloudLink` 通道编排） | 50s（`GBoySocketLink.java:59`） | 50s（`GBoyLink.swift:360-372`） | ⚠️等价（有意偏离，避免白等 50s；重连仍照抄） |
+| 49 | **首次连接单次 10s、失败即抛**；只有掉线重连才 2s×50s（`AmA8tU:95-98` 的 `if (!f4332B9tovu) throw e;`，`f4332B9tovu` 只在握手成功后置真 `:228`） | 首连单次（`TcpDirectLink::connectTo`）；失败按架构回落 WS 隧道 | 首连单次（`GBoySocketLink.java:159-189`），重连 2s/50s（`:389-423`） | 首连单次，重连 2s/50s（`GBoyLink.swift:346-372`） | ✅一致（重连窗口只作用于已连过的会话） |
 | 50 | 帧循环阻塞收包不得压低帧率（官方帧闸与收包解耦，`KpHwm4/A5SV6n`+`AmA8tU`） | `recv` 超时按 `tickMs` 收窄（`CloudLink.cpp:2037-2039`），否则 60fps 被压到 33fps | 独立读线程 | 独立读线程+睡眠节拍 | ⚠️等价（PC 单线程结构导致，已修） |
 | 51 | `type 6` 与 SIO 中继桥共用 6 的判别（官方无此问题） | `GBoyFrames::stateOf` 用"u32 头是否放得下"区分（`GBoyFrames.cpp:72-84`） | 同 | 同 | ⚠️等价（我们自造的分层，官方没有桥） |
-| 52 | 交付实测状态 | 蓝牙仅编译验证（无适配器）；fps 上限无真机对端下发验证 | 蓝牙权限+通道已加，未真机验证 | 无 RFCOMM | ⚠️等价（**已实现未实测**，验收前需补） |
+| 52 | 交付实测状态 | 编译+回归绿（`buslocal`、`frames` 4 条）；`dual` 单次可 PASS（00:42 一次全绿），但**同一二进制 5 跑 3 次无诊断退出**、`bus test.gba 4` FAIL（SIOMULTI0=ffff）→ 判 harness/4P 既有状态，**未稳定**；蓝牙仅编译（无适配器） | `assembleDebug` PASS；未真机 | `swiftc -parse` 通过；**未编译未真机** | ⚠️等价（**已实现未实测**：iOS 全部、PC/Android 蓝牙、4P 稳定性） |
 
 **已知偏差（4P 槽位键）**：官方稳态用 `type 1..4` 表示"第 N 号玩家的按键"（`AYUAbz` 前半段按 playerCount 算槽位），
 我们三端用自家扩展 `11/12/17`。APK 内**没有**任何代码发送 1..4，它们只可能来自中继节点（节点给按键打玩家标签）；
@@ -614,13 +619,17 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 与**接收端字节码**（`AYUAbz` case 0 = `setKeys`、case 9 = 改帧闸）。两种读法只在「握手期 vs 稳态」分阶段时才自洽，
 见 §0.4；判定性实验见同节。在实验做完之前，5/6/9/10 行按 ❌不一致 计。
 
-**统计：`✅一致` 12 条，`⚠️等价` 26 条，`❌缺失` 6 条，`❌不一致` 8 条，共 52 条。**
+**统计：`✅一致` 19 条，`⚠️等价` 27 条，`❌缺失` 3 条，`❌不一致` 3 条，共 52 条。**
 
-按"一致 + 等价"计，照抄率 **38/52 ≈ 73%**；若只算"逐字节可互通"的条目（✅），**12/52 ≈ 23%**。
+按"一致 + 等价"计，照抄率 **46/52 ≈ 88%**；若只算"逐字节可互通"的条目（✅），**19/52 ≈ 37%**。
 
 ---
 
 # C. 缺口清单（按修复量从小到大）
+
+> **进度（2026-11-15 01:1x）**：C1/C2/C3/C5/C6/C7 **三端已完成**；
+> C4 **三端已完成**（PC 00:34 撤掉两处；`ninja mgba-qt` / `test-gboylink` / `frames` / `buslocal` 全绿）；
+> C8/C9/C11/C12 暂不动（team-lead 决定）。下表保留原始描述与证据，行内标注现状。
 
 > 每条给：缺什么 / 改哪里 / 动几端 / 风险 / 怎么验证。
 > `Pn` = 优先级（P0 = 与官方客户端互通必须改）。
@@ -653,24 +662,32 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 - **风险**：低（13 号继续保留给自家旧版本，收 5 时执行 reset 即可）。
 - **验证**：一端按"重置"，另一端所有核重启到开机画面。
 
-### C4. `type 6` load 后复位的两颗粒（P0，三端）——**先定语义再动手**
+### C4. `type 6` load 后复位的两颗粒 —— **不要照抄（三端已撤，2026-11-15 01:0x 闭环）**
 - **缺什么**：官方 `B25kr6:156-157` 在 load 成功后 `reset(false)` **可见核 + 对端核**。
-- **⚠️ 语义未定（2026-11-14 复核）**：`Console.reset(boolean)` 是 libgboy 的 native 方法
-  （`libgboy.so` 里 `Java_com_game_boy_emu_gba_Console_reset` 存在，且签名确认带一个 boolean），
-  但 libgboy 不是 mGBA 内核（`.so` 内无 mGBA/GBASIOReset/SavedataUnmask 任何字符串），
-  所以**无法从 mGBA 源码推断这个 bool 的含义**，静态也读不到函数体。
-  现有线索互相矛盾：`B9tovu` 建核后也 `reset(false)`（像"开机"），而这里紧跟在 load 之后（像"提交/软复位"）。
-- **因此本轮结论**：**不要照抄**。先记为"待确认"，别把 `m_controller->reset()`（整机软复位）
-  直接塞进 load 之后 —— 那会把刚载入的 RAM 冲掉，比不 reset 更糟。
-- **可替代的等价动作**（风险低、可立即做）：load 之后只做「重新武装 SIO」——PC/Android/iOS 的镜像核
-  本来就是持续 `linkJoin`/`runFrame`，帧边界 `loadState` 后下一帧会自然继续；若观察到载入后 SIO 卡死，
-  再补 `sioClose+linkJoin` 重建，而不是整机 reset。
-- **最省事的判定法**：用官方客户端连我们，发一份 state 给它，看它收到后是"画面跳到存档那一帧继续跑"
-  还是"回到开机画面"。前者说明 `reset(false)` 不毁 RAM（是软/联机复位），后者说明它其实是开机复位、
-  且官方在 load 之后还能用说明 load 是"暂存 + reset 时提交"。
-- **改哪（确定语义后）**：PC `CloudLink.cpp:1830-1842`、Android `GBoyConsoleSet.java:591-611`、
-  iOS `GBoyConsoleSet.swift:328-350`。
-- **注意区分**：`type 5`（用户点"重置游戏"）的 `reset` 是**整机复位**，与这条无关，可以照抄。
+- **结论：不要跟。这不是"缺一条"，是"跟了就是 bug"。** 证据链（2026-11-14 复核，全部可在本仓库核对）：
+  1. 官方 `Console.reset(boolean)` 是 libgboy 的 native 方法（`libgboy.so` 有
+     `Java_com_game_boy_emu_gba_Console_reset`，签名带一个 boolean），但 libgboy **不是 mGBA 内核**
+     （`.so` 里查不到 mGBA / GBASIOReset / SavedataUnmask 任何字符串），函数体也不可静态读。
+  2. 我们这边的 `mgbaMobileReset` = `emu->core->reset(core)`（`src/platform/mobile/mgba_mobile.c:4883`），
+     GBA 的 reset 走 `GBAReset`（`src/gba/gba.c:245`）→ `GBAMemoryReset`（`src/gba/memory.c:219-228`）
+     **`memset(wram,0,256K)` + `memset(iwram,0,32K)` + 清 IO + `GBAIOInit` + `GBASIOReset`**。
+  3. 而载入是 `mCoreLoadStateNamed`（`mgba_mobile.c:4799`），它已经把 CPU/内存/IO 全部恢复好了，
+     **不需要**任何 reset。载入后再 reset = 把刚恢复的 RAM 清零、PC 回 0 → 镜像核回到开机画面。
+  4. 反证：官方若真在 load 后做"开机复位"，它自己的状态同步就是无效的；所以 `reset(false)` 一定
+     不是"开机复位"。我们无法复现它的真实语义（很可能是"软复位 SIO/帧闸"），**没有等价 native 接口**。
+- **现状（2026-11-14 23:5x 复核后更新）**：iOS 已经有意不跟并写清了理由
+  （`GBoyConsoleSet.swift:379-388`）——**这是正确做法**；
+  **PC 曾有两处**（已撤，见下）：`GBoyMirror.cpp:227`（镜像核帧边界 reset）**和** `CloudLink.cpp:1862`
+  的 `emit remoteReset()` → `LobbyView.cpp:257` → `CoreController::reset`（**连玩家正在玩的可见核一起重启**）；
+  **Android 一处**：`GBoyConsoleSet.java` 的 `applyRemoteState` 成功分支（**2026-11-15 00:4x 已撤**，
+  现在只有 `type5` 的 `onReset/onRemoteReset` 会调 `requestMirrorResets`）。三者都属于 P0 缺陷，
+  会把对端存档当场抹掉，表现为"握手成功、两边都在开机画面、SIO 永远凑不齐"。
+- **已完成（2026-11-15 01:0x）**：PC 两处（`GBoyMirror.cpp` 载入后的 reset、`CloudLink.cpp:1862` 的 `emit remoteReset`）
+  已删除，`emit remoteReset` 全文只剩 1837（type5 的 `onReset`）与 2286（`handle()` 的 `TYPE_RESET`）两条正确链路；
+  Android 早在 00:4x 撤完；iOS 本来就没跟。`type 5`（用户点“重置游戏”）链路保留不动。
+- **验收**：PC `ninja mgba-qt` / `test-gboylink` EXIT=0，`frames` 4 条 + `buslocal` 2 条全 PASS，dist 已更新（00:34）。
+- **可替代的等价动作**（若真观察到载入后 SIO 卡死）：只重建联机线（`linkClose`+`linkJoin`），
+  绝不整机 reset。
 
 ### C5. `type 6` load 失败要可见（P1，三端，各 ~10 行）——**不做异步回包**
 - **缺什么**：官方 `-5 → 3`（尺寸不符）、`其它 → 1`、`0 → 成功`，失败即断链。
@@ -682,18 +699,26 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
      `applyRemoteState` 的期望值；收到 `type6` 时先比 `size`，不等就**直接关连接**（等价于官方的 `3`）。
   2. **结果上报（镜像线程，3 行）**：帧边界 load 的返回值写进一个 `std::atomic<int>`/`volatile int`，
      会话循环下一拍读到非 0 → 关连接 + 日志。对端看到的是 EOF，等价于官方的 `type1` 空体。
+- **现状（2026-11-15 已闭环）**：三端都把结果用起来了——PC 帧边界结果经 `m_mirrorStateError`
+  在 `CloudLink.cpp:2049-2054` 收口断链；Android 在 `EmulatorActivity:2282-2283` / `:4944-4945`
+  非 0 即关链路；iOS 走 `onStateLoadResult` → `abortSession(errorCode:)`。
 - **改哪**：`GBoyMirror.cpp:242`、`GBoyConsoleSet.java:591`、`GBoyConsoleSet.swift:328`。
 - **风险**：低（只把静默失败变成显式失败）。
 - **验证**：故意发一个 100 字节假存档 → 5 秒内断链并有明确日志，而不是"看起来连上了但核不动"。
 
-### C6. `type 1` 注册体按官方裁短（P1，三端，各 5 行）
-- **缺什么**：官方 `AmA8tU:173-178` 只有 `playerCount==1` 才补 `short 0 + int listSize`；
-  我们无条件 12 字节。
-- **改哪**：`GBoyFrames.cpp:86-94`、`GBoyFrames.java:120-130`、`LobbyFrames.swift:127`。
-- **风险**：低（自家两端同时改）。
-- **验证**：抓包比对 pc=1 与 pc=2 两种房间的 type1 长度（16 字节 vs 10 字节）。
+### C6. `type 1` 注册帧：iOS 应为恒 16 字节 —— **已完成（2026-11-15 01:1x）**
+- **原文澄清（2026-11-15 更正）**：`ARc23Z((short)1, 10)` 分配的是 **16 字节**（`len+6`，长度字段 = 12），
+  发送线程写的是 `byteBuffer.array()`（**整个 backing array**，不受 position/limit 影响）。所以官方线上
+  type1 注册帧**永远是 16 字节**；`AmA8tU:173-178` 的 `if (playerCount == 1)` 只决定尾部 6 字节
+  **填不填**，不是决定"发不发"。pc≠1 时那 6 字节是 0。
+- **现状（已闭环）**：PC（`GBoyFrames.cpp:99-108`）、Android（`GBoyFrames.java:126-136`）、
+  iOS（`LobbyFrames.swift:150-165`）三端均为"恒 16、pc==1 才填"，与官方逐字节一致。
+- **改哪**：`LobbyFrames.swift:150-164` —— 去掉 10 字节分支，统一 `[UInt8](repeating: 0, count: 16)` + `putInt(12)`，
+  `pc == 1` 时才写 `putShort(10, 0)` 与 `putInt(12, baseStateCount)`。
+- **风险**：低（长度字段同步改成 12，分帧自洽）。
+- **验证**：抓包比 pc=1 与 pc=2 两种房间的 type1 帧长，都应是 16 字节；pc=2 时尾部 6 字节为 0。
 
-### C7. 补 `type 2`（名字）发送（P1，Android 1 处 + PC 补齐时机）
+### C7. 补 `type 2`（名字）发送（**2026-11-15 已完成**：Android `GBoyCloudLink.java:1929` 已发）
 - **缺什么**：官方 `AZkASS:136` 双向发；Android 完全没有发送点。
 - **改哪**：Android `GBoyCloudLink.java` 官方模式启动处（对照 PC `CloudLink.cpp:1861`）。
 - **风险**：低。
@@ -741,12 +766,30 @@ conv = UUID.randomUUID().hashCode() & Integer.MAX_VALUE
 
 ## 结论
 
-- **架构层（P2P + 每端多核 + 只传按键 + 握手期整份 savestate）我们是对的**，也是三端已经跑通的部分。
-- **协议层还没有照抄**：`0/9` 语义反了、`5` 当成了 ack、`type 6` 后没有 reset、注册体长度不对、
-  槽位表是另一套。这五条里任何一条都会让"与官方客户端互通"失败，其中 C1 会让官方客户端
-  **行为异常**（倍速被按键掩码劫持），不只是"不同步"。
-- 照抄率（52 条）：**✅12 / ⚠️26 / ❌缺失 6 / ❌不一致 8**；
-  "逐字节互通"口径 **23%**，"行为等价"口径 **73%**。
-- 与 PC 侧的分歧集中在 `0/9/5` 三行（见 §0.4 的判定实验）；**实验之前不要把这三行标成"已对齐"**。
-- 修复顺序建议：**C1 → C2 → C3 → C4 → C5**（半天量级、互相独立、都可抓包验证），
-  再动 C8/C9（状态机与槽位，需回归 4 核）。
+**协议层已按字节码真值收敛（2026-11-15 01:1x）**
+
+- `0 = 按键 / 9 = 速度 / 5 = 重置`：三端已落地（C1/C2/C3），每秒 fps 帧已删、13 号只留接收兼容。
+- `type 6` 载入后**不复位**（C4）：三端一致、有意偏离，已闭环；官方 `reset(false)` 的语义无法复现，
+  照抄会 `memset` 掉 EWRAM/IWRAM —— 这条已在代码与本文里都写了"勿修回去"。
+- `type 6` 失败即断链并区分 `3 / 1`（C5）、注册帧恒 16 字节（C6）、`type 2` 三端都发（C7）：均已闭环。
+
+**照抄率（52 条）**：`✅19 / ⚠️27 / ❌缺失 3 / ❌不一致 3`；
+"逐字节互通"口径 **37%**，"行为等价"口径 **88%**。
+
+**验证边界（对外表述请带上）**：iOS 只过 `swiftc -parse`，未编译未真机；PC/Android 蓝牙只有编译验证（无适配器）；
+PC 的 `dual` 同一二进制 5 跑 3 次无诊断退出、`bus test.gba 4` 失败（SIOMULTI0=ffff），属 harness/4P 既有状态，
+所以 **4 人房不可宣称"已验证"**。`buslocal`、`frames`（FRAMES/KCP/RECONNECT/TCPDIRECT）是稳定门禁。
+
+**剩余 6 条（都不阻塞三端互通，只影响与官方客户端在特定场景的完全一致）**
+
+| # | 差异 | 影响面 | 建议 |
+|---|---|---|---|
+| 9 | `type 3` 在官方是"rtt + 载入指令 / 空 ack / 稳态玩家3键"三重语义，我们只当 ready+RTT | 与官方客户端首连时的载入时序 | C8，需按阶段重构，风险中 |
+| 34 | 槽位映射：官方 `A2egSU(pc,index)` 表 vs 我们"除本机升序" | 3/4 人房谁控哪颗粒 | C9，改动小但要回归 4 核 |
+| 46 | `type 7`（本机可见核按键）我们用自研 14 号 | 无（APK 内无发送方） | 可不动 |
+| 20 | `type 1` 空体（=断开）我们不发，直接关 socket | 对端看到 EOF，语义等价 | 可不动 |
+| 39 | `type 9` 倍速只记录、未改帧闸 | 倍速不同步（不影响按键） | C11，锦上添花 |
+| 45 | `type 8`（每帧推进次数）未实现 | 无（中继/多对端场景） | 可不动 |
+
+**下一步**：三端已没有"必须改"的项了（C6 是最后一条，已闭环）。若继续，建议顺序 **C9（槽位表，需 4 核回归）→ C11（倍速生效）→ C8（type3 阶段二义）**；
+C8/C9 都要动状态机/核布局，务必先跑 `buslocal`/`frames`/`dual` 再合。

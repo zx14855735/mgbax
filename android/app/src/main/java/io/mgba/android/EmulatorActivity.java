@@ -2282,8 +2282,12 @@ public class EmulatorActivity extends AppCompatActivity {
                 int code = set.applyRemoteState(state);
                 if (code != GBoyConsoleSet.STATE_OK) {
                     /* 官方 B25kr6:148-152：-5 → 3（尺寸不符），其它非 0 → 1，
-                     * 非 0 直接断链。这里至少把错误码打出来，别再静默继续跑。 */
-                    Log.w(TAG, "local link TYPE_STATE rejected code=" + code);
+                     * 非 0 直接断链。 */
+                    Log.w(TAG, "local link TYPE_STATE rejected code=" + code + ", closing link");
+                    GBoySocketLink link = localLink;
+                    if (link != null) {
+                        link.close();
+                    }
                 }
             }
 
@@ -4939,7 +4943,14 @@ public class EmulatorActivity extends AppCompatActivity {
                         } else {
                             int stateCode = set.applyRemoteState(state);
                             if (stateCode != GBoyConsoleSet.STATE_OK) {
-                                Log.w(TAG, "TYPE_STATE rejected code=" + stateCode);
+                                /* 官方 B25kr6:148-152：load 失败（-5→3、其它→1）
+                                 * 会回一个 type 1 错误体并结束会话。我们不做那条
+                                 * 反向包，直接断链；对端读到 EOF 等价。 */
+                                Log.w(TAG, "TYPE_STATE rejected code=" + stateCode
+                                        + ", closing link");
+                                if (cloudLink != null) {
+                                    cloudLink.close();
+                                }
                             }
                         }
                     });
@@ -4947,6 +4958,13 @@ public class EmulatorActivity extends AppCompatActivity {
 
                 @Override
                 public void onRemoteReset() {
+                    /* 官方 type 5 = 重置：可见核 + 所有镜像核（p2.txt:379e76-379ec8）。
+                     * 镜像核不能让 UI 线程直接 reset（mgbaMobileReset 不取核心锁），
+                     * 只置请求，由各自的镜像线程在帧边界执行。 */
+                    GBoyConsoleSet set = consoleSet;
+                    if (set != null) {
+                        set.requestMirrorResets();
+                    }
                     runOnUiThread(() -> {
                         if (core != null && core.isLoaded()) {
                             core.reset();

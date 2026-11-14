@@ -100,14 +100,10 @@ public final class GBoyConsoleSet {
     /* 调试用：置位时镜像线程在锁外暂停，好让别的线程安全地给镜像核存档
      * （「隐藏镜像核到底走到哪一步」只能把它的状态倒出来在 PC 上回放看）。 */
     private volatile boolean mirrorHold;
-    /* TYPE_RESET(5) 与「type 6 载入成功后复位」都要动镜像核，而
-     * mgbaMobileReset 不取核心锁（mgba_mobile.c:4861），从 UI/网络线程直接
-     * reset 会和镜像线程的 runFrames 抢同一个 core。所以只置标志，由每颗
-     * 镜像线程在帧边界自己复位。 */
+    /* 官方 type 5（重置游戏）要动镜像核，而 mgbaMobileReset 不取核心锁
+     * （mgba_mobile.c:4861），从 UI/网络线程直接 reset 会和镜像线程的
+     * runFrames 抢同一个 core。所以只置标志，由每颗镜像线程在帧边界自己复位。 */
     private boolean[] mirrorReset;
-    /* 同一时刻也要复位可见核（官方 B25kr6:156-157 是可见核 + 对端核各一次）。
-     * 可见核由模拟线程独占，这里只留请求，交给 emulationLoop 消费。 */
-    private volatile boolean visibleResetRequested;
     /* 本机对端存档的字节数：官方 loadStateFromMemory 用 -5 表示「尺寸不符」，
      * 我们的 JNI 只回 boolean（jni_bridge.cpp:250-269），失败时用这个长度
      * 区分「尺寸不符(3)」和「其它错误(1)」。 */
@@ -186,7 +182,6 @@ public final class GBoyConsoleSet {
         mirrorThreads = new Thread[count];
         mirrorFrames = new long[count];
         mirrorReset = new boolean[count];
-        visibleResetRequested = false;
 
         /* 整轮联机只取一次初始存档：两次 start() 之间游戏可能保存并写回
          * 电池存档，重读会得到不同进度（实测 mirror1 与 mirror2/3 分叉，
@@ -634,10 +629,17 @@ public final class GBoyConsoleSet {
      *
      * <p>载入本身在这里同步做：{@code mgbaMobileLoadStateFromMemory} 与
      * {@code mgbaMobileRunFrames} 共用同一把核心锁（mgba_mobile.c:4816 /
-     * 4146），和镜像线程并发是安全的；载入后官方 {@code B25kr6:156-157} 会
-     * 复位可见核 + 对端核，而 {@code mgbaMobileReset} 不取锁，所以复位只能
-     * 置请求、由各自线程在帧边界执行（见 {@link #takeVisibleResetRequest()}
-     * 与 mirrorLoop）。</p>
+     * 4146），和镜像线程并发是安全的。</p>
+     *
+     * <p><b>载入成功不能复位</b>。官方 {@code B25kr6:156-157} 在 load 之后调
+     * {@code reset(false)}，是因为它的 {@code loadStateFromMemory} 只回灌电池
+     * 存档；我们的 native 走 {@code mCoreLoadStateNamed}，而它<b>无条件</b>执行
+     * {@code core->loadState(core, state)}（src/core/serialize.c:538-546，
+     * flags 只筛截图/电池存档/RTC/金手指），CPU 与 WRAM 都在这次载入里恢复。
+     * 此时照抄 reset 会把刚载入的进度清零（{@code mgbaMobileReset} →
+     * {@code GBAReset} → {@code GBAMemoryReset}，src/gba/memory.c:219-228），
+     * 两端都停在开机画面。所以「我们的 load」与「官方的 savedata+reset」等价，
+     * 复位这一步必须省略。</p>
      */
     public int applyRemoteState(byte[] state) {
         if (mirrors == null || mirrors.length == 0 || state == null || state.length == 0) {
@@ -657,19 +659,19 @@ public final class GBoyConsoleSet {
             return sizeMismatch ? STATE_SIZE_MISMATCH : STATE_ERROR;
         }
         stateSizeHint = state.length;
-        android.util.Log.i("mGBA-App", "applied peer state bytes=" + state.length
+        android.util.Log.i("mGBA-App", "peer state loaded (no reset) bytes=" + state.length
                 + " index=0 slot=" + mirrorSlotFor(localSlot, players, 0));
-        /* 官方载入成功后复位两颗粒：镜像核各自在帧边界复位，可见核交给模拟线程。 */
-        requestMirrorResets();
-        visibleResetRequested = true;
+        /* 载入成功后**不要复位**：官方 B25kr6:156-157 的 reset(false) 对应的是
+         * 「只回灌电池存档」那套 native；我们的 mCoreLoadStateNamed 会连 CPU/WRAM
+         * 一起恢复（src/core/serialize.c:541 无条件 core->loadState），再 reset
+         * 等于把刚灌进去的进度清零，两端一起停在开机画面。 */
         return STATE_OK;
     }
 
     /**
-     * 请求所有镜像核在各自的帧边界复位（官方 {@code AYUAbz} case 5 / case 6
-     * 都对每颗镜像核调 {@code reset(false)}）。可见核的复位由调用方负责：
-     * TYPE_RESET 走 UI 线程那条现有路径，type 6 载入则用
-     * {@link #takeVisibleResetRequest()}。
+     * 请求所有镜像核在各自的帧边界复位（官方 {@code AYUAbz} case 5 对每颗镜像核
+     * 调 {@code reset(false)}，即用户主动「重置游戏」）。可见核的复位由调用方
+     * 负责（模拟线程）。**type 6 载入成功不走这里**（见 applyRemoteState）。
      */
     public void requestMirrorResets() {
         synchronized (lock) {
@@ -678,15 +680,6 @@ public final class GBoyConsoleSet {
             }
             lock.notifyAll();
         }
-    }
-
-    /** 模拟线程取走「可见核复位」请求（type 6 载入成功后由官方语义触发）。 */
-    public boolean takeVisibleResetRequest() {
-        if (!visibleResetRequested) {
-            return false;
-        }
-        visibleResetRequested = false;
-        return true;
     }
 
     /** 镜像线程取走自己的复位请求。 */
@@ -803,7 +796,7 @@ public final class GBoyConsoleSet {
             if (state != State.READY) {
                 return;
             }
-            /* 复位请求（type 5，或 type 6 载入成功后）：只在本线程的帧边界做。
+            /* 复位请求（官方 type 5 = 重置游戏）：只在本线程的帧边界做。
              * mgbaMobileReset 不取核心锁，别的线程直接调会和 runFrames 抢核。 */
             if (takeMirrorReset(index)) {
                 MgbaCore target = mirrors == null ? null : mirrors[index];

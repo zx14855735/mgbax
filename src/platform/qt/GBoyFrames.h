@@ -38,9 +38,14 @@ static constexpr quint32 maxFrameLength = 16u * 1024u * 1024u;
 /* 帧类型号**必须和官方客户端一致**（KpHwm4.B25kr6 的 ARc23Z 调用）。
  *
  * 官方用的是 0/1/2/3/5/6/9，中间空号不是笔误：4 与 7/8 在官方里没有被
- * 使用，我们早先把它们占成「槽位按键」后，0 被当成按键、9 被当成 FPS，
- * 与官方的语义正好错位（官方 0 = 节奏/帧率上限，9 = 按键掩码）。这样
- * 一来自家两端能通、却与官方客户端互不相认，而且 iOS 又是第三套编号。
+ * 使用（4 只在多对端的按键分发里当槽位下标出现）。
+ *
+ * 2026-11-15 逐字节复核（tmp_gboy_apk/NETPLAY_AUDIT.md §0）推翻了旧文档：
+ *   0 = **按键掩码**（D8MqeW.run 每 5 帧发一次；AYUAbz 的 case 0 → setKeys）
+ *   9 = **速度倍率**（倍速菜单 → B25kr6.AZOQYO；case 9 → 改帧闸）
+ *   5 = **reset**（EmulatorActivity:1333 发；case 5 → 可见核 + 全部镜像核 reset）
+ * 官方**没有**帧率/pacing 消息，也没有 ready-ack。早先按旧文档把 0 当帧率、
+ * 9 当按键，等于把整条输入通道的语义反了。
  *
  * 现在：0..9 严格照抄官方；我们自己的多槽位扩展一律放到 11 以上。
  */
@@ -119,7 +124,7 @@ QByteArray stateOf(const QByteArray& body);
  * handshake completes: type 1, body {@code int32 playerCount}; the official
  * {@code AmA8tU.A5SV6n:173-178} appends {@code short 0 + int32 baseStateCount}
  * only when {@code playerCount == 1}, so a multiplayer room frame is 10 bytes
- * on the wire and a one-player frame is 18 bytes.
+ * on the wire and a one-player frame is 16 bytes.
  */
 QByteArray registerFrame(int playerCount, int baseStateCount);
 

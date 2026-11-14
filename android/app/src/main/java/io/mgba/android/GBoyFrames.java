@@ -74,7 +74,8 @@ final class GBoyFrames {
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
     static final int TYPE_INPUT_2 = 11;
     static final int TYPE_INPUT_4 = 12;
-    /** 旧版复位号（已并入官方 5）；仅接收侧兼容一段时间，发送一律用 5。 */
+    /** 旧版复位号（官方 5 之前我们用的 13）；只接收兼容，发送一律用 5。
+     *  PC / iOS 同样保留 13，三端对旧客户端都能复位。 */
     static final int TYPE_RESET_LEGACY = 13;
     static final int TYPE_KEYS_LOCAL = 14;
     static final int TYPE_COUNTER = 15;
@@ -119,17 +120,21 @@ final class GBoyFrames {
      *   type 1, body: int playerCount, short 0, int baseStateCount
      * </pre>
      *
-     * The body is always ten bytes long - the official client allocates
-     * {@code ARc23Z((short) 1, 10)} and only fills the trailing six bytes when
-     * more than one player is present.
+     * The body is always ten bytes long — the official client allocates
+     * {@code ARc23Z((short) 1, 10)} and the sender writes the whole backing
+     * array, so the frame stays 16 bytes on the wire even when the trailing
+     * six bytes are left as zeros. Only {@code playerCount == 1} fills
+     * {@code short 0 + int listSize} (AmA8tU.java:173-178).
      */
     static byte[] registerFrame(int playerCount, int baseStateCount) {
         byte[] out = new byte[16];
         putInt(out, 0, 12);
         putShort(out, 4, TYPE_REGISTER);
         putInt(out, 6, playerCount);
-        putShort(out, 10, 0);
-        putInt(out, 12, baseStateCount);
+        if (playerCount == 1) {
+            putShort(out, 10, 0);
+            putInt(out, 12, baseStateCount);
+        }
         return out;
     }
 

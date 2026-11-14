@@ -33,7 +33,8 @@ enum LobbyFrames {
     /*
      * 类型号按官方**字节码**逐条核对（tmp_gboy_apk/NETPLAY_AUDIT.md §0、
      * .workbuddy/gboy/dd/p1/p2.txt）：
-     *   0 按键 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 复位 / 6 状态 / 9 倍速。
+     *   0 按键 / 1 握手 / 2 名字 / 3 就绪+RTT / 5 复位 / 6 状态 / 9 倍速 /
+     *   10 断开通知。
      *
      * 关键更正（曾经的错表把 0 当帧率、9 当按键、5 当 ready-ack）：
      *   - `KpHwm4/B25kr6.AYUAbz` 的 packed-switch：case 0 → `peer.BI9f7h.setKeys(getInt())`
@@ -66,6 +67,8 @@ enum LobbyFrames {
     static let typeState = 6
     /// 官方 9：模拟速度倍率（int32：1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
     static let typeSpeed = 9
+    /// 官方 10：断开通知（无 payload；`AYUAbz` case 10 → UI msg 2）。
+    static let typeDisconnect = 10
 
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
 
@@ -139,16 +142,25 @@ enum LobbyFrames {
     /// The registration frame the official client sends right after the KCP
     /// handshake completes:
     ///
-    ///     type 1, body: int playerCount, short 0, int baseStateCount
+    ///     type 1, body: int playerCount [, short 0, int baseStateCount]
     ///
-    /// The body is always ten bytes long.
+    /// **线上恒 16 字节、长度字段恒 12**：官方 `B25kr6.ARc23Z(1, 10)` 分配的是
+    /// `10 + 6 = 16` 字节并把长度写成 12，发送线程 `A5SV6n` 调的是
+    /// `outputStream.write(byteBuffer.array())` —— 写整个 backing array，与
+    /// position/limit 无关。`AmA8tU:173-178` 的 `if (playerCount == 1)` 只决定
+    /// 尾部那 6 字节**填不填**（填 `short 0 + int listSize`，不填就是 0），
+    /// **不决定发不发**。所以 pc≠1 是「16 字节、尾部 6 个 0」，不是 10 字节的帧。
+    /// 与 PC `GBoyFrames::registerFrame` / Android `GBoyFrames.registerFrame`
+    /// 逐字节一致（AUDIT C6 / B 表第 19 行）。
     static func registerFrame(playerCount: Int32, baseStateCount: Int32) -> Data {
         var out = [UInt8](repeating: 0, count: 16)
         putInt(&out, 0, 12)
         putShort(&out, 4, typeRegister)
         putInt(&out, 6, playerCount)
-        putShort(&out, 10, 0)
-        putInt(&out, 12, baseStateCount)
+        if playerCount == 1 {
+            putShort(&out, 10, 0)
+            putInt(&out, 12, baseStateCount)
+        }
         return Data(out)
     }
 

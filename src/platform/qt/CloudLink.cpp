@@ -1791,7 +1791,8 @@ void CloudLink::closeSio() {
  *
  *   本机：可见核 linkHost(127.0.0.1:P) ← 镜像核 linkJoin —— SIO 完全本地，
  *         游戏内联机（有线俱乐部/对战）就是两颗本地核在跑，零网络锁步
- *   网络：每 5 帧(12Hz)一把按键掩码 + 1Hz FPS + 一把 TYPE_STATE 开局快照
+ *   网络：每 5 帧(12Hz)一把按键掩码（type 0）+ 一把 TYPE_STATE 开局快照
+ *         （官方没有 FPS/pacing 消息；type 9 只是倍速菜单，不在本循环发）
  *
  * 镜像核由 GBoyMirror 自己的线程推进（60fps，pumpLink 每帧），本地按键由
  * 前端的 pump 定时器喂进 m_localKeys，远端按键经 GBoyLinkSession 12Hz 采样
@@ -1823,7 +1824,18 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 	}
 	m_mirrorSioPort = port;
 	GBoyLinkSession::Events events;
-	events.onReset = [this]() { emit remoteReset(); };
+	events.onReset = [this]() {
+		/* 官方 type 5（EmulatorActivity.BmvVmW:1333 → 接收侧 case 5）：
+		 * reset(false) 本机可见核，并遍历所有镜像核 reset(false)。
+		 * 镜像核的 reset 落在自己的帧边界（GBoyMirror::requestReset），
+		 * 可见核走 GUI 线程上的 CoreController::reset（remoteReset 的既有连接）。 */
+		for (int i = 0; i < MIRROR_COUNT; ++i) {
+			if (m_mirrors[i]) {
+				m_mirrors[i]->requestReset();
+			}
+		}
+		emit remoteReset();
+	};
 	events.onState = [this](const QByteArray& state) {
 		/* 官方语义（GBoy KpHwm4.B25kr6:144-152）：type 6 的 savestate 只灌进
 		 * 「代表那个玩家的控制台」。本机布局是可见核 slot 1 + 镜像核 slot 2/3/4
@@ -1834,11 +1846,36 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		 * 它们的进度覆盖成对端的，四人子状态立刻分裂 —— Android 老版本
 		 * 「灌全部镜像核」就是这么坏的。 */
 		const int kPeerMirror = 0; // 槽位 2
-		if (m_mirrors[kPeerMirror] && m_mirrors[kPeerMirror]->applyRemoteState(state)) {
+		GBoyMirror* mirror = m_mirrors[kPeerMirror];
+		if (!mirror) {
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE dropped (no mirror console)"));
+			return;
+		}
+		/* 返回值是官方 type 6 的错误码：-5 尺寸不符、1 参数非法、0 已入队。
+		 * 真正的载入在镜像线程的帧边界做，结果走回调（0 / -5 / 1）。 */
+		int queued = mirror->applyRemoteState(state, [this](int result) {
+			if (result == 0) {
+				GbCloud::debugLog(QStringLiteral("TYPE_STATE loaded into mirror slot 2"));
+				/* 官方 B25kr6:156-157 在 load 之后对两颗粒做 reset(false)，但
+				 * 那是 libgboy 的 native 软复位；我们的 mgbaMobileReset 走
+				 * GBAReset → GBAMemoryReset 会 memset 掉 EWRAM 256K + IWRAM 32K，
+				 * 等于把刚载入的存档冲掉（实测现象：握手成功但两边停在开机画面）。
+				 * 所以这里**不复位**：type 6 只负责载入，复位只由 type 5 触发。 */
+			} else {
+				GbCloud::debugLog(QStringLiteral("TYPE_STATE rejected by mirror (code %1)")
+				                          .arg(result));
+				/* 官方 -5 → 3、其它非 0 → 1，失败即断链。留到 serve 循环里
+				 * 统一收口，避免在镜像线程直接拆链路。 */
+				m_mirrorStateError.store(result, std::memory_order_relaxed);
+			}
+		});
+		if (queued == 0) {
 			GbCloud::debugLog(QStringLiteral("TYPE_STATE queued for mirror slot 2 (%1 bytes)")
 			                          .arg(state.size()));
 		} else {
-			GbCloud::debugLog(QStringLiteral("TYPE_STATE dropped (no mirror console)"));
+			GbCloud::debugLog(QStringLiteral("TYPE_STATE rejected before queue (code %1, %2 bytes)")
+			                          .arg(queued).arg(state.size()));
+			m_mirrorStateError.store(queued, std::memory_order_relaxed);
 		}
 	};
 	events.onReady = [this]() { status(QStringLiteral("对方已就绪")); };
@@ -1941,10 +1978,9 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	// 节拍，等价安卓的 onLocalFrame 帧驱动），GBoyLinkSession 内部每 5 帧
 	// 发一把本地按键并采样一把远端按键——正是官方客户端的 cadence。
 	//
-	// 节拍受官方 type 0 的帧率上限约束：官方收到 type 0 后写
-	// `AaHO0E.f4302AZkASS`（AzWtSf:174-179 / AmA8tU:213-221），帧循环按
-	// `1000/fps` 排下一帧。我们照抄这个语义，把固定 16ms 换成动态节拍；
-	// 没收到过（-1）或数值非法（<5 或 >240）时保持 60fps = 16ms。
+	// 节拍固定 16ms（60fps）：官方没有任何「帧率下发」消息（逐字节复核见
+	// NETPLAY_AUDIT §0：type 0 是按键、type 9 才是倍速菜单），所以这里不按
+	// 网络值改节拍；倍速只影响官方客户端自己的帧闸。
 	qint64 lastTick = 0;
 	qint64 lastAdvertise = 0;
 	// 每分钟一次的会话自检：对端按键积压/掉帧从会话里捞出来打日志。
@@ -2008,6 +2044,14 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
 			m_gboySession->sendReset();
 		}
+		/* 官方 type 6 失败即断链：-5（尺寸不符）对应错误码 3，其它对应 1。
+		 * 镜像核在帧边界载入后写标记，这里在主循环收口。 */
+		if (int stateError = m_mirrorStateError.exchange(0, std::memory_order_relaxed)) {
+			fail(stateError == -5
+			     ? QStringLiteral("对端存档尺寸不符（错误码 3），连接已断开")
+			     : QStringLiteral("对端存档载入失败（错误码 1），连接已断开"));
+			break;
+		}
 		// Host side: keep the signalling socket alive and re-broadcast the
 		// relay endpoint (same duty cycle as the merged-keys serve()).
 		if (m_isAdvertising && m_session && !m_tunnelUp && now - lastAdvertise >= 2000) {
@@ -2045,6 +2089,7 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 void CloudLink::stopOfficialMatch() {
 	/* 下一次连接必须重新走「镜像就绪 → 写文件 → 四核同时起跑」；残留的
 	 * nav_at 会让可见核在镜像核创建之前就独自开跑，四核相位错开。 */
+	m_mirrorStateError.store(0, std::memory_order_relaxed);
 	const QString scriptDir = QString::fromLocal8Bit(qgetenv("MGBAX_SCRIPT_DIR"));
 	if (!scriptDir.isEmpty()) {
 		QFile::remove(scriptDir + QStringLiteral("/nav_at"));
@@ -2236,7 +2281,8 @@ void CloudLink::handle(const QByteArray& body) {
 		// See m_remoteKeysEnabled: keep receiving the frame (the relay uses it
 		// to confirm the peer is alive) but never feed it to our own core.
 		emit remoteKeys(m_remoteKeysEnabled ? keys : 0);
-	} else if (type == GBoyFrames::TYPE_RESET) {
+	} else if (type == GBoyFrames::TYPE_RESET || type == GBoyFrames::TYPE_RESET_LEGACY) {
+		/* 官方 5 = 复位；13 是旧版我们自己的号，继续认。 */
 		emit remoteReset();
 	} else if (type == GBoyFrames::TYPE_STATE) {
 		// The SIO relay bridge also uses type 6 with a raw netLink packet and

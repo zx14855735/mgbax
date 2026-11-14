@@ -1,7 +1,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-import Compression
 import CryptoKit
 import Darwin
 import Foundation
@@ -22,6 +21,7 @@ import Foundation
  *   5 RESET     u16 type + int32 0；复位全部核。
  *   6 STATE     u16 type + u32 size + 整份 mGBA 即时存档。
  *   9 SPEED     u16 type + int32 倍率（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。
+ *  10 DISCONNECT u16 type；对端通知断开（AYUAbz case 10 → UI msg 2）。
  *  13 RESET_OLD u16 type；自家旧版复位号，收到同样执行复位（只发 5）。
  * 100 RECONNECT u16 type + int32 rtt（裸 10 字节，AmA8tU.ARc23Z(Socket)）。
  *
@@ -77,6 +77,8 @@ final class GBoyLink {
     private static let msgState = 6
     /// 官方 9：模拟倍速（B25kr6.AZOQYO，调用者是倍速菜单）。
     private static let msgSpeed = 9
+    /// 官方 10：断开通知（AYUAbz case 10 → UI msg 2）。无 payload。
+    private static let msgDisconnect = 10
     /// 自家旧版复位号，保留兼容（只收不发）。
     private static let msgResetLegacy = 13
     /// 官方断线重连握手（AmA8tU.ARc23Z(Socket):263-272）：type 100 + int32 rtt。
@@ -428,7 +430,37 @@ final class GBoyLink {
         }
 
         try send(fd, Self.frame(Self.msgReady))
-        _ = try nextFrame(fd, want: Self.msgReady)
+        /* 官方服务端（B25kr6.A4TApA）只读我们的 type 3、**从不回发**（AUDIT C8），
+         * 所以这一步是可选的：等不到 ack 就继续握手，不能把已握好的链路判死。
+         * 期间到达的 type 6 说明对端直接进了存档交换 —— 回推给 readState()。
+         *
+         * 用 select() 等 2 秒而不是改 SO_RCVTIMEO：读超时会吃掉半帧头把后续
+         * 字节错位成帧头（见 tune() 里 keepalive 那段说明），而这里对端可能
+         * 一个字节都不发，不能为了一次可选等待冒这个险。 */
+        let readyDeadline = Date().addingTimeInterval(2)
+        while Self.waitReadable(fd, until: readyDeadline) {
+            let frame = try readFrame(fd)
+            let messageType = Self.type(frame)
+            if messageType == Self.msgReady {
+                let rtt = Self.intValue(frame)
+                if rtt >= 0 {
+                    lock.lock()
+                    lastRttValue = rtt
+                    lock.unlock()
+                }
+                break
+            }
+            if messageType == Self.msgState {
+                pushedBackFrame = frame
+                break
+            }
+            if messageType == Self.msgKeys || messageType == Self.msgSpeed
+                || messageType == Self.msgReset || messageType == Self.msgResetLegacy
+                || messageType == Self.msgReconnect {
+                continue
+            }
+            throw LinkError(message: "对方不是联机大厅会话")
+        }
 
         /* type 6 双向交换，而且是**照抄官方**的用法：收到的存档要灌进
          * 「代表对端那个玩家」的镜像核，不是收下就扔。以前这里把对端存档
@@ -493,6 +525,11 @@ final class GBoyLink {
                     // 官方 5 = 复位全部核（EmulatorActivity:1333 / AYUAbz case 5）；
                     // 13 是自家旧版号，一并接受。
                     onRemoteReset()
+                } else if messageType == Self.msgDisconnect {
+                    // 官方 10 = 对端通知断开（AYUAbz case 10 → UI msg 2，无 payload）。
+                    // 与读到 EOF 走同一条收尾：关会话、报状态，不当作错误弹窗。
+                    drop(session, "对方已断开（type 10）")
+                    return
                 } else if messageType == Self.msgSpeed {
                     // 官方 9 = 倍速（AYUAbz case 9 → AaHO0E.AZkASS + 重算帧闸）。
                     let speed = Int(Self.intValue(frame))
@@ -583,6 +620,8 @@ final class GBoyLink {
         currentFd = fd
         currentGeneration += 1
         sessionClosedFlag = false
+        // 新会话：上一代握手没消费掉的回推帧不能漏进来（它属于旧连接）。
+        pushedBackFrame = nil
         let session = Session(fd: fd, generation: currentGeneration)
         lock.unlock()
         return session
@@ -614,6 +653,22 @@ final class GBoyLink {
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, socklen_t(MemoryLayout<Int32>.size))
         var interval: Int32 = 1
         setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    /// 等 `fd` 可读（不消费任何字节），最多到 `deadline`。`true` = 有数据可读。
+    /// 给「可选的握手步骤」加一个短窗口，同时不碰 SO_RCVTIMEO（读超时会吃掉
+    /// 半帧头，把后续字节错位成帧头）。
+    private static func waitReadable(_ fd: Int32, until deadline: Date) -> Bool {
+        let remaining = deadline.timeIntervalSinceNow
+        if remaining <= 0 {
+            return false
+        }
+        var set = fd_set()
+        fdZero(&set)
+        fdSet(fd, &set)
+        var tv = timeval(tv_sec: Int(remaining),
+                         tv_usec: Int32((remaining - Double(Int(remaining))) * 1_000_000))
+        return select(fd + 1, &set, nil, nil, &tv) > 0
     }
 
     private static func clearTimeouts(_ fd: Int32) {
@@ -874,7 +929,10 @@ final class GBoyLink {
             if messageType == want {
                 return frame
             }
-            if messageType == Self.msgReconnect || messageType == Self.msgSpeed {
+            if messageType == Self.msgReconnect || messageType == Self.msgSpeed
+                || messageType == Self.msgReady {
+                // 迟到的 type 3 ack（C8：可选 ack 只等 2 秒）与重连/倍速一样
+                // 属于「握手噪声」，吞掉继续等目标帧。
                 continue
             }
             if messageType != Self.msgKeys && messageType != Self.msgReset
@@ -906,7 +964,10 @@ final class GBoyLink {
                 guard size > 0, frame.count >= 6 + size else { return nil }
                 return Array(frame[6..<(6 + size)])
             }
-            if messageType == Self.msgReconnect || messageType == Self.msgSpeed {
+            if messageType == Self.msgReconnect || messageType == Self.msgSpeed
+                || messageType == Self.msgReady {
+                // 迟到的 type 3 ack（C8：可选 ack 只等 2 秒）与重连/倍速一样
+                // 属于「握手噪声」，吞掉继续等目标帧。
                 continue
             }
             if messageType != Self.msgKeys && messageType != Self.msgReset
@@ -920,7 +981,21 @@ final class GBoyLink {
         frame.count < 2 ? -1 : Int(frame[0]) << 8 | Int(frame[1])
     }
 
+    /**
+     * 一帧回推缓冲（握手期专用）。
+     *
+     * 「等 type 3 的 ack」是可选的（AUDIT C8）：官方服务端只读我们的 3，从不
+     * 回发。等待期间若对端直接开始发 type 6，这帧不能丢 —— 放回这里，后面的
+     * `readState()` 会原样读到它，否则对端存档会被握手吞掉。
+     * 只在 session() 之前（握手线程、单线程）读写，不需要加锁。
+     */
+    private var pushedBackFrame: [UInt8]?
+
     private func readFrame(_ fd: Int32) throws -> [UInt8] {
+        if let frame = pushedBackFrame {
+            pushedBackFrame = nil
+            return frame
+        }
         let header = try Self.readFully(fd, 4)
         let len = Int(header[0]) << 24 | Int(header[1]) << 16 | Int(header[2]) << 8 | Int(header[3])
         if len < 0 || len > 32 * 1024 * 1024 {
@@ -1009,43 +1084,12 @@ final class GBoyLink {
         return frame
     }
 
-    /**
-     * zlib-format deflate: Java's Deflater (and GBoy's Inflater) expect the
-     * two-byte zlib header and the trailing Adler-32, while the system
-     * Compression framework only produces raw deflate streams.
-     */
-    private static func zlibCompress(_ raw: Data) -> Data {
-        var dst = Data(count: raw.count + 128)
-        let written = dst.withUnsafeMutableBytes { (dstRaw: UnsafeMutableRawBufferPointer) -> Int in
-            raw.withUnsafeBytes { (srcRaw: UnsafeRawBufferPointer) -> Int in
-                guard let dstBase = dstRaw.baseAddress, let srcBase = srcRaw.baseAddress, srcRaw.count > 0 else { return 0 }
-                return compression_encode_buffer(dstBase.assumingMemoryBound(to: UInt8.self), dstRaw.count,
-                                                 srcBase.assumingMemoryBound(to: UInt8.self), srcRaw.count,
-                                                 nil, COMPRESSION_ZLIB)
-            }
-        }
-        guard written > 0 else { return raw }
-        var out = Data([0x78, 0x9C])
-        out.append(dst.prefix(written))
-        let sum = adler32(raw)
-        out.append(UInt8((sum >> 24) & 0xFF))
-        out.append(UInt8((sum >> 16) & 0xFF))
-        out.append(UInt8((sum >> 8) & 0xFF))
-        out.append(UInt8(sum & 0xFF))
-        return out
-    }
-
-    private static func adler32(_ data: Data) -> UInt32 {
-        var a: UInt32 = 1
-        var b: UInt32 = 0
-        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            for index in 0..<raw.count {
-                a = (a + UInt32(raw[index])) % 65521
-                b = (b + a) % 65521
-            }
-        }
-        return (b << 16) | a
-    }
+    /* 这里曾有 zlibCompress()/adler32()：给 type 6 的存档做 zlib 压缩（手动补
+     * 两字节 zlib 头 + Adler-32），因为早期 stateFrame() 发的是压缩包。现在
+     * type 6 直接发 mGBA 的原始即时存档（官方 AZkASS:194 也是 int32 长度 +
+     * 原样 blob，不压缩），这两个函数已无调用方，删除以免有人误接回去。
+     * 注意：Zip.swift 里的 inflate 仍用 COMPRESSION_ZLIB，那一处是按 CRC 试
+     * 「带/不带 zlib 头」两种解码，各平台的实测口径不同，与联机协议无关。 */
 
     private static func message(_ error: Error) -> String {
         (error as? LinkError)?.message ?? "联机大厅连接失败"

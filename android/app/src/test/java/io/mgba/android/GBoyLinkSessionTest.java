@@ -63,7 +63,7 @@ public final class GBoyLinkSessionTest {
         readyHandshake();
         resetAndStateRoundTrip();
         readerAcceptsLargeStateFrames();
-        counterAndFps();
+        counterAndSpeed();
         backPressureDropsOldest();
         registrationAndSocketHandshake();
         rejectsBadConfiguration();
@@ -277,15 +277,15 @@ public final class GBoyLinkSessionTest {
                 "truncated state is rejected");
     }
 
-    private static void counterAndFps() {
+    private static void counterAndSpeed() {
         fresh();
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_COUNTER, 77), 2);
-        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_FPS, 59), 2);
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_SPEED, 59), 2);
         check(session.remoteCounter() == 77, "counter recorded");
-        check(session.remoteFps() == 59, "peer fps recorded");
-        session.sendFps(60);
+        check(session.remoteSpeed() == 59, "peer speed multiplier recorded");
+        session.sendSpeed(2);
         byte[] wire = sink.frames.get(sink.frames.size() - 1);
-        check(GBoyFrames.getShort(wire, 4) == GBoyFrames.TYPE_FPS, "fps frame type 9");
+        check(GBoyFrames.getShort(wire, 4) == GBoyFrames.TYPE_SPEED, "speed frame type 9");
     }
 
     private static void backPressureDropsOldest() {
@@ -352,11 +352,11 @@ public final class GBoyLinkSessionTest {
         check(Arrays.equals(GBoyLinkSession.stateOf(body), blob),
                 "large save-state payload decodes byte for byte");
 
-        byte[] small = GBoyFrames.frame(GBoyFrames.TYPE_FPS, 47);
+        byte[] small = GBoyFrames.frame(GBoyFrames.TYPE_SPEED, 2);
         reader.append(small, small.length);
         byte[] next = reader.next();
-        check(next != null && GBoyFrames.typeOf(next) == GBoyFrames.TYPE_FPS
-                        && GBoyFrames.intOf(next) == 47,
+        check(next != null && GBoyFrames.typeOf(next) == GBoyFrames.TYPE_SPEED
+                        && GBoyFrames.intOf(next) == 2,
                 "stream stays aligned after a large state frame");
     }
 

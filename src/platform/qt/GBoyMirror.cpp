@@ -212,8 +212,12 @@ void GBoyMirror::run() {
 			}
 		}
 		GBoyLinkSession* session = m_session;
-		/* 对端存档：只在帧边界载入。GBoy 的 case 6 也是「载入 → reset(false)
-		 * → arm SIO」，载入点永远落在一帧结束后，不会与正在执行的指令流抢。
+		/* 对端存档：只在帧边界载入，避免与正在执行的指令流抢。
+		 * 官方 case 6 是「载入 → reset(false)」，但官方的 reset 是 libgboy 的
+		 * native 软复位；我们的 mgbaMobileReset 走 GBAReset → GBAMemoryReset，
+		 * 会 memset 清掉 EWRAM 256K + IWRAM 32K —— load 已经完整恢复了状态，
+		 * 再 reset 等于把刚载入的存档抹掉（现象：握手成功却停在开机画面）。
+		 * 因此 type 6 **只载入不复位**，复位只由 type 5 / requestReset() 触发。
 		 * 载入结果按官方错误码（0 / -5 / 1）回调给 CloudLink，失败要断链。 */
 		QByteArray incoming;
 		std::function<void(int)> stateResult;
@@ -222,10 +226,7 @@ void GBoyMirror::run() {
 			                                             size_t(incoming.size()));
 			if (result == 0) {
 				m_appliedStates.fetch_add(1, std::memory_order_relaxed);
-				/* 官方 B25kr6:156-157：load 成功后立刻 reset 本核，否则新
-				 * 载入的 CPU 状态会从半帧处继续跑，画面比可见核慢一步。 */
-				mgbaMobileReset(m_emu);
-				qInfo().noquote() << QStringLiteral("[GBoyMirror] applied peer state %1 bytes slot %2 (reset)")
+				qInfo().noquote() << QStringLiteral("[GBoyMirror] applied peer state %1 bytes slot %2")
 				                            .arg(incoming.size()).arg(m_slot);
 			} else {
 				qInfo().noquote() << QStringLiteral("[GBoyMirror] peer state rejected (%1 bytes, code %2)")

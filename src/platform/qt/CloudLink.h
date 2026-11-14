@@ -186,6 +186,9 @@ private:
 	GBoyMirror* m_mirrors[MIRROR_COUNT] = {nullptr};
 	quint16 m_mirrorSioPort = 0;
 	long m_officialFrame = 0;
+	/** 镜像核载入对端 type 6 的结果（0 = 无错误；-5 = 尺寸不符；1 = 其它失败）。
+	 *  镜像线程写入，serveOfficial 循环在下一 tick 按官方语义断链。 */
+	std::atomic<int> m_mirrorStateError{0};
 
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;

@@ -238,7 +238,8 @@ public final class GBoyLinkSession {
                 break;
             }
             case GBoyFrames.TYPE_NAME: {
-                // 官方 2：32 字节定长名字 + int16 长度 + 描述串，只用于显示。
+                /* 官方 2（AZkASS:136）：32 字节定长 romHash + int16 长度 + ROM 名。
+                 * 只用于显示对端身份，和核对 ROM 是否一致无关（官方此步不校验）。 */
                 byte[] payload = GBoyFrames.payloadOf(body);
                 if (payload.length >= 34) {
                     int len = ((payload[32] & 0xFF) << 8) | (payload[33] & 0xFF);
@@ -249,9 +250,9 @@ public final class GBoyLinkSession {
                             break;
                         }
                     }
-                    String name = new String(payload, 0, end);
-                    String desc = new String(payload, 34, Math.min(len, payload.length - 34));
-                    events.onStatus("peer " + name + " (" + desc + ")");
+                    String hash = new String(payload, 0, end);
+                    String romName = new String(payload, 34, Math.min(len, payload.length - 34));
+                    events.onStatus("peer " + hash + " (" + romName + ")");
                 }
                 break;
             }
@@ -280,7 +281,8 @@ public final class GBoyLinkSession {
             }
             case GBoyFrames.TYPE_RESET:
             case GBoyFrames.TYPE_RESET_LEGACY:
-                // 官方 5 = 复位（EmulatorActivity.BmvVmW 发送）；13 是我们旧号，兼容接收。
+                // 官方 5 = 复位（EmulatorActivity.BmvVmW 发送，收端全核 reset）；
+                // 13 是我们旧号，仅接收兼容，发送永远用 5。
                 events.onReset();
                 break;
             case GBoyFrames.TYPE_STATE:

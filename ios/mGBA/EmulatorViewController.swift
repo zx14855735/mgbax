@@ -1157,6 +1157,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 var done = 0
                 while done < framesToRun {
                     let n = min(step, framesToRun - done)
+                    // 官方 type 5 的复位落点：可见核只能在这条线程、帧边界做
+                    // （镜像核由各自线程在自己的帧边界 reset）。
+                    if let set = consoleSet, set.takeVisibleReset() {
+                        mgbaMobileReset(core)
+                        mgbaMobileClearAudio(core)
+                    }
                     // 镜像帧钟：跑这一批前推高天花板，镜像追平即等（与
                     // Android 的 beginFrame/endFrame 同构）。
                     if let set = consoleSet, set.isReady {
@@ -1553,8 +1559,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             toast(ok ? "已读取即时存档 \(current)" : "没有即时存档 \(current)")
             DispatchQueue.main.async { self.refreshSlotButton() }
         } else if cmd == cmdReset {
-            mgbaMobileReset(core)
-            mgbaMobileClearAudio(core)
+            if let set = consoleSet, set.isReady {
+                /* 4 核房间要连镜像核一起复位：只复位可见核会让镜像停在旧的一幕，
+                 * SIO 立刻分叉（官方 type 5 收到后也是遍历所有核 reset）。可见核
+                 * 由帧循环在帧边界用 takeVisibleReset() 执行。 */
+                set.requestResetAll()
+            } else {
+                mgbaMobileReset(core)
+                mgbaMobileClearAudio(core)
+            }
             // The peer resets its own console to stay in sync.
             gboyLink?.sendReset()
             toast("已复位")
@@ -5950,6 +5963,20 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             lobbyLink?.sendInitialState()
         } else {
             consoleSet = set
+            /* 官方 type 6 的载入返回码：0 成功、3 = 尺寸不符（-5）、1 = 其它失败
+             * （B25kr6:148-152）。镜像线程里回调，owner hop 主线程。官方的做法是
+             * 拿到非 0 直接结束会话；这里先如实报出来，是否断链由上层决定。 */
+            set.onStateLoadResult = { [weak self] result in
+                DispatchQueue.main.async {
+                    NSLog("GBOY_RT peer state load failed code=\(result.rawValue)")
+                    /* 官方 B25kr6:144-152：载入失败就直接结束这条对端会话（-5 → 3、
+                     * 其它非 0 → 1）。等价动作是发一条空体 type 1 再关通道。 */
+                    self?.lobbyLink?.abortSession(errorCode: result.rawValue)
+                    self?.toast(result == .sizeMismatch
+                                ? "对端即时存档尺寸不符（错误 3）"
+                                : "对端即时存档载入失败（错误 1）")
+                }
+            }
             gate.lock()
             cloudConsoleActive = true
             let pending = pendingPeerState
@@ -6053,9 +6080,16 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         link.onRemoteReset = { [weak self] in
             DispatchQueue.main.async {
-                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
-                mgbaMobileReset(core)
-                mgbaMobileClearAudio(core)
+                guard let self else { return }
+                /* 官方 type 5（`AYUAbz` case 5）：复位可见核 + **所有镜像核**。
+                 * 4 核房间里只复位可见核会让镜像停在旧的一幕，SIO 立刻分叉。
+                 * 可见核由帧循环在帧边界用 takeVisibleReset() 取走执行。 */
+                if let set = self.consoleSet, set.isReady {
+                    set.requestResetAll()
+                } else if let core = self.core, mgbaMobileIsLoaded(core) {
+                    mgbaMobileReset(core)
+                    mgbaMobileClearAudio(core)
+                }
                 self.toast("已复位")
             }
         }
@@ -6163,9 +6197,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         link.onRemoteReset = { [weak self] in
             DispatchQueue.main.async {
-                guard let self, let core = self.core, mgbaMobileIsLoaded(core) else { return }
-                mgbaMobileReset(core)
-                mgbaMobileClearAudio(core)
+                guard let self else { return }
+                /* 官方 type 5（`AYUAbz` case 5）：复位可见核 + **所有镜像核**。
+                 * 可见核由帧循环在帧边界用 takeVisibleReset() 取走执行。 */
+                if let set = self.consoleSet, set.isReady {
+                    set.requestResetAll()
+                } else if let core = self.core, mgbaMobileIsLoaded(core) {
+                    mgbaMobileReset(core)
+                    mgbaMobileClearAudio(core)
+                }
                 self.toast("已复位")
             }
         }

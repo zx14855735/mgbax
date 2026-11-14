@@ -97,6 +97,8 @@ final class LobbyLink {
     /// 本次连接是否已经发过 type 6（连接级去重）。每连一条新通道在
     /// `onConnected` 之前清零：一次会话最多发一份初始存档，重连后可以再发一份。
     private var stateSentThisConnection = false
+    /// 本连接是否已经因「对端存档载入失败」中止过（一次会话只发一次 type 1 空体）。
+    private var aborted = false
     /// 会话信息：「重新连接中继」复用它，不重建房间。
     private var authToken: String?
     private var currentRoom: Room?
@@ -199,7 +201,32 @@ final class LobbyLink {
     private func beginConnection() {
         lock.lock()
         stateSentThisConnection = false
+        aborted = false
         lock.unlock()
+    }
+
+    /**
+     * 官方 B25kr6:144-152：对端存档载入失败（`-5` → 会话错误 3、其它非 0 → 1）
+     * 时直接 `return i` 结束这条对端会话。iOS 的载入发生在镜像线程的帧边界，
+     * 错误码晚一帧才拿到，这里补上等价动作：
+     *   - 发一条**空体 type 1**（官方的语义：长度 0 的 1 = 断开/结束）；
+     *   - 关掉通道，`serve()` 返回后 onDisconnected 会让上层拆掉四核房间；
+     *   - 状态栏写明原因与错误码。
+     * 一条连接只发一次（`aborted`），避免镜像线程和重连路径重复触发。
+     */
+    func abortSession(errorCode: Int) {
+        lock.lock()
+        let current = channel
+        let dead = closedFlag
+        let already = aborted
+        if !already {
+            aborted = true
+        }
+        lock.unlock()
+        guard !already, !dead else { return }
+        current?.send(LobbyFrames.frame(LobbyFrames.typeRegister))
+        status("对端存档载入失败（错误码 \(errorCode)），联机已结束")
+        close()
     }
 
     func close() {
@@ -654,10 +681,16 @@ final class LobbyLink {
      * 由 `handle(_:steady:false)` 单独消化。
      */
     private func handshake(link: LobbyKcpChannel, room: Room) throws {
-        let count = try expect(link: link, type: LobbyFrames.typeReady, timeoutMs: LobbyLink.stepWaitMs)
-        let reported = LobbyFrames.intValue(of: count)
-        if reported > 0 {
-            status("中继报告有 \(reported) 个玩家")
+        /* AUDIT C8：官方服务端从不主动发 type 3（它是「就绪 + 现在去灌各槽
+         * 存档」的单向指令，客户端回空体 3 当 ack）。所以这里不能硬等：
+         * 超时只说明对端没先发，按「玩家数未知」继续注册即可。
+         * 命中时若是空体 ack，intValue 读到 0，同样只当没报告数字。 */
+        if let count = try? expect(link: link, type: LobbyFrames.typeReady,
+                                   timeoutMs: LobbyLink.stepWaitMs) {
+            let reported = LobbyFrames.intValue(of: count)
+            if reported > 0 {
+                status("中继报告有 \(reported) 个玩家")
+            }
         }
         status("已注册到中继，等待对方…")
 
@@ -807,14 +840,21 @@ final class LobbyLink {
         case LobbyFrames.typeInput4:
             deliverKeys(4, body)
         case LobbyFrames.typeReady:
-            // 官方语义：3 = 就绪 + RTT（int32）。带 int 的不再当槽位 3 的
-            // 按键（那是撞号，已改到 typeInput3 = 17）；运行中收到的裸 3
-            // 只是握手残留，记录 RTT 即可。
-            let rtt = LobbyFrames.intValue(of: body)
-            if LobbyFrames.payload(of: body).count >= 4, rtt >= 0 {
-                lock.lock()
-                remoteRtt = rtt
-                lock.unlock()
+            // 官方 3 有双重语义（AUDIT §0.4 / 稳态表）：握手期是「就绪 + RTT
+            // （int32）」，稳态是**槽位 3 的按键**（AYUAbz 里 1..4 按槽位分发的
+            // 那张表）。官方自己从不发稳态的 1..4，但 Android/PC 接收侧都按表
+            // 兼容；我们发槽位 3 按键用的是扩展号 17，这里两种都收。
+            if LobbyFrames.payload(of: body).count >= 4 {
+                if steady {
+                    deliverKeys(3, body)
+                } else {
+                    let rtt = LobbyFrames.intValue(of: body)
+                    if rtt >= 0 {
+                        lock.lock()
+                        remoteRtt = rtt
+                        lock.unlock()
+                    }
+                }
             }
         case LobbyFrames.typeSpeed:
             // 官方 9：倍速（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。官方收到后
@@ -834,6 +874,12 @@ final class LobbyLink {
             if let state = LobbyFrames.state(of: body), !state.isEmpty {
                 onRemoteState(state)
             }
+        case LobbyFrames.typeDisconnect:
+            /* 官方 10 = 对端通知断开（`AYUAbz` case 10 → UI msg 2，无 payload）。
+             * 与 type 1 空体同一条收尾：正常断开，不当作错误。close() 让
+             * serve() 退出，随后 onDisconnected 由上层拆四核房间。 */
+            status("对方已断开")
+            close()
         default:
             break
         }

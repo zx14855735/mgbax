@@ -303,7 +303,7 @@ final class GBoyConsoleSet {
                             // %ld 而不是 %d：NSLog 的 Int 参数是 64 位，%d 只取低
                             // 32 位，字节数一过 2GB 就打印错值（varargs 未定义）。
                             NSLog("GBOY_RT peer state applied bytes=%ld code=%ld",
-                                  state.count, raw)
+                                  state.count, Int(raw))
                             if result != .ok {
                                 self.onStateLoadResult?(result)
                             }

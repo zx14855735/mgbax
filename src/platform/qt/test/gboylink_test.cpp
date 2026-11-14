@@ -1150,8 +1150,9 @@ static int busLocalSlotTest(void) {
 }
 
 /* PC 会话层与 Android GBoyLinkSession.java / iOS LobbyLink.swift 的槽位规则
- * 必须一致：3/4 人按本机槽位发带槽位帧，TYPE_KEYS 固定代表 slot 1；
- * 两人会话仍发 TYPE_KEYS。 */
+ * 必须一致：3/4 人时按本机槽位发带槽位帧（11/12/17）；裸 TYPE_KEYS 代表
+ * 「对端那台设备」，落点由 defaultSenderSlot() 决定 —— 云端 4 核两端都用
+ * localSlot=1，所以裸键帧固定落 slot 2；其它本机槽位落 slot 1。 */
 static int gboySessionSlotTest(void) {
 	int failures = 0;
 	auto check = [&](bool ok, const char* what) {
@@ -1198,12 +1199,29 @@ static int gboySessionSlotTest(void) {
 		ev.onReady = []() {};
 		ev.onStatus = [](const QString&) {};
 		GBoyLinkSession peer([&](const QByteArray& f) { sent = f; }, ev, 2, 4);
+		/* 会话层在 ready 之前会忽略按键帧（官方 type 0 在握手期是节奏信号），
+		 * 先补一条 type 3 把对端标成就绪，再验槽位路由。 */
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_READY, 0));
 		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x5A));
 		for (int f = 1; f <= 5; ++f) {
 			peer.onLocalFrame(f, 0);
 		}
 		check(peer.keysForSlot(1) == 0x5A,
-		      "4-player default sender slot is 1 on the PC side");
+		      "localSlot=2 (4-player) sends a bare key frame to slot 1");
+	}
+	/* 云端 4 核的真实构造是两端都 localSlot=1：裸 TYPE_KEYS 必须落 slot 2
+	 * （对端那台设备），不能盖到自己的可见核上。 */
+	{
+		GBoyLinkSession::Events ev;
+		ev.onReset = []() {};
+		ev.onState = [](const QByteArray&) {};
+		ev.onReady = []() {};
+		ev.onStatus = [](const QString&) {};
+		GBoyLinkSession peer([](const QByteArray&) {}, ev, 1, 4);
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_READY, 0));
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_KEYS, 0x3C));
+		check(peer.keysForSlot(2) == 0x3C,
+		      "cloud 4-core layout (localSlot=1) routes bare keys to slot 2");
 	}
 	/* 官方 9 = 倍速、5 = 复位（NETPLAY_AUDIT.md C1/C3）。 */
 	{
@@ -1214,12 +1232,12 @@ static int gboySessionSlotTest(void) {
 		ev.onReady = []() {};
 		ev.onStatus = [](const QString&) {};
 		GBoyLinkSession peer([](const QByteArray&) {}, ev, 1, 4);
-		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_SPEED, 2));
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_SPEED, 2));
 		check(peer.remoteSpeed() == 2, "type 9 records the peer speed multiplier");
-		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
 		check(reset, "type 5 is a reset, not a ready ack");
 		reset = false;
-		peer.onFrameBody(GBoyFrames::frame(GBoyFrames::TYPE_RESET_LEGACY, 0));
+		peer.onWireFrame(GBoyFrames::frame(GBoyFrames::TYPE_RESET_LEGACY, 0));
 		check(reset, "the legacy type 13 still resets old clients");
 	}
 	/* 镜像核槽位映射必须与 Android / iOS 逐项一致。 */
@@ -2800,11 +2818,13 @@ static int framesTest() {
 		                         .arg(int(GBoyFrames::TYPE_RESET));
 		++failures;
 	}
-	/* 官方注册体（AmA8tU:173-178）：多人房只有 4 字节 int（整帧 10 字节），
-	 * 单人房才补 short 0 + int listSize（整帧 18 字节）。 */
-	if (GBoyFrames::registerFrame(2, 0).size() != 10
-	    || GBoyFrames::registerFrame(4, 0).size() != 10
-	    || GBoyFrames::registerFrame(1, 3).size() != 18) {
+	/* 官方注册帧（AmA8tU:173-178 + A5SV6n 的 `write(array())`）：`ARc23Z(1,10)`
+	 * 恒分配 16 字节、长度字段恒为 12，发送线程写整个 backing array，所以**线上
+	 * 永远是 16 字节**；playerCount==1 只是把尾部 6 字节填上（short 0 + listSize），
+	 * 否则尾部保持 0。早先按「多人房只发 10 字节」理解是误读了 fill 与 not-fill。 */
+	if (GBoyFrames::registerFrame(2, 0).size() != 16
+	    || GBoyFrames::registerFrame(4, 0).size() != 16
+	    || GBoyFrames::registerFrame(1, 3).size() != 16) {
 		qInfo().noquote() << QString("FRAMES TEST: FAIL (register frame length: pc2=%1 pc1=%2)")
 		                         .arg(GBoyFrames::registerFrame(2, 0).size())
 		                         .arg(GBoyFrames::registerFrame(1, 3).size());
