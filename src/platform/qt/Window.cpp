@@ -278,12 +278,16 @@ void Window::argumentsPassed() {
 
 	if (args->fname) {
 		setController(m_manager->loadGame(args->fname));
-	} else if (m_config->getOption("loadLastRom").toInt() && !m_mruFiles.isEmpty()) {
+	} else if (m_config->getOption("loadLastRom").toInt()) {
 		/* lastRom（与 Android/iOS 同名语义）：只在本进程的启动窗口里做，
-		 * 多开窗口走 newWindow() 不经过 argumentsPassed()，不会连带开 ROM。 */
-		const QString lastFile = m_mruFiles.first();
-		if (QFileInfo::exists(lastFile)) {
-			setController(m_manager->loadGame(lastFile));
+		 * 多开窗口走 newWindow() 不经过 argumentsPassed()，不会连带开 ROM。
+		 * 从最近往前找第一个还在磁盘上的文件（压缩包内条目这类非真实路径会被跳过）。 */
+		for (const QString& candidate : m_mruFiles) {
+			if (!QFileInfo::exists(candidate)) {
+				continue;
+			}
+			setController(m_manager->loadGame(candidate));
+			break;
 		}
 	}
 
@@ -1764,9 +1768,25 @@ void Window::setupMenu(QMenuBar* menubar) {
 	m_ffspeedActions[-1.0] = ffspeed->addValue(tr("Unbounded"), -1.0f, &m_actions, "fastForwardSpeed");
 	ffspeed->setValue(QVariant(-1.0f));
 	m_actions.addSeparator("fastForwardSpeed");
-	for (int i = 2; i < 11; ++i) {
+	/* 0.25x / 0.5x / 1.5x：移动端允许 0.1~16x 的慢放与小数倍速，PC 菜单原来
+	 * 只有 2x..10x（设置页的 QDoubleSpinBox 能填 0.01~20，但入口太深）。 */
+	for (double slow : {0.25, 0.5, 1.5}) {
+		m_ffspeedActions[slow] = ffspeed->addValue(QString("%1x").arg(slow), slow, &m_actions, "fastForwardSpeed");
+	}
+	for (int i = 2; i <= 16; ++i) {
 		m_ffspeedActions[i] = ffspeed->addValue(tr("%0x").arg(i), i, &m_actions, "fastForwardSpeed");
 	}
+	m_actions.addSeparator("fastForwardSpeed");
+	m_actions.addAction(tr("Custom..."), "fastForwardSpeed.custom", [this, ffspeed]() {
+		bool ok = false;
+		const double ratio = QInputDialog::getDouble(this, tr("Fast forward speed"),
+		    tr("Ratio (0.01 - 20, use the Unbounded entry for no limit)"),
+		    m_config->getOption("fastForwardRatio", "-1").toDouble(), 0.01, 20.0, 2, &ok);
+		if (!ok) {
+			return;
+		}
+		ffspeed->setValue(QVariant(ratio));
+	}, "fastForwardSpeed");
 	m_config->updateOption("fastForwardRatio");
 	/* 每游戏倍速记忆（B7，与移动端 per_rom_speed 等价）：Speed 变化后写进
 	 * qt.ini 的 perRomSpeed/<rom 基名>，进场时再套回来。 */

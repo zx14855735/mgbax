@@ -544,4 +544,44 @@
     <!-- Notice service -->
     <string name="notice_title">游戏运行中</string>
     <string name="notice_running">%1$s 正在运行</string>
+
+    <!-- Desktop shortcut (forwarder) -->
+    <string name="shortcut_create">创建桌面快捷方式</string>
+    <string name="shortcut_requested">已请求添加「%1$s」到桌面，请确认</string>
+    <string name="shortcut_dynamic">已加入长按图标的快捷方式：%1$s</string>
+    <string name="shortcut_unsupported">当前系统不支持桌面快捷方式（需要 Android 7.1+）</string>
+    <string name="shortcut_failed">创建快捷方式失败：%1$s</string>
+
+    <!-- Diagnostics package -->
+    <string name="diag_export">导出诊断包</string>
+    <string name="diag_done">诊断包已导出</string>
+    <string name="diag_failed">导出失败：%1$s</string>
+
+    <!-- Key macro recording / playback -->
+    <string name="key_macro">按键宏录制/回放</string>
+    <string name="macro_title">按键宏</string>
+    <string name="macro_record">开始录制</string>
+    <string name="macro_stop">停止录制并保存</string>
+    <string name="macro_play">回放</string>
+    <string name="macro_clear">删除已保存的宏</string>
+    <string name="macro_status_empty">还没有录制宏</string>
+    <string name="macro_status_saved">已保存 %1$d 帧</string>
+    <string name="macro_status_recording">录制中…已 %1$d 帧</string>
+    <string name="macro_recording_started">开始录制：正常操作即可，完成后回到这里停止</string>
+    <string name="macro_saved">宏已保存（%1$d 帧）</string>
+    <string name="macro_save_failed">保存宏失败：%1$s</string>
+    <string name="macro_finished">宏回放结束</string>
+    <string name="macro_play_started">开始回放（%1$d 帧）</string>
+    <string name="macro_stop_first">请先停止录制再回放</string>
+    <string name="macro_cleared">已删除已保存的宏</string>
+    <string name="key_macro_hint">录制时按平时的方式玩；回放请保持与录制时相同的倍速（默认 1x），宏只对该 ROM 生效。</string>
+
+    <!-- MP4 recording -->
+    <string name="video_record">录像</string>
+    <string name="video_record_stop">停止录像</string>
+    <string name="video_record_started">开始录像（H.264 + AAC）</string>
+    <string name="video_record_failed">录像启动失败：%1$s</string>
+    <string name="video_record_saved">录像已保存到 Movies/mGBAx/%1$s（%2$d 秒）</string>
+    <string name="video_record_empty">录像过短，已丢弃</string>
+    <string name="video_record_no_rom">请先加载 ROM 再录像</string>
 </resources>

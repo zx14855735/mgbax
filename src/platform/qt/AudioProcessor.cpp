@@ -59,7 +59,14 @@ AudioProcessor::~AudioProcessor() {
 
 void AudioProcessor::configure(ConfigController* config) {
 	const mCoreOptions* opts = config->options();
-	setBufferSamples(opts->audioBuffers);
+	int buffers = opts->audioBuffers;
+	/* 低延迟模式（对齐移动端 low_latency）：把缓冲压到 512 帧以内，
+	 * 牺牲一点抗抖动换更小的按键/画面延迟。设置页的 audioBuffers 仍然生效，
+	 * 只是这里取两者较小值。 */
+	if (config->getOption("lowLatency").toInt() && (buffers <= 0 || buffers > LOW_LATENCY_BUFFERS)) {
+		buffers = LOW_LATENCY_BUFFERS;
+	}
+	setBufferSamples(buffers);
 	requestSampleRate(opts->sampleRate);
 }
 

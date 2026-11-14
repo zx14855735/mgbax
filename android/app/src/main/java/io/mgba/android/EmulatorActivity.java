@@ -15,6 +15,9 @@ import android.content.Context;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
+import android.graphics.drawable.Icon;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Bitmap;
@@ -122,6 +125,9 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int CMD_UNDO_SAVE = 7;
     /** Advances a single emulated frame; used while paused. */
     private static final int CMD_STEP = 8;
+    /** Desktop-shortcut intent (PC's "create forwarder"). */
+    private static final String ACTION_OPEN_ROM = "io.mgba.android.OPEN_ROM";
+    private static final String EXTRA_ROM_PATH = "rom_path";
     private static final int TURBO_ARM_MS = 200;
     /** Slot reserved for the automatic save-on-exit / load-on-start pair. */
     private static final int AUTO_SLOT = 0;
@@ -691,6 +697,14 @@ public class EmulatorActivity extends AppCompatActivity {
     private volatile int undoLoadSlot = -1;
     /** Slot whose previous contents sit in {@code .ssN.bak} for 撤销存档; -1 when none. */
     private volatile int undoSaveSlot = -1;
+    /** Key-macro recording / playback (stand-in for PC's scripting / autorun). */
+    private volatile boolean macroRecording;
+    private final ArrayList<Integer> macroRecord = new ArrayList<>();
+    private volatile int[] macroPlayback;
+    private volatile int macroIndex;
+    /** MP4 recorder; null unless recording. Touched from UI and emulation threads. */
+    private volatile VideoRecorder recorder;
+    private long recordStartedAt;
     /** Hidden mirror core; null until the ported GBoy link is started. */
     private volatile GBoyConsoleSet consoleSet;
     /** 3/4 人本机多核时改用进程内锁步 SIO（默认关，走共享内存总线）。 */
@@ -1196,7 +1210,23 @@ public class EmulatorActivity extends AppCompatActivity {
      * like the GBoy/My Boy lobby (远程按键模式).
      */
     private int userKeys() {
-        return touchKeys | hwKeys | (gboyRemoteKeysEnabled ? gboyRemoteKeys : 0);
+        int[] macro = macroPlayback;
+        if (macro != null) {
+            int index = macroIndex;
+            if (index >= macro.length) {
+                macroPlayback = null;
+                macroIndex = 0;
+                runOnUiThread(() -> toast(getString(R.string.macro_finished)));
+            } else {
+                macroIndex = index + 1;
+                return macro[index];
+            }
+        }
+        int mask = touchKeys | hwKeys | (gboyRemoteKeysEnabled ? gboyRemoteKeys : 0);
+        if (macroRecording) {
+            macroRecord.add(mask);
+        }
+        return mask;
     }
 
     private void noteUserKeys(int prevTouch, int prevHw) {
@@ -1445,6 +1475,12 @@ public class EmulatorActivity extends AppCompatActivity {
             }
             return;
         }
+        if (requestCode == REQ_DIAG) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                exportDiagnostics(data.getData());
+            }
+            return;
+        }
         if (requestCode == REQ_SAV_EXPORT) {
             if (resultCode == RESULT_OK && data != null && data.getData() != null) {
                 exportBatterySave(data.getData());
@@ -1517,7 +1553,20 @@ public class EmulatorActivity extends AppCompatActivity {
 
     /** Handles a ROM the user opened from a file manager ("open with"). */
     private void handleViewIntent(@Nullable Intent intent) {
-        if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) {
+        if (intent == null) {
+            return;
+        }
+        // Pinned desktop shortcut ("create forwarder" on PC).
+        if (ACTION_OPEN_ROM.equals(intent.getAction())) {
+            String path = intent.getStringExtra(EXTRA_ROM_PATH);
+            if (path != null && new File(path).isFile() && !path.equals(handledRomUri)) {
+                handledRomUri = path;
+                getPreferences(MODE_PRIVATE).edit().putString("lastRom", path).apply();
+                pendingPath.set(path);
+            }
+            return;
+        }
+        if (!Intent.ACTION_VIEW.equals(intent.getAction())) {
             return;
         }
         Uri uri = intent.getData();
@@ -2888,6 +2937,12 @@ public class EmulatorActivity extends AppCompatActivity {
         // restart but only for the ROM that made it.
         undoLoadBlob = null;
         undoLoadSlot = -1;
+        macroRecording = false;
+        macroPlayback = null;
+        macroIndex = 0;
+        synchronized (macroRecord) {
+            macroRecord.clear();
+        }
         String undoRom = getPreferences(MODE_PRIVATE).getString("undo_save_rom", null);
         undoSaveSlot = path.equals(undoRom)
                 ? getPreferences(MODE_PRIVATE).getInt("undo_save_slot", -1) : -1;
@@ -5786,7 +5841,9 @@ public class EmulatorActivity extends AppCompatActivity {
         final int IDX_ROM_DIRS = 5;
         final int IDX_SCAN = 6;
         final int IDX_ROM_INFO = 7;
-        final int IDX_HELP = 8;
+        final int IDX_SHORTCUT = 8;
+        final int IDX_DIAG = 9;
+        final int IDX_HELP = 10;
         String[] items = {
                 getString(R.string.orientation_title),
                 getString(R.string.settings_sound),
@@ -5796,6 +5853,8 @@ public class EmulatorActivity extends AppCompatActivity {
                 getString(R.string.rom_dirs_menu),
                 getString(R.string.scan_button),
                 getString(R.string.rom_info),
+                getString(R.string.shortcut_create),
+                getString(R.string.diag_export),
                 getString(R.string.settings_help),
         };
         new AlertDialog.Builder(this)
@@ -5817,6 +5876,15 @@ public class EmulatorActivity extends AppCompatActivity {
                         showRomScan();
                     } else if (which == IDX_ROM_INFO) {
                         showRomInfoDialog();
+                    } else if (which == IDX_SHORTCUT) {
+                        createRomShortcut();
+                    } else if (which == IDX_DIAG) {
+                        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                        intent.addCategory(Intent.CATEGORY_OPENABLE);
+                        intent.setType("application/zip");
+                        intent.putExtra(Intent.EXTRA_TITLE, "mGBAx-diag-"
+                                + DateFormat.format("yyyyMMdd-HHmm", System.currentTimeMillis()) + ".zip");
+                        launchPicker(intent, REQ_DIAG);
                     } else if (which == IDX_HELP) {
                         showHelpDialog();
                     }
@@ -6041,6 +6109,10 @@ public class EmulatorActivity extends AppCompatActivity {
         keyRemap.setAllCaps(false);
         keyRemap.setText(R.string.key_remap);
         keyRemap.setOnClickListener(v -> showKeyRemapDialog());
+        final Button keyMacro = new Button(this);
+        keyMacro.setAllCaps(false);
+        keyMacro.setText(R.string.key_macro);
+        keyMacro.setOnClickListener(v -> showKeyMacroDialog());
         final Button rewindTap = new Button(this);
         rewindTap.setAllCaps(false);
         rewindTap.setText(getString(R.string.rewind_tap, rewindTapSeconds()));
@@ -6109,6 +6181,7 @@ public class EmulatorActivity extends AppCompatActivity {
         box.addView(opacityBar);
         box.addView(extras);
         box.addView(keyRemap);
+        box.addView(keyMacro);
         box.addView(rewindTap);
         box.addView(cKey);
         box.addView(c2Key);
@@ -6709,6 +6782,186 @@ public class EmulatorActivity extends AppCompatActivity {
      * cartridge this is, what the core thinks its save type is, and where the
      * battery save and states actually live.
      */
+    /**
+     * Pins a launcher shortcut that boots straight into this ROM, Android's
+     * version of PC's "create forwarder". API 25+ can ask for a home-screen
+     * pin; older devices get nothing, so the toast says so.
+     */
+    private void createRomShortcut() {
+        String path = currentRomPath != null ? currentRomPath
+                : getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        if (path == null || !new File(path).isFile()) {
+            toast(getString(R.string.rom_info_none));
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 25) {
+            toast(getString(R.string.shortcut_unsupported));
+            return;
+        }
+        ShortcutManager manager = (ShortcutManager) getSystemService(SHORTCUT_SERVICE);
+        if (manager == null) {
+            toast(getString(R.string.shortcut_unsupported));
+            return;
+        }
+        String name = new File(path).getName();
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            name = name.substring(0, dot);
+        }
+        if (name.length() > 12) {
+            name = name.substring(0, 12);
+        }
+        Intent launch = new Intent(this, EmulatorActivity.class)
+                .setAction(ACTION_OPEN_ROM)
+                .putExtra(EXTRA_ROM_PATH, path);
+        ShortcutInfo info = new ShortcutInfo.Builder(this, "rom-" + Integer.toHexString(path.hashCode()))
+                .setShortLabel(name)
+                .setLongLabel(name)
+                .setIcon(Icon.createWithResource(this, R.drawable.ic_launcher))
+                .setIntent(launch)
+                .build();
+        try {
+            if (manager.isRequestPinShortcutSupported()) {
+                manager.requestPinShortcut(info, null);
+                toast(getString(R.string.shortcut_requested, name));
+            } else {
+                manager.pushDynamicShortcut(info);
+                toast(getString(R.string.shortcut_dynamic, name));
+            }
+        } catch (Exception e) {
+            toast(getString(R.string.shortcut_failed, e.getMessage()));
+        }
+    }
+
+    /** Writes a diagnostic zip (device, settings, save/state listing) for bug reports. */
+    private void exportDiagnostics(Uri target) {
+        new Thread(() -> {
+            try (OutputStream out = getContentResolver().openOutputStream(target, "wt")) {
+                if (out == null) {
+                    throw new IOException("no stream");
+                }
+                try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(out)) {
+                    putZipEntry(zip, "device.txt", deviceReport());
+                    putZipEntry(zip, "settings.json", settingsReport());
+                    putZipEntry(zip, "saves.txt", savesReport());
+                    putZipEntry(zip, "roms.txt", romsReport());
+                    putZipEntry(zip, "runtime.txt", runtimeReport());
+                }
+                runOnUiThread(() -> toast(getString(R.string.diag_done)));
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(getString(R.string.diag_failed, e.getMessage())));
+            }
+        }, "diag-export").start();
+    }
+
+    private static void putZipEntry(java.util.zip.ZipOutputStream zip, String name, String body)
+            throws IOException {
+        zip.putNextEntry(new java.util.zip.ZipEntry(name));
+        zip.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        zip.closeEntry();
+    }
+
+    private String deviceReport() {
+        String version = "";
+        try {
+            version = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception ignored) {
+        }
+        StringBuilder out = new StringBuilder();
+        out.append("app: ").append(getString(R.string.app_name)).append(' ').append(version).append('\n');
+        out.append("manufacturer: ").append(Build.MANUFACTURER).append('\n');
+        out.append("model: ").append(Build.MODEL).append('\n');
+        out.append("android: ").append(Build.VERSION.RELEASE).append(" (SDK ").append(Build.VERSION.SDK_INT).append(")\n");
+        out.append("abis: ").append(Arrays.toString(Build.SUPPORTED_ABIS)).append('\n');
+        out.append("screen: ").append(getResources().getDisplayMetrics().widthPixels).append('x')
+                .append(getResources().getDisplayMetrics().heightPixels).append(" @")
+                .append(getResources().getDisplayMetrics().densityDpi).append("dpi\n");
+        out.append("orientation: ").append(getResources().getConfiguration().orientation).append('\n');
+        if (core != null && core.isLoaded()) {
+            out.append("core: ").append(core.width()).append('x').append(core.height())
+                    .append(" title=").append(core.title()).append('\n');
+            out.append("audio: source=").append(core.sampleRate())
+                    .append(" out=").append(chosenOutputRate()).append('\n');
+        }
+        out.append("save access: ").append(SaveLocation.hasAccess(this)).append('\n');
+        return out.toString();
+    }
+
+    private String settingsReport() {
+        org.json.JSONObject settings = new org.json.JSONObject();
+        for (Map.Entry<String, ?> entry : getPreferences(MODE_PRIVATE).getAll().entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof Integer || value instanceof Long || value instanceof Boolean
+                    || value instanceof Float || value instanceof String) {
+                try {
+                    settings.put(entry.getKey(), value);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        return settings.toString();
+    }
+
+    private String savesReport() {
+        StringBuilder out = new StringBuilder();
+        String savePath = core != null && core.isLoaded() ? core.saveFile() : null;
+        out.append("battery: ").append(savePath == null ? "(none)" : savePath).append('\n');
+        if (savePath != null && new File(savePath).isFile()) {
+            File save = new File(savePath);
+            out.append("  size=").append(save.length()).append(" mtime=").append(save.lastModified()).append('\n');
+        }
+        File dir = activeStateDir != null ? activeStateDir : defaultStateDir;
+        out.append("state dir: ").append(dir == null ? "(none)" : dir.getAbsolutePath()).append('\n');
+        if (dir != null) {
+            for (int i = 0; i <= 9; i++) {
+                File state = new File(dir, stateBaseName() + ".ss" + i);
+                if (state.isFile()) {
+                    out.append("  slot ").append(i).append(": size=").append(state.length())
+                            .append(" mtime=").append(state.lastModified()).append('\n');
+                }
+            }
+        }
+        out.append("undo save slot: ").append(undoSaveSlot).append('\n');
+        out.append("undo load available: ").append(undoLoadBlob != null).append('\n');
+        return out.toString();
+    }
+
+    /** ROM base name used by mGBA's state files. */
+    private String stateBaseName() {
+        String path = currentRomPath != null ? currentRomPath
+                : getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        String name = path == null ? "game" : new File(path).getName();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) : name;
+    }
+
+    private String romsReport() {
+        StringBuilder out = new StringBuilder();
+        String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+        out.append("last rom: ").append(last).append('\n');
+        out.append("crc32: ").append(romCrc < 0 ? "n/a" : String.format(Locale.US, "0x%08X", romCrc)).append('\n');
+        out.append("rom dirs:\n");
+        for (String dir : romDirs()) {
+            out.append("  ").append(dir).append('\n');
+        }
+        out.append("favorites:\n").append(getPreferences(MODE_PRIVATE).getString("rom_favs", "")).append('\n');
+        return out.toString();
+    }
+
+    private String runtimeReport() {
+        Runtime runtime = Runtime.getRuntime();
+        StringBuilder out = new StringBuilder();
+        out.append("heap: used=").append((runtime.totalMemory() - runtime.freeMemory()) / 1048576)
+                .append("MB total=").append(runtime.totalMemory() / 1048576)
+                .append("MB max=").append(runtime.maxMemory() / 1048576).append("MB\n");
+        out.append("threads: ").append(Thread.activeCount()).append('\n');
+        out.append("paused: ").append(paused).append(" speed: ").append(speed).append('\n');
+        out.append("link: bus=").append(busLinkActive)
+                .append(" local=").append(localLink != null)
+                .append(" cloud=").append(cloudLink != null).append('\n');
+        return out.toString();
+    }
+
     private void showRomInfoDialog() {
         String path = currentRomPath;
         if (path == null) {
@@ -7789,6 +8042,7 @@ public class EmulatorActivity extends AppCompatActivity {
     private static final int REQ_STICKER = 8;
     private static final int REQ_SAV_EXPORT = 12;
     private static final int REQ_SAV_IMPORT = 13;
+    private static final int REQ_DIAG = 14;
 
     private int skinStylePref() {
         return getPreferences(MODE_PRIVATE).getInt("skin_style", ControlsView.STYLE_CLASSIC);
@@ -8475,6 +8729,184 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
             });
         }, "save-import").start();
+    }
+
+    // == 按键宏：录制 / 回放（PC 脚本系统的可用替代） =====================
+
+    private File macroFile() {
+        File dir = new File(getFilesDir(), "macros");
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            Log.w(TAG, "macro dir not created: " + dir);
+        }
+        return new File(dir, stateBaseName() + ".macro");
+    }
+
+    /** Frames stored in the file, or 0 when there is no macro yet. */
+    private int savedMacroFrames() {
+        File file = macroFile();
+        if (!file.isFile()) {
+            return 0;
+        }
+        try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.FileReader(file))) {
+            String header = in.readLine();
+            if (header == null || !header.startsWith("mGBAx-macro")) {
+                return 0;
+            }
+            String count = in.readLine();
+            return count == null ? 0 : Integer.parseInt(count.trim());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void showKeyMacroDialog() {
+        int recorded;
+        synchronized (macroRecord) {
+            recorded = macroRecord.size();
+        }
+        int savedFrames = savedMacroFrames();
+        String status = macroRecording
+                ? getString(R.string.macro_status_recording, recorded)
+                : savedFrames > 0 ? getString(R.string.macro_status_saved, savedFrames)
+                : getString(R.string.macro_status_empty);
+        CharSequence[] items = {
+                getString(macroRecording ? R.string.macro_stop : R.string.macro_record),
+                getString(R.string.macro_play),
+                getString(R.string.macro_clear),
+        };
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.macro_title)
+                .setMessage(status + "\n" + getString(R.string.key_macro_hint))
+                .setItems(items, (dialog, which) -> {
+                    if (which == 0) {
+                        if (macroRecording) {
+                            stopMacroRecording();
+                        } else {
+                            startMacroRecording();
+                        }
+                    } else if (which == 1) {
+                        playMacro();
+                    } else {
+                        clearMacro();
+                    }
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private void startMacroRecording() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        macroPlayback = null;
+        macroIndex = 0;
+        synchronized (macroRecord) {
+            macroRecord.clear();
+        }
+        macroRecording = true;
+        toast(getString(R.string.macro_recording_started));
+    }
+
+    /** Stops recording and writes the captured frames to the per-ROM file. */
+    private void stopMacroRecording() {
+        macroRecording = false;
+        final int[] masks;
+        synchronized (macroRecord) {
+            masks = new int[macroRecord.size()];
+            for (int i = 0; i < masks.length; i++) {
+                masks[i] = macroRecord.get(i);
+            }
+            macroRecord.clear();
+        }
+        if (masks.length == 0) {
+            toast(getString(R.string.macro_status_empty));
+            return;
+        }
+        final File file = macroFile();
+        new Thread(() -> {
+            try (java.io.BufferedWriter out =
+                         new java.io.BufferedWriter(new java.io.FileWriter(file))) {
+                out.write("mGBAx-macro 1\n");
+                out.write(String.valueOf(masks.length));
+                out.write('\n');
+                for (int mask : masks) {
+                    out.write(Integer.toString(mask));
+                    out.write('\n');
+                }
+                runOnUiThread(() -> toast(getString(R.string.macro_saved, masks.length)));
+            } catch (Exception e) {
+                runOnUiThread(() -> toast(getString(R.string.macro_save_failed, e.getMessage())));
+            }
+        }, "macro-save").start();
+    }
+
+    @Nullable
+    private int[] loadMacro() {
+        File file = macroFile();
+        if (!file.isFile()) {
+            return null;
+        }
+        try (java.io.BufferedReader in = new java.io.BufferedReader(new java.io.FileReader(file))) {
+            String header = in.readLine();
+            if (header == null || !header.startsWith("mGBAx-macro")) {
+                return null;
+            }
+            String countLine = in.readLine();
+            if (countLine == null) {
+                return null;
+            }
+            int count = Integer.parseInt(countLine.trim());
+            int[] masks = new int[count];
+            int read = 0;
+            for (; read < count; read++) {
+                String line = in.readLine();
+                if (line == null) {
+                    break;
+                }
+                masks[read] = Integer.parseInt(line.trim());
+            }
+            return read == count ? masks : Arrays.copyOf(masks, read);
+        } catch (Exception e) {
+            Log.w(TAG, "macro load failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    private void playMacro() {
+        if (core == null || !core.isLoaded()) {
+            toast(getString(R.string.no_rom));
+            return;
+        }
+        if (macroRecording) {
+            toast(getString(R.string.macro_stop_first));
+            return;
+        }
+        int[] macro = loadMacro();
+        if (macro == null || macro.length == 0) {
+            toast(getString(R.string.macro_status_empty));
+            return;
+        }
+        if (paused) {
+            setPaused(false);
+        }
+        macroIndex = 0;
+        macroPlayback = macro;
+        toast(getString(R.string.macro_play_started, macro.length));
+    }
+
+    private void clearMacro() {
+        macroRecording = false;
+        macroPlayback = null;
+        macroIndex = 0;
+        synchronized (macroRecord) {
+            macroRecord.clear();
+        }
+        File file = macroFile();
+        if (file.isFile() && !file.delete()) {
+            Log.w(TAG, "macro not deleted: " + file);
+        }
+        toast(getString(R.string.macro_cleared));
     }
 
     /** Backup hub: export everything to a zip, restore from one. */

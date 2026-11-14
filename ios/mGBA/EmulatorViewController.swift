@@ -1,4 +1,5 @@
-﻿import CoreMotion
+﻿import AVFoundation
+import CoreMotion
 import Darwin
 import GameController
 import Photos
@@ -109,6 +110,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /** 屏幕亮度作为阳光来源时的刷新定时器。 */
     private var solarTimer: Timer?
     private var gifButton: UIButton?
+    /** MP4 录像（PC Record A/V 的 iOS 等价物，H.264 视频轨）。 */
+    private var videoWriter: AVAssetWriter?
+    private var videoInput: AVAssetWriterInput?
+    private var videoAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var videoURL: URL?
+    private var videoFrames: Int64 = 0
+    private var lastVideoAt: TimeInterval = 0
+    private var recordButton: UIButton?
     private var gifQueue: GifFrameQueue?
     private var lastGifAt: UInt64 = 0
     private var gifFrames = 0
@@ -608,6 +617,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             ("翻译", #selector(showTranslateDialog)),
             ("截图", #selector(takeScreenshot)),
             ("GIF", #selector(toggleGif)),
+            ("录像", #selector(toggleVideoRecording)),
             ("设置", #selector(showSettings))
         ]
         for (index, item) in titles.enumerated() {
@@ -625,6 +635,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             if index == 4 { slotButton = button }
             if item.0 == "GIF" { gifButton = button }
+            if item.0 == "录像" { recordButton = button }
         }
         fpsView.textColor = UIColor(red: 156 / 255, green: 204 / 255, blue: 156 / 255, alpha: 1)
         fpsView.font = .systemFont(ofSize: 12)
@@ -1462,6 +1473,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                     self.gameView.present(pixels: base, width: w, height: h, stride: w)
                 }
             }
+            if self.videoWriter != nil {
+                self.appendVideoFrame(data, width: w, height: h)
+            }
             if self.gifWantCapture {
                 self.gifWantCapture = false
                 data.withUnsafeBytes { raw in
@@ -1602,6 +1616,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         RunLog.shared.add("已载入 \(URL(fileURLWithPath: path).lastPathComponent)\(name.isEmpty ? "" : "（\(name)）")")
         // 换游戏后上一款的快照没有意义，留着会把旧进度灌进新核心。
         dropUndoState()
+        // 换卡带后画面尺寸可能变，正在录的 MP4 收尾保存。
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.videoWriter != nil else { return }
+            self.stopVideoRecording()
+        }
         // 进入游戏时自动读档：上次退出的进度。云端 4 核重载期间跳过——
         // 四核必须从同一份电池存档冷启动。
         gate.lock()
@@ -2046,6 +2065,21 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             case "resume": if paused { togglePause() }
             case "reset": resetGame()
             case "screenshot": takeScreenshot()
+            case "save", "load":
+                if let n = Int(value("slot")), n >= 1, n <= 9 {
+                    slot = n
+                    refreshSlotButton()
+                }
+                postCommand(value("action").lowercased() == "save" ? cmdSave : cmdLoad)
+            case "undo": undoStateAction()
+            case "step": stepFrame()
+            case "back": stepBackFrame()
+            case "speed":
+                if let rate = Double(value("rate")) {
+                    setSpeed(rate)
+                } else {
+                    toast("需要 rate 参数")
+                }
             default: toast("未知动作")
             }
         case "cloud":
@@ -5306,6 +5340,127 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
     }
 
+    // MARK: - MP4 recording
+
+    @objc private func toggleVideoRecording() {
+        if videoWriter != nil {
+            stopVideoRecording()
+        } else {
+            startVideoRecording()
+        }
+    }
+
+    /// 开始 H.264 录像（PC Record A/V 的等价物；音轨方案见 IOS_GAPS §3.8）。
+    private func startVideoRecording() {
+        guard let core, mgbaMobileIsLoaded(core) else {
+            toast("请先打开一个游戏")
+            return
+        }
+        guard videoWriter == nil else { return }
+        let w = Int(mgbaMobileWidth(core))
+        let h = Int(mgbaMobileHeight(core))
+        guard w > 0, h > 0 else {
+            toast("请先打开一个游戏")
+            return
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mGBAx-\(Self.fileStamp()).mp4")
+        guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mp4) else {
+            toast("无法创建录像文件")
+            return
+        }
+        let settings: [String: Any] = [
+            AVVideoCodecKey: AVVideoCodecType.h264,
+            AVVideoWidthKey: w,
+            AVVideoHeightKey: h
+        ]
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+        input.expectsMediaDataInRealTime = true
+        let attributes: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
+            kCVPixelBufferWidthKey as String: w,
+            kCVPixelBufferHeightKey as String: h
+        ]
+        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
+                                                           sourcePixelBufferAttributes: attributes)
+        guard writer.canAdd(input) else {
+            toast("录像初始化失败")
+            return
+        }
+        writer.add(input)
+        guard writer.startWriting() else {
+            toast("录像初始化失败")
+            return
+        }
+        writer.startSession(atSourceTime: .zero)
+        videoWriter = writer
+        videoInput = input
+        videoAdaptor = adaptor
+        videoURL = url
+        videoFrames = 0
+        lastVideoAt = 0
+        recordButton?.setTitle("停止录像", for: .normal)
+        toast("开始录像（当前版本无音轨）")
+    }
+
+    private func stopVideoRecording() {
+        guard let writer = videoWriter, let input = videoInput else { return }
+        videoWriter = nil
+        videoInput = nil
+        videoAdaptor = nil
+        recordButton?.setTitle("录像", for: .normal)
+        input.markAsFinished()
+        let url = videoURL
+        videoURL = nil
+        writer.finishWriting { [weak self] in
+            guard let self else { return }
+            guard writer.status == .completed, let url else {
+                DispatchQueue.main.async { self.toast("录像失败") }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+            }) { ok, _ in
+                DispatchQueue.main.async {
+                    self.toast(ok ? "录像已保存到相册" : "保存录像失败")
+                }
+            }
+        }
+    }
+
+    /// 把一帧 BGRA 像素写进 H.264 轨（30 fps 上限，主线程调用）。
+    private func appendVideoFrame(_ data: Data, width: Int, height: Int) {
+        guard let adaptor = videoAdaptor, let input = videoInput,
+              input.isReadyForMoreMediaData, videoWriter?.status == .writing else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastVideoAt >= 1.0 / 30.0 else { return }
+        lastVideoAt = now
+        guard let pool = adaptor.pixelBufferPool else { return }
+        var buffer: CVPixelBuffer?
+        guard CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer) == kCVReturnSuccess,
+              let buffer else { return }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let base = CVPixelBufferGetBaseAddress(buffer) {
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            data.withUnsafeBytes { raw in
+                guard let src = raw.baseAddress else { return }
+                if stride == width * 4 {
+                    _ = memcpy(base, src, width * height * 4)
+                } else {
+                    for row in 0..<height {
+                        _ = memcpy(base.advanced(by: row * stride),
+                                   src.advanced(by: row * width * 4),
+                                   width * 4)
+                    }
+                }
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        if adaptor.append(buffer, withPresentationTime: CMTime(value: videoFrames, timescale: 30)) {
+            videoFrames += 1
+        }
+    }
+
     /** Starts recording the presented frames into a GIF. */
     private func startGif() {
         guard let core, mgbaMobileIsLoaded(core) else {
@@ -7171,6 +7326,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        if videoWriter != nil {
+            stopVideoRecording()
+        }
         gate.lock()
         paused = true
         gate.unlock()

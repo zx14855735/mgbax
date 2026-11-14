@@ -190,6 +190,11 @@
                     android:text="@string/gif_record" />
 
                 <Button
+                    android:id="@+id/btn_record"
+                    style="@style/MgbaButton"
+                    android:text="@string/video_record" />
+
+                <Button
                     android:id="@+id/btn_settings"
                     style="@style/MgbaButton"
                     android:text="@string/settings" />
