@@ -199,6 +199,10 @@ void GBoyLinkSession::onWireFrame(const QByteArray& wire) {
 	onWireFrame(wire, defaultSenderSlot());
 }
 
+void GBoyLinkSession::injectKeysForSlot(int slot, int keys) {
+	pushKeys(slot, keys);
+}
+
 void GBoyLinkSession::pushKeys(int slot, int keys) {
 	if (slot < 1 || slot > MAX_CONSOLES) {
 		return;

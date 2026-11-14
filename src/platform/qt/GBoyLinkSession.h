@@ -65,6 +65,14 @@ public:
 	/** Key mask the frame loop must inject into the console of {@code slot}. */
 	int keysForSlot(int slot);
 
+	/** 本机灌键（4 核/设备测试钩子）。
+	 *
+	 * 和 Android 的 injectKeysForSlot 对称：本机只有可见核有真人按键源，
+	 * slot3/4 作 NPC 队位恒 0 会一直停在柜台大厅，大竞技场就不放开走位。
+	 * 把可见核的掩码同步灌进 3/4，让 NPC 跟着走同一段对话。不灌 slot2
+	 * （跨网对端真人，覆盖会吞掉对方操作）。 */
+	void injectKeysForSlot(int slot, int keys);
+
 	/**
 	 * Handles one complete frame body (type followed by payload) from a peer.
 	 * {@code senderSlot} is the slot of the console owned by that peer; a bare
