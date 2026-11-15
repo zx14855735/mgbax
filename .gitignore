@@ -65,3 +65,6 @@ zcode-tmp-build*.log
 /android/local.properties
 /.gradle/
 /.cxx/
+/ios/typecheck/build/
+/ios/typecheck/last-errors.log
+/emulator.log
