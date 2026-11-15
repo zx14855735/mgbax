@@ -145,10 +145,29 @@ jobs:
           echo "===== GBOY_RT markers ====="
           grep 'GBOY_RT' lockstep.log | tail -30 || true
           echo "===== assertions ====="
-          grep -q 'GBOY_RT lockstep started players=4' lockstep.log
-          grep -q 'GBOY_RT mirror idx=1 frames=600 ok' lockstep.log
-          grep -q 'GBOY_RT mirror idx=2 frames=600 ok' lockstep.log
-          grep -q 'GBOY_RT mirror idx=3 frames=600 ok' lockstep.log
+          # 逐条断言并显式标注缺哪一个：原先用裸 grep -q，失败只有 exit 1，
+          # 注解里看不到是哪个标记缺，等于盲猜。改成 ::error:: 后可直接定位。
+          FAIL=0
+          for M in \
+            'GBOY_RT lockstep started players=4' \
+            'GBOY_RT mirror idx=1 frames=600 ok' \
+            'GBOY_RT mirror idx=2 frames=600 ok' \
+            'GBOY_RT mirror idx=3 frames=600 ok'
+          do
+            if grep -q "$M" lockstep.log 2>/dev/null; then
+              echo "OK: $M"
+            else
+              echo "::error::missing marker: $M"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "===== lockstep.log tail (last 80 lines) ====="
+            tail -80 lockstep.log 2>/dev/null || true
+            echo "===== GBOY_RT all markers ====="
+            grep 'GBOY_RT' lockstep.log 2>/dev/null | head -40 || true
+            exit 1
+          fi
           echo "LOCKSTEP RUNTIME OK (4 mirrors advanced 600+ frames under frame clock)"
 
       - name: Upload lockstep runtime log
