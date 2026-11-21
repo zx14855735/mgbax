@@ -212,11 +212,24 @@ public final class GBoyLinkSession {
         switch (type) {
             case GBoyFrames.TYPE_KEYS:
             case GBoyFrames.TYPE_KEYS_LOCAL:
+                /* 与 PC {@code GBoyLinkSession.cpp:117} 对齐：ready 之前的按键帧
+                 * 一律丢弃。官方握手顺序下极少命中（键位帧只在握手完成后才
+                 * 广播），挡的是帧乱序 / 对端提前发键 —— 那种帧若按真实按键
+                 * 推入，镜像核会带着半握手状态乱跳。 */
+                if (!isReady()) {
+                    events.onStatus("pre-ready key frame ignored");
+                    break;
+                }
                 pushKeys(senderSlot, GBoyFrames.intOf(body));
                 break;
             case GBoyFrames.TYPE_INPUT_2:
             case GBoyFrames.TYPE_INPUT_3:
             case GBoyFrames.TYPE_INPUT_4: {
+                /* 同上，见 PC {@code GBoyLinkSession.cpp:117} 的 pre-ready 门。 */
+                if (!isReady()) {
+                    events.onStatus("pre-ready key frame ignored");
+                    break;
+                }
                 int target = type == GBoyFrames.TYPE_INPUT_2 ? 2
                         : type == GBoyFrames.TYPE_INPUT_3 ? 3 : 4;
                 pushKeys(target, GBoyFrames.intOf(body));
@@ -256,12 +269,20 @@ public final class GBoyLinkSession {
                 }
                 break;
             }
-            case GBoyFrames.TYPE_REGISTER:
+            case GBoyFrames.TYPE_REGISTER: {
+                /* 与 PC {@code GBoyLinkSession.cpp:167-172} 对齐：重复注册帧
+                 * 不再重复触发 onReady —— 只有把 ready 从 false 抬到 true 的
+                 * 那一次才算「握手完成」。 */
+                boolean first;
                 synchronized (lock) {
+                    first = !ready;
                     ready = true;
                 }
-                events.onReady();
+                if (first) {
+                    events.onReady();
+                }
                 break;
+            }
             case GBoyFrames.TYPE_RECONNECT: {
                 /* 官方重连握手（AmA8tU.ARc23Z(Socket) 263-272）：裸 10 字节
                  * int32 6 + int16 100 + int32 rtt，在线上就是 type=100 的普通
@@ -285,9 +306,21 @@ public final class GBoyLinkSession {
                 // 13 是我们旧号，仅接收兼容，发送永远用 5。
                 events.onReset();
                 break;
-            case GBoyFrames.TYPE_STATE:
-                events.onState(stateOf(body));
+            case GBoyFrames.TYPE_STATE: {
+                /* C0 / ADR-002：type 6 有两种语义并存 —— 官方 case 6 是
+                 * 「u32 长度 + 整份 savestate」，path A 借壳 type 6 承载的是
+                 * 裸 20 字节 netLink 包（无长度头）。stateOf() 会把后者正确
+                 * 拒绝为空；此时**绝不能**继续派发空 blob，否则
+                 * applyRemoteState(empty) 返回 STATE_ERROR(1)，EmulatorActivity
+                 * 会把一条完全正常的 SIO 桥包当成载入失败直接 close() 断链
+                 * （与 AC5「只有载入失败才断链」冲突）。与 PC
+                 * CloudLink.cpp 的 `if (!state.isEmpty())` 门控对齐：空即忽略。 */
+                byte[] state = stateOf(body);
+                if (state != null && state.length > 0) {
+                    events.onState(state);
+                }
                 break;
+            }
             case GBoyFrames.TYPE_COUNTER:
                 synchronized (lock) {
                     remoteCounter = GBoyFrames.intOf(body);

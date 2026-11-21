@@ -84,18 +84,17 @@ public final class GBoySocketLinkTest {
     }
 
     private static void keyMaskReachesTheOtherConsole() {
-        // Both sessions sample/broadcast immediately on frame 0, then every
-        // fifth frame. Consume the guest's frame 0 before the host sends, so
-        // the next sample point is exactly frame 5.
+        // 11-13 起接收侧「最新即生效、不排队」：帧一到达就写进 currentKeys，
+        // backlog() 恒为 0，所以不能用队列长度判断帧是否穿过 socket。
         guest.session().onLocalFrame(0, 0);
         host.session().onLocalFrame(0, 0xAB);
-        check(waitFor(() -> guest.session().backlog(1) > 0, 3000),
-                "key frame arrives over the socket");
+        check(waitFor(() -> guest.session().keysForSlot(1) == 0xAB, 3000),
+                "key frame arrives over the socket and applies immediately");
         for (int f = 1; f <= 5; ++f) {
             guest.session().onLocalFrame(f, 0);
         }
         check(guest.session().keysForSlot(1) == 0xAB,
-                "slot 1 receives the host's key mask at the 12 Hz sample point");
+                "slot 1 holds the last received mask across local frames");
     }
 
     private static void continuousFramesReachPeer() {
@@ -190,8 +189,10 @@ public final class GBoySocketLinkTest {
                     "4-player sessions complete the socket handshake");
             h.session().onLocalFrame(0, 0xA1);
             g.session().onLocalFrame(0, 0xB2);
-            check(waitFor(() -> g.session().backlog(1) > 0
-                            && h.session().backlog(2) > 0, 3000),
+            /* 同 keyMaskReachesTheOtherConsole：接收侧不再排队，直接按落槽
+             * 后的键值判断帧是否穿过 TCP。 */
+            check(waitFor(() -> g.session().keysForSlot(1) == 0xA1
+                            && h.session().keysForSlot(2) == 0xB2, 3000),
                     "slot-typed key frames cross the TCP link");
             for (int f = 1; f <= 5; ++f) {
                 h.session().onLocalFrame(f, 0);

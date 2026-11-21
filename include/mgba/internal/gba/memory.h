@@ -183,6 +183,17 @@ void GBAPatch32(struct ARMCore* cpu, uint32_t address, int32_t value, int32_t* o
 void GBAPatch16(struct ARMCore* cpu, uint32_t address, int16_t value, int16_t* old);
 void GBAPatch8(struct ARMCore* cpu, uint32_t address, int8_t value, int8_t* old);
 
+/* 【2026-11-16】云端联机：吞掉 gen8 写 gLink.lag(+0x13, 绝对地址 0x03002B07)
+ * 的**非零** store，避免 LinkVSync 在一帧没跑满 9 次传送时把「时钟滞后」标成
+ * 致命错误（EXTRACT_LINK_ERRORS 含 LAG_MASTER 0x10000 / LAG_SLAVE 0x40000），
+ * 一次公网抖动就被 CheckErrorStatus() 拆链。
+ *
+ * 为什么必须拦在 store 上而不是事后清位：LinkVSync 在 VBlank 中断里写这个字节，
+ * 同一帧的 LinkMain2 → CheckErrorStatus 紧接着就读它，中间只有几百个周期，
+ * 任何轮询/事件都来不及插进去（实测 lgc=0，一次都没清到）。链路是否真的还活着
+ * 由传输层判断（对端 1s 内推过字才置位），真断链仍然让游戏自己报错。 */
+extern bool gbaLinkDropClockLag;
+
 uint32_t GBALoadMultiple(struct ARMCore*, uint32_t baseAddress, int mask, enum LSMDirection direction,
                          int* cycleCounter);
 uint32_t GBAStoreMultiple(struct ARMCore*, uint32_t baseAddress, int mask, enum LSMDirection direction,

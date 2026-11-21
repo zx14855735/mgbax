@@ -528,6 +528,9 @@ void SettingsView::updateConfig() {
 	saveSetting("muteOnFocusLost", m_ui.muteOnFocusLost);
 	saveSetting("muteOnMinimize", m_ui.muteOnMinimize);
 	saveSetting("savegamePath", m_ui.savegamePath);
+	/* 与移动端 saves_beside_rom 对应的持久键。旧版本只靠空的 savegamePath
+	 * 隐含这个状态，跨端同步配置时没有对应键；显式落盘后即可被同步层搬运。 */
+	saveSetting("savegameSameDir", m_ui.savegameSameDir);
 	saveSetting("savestatePath", m_ui.savestatePath);
 	saveSetting("screenshotPath", m_ui.screenshotPath);
 	saveSetting("patchPath", m_ui.patchPath);
@@ -752,6 +755,9 @@ void SettingsView::reloadConfig() {
 	loadSetting("muteOnFocusLost", m_ui.muteOnFocusLost);
 	loadSetting("muteOnMinimize", m_ui.muteOnMinimize);
 	loadSetting("savegamePath", m_ui.savegamePath);
+	/* 缺省值与旧行为一致：空 savegamePath 即「与 ROM 同目录」。显式持久化后
+	 * 以键为准；savegameSameDir 的 toggled 连接会在勾选时清空路径输入框。 */
+	loadSetting("savegameSameDir", m_ui.savegameSameDir, m_ui.savegamePath->text().isEmpty());
 	loadSetting("savestatePath", m_ui.savestatePath);
 	loadSetting("screenshotPath", m_ui.screenshotPath);
 	loadSetting("patchPath", m_ui.patchPath);

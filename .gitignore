@@ -50,6 +50,12 @@ version.c
 *.gb
 *.rom
 
+# 本地 ELF / ROM 备份与快照（体积大，不进仓库）
+# 注意：ignore 对已跟踪文件无效；已入库大文件需主理人评估后另行 git rm --cached
+/rom.elf
+/.rom-backup/
+/.rom-snap/
+
 # 测试 ROM 素材集
 /cinema/
 
@@ -68,3 +74,23 @@ zcode-tmp-build*.log
 /ios/typecheck/build/
 /ios/typecheck/last-errors.log
 /emulator.log
+
+# 打包产物（体积大，不入库）
+out/
+dist-portable/
+
+# iexpress 临时文件
+~mGBAx-single.*
+mgba-startup.log
+
+# 本地回归日志/测试产物（tmp_regress 下只有日志与 .ss1 存档）
+tmp_regress/
+
+# 2P 云端测试临时产物（AVD 实跑日志 / dry-run 输出；报告用 .md 仍正常跟踪）
+tests/2p-cloud/tmp-avd-run/
+tests/2p-cloud/.dryrun*
+
+# 本地语法检查临时输出
+/.syntax-*.txt
+/*.rsp
+/.t.*

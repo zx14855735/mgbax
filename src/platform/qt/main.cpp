@@ -24,6 +24,7 @@
 
 #include <QLibraryInfo>
 #include <QTranslator>
+#include "MgbaTranslate.h"
 
 #ifdef BUILD_GLES2
 #include <QSurfaceFormat>
@@ -64,6 +65,7 @@ using namespace QGBA;
 #ifdef Q_OS_WIN
 #include <windows.h>
 #include <cstdio>
+#include <QDir>
 
 /**
  * 崩溃现场落地：Windows 上进程被 SIGSEGV 带走时什么都不会留下，联机这种
@@ -199,24 +201,75 @@ int main(int argc, char* argv[]) {
 	QApplication::setDesktopFileName(QString("io.mgba.mGBA"));
 #endif
 
-	QTranslator qtTranslator;
-#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
-	if (qtTranslator.load(locale, "qt", "_", QLibraryInfo::location(QLibraryInfo::TranslationsPath))) {
-#else
-	if (qtTranslator.load(locale, "qt", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath))) {
-#endif
-		application.installTranslator(&qtTranslator);
+	/* 本项目以中文为默认界面语言：无条件加载 zh_CN，而不是跟随系统 locale。
+	 * 原因：系统 locale 为 en 时会命中 mgba-en.ts（英文源串），中文用户看到的仍是英文；
+	 * 而我们新增的 GBoy / 联机界面源码里本来就是中文，源串回退也不会变英文。
+	 * 需要对比原版英文或排查翻译问题时，用环境变量覆盖，例如
+	 *   MGBAX_LANG=en     → 加载 mgba-en.ts（英文）
+	 *   MGBAX_LANG=none   → 不装应用翻译，直接显示源串
+	 * 其余语言（de/ja/ko/ru…）同理由 MGBAX_LANG 指定。 */
+	QString uiLang = qEnvironmentVariable("MGBAX_LANG");
+	if (uiLang.isEmpty()) {
+		uiLang = QStringLiteral("zh_CN");
 	}
+
+	QTranslator qtTranslator;
+	/* Qt 自带控件（文件对话框、按钮）也走同一语言，规则同上：先按 uiLang，再退 zh_CN。 */
+	QString qtLang = uiLang;
+#if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
+	if (!qtTranslator.load(qtLang, "qt", "_", QLibraryInfo::location(QLibraryInfo::TranslationsPath))) {
+		qtTranslator.load(QStringLiteral("zh_CN"), "qt", "_",
+		                  QLibraryInfo::location(QLibraryInfo::TranslationsPath));
+	}
+#else
+	if (!qtTranslator.load(qtLang, "qt", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath))) {
+		qtTranslator.load(QStringLiteral("zh_CN"), "qt", "_",
+		                  QLibraryInfo::path(QLibraryInfo::TranslationsPath));
+	}
+#endif
+	application.installTranslator(&qtTranslator);
 
 #ifdef QT_STATIC
 	QTranslator qtStaticTranslator;
-	qtStaticTranslator.load(locale, "qtbase", "_", ":/translations/");
+	qtStaticTranslator.load(qtLang, "qtbase", "_", ":/translations/");
 	application.installTranslator(&qtStaticTranslator);
 #endif
 
 	QTranslator langTranslator;
-	if (langTranslator.load(locale, binaryName, "-", ":/translations/")) {
+	bool langLoaded = false;
+	if (uiLang.compare(QLatin1String("none"), Qt::CaseInsensitive) != 0) {
+		langLoaded = langTranslator.load(uiLang, binaryName, "-", ":/translations/");
+		if (!langLoaded && uiLang != QStringLiteral("zh_CN")) {
+			/* 指定的语言没有对应 .qm 时退回中文，避免静默显示英文。 */
+			langLoaded = langTranslator.load(QStringLiteral("zh_CN"), binaryName, "-",
+			                                 ":/translations/");
+		}
+	}
+	if (langLoaded) {
 		application.installTranslator(&langTranslator);
+	}
+
+	/* 中文界面走项目自带的翻译表（MgbaTranslate.cpp）：按源串查表、忽略 context，
+	 * 不依赖 .ts/.qm 的 context 匹配，因此不会出现「译文在文件里但界面不生效」。
+	 * 设 MGBAX_LANG=none 可关闭，用来对照原版英文。 */
+	static SimpleTranslator zhTable;
+	bool zhInstalled = false;
+	if (uiLang.startsWith(QStringLiteral("zh"), Qt::CaseInsensitive)) {
+		application.installTranslator(&zhTable);
+		zhInstalled = true;
+	}
+	/* 启动自检：把「界面语言 / 翻译表是否挂上 / 一个探针串的翻译结果」写进临时日志。
+	 * 排查「界面还是英文」时先看这个文件，能立刻区分「表没挂上」和「键对不上」。 */
+	{
+		QString logPath = QDir::tempPath() + QStringLiteral("/mgba-startup.log");
+		FILE* log = fopen(logPath.toUtf8().constData(), "a");
+		if (log) {
+			fprintf(log, "uiLang=%s installed=%d probe(Audio/Video)=%s\n",
+			        uiLang.toUtf8().constData(), zhInstalled ? 1 : 0,
+			        QCoreApplication::translate("QGBA::SettingsView", "Audio/Video")
+			                .toUtf8().constData());
+			fclose(log);
+		}
 	}
 
 	Window* w = application.newWindow();

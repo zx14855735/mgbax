@@ -68,6 +68,27 @@ static const uint32_t _agbPrintFunc = 0x4770DFFA; // swi 0xFA; bx lr
 uint32_t mgbaFlashWrites;
 uint32_t mgbaFlashLastAddr;
 uint32_t mgbaFlashLastValue;
+/* 见 internal/gba/memory.h 的注释：吞掉 gen8 写 gLink.lag 的非零 store。 */
+bool gbaLinkDropClockLag;
+static bool _dropLagStore(uint32_t address, uint32_t value, unsigned width) {
+	/* 一次性证据：确认 lag 的 store 到底有没有走到这里、当时开关是什么值。 */
+	if (width == 8 && address == 0x03002B07u) {
+		static int dbg;
+		if (dbg < 5) {
+			++dbg;
+			fprintf(stderr, "LAGSTORE n=%d v=%d blk=%d\n", dbg, (int) value, (int) gbaLinkDropClockLag);
+		}
+	}
+	if (!gbaLinkDropClockLag) {
+		return false;
+	}
+	uint32_t last = address + (width / 8) - 1;
+	if (address > 0x03002B07u || last < 0x03002B07u) {
+		return false;
+	}
+	unsigned shift = (0x03002B07u - address) * 8u;
+	return ((value >> shift) & 0xFFu) != 0;
+}
 static uint32_t _rom64Ws1Reads;
 static uint32_t _rom64Ws1Upper;
 static uint32_t _rom64Ws1Last;
@@ -939,6 +960,9 @@ void GBAStore32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycle
 	int32_t oldValue;
 	char* waitstatesRegion = memory->waitstatesNonseq32;
 	_probeStore(cpu, address, (uint32_t) value, 32);
+	if (_dropLagStore(address, (uint32_t) value, 32)) {
+		return;
+	}
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:
@@ -991,6 +1015,9 @@ void GBAStore16(struct ARMCore* cpu, uint32_t address, int16_t value, int* cycle
 	int wait = 0;
 	int16_t oldValue;
 	_probeStore(cpu, address, (uint32_t) (uint16_t) value, 16);
+	if (_dropLagStore(address, (uint32_t) (uint16_t) value, 16)) {
+		return;
+	}
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:
@@ -1137,6 +1164,60 @@ void GBAStore8(struct ARMCore* cpu, uint32_t address, int8_t value, int* cycleCo
 	int wait = 0;
 	uint16_t oldValue;
 	_probeStore(cpu, address, (uint32_t) (uint8_t) value, 8);
+	if (_dropLagStore(address, (uint32_t) (uint8_t) value, 8)) {
+		return;
+	}
+	/* 【临时排查插桩 2026-11-16】gen8 的 CloseLink() 第一句就是
+	 * `gLinkOpen = FALSE;`（bool8 → STRB）。挂在这里把 PC/LR 打出来，
+	 * 就能直接反查出是谁把联机链路拆掉的（LinkMain1 START0 走的是
+	 * CpuFill32(&gLink)，不会命中这里）。排查完删掉。 */
+	/* 【块交换取证 2026-11-16 20:5x】rem = gReceivedRemoteLinkPlayers(0x03002AC1)
+	 * 何时被写、写成什么，是「训练家卡片块有没有真正重组完成」的唯一判据。
+	 * 同时把两个接收槽的 pos/size（sBlockRecv @0x03002990，结构
+	 * { u16 pos; u16 size; u8 multiplayerId; } 每个 8 字节）打出来：
+	 * 只有 pos>=size 才会走完成分支 ⇒ 才能调 HandleReceiveRemoteLinkPlayer
+	 * ⇒ rem=1。brs 恒 0 是设计使然（link.c:601 的另一分支），不能当判据。 */
+	if (address == 0x03002AC1u) {
+		static int remN;
+		if (remN < 30) {
+			++remN;
+			fprintf(stderr, "REMW n=%d v=%d pc=%08X lr=%08X p0=%u/%u p1=%u/%u ms=%02X notrecv=%02X\n",
+			        remN, (int) value, cpu->gprs[15], cpu->gprs[14],
+			        (unsigned) GBAView16(cpu, 0x03002990u),
+			        (unsigned) GBAView16(cpu, 0x03002992u),
+			        (unsigned) GBAView16(cpu, 0x03002998u),
+			        (unsigned) GBAView16(cpu, 0x0300299Au),
+			        (unsigned) GBAView8(cpu, 0x03002A40u),
+			        (unsigned) GBAView8(cpu, 0x03002A3Cu));
+		}
+	}
+	if (address == 0x02027BB0u) {
+		static int linkCloseN;
+		if (linkCloseN < 60) {
+			++linkCloseN;
+			/* st = gLinkStatus(0x03002A9C)：CloseLink 之前的错误位现场；
+			 * sup = gSuppressLinkErrorMessage(0x03002AAC)；
+			 * ls/pc = gLink.state / playerCount（确认拆链发生在哪个阶段）。 */
+			/* res = gSpecialVar_Result(0x020219AC) ⇒ 就是脚本刚拿到的
+			 *       LINKUP_* 结果（1=SUCCESS 6=CONNECTION_ERROR 7/9=NOT_READY…）；
+			 * rem = gReceivedRemoteLinkPlayers(0x03002AC1) ⇒ 训练家卡片块是否真收到；
+			 * ccv = VAR_CABLE_CLUB_STATE(0x4087)：gSaveBlock1Ptr+0x139C+(0x4087-0x4000)*2
+			 *       = +0x14AA。只要它是 USING_*_BATTLE(1..3)，cable club 的
+			 *       OnFrame 脚本就会每帧调 CableClub_EventScript_ExitLinkRoom
+			 *       → special CloseLink，把刚建好的链路立刻拆掉。 */
+			uint32_t sb1 = GBAView32(cpu, 0x03004964u);
+			fprintf(stderr, "LINKOPEN n=%d v=%d pc=%08X lr=%08X r0=%08X r1=%08X r2=%08X st=%08X sup=%d ls=%d pcnt=%d res=%d rem=%d ccv=%d\n",
+			        linkCloseN, (int) value, cpu->gprs[15], cpu->gprs[14],
+			        cpu->gprs[0], cpu->gprs[1], cpu->gprs[2],
+			        GBAView32(cpu, 0x03002A9Cu),
+			        (int) GBAView8(cpu, 0x03002AACu),
+			        (int) GBAView8(cpu, 0x03002AF5u),
+			        (int) GBAView8(cpu, 0x03002AF7u),
+			        (int) (int16_t) GBAView16(cpu, 0x020219ACu),
+			        (int) GBAView8(cpu, 0x03002AC1u),
+			        sb1 ? (int) (int16_t) GBAView16(cpu, sb1 + 0x14AAu) : -1);
+		}
+	}
 
 	switch (address >> BASE_OFFSET) {
 	case GBA_REGION_EWRAM:

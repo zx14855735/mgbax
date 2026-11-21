@@ -1,0 +1,499 @@
+{
+  "schema": "cloud2p-evidence/1",
+  "scope": "PROXY-2PC",
+  "verdict": "NOT-CROSS-DEVICE",
+  "verdict_reason": "scope=PROXY-2PC forces NOT-CROSS-DEVICE regardless of E items",
+  "inputs": {
+    "lobby": [
+      ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_lobby_debug.log",
+      ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log"
+    ],
+    "sio": [
+      ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_sio.log",
+      ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_sio.log"
+    ],
+    "logcat": [],
+    "summary": [
+      ".zcode-tmp/cloud2p/E2-FAST\\summary.txt"
+    ]
+  },
+  "items": {
+    "E-1": {
+      "status": "UNOBSERVED",
+      "summary": "stable signature seen but no stable duration field",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_sio.log",
+          "line": 2890,
+          "text": "[diag] mu=0 brs=0000/0000 rem=0 cb=00000000 st=00000868 eb=00000000 keys=001 lstate=4 pc=2 intr=6 ridx=6 sidx=5 lag=0 rn=0 qf=0 linkup=6 ltype=4403 wl=0 px=10 py=4 menu=c0/0/1/w2 mt=-1 mid=-1 role=im8"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_sio.log",
+          "line": 89,
+          "text": "[diag] mu=0 brs=0000/0000 rem=0 cb=00000000 st=00000000 eb=00000000 keys=001 lstate=0 pc=0 intr=0 ridx=0 sidx=0 lag=0 rn=0 qf=0 linkup=1 ltype=0 wl=0 px=0 py=0 menu=c0/0/3/w1 mt=-1 mid=-1 role=im0/lid"
+        }
+      ],
+      "detail": {
+        "max_stable_samples": 182,
+        "duration": "no stable duration field",
+        "master_seen": true,
+        "trap_count": 1142
+      }
+    },
+    "E-2": {
+      "status": "FAIL",
+      "summary": "BATTLE=NO",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 3,
+          "text": "BATTLE=NO"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 8,
+          "text": "in_battle_frame=False battle_samples=0"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 10,
+          "text": "battle_window=[0x80B30C0,0x80BCA78) source=rom.map"
+        }
+      ],
+      "detail": {
+        "battle": "NO",
+        "samples": 0,
+        "window": "[0x80B30C0,0x80BCA78)",
+        "source": "rom.map",
+        "stale": false,
+        "in_battle_frame": "False",
+        "in_battle_frame_true": false
+      }
+    },
+    "E-3": {
+      "status": "UNOBSERVED",
+      "summary": "fps=[59.5, 60.5, 59.5, 60.5] + fast seen but NOT in-battle (BATTLE=NO battle_samples=0 in_battle_frame=False); menu-state fps does not satisfy E-3",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 11,
+          "text": "fps_pc_A=59.5 fps_pc_B=60.5"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 37,
+          "text": "multi_A=SIO multi me=0 role=0 mst=1 idx=27905 ok=27904 last=0.4ms peak=101.6ms to=1 fb=14131 mis=11 lgc=695 m0=8FFF m1=0011 wait=4/31ms n=64 cp=0/60 cf=0 pushOut=27905/0 pushIn=27904"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 38,
+          "text": "multi_B=SIO multi me=1 role=1 mst=0 idx=27904 ok=27904 last=20518.5ms peak=256110.1ms to=555435 fb=448648 mis=27904 lgc=3011 m0=8FFF m1=0011 wait=0/0ms n=0 cp=0/60 cf=0 pushOut=27903/0 pushIn=27904"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 37,
+          "text": "multi_A=SIO multi me=0 role=0 mst=1 idx=27905 ok=27904 last=0.4ms peak=101.6ms to=1 fb=14131 mis=11 lgc=695 m0=8FFF m1=0011 wait=4/31ms n=64 cp=0/60 cf=0 pushOut=27905/0 pushIn=27904"
+        }
+      ],
+      "detail": {
+        "fps": [
+          59.5,
+          60.5,
+          59.5,
+          60.5
+        ],
+        "fast_pc": true,
+        "fast_app": false,
+        "in_battle": false,
+        "battle_samples": 0,
+        "in_battle_frame": "False",
+        "sio_fast": {
+          "idx": "",
+          "pidx": "",
+          "pq": "",
+          "alignblk": "",
+          "n": "",
+          "reuse": "",
+          "miss": ""
+        },
+        "pa_frame": {
+          "channels": [],
+          "dirs": []
+        }
+      }
+    },
+    "E-4": {
+      "status": "PASS",
+      "summary": "via=p2p peerCandidates A=True B=True",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_lobby_debug.log",
+          "line": 133,
+          "text": "01:25:23.425 [sio-rtt] me=1645f544 n=25 avg=160ms peak=248ms via=p2p"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_lobby_debug.log",
+          "line": 136,
+          "text": "01:25:28.427 [sio-rtt] me=1645f544 n=24 avg=173ms peak=262ms via=p2p"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 12,
+          "text": "via=p2p  # [MGBAX_P2P]/diagnosticsText 优先"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 13,
+          "text": "peerCandidates_A=True peerCandidates_B=True"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 35,
+          "text": "rtt_A=01:30:18.474 [sio-rtt] me=1645f544 n=194 avg=10ms peak=39ms via=p2p"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 36,
+          "text": "rtt_B=01:30:18.491 [sio-rtt] me=a6e299ed n=234 avg=11ms peak=34ms via=p2p"
+        }
+      ],
+      "detail": {
+        "via": "p2p",
+        "peers": [
+          "True",
+          "True"
+        ],
+        "p2p_result": {
+          "me": "a6e299ed",
+          "event": "result",
+          "result": "ok",
+          "peerCandidates": "1",
+          "peerCandidateCount": "3",
+          "localCandidates": "3",
+          "directEnabled": "1",
+          "connected": "1",
+          "switchSent": "1",
+          "peerWants": "1",
+          "peerAgreed": "0",
+          "aborted": "0",
+          "via": "p2p"
+        },
+        "p2p_diag": {
+          "via": "p2p",
+          "avg": "4ms",
+          "peerCandidates": "3",
+          "direct": "1",
+          "ignored": "2",
+          "peer": "192.168.1.5:61179"
+        },
+        "raw_peerCandidates": "1",
+        "pa_direct": {},
+        "pa_frame": {
+          "channels": [],
+          "dirs": []
+        }
+      }
+    },
+    "E-5": {
+      "status": "PASS",
+      "summary": "negotiated A=A B=A official=False/False nav_leak=False",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 20,
+          "text": "mode_requested=A mode_negotiated_A=A mode_negotiated_B=A"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 21,
+          "text": "official_mode_A=False official_mode_B=False nav_at_leak=False"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log",
+          "line": 83,
+          "text": "01:25:18.439 [MGBAX_PATH] me=a6e299ed path=A mode=A officialMode=0 transport=p2p frameEnc=raw-20B-netLink"
+        }
+      ],
+      "detail": {
+        "negotiated": [
+          "A",
+          "A"
+        ],
+        "official": [
+          "False",
+          "False"
+        ],
+        "nav_leak": "False",
+        "mgbx_path": {
+          "me": "a6e299ed",
+          "path": "A",
+          "mode": "A",
+          "officialMode": "0",
+          "transport": "p2p",
+          "frameEnc": "raw-20B-netLink"
+        },
+        "c0_gate": {},
+        "pathB_2p_bus_ok": "N/A"
+      }
+    },
+    "E-6": {
+      "status": "UNOBSERVED",
+      "summary": "rem=1 + brs=0101 but n8=0 (block channel not proven); brs is cleared after card copy; rem=1 / ts are authoritative",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 32,
+          "text": "linkup_s=83 stable_s=-"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_sio.log",
+          "line": 5352,
+          "text": "[diag] mu=0 brs=0000/0000 rem=1 cb=00000000 st=00000149 eb=00000000 keys=000 lstate=4 pc=2 intr=158 ridx=3 sidx=2 lag=0 rn=1 qf=0 linkup=1 ltype=4403 wl=0 px=10 py=4 menu=c0/0/1/w2 mt=-1 mid=-1 role=i"
+        },
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_sio.log",
+          "line": 11538,
+          "text": "[diag] mu=0 brs=0101/0000 rem=1 cb=00000000 st=00000149 eb=00000000 keys=001 lstate=4 pc=2 intr=183 ridx=7 sidx=6 lag=0 rn=1 qf=0 linkup=1 ltype=4403 wl=0 px=6 py=8 menu=c0/0/1/w2 mt=-1 mid=-1 role=im"
+        }
+      ],
+      "detail": {
+        "linkup_s": "83",
+        "rem1": true,
+        "brs": true,
+        "n8": 0,
+        "note": "brs is cleared after card copy; rem=1 / ts are authoritative",
+        "badchecksum": {
+          "A": "0",
+          "B": "0"
+        }
+      }
+    },
+    "E-7": {
+      "status": "FAIL",
+      "summary": "scope=PROXY-2PC (same-machine/agent topology, not cross-device)",
+      "refs": [],
+      "detail": {
+        "scope": "PROXY-2PC",
+        "summary_scope": "PROXY-2PC",
+        "accounts": [],
+        "uuids": [
+          "BPEE,503802278d29e565208ada4d1df52c14",
+          "BPEE,919646730d3830bac2fe202e41f2278c"
+        ],
+        "devices": [
+          "570954",
+          "673931"
+        ],
+        "rooms": [
+          "570954",
+          "673931"
+        ],
+        "emulators": [],
+        "physical": [],
+        "strict": false,
+        "expected_uuids": []
+      }
+    },
+    "E-8": {
+      "status": "UNOBSERVED",
+      "summary": "missing binding: log set",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\summary.txt",
+          "line": 31,
+          "text": "exitcode_A=None exitcode_B=None"
+        }
+      ],
+      "detail": {
+        "commit": "87564834b2b24071deeb645c28f469add9457091",
+        "binary_md5": "9995E03CECA199F962B67126A7A5D13E",
+        "source_md5": "4C2470DED4C6BBC905352B0E45E1640F",
+        "inputs": {
+          "lobby": true,
+          "sio": true,
+          "logcat": false,
+          "summary": true
+        }
+      }
+    }
+  },
+  "anti_criteria": [
+    {
+      "name": "KNOWN_TRAP_LINKUP_RESIDUAL",
+      "hit": true,
+      "explanation": "linkup=1 with role=im0/lid0/st=0 is a menu leftover, not LINKUP success",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_sio.log",
+          "line": 89,
+          "text": "[diag] mu=0 brs=0000/0000 rem=0 cb=00000000 st=00000000 eb=00000000 keys=001 lstate=0 pc=0 intr=0 ridx=0 sidx=0 lag=0 rn=0 qf=0 linkup=1 ltype=0 wl=0 px=0 py=0 menu=c0/0/3/w1 mt=-1 mid=-1 role=im0/lid"
+        }
+      ]
+    },
+    {
+      "name": "RESET_SIGNATURE",
+      "hit": false,
+      "explanation": "last [diag] is lstate=1 pc=0 intr=0 (CpuFill32(&gLink) reset)",
+      "refs": [
+        {
+          "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_sio.log",
+          "line": 14524,
+          "text": "[diag] mu=0 brs=0101/0000 rem=0 cb=0816C96D st=00000000 eb=00004149 keys=000 lstate=1 pc=0 intr=0 ridx=0 sidx=0 lag=0 rn=0 qf=0 linkup=1 ltype=4403 wl=0 px=6 py=8 menu=c0/0/1/w2 mt=-1 mid=-1 role=im0/"
+        }
+      ]
+    },
+    {
+      "name": "ERROR_BITS",
+      "hit": false,
+      "explanation": "st contains 0x7F000 error bits at last sample (total=0)",
+      "refs": []
+    },
+    {
+      "name": "SAME_MACHINE_BATTLE",
+      "hit": false,
+      "explanation": "BATTLE=YES under PROXY-2PC is same-machine evidence, not cross-device",
+      "refs": []
+    },
+    {
+      "name": "TWO_ROOM_SPLIT",
+      "hit": true,
+      "explanation": "two distinct room ids in one run (session migrated, not one E2E)",
+      "refs": []
+    },
+    {
+      "name": "AVD_UNDER_STRICT",
+      "hit": false,
+      "explanation": "--strict-cross-device rejects emulator-backed CROSS-DEVICE-AVD scope",
+      "refs": []
+    },
+    {
+      "name": "EMULATOR_UNDER_STRICT",
+      "hit": false,
+      "explanation": "scope=REAL-DEVICE but only emulator device identities present",
+      "refs": []
+    }
+  ],
+  "diag_facts": {
+    "rows": 3396,
+    "max_run": 182,
+    "trap_count": 1142,
+    "err_count": 0,
+    "reset_count": 1031,
+    "n8_max": 0,
+    "last_trap": true
+  },
+  "netplay_diag": {
+    "p2p_result": {
+      "me": "a6e299ed",
+      "event": "result",
+      "result": "ok",
+      "peerCandidates": "1",
+      "peerCandidateCount": "3",
+      "localCandidates": "3",
+      "directEnabled": "1",
+      "connected": "1",
+      "switchSent": "1",
+      "peerWants": "1",
+      "peerAgreed": "0",
+      "aborted": "0",
+      "via": "p2p"
+    },
+    "direct_diag": {
+      "via": "p2p",
+      "avg": "4ms",
+      "peerCandidates": "3",
+      "direct": "1",
+      "ignored": "2",
+      "peer": "192.168.1.5:61179"
+    },
+    "path": {
+      "me": "a6e299ed",
+      "path": "A",
+      "mode": "A",
+      "officialMode": "0",
+      "transport": "p2p",
+      "frameEnc": "raw-20B-netLink"
+    },
+    "gate": {
+      "me": "a6e299ed",
+      "path": "A",
+      "envLinkMode": "A",
+      "envOfficialLink": "<unset>",
+      "envRearm": "1",
+      "fastMinOk": "8",
+      "fastMinOkSlave": "8",
+      "sioFast": "<unset>",
+      "sioLog": "1",
+      "linkDiag": "1",
+      "hsSignature": "lstate=4,pc=2,st&0x20",
+      "hsLog": "mgba_sio.log:[rearm]"
+    },
+    "rearm": {
+      "fired": 3,
+      "rounds": 148,
+      "hs1": 148
+    },
+    "slave_fast_align_blocked_max": 0,
+    "sio_fast": {},
+    "sio_fast_on": {},
+    "pa_frame": {
+      "channels": [],
+      "dirs": []
+    },
+    "pa_direct": {},
+    "c0_gate": {},
+    "summary": {
+      "scope": "PROXY-2PC",
+      "in_battle_frame": "False",
+      "pathB_2p_bus_ok": "N/A",
+      "slave_fast_align_blocked_A": "0",
+      "slave_fast_align_blocked_B": "0",
+      "badchecksum_A": "0",
+      "badchecksum_B": "0",
+      "bus_A": "-",
+      "bus_B": "-",
+      "p2p_avg_A": "11ms",
+      "p2p_avg_B": "4ms",
+      "p2p_ignored_A": "1",
+      "p2p_ignored_B": "2",
+      "peerCandidateCount_A": "3",
+      "peerCandidateCount_B": "3",
+      "path_A": "A",
+      "path_B": "A",
+      "env_fast_slave_align": "4",
+      "rearm_A_fired": "3",
+      "rearm_A_hs1": "145",
+      "rearm_A_rounds": "145",
+      "rearm_B_fired": "0",
+      "rearm_B_hs1": "0",
+      "rearm_B_rounds": "0"
+    },
+    "refs": {
+      "p2p_result_ref": {
+        "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log",
+        "line": 81,
+        "text": "01:25:18.430 [MGBAX_P2P] me=a6e299ed event=result result=ok peerCandidates=1 peerCandidateCount=3 localCandidates=3 directEnabled=1 connected=1 switchSent=1 peerWants=1 peerAgreed=0 aborted=0 via=p2p"
+      },
+      "direct_diag_ref": {
+        "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log",
+        "line": 260,
+        "text": "01:30:18.233 [direct] p2p-rtt via=p2p avg=4ms peerCandidates=3 direct=1 ignored=2 peer=192.168.1.5:61179"
+      },
+      "path_ref": {
+        "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log",
+        "line": 83,
+        "text": "01:25:18.439 [MGBAX_PATH] me=a6e299ed path=A mode=A officialMode=0 transport=p2p frameEnc=raw-20B-netLink"
+      },
+      "gate_ref": {
+        "file": ".zcode-tmp/cloud2p/E2-FAST\\b_tmp\\mgba_lobby_debug.log",
+        "line": 84,
+        "text": "01:25:18.442 [MGBAX_GATE] me=a6e299ed path=A envLinkMode=A envOfficialLink=<unset> envRearm=1 fastMinOk=8 fastMinOkSlave=8 sioFast=<unset> sioLog=1 linkDiag=1 hsSignature=lstate=4,pc=2,st&0x20 hsLog=m"
+      },
+      "rearm_ref": {
+        "file": ".zcode-tmp/cloud2p/E2-FAST\\a_tmp\\mgba_sio.log",
+        "line": 414,
+        "text": "[rearm] fired n=1 me=0 isMaster=8 hs=0 players=0 (hs set)"
+      }
+    }
+  }
+}

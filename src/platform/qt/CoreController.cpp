@@ -11,11 +11,13 @@
 #include "MemoryAccessLogController.h"
 #include "MultiplayerController.h"
 #include "Override.h"
+#include "ScriptedControl.h"
 
 #include <QAbstractButton>
 #include <QDateTime>
 #include <QMessageBox>
 #include <QMutexLocker>
+#include <QTimer>
 
 #include <mgba/core/serialize.h>
 #include <mgba/core/version.h>
@@ -38,6 +40,9 @@
 #ifdef M_CORE_GBA
 #include "sio_link.h"
 #endif
+
+/* 临时诊断（MGBAX_ARM_TEST 需要）：把 [arm] 结论写进 mgba_lobby_debug.log。 */
+#include "GbCloud.h"
 
 #include "moc_CoreController.cpp"
 
@@ -325,7 +330,12 @@ void CoreController::loadConfig(ConfigController* config) {
 	m_audioSync = config->getOption("audioSync", m_audioSync).toInt();
 	m_fpsTarget = config->getOption("fpsTarget").toFloat();
 	m_autosave = config->getOption("autosave", false).toInt();
-	m_autoload = config->getOption("autoload", true).toInt();
+	/* 注意：getOption(key, true) 缺省返回字符串 "true"，toInt() 会变成 0，
+	 * 导致全新配置下实际不读档（与 UI 上默认勾选的 Load last state 相矛盾）。
+	 * 这里按 SettingsView::loadSetting 的口径解释：未设置 = true，"0" = false。
+	 * 与移动端 auto_load_state 的默认值统一为 true。 */
+	QString autoloadOption = config->getOption("autoload");
+	m_autoload = autoloadOption.isNull() || (autoloadOption != QLatin1String("0") && autoloadOption != QLatin1String("false"));
 	m_autofireThreshold = config->getOption("autofireThreshold", m_autofireThreshold).toInt();
 	m_fastForwardVolume = config->getOption("fastForwardVolume", -1).toInt();
 	m_fastForwardMute = config->getOption("fastForwardMute", false).toInt();
@@ -336,6 +346,20 @@ void CoreController::loadConfig(ConfigController* config) {
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "volume");
 	mCoreConfigCopyValue(&m_threadContext.core->config, config->config(), "mute");
 	m_preload = config->getOption("preload", true).toInt();
+
+	/* 与移动端 saves_beside_rom 对齐的持久键。默认 true 与旧行为一致（空
+	 * savegamePath 即「存档放 ROM 同目录」）。同步进来的配置可能同时带
+	 * savegameSameDir=true 和一个陈旧的 savegamePath，这里先清掉路径，
+	 * 让紧随其后的 mCoreLoadForeignConfig 把 save 目录映射回 ROM 目录。 */
+	QString sameDirOption = config->getOption("savegameSameDir");
+	/* 兼容旧配置：没有这个键时按空的 savegamePath 推导，不能一律当成 true，
+	 * 否则已设置自定义存档目录的老用户会在升级后被清空路径。 */
+	bool sameDir = sameDirOption.isNull()
+		? config->getOption("savegamePath").isEmpty()
+		: (sameDirOption != QLatin1String("0") && sameDirOption != QLatin1String("false"));
+	if (sameDir) {
+		config->setOption("savegamePath", "");
+	}
 
 	QSize sizeBefore = screenDimensions();
 	m_activeBuffer.resize(256 * 224 * sizeof(mColor));
@@ -486,6 +510,40 @@ bool CoreController::lanLinkHostPlayers(quint16 port, int players) {
 	return m_lanLink && sioLinkHostPlayers(m_lanLink, port, players);
 }
 
+/* path B 四核本机回环：可见核当总线主机（槽位 0），三个镜像核按会话槽位
+ * 1/2/3 直接 join 进程内的 LocalBus。TCP 星型在 Windows 上每个核各算各的
+ * 轮次号，错位后主机永远收不到从机本轮的字（PB15：m1 恒 FFFF、mis≈5700）。 */
+bool CoreController::lanLinkHostPlayersLocal(int key, int players) {
+	if (!m_lanLink) {
+		m_lanLink = sioLinkCreate();
+	}
+	return m_lanLink && sioLinkHostPlayersLocal(m_lanLink, key, players);
+}
+
+/* path B 锁步房间：可见核已经跑在 mCoreThread 上（每帧 core->runLoop），
+ * 用 mgbaLockstepAttachThread 把协调器的 sleep/wake 绑到那条线程即可，
+ * 不需要 mgbaLockstepRunFrame 自管 park。3 个镜像核用
+ * mgbaMobileLinkJoinLockstep 加入同一个 key，四核在 SIO 传输轮次粒度硬同步。 */
+bool CoreController::lanLinkHostLockstep(int key, int players, int slot) {
+	struct MgbaLockstepRoom* room = mgbaLockstepHost(key, players);
+	if (!room) {
+		return false;
+	}
+	if (!hasStarted() || !m_threadContext.core) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	struct MgbaLockstepSlot* attached =
+	        mgbaLockstepAttachThread(room, m_threadContext.core, &m_threadContext, slot);
+	if (!attached) {
+		mgbaLockstepRelease(room);
+		return false;
+	}
+	m_lockstepRoom.store(room, std::memory_order_release);
+	m_lockstepSlot.store(attached, std::memory_order_release);
+	return true;
+}
+
 bool CoreController::lanLinkJoin(const QString& host, quint16 port) {
 	return lanLinkJoinPlayers(host, port, 2);
 }
@@ -498,10 +556,65 @@ bool CoreController::lanLinkJoinPlayers(const QString& host, quint16 port, int p
 }
 
 void CoreController::lanLinkClose() {
-	if (m_lanLink) {
-		sioLinkDestroy(m_lanLink);
-		m_lanLink = nullptr;
+	/* 锁步拆链也走 sioClose() → lanLinkClose()：setPeripheral(NULL) 会触发
+	 * driver deinit（_removePlayer），必须在核心线程上做。 */
+	{
+		struct MgbaLockstepSlot* slot = m_lockstepSlot.exchange(nullptr);
+		struct MgbaLockstepRoom* room = m_lockstepRoom.exchange(nullptr);
+		if (slot || room) {
+			auto detach = [](mCoreThread* thread) {
+				CoreController* c = static_cast<CoreController*>(thread->userData);
+				if (c->m_lockstepGarbageSlot) {
+					mgbaLockstepDetach(c->m_lockstepGarbageSlot);
+					c->m_lockstepGarbageSlot = nullptr;
+				}
+				if (c->m_lockstepGarbageRoom) {
+					mgbaLockstepRelease(c->m_lockstepGarbageRoom);
+					c->m_lockstepGarbageRoom = nullptr;
+				}
+			};
+			if (mCoreThreadIsActive(&m_threadContext)) {
+				m_lockstepGarbageSlot = slot;
+				m_lockstepGarbageRoom = room;
+				mCoreThreadRunFunction(&m_threadContext, detach);
+				m_lockstepGarbageSlot = nullptr;
+				m_lockstepGarbageRoom = nullptr;
+			} else {
+				if (slot) {
+					mgbaLockstepDetach(slot);
+				}
+				if (room) {
+					mgbaLockstepRelease(room);
+				}
+			}
+		}
 	}
+	struct SioLink* link = m_lanLink.exchange(nullptr);
+	if (!link) {
+		return;
+	}
+	/* 关闭必须落在跑核心的那个线程上。finishFrame() 每帧调用 sioLinkPump()，
+	 * 而 sioLinkClose() 里 GBASIOSetDriver(NULL) 之后 netLink 还要 join IO/心跳
+	 * 线程（几毫秒），这段时间 netLink 状态仍报 2 → 核心线程的 pollLink() 看见
+	 * 「已连接但本地驱动没挂」会立刻把 gba->sio.driver 重新挂到 sio->gbaLink.d；
+	 * 紧接着 sioLinkDestroy() 释放 SioLink，核心下次 SIO 传输就跳进已释放
+	 * （被复用清零）的函数表 —— 实测就是拆链后 0xC0000005 / AV@0（Faulting
+	 * module unknown, offset 0x0），栈上完全看不到。挪到核心线程的帧间执行，
+	 * 与 pump 天然互斥。 */
+	if (mCoreThreadIsActive(&m_threadContext)) {
+		m_lanLinkGarbage = link;
+		mCoreThreadRunFunction(&m_threadContext, [](mCoreThread* thread) {
+			CoreController* controller = static_cast<CoreController*>(thread->userData);
+			struct SioLink* l = controller->m_lanLinkGarbage;
+			controller->m_lanLinkGarbage = nullptr;
+			if (l) {
+				sioLinkDestroy(l);
+			}
+		});
+		m_lanLinkGarbage = nullptr;
+		return;
+	}
+	sioLinkDestroy(link);
 }
 
 int CoreController::lanLinkState() const {
@@ -516,8 +629,75 @@ int CoreController::lanLinkPlayers() const {
 	return m_lanLink ? sioLinkPlayerCount(m_lanLink) : 2;
 }
 
-// ---- mobile-parity features ----
+/* PC cloud-arm（对齐 Android EmulatorActivity:5467-5484 的 reload 段）：
+ * 把可见核的电池存档字节重新读进来并复位到第 0 帧，让「可见核」和三个
+ * 从电池存档冷启动的镜像核站在同一个起点上。loadRom() 那种整核重建在 Qt
+ * 侧会把 Window / LobbyView 手里的 controller 指针废掉，所以这里用
+ * 「载入存档 + mCoreThreadReset」这一对等价操作：
+ *   - loadSave() 把同一份字节写进 savedata（镜像核读的是同一个文件，
+ *     旧行为下可见核保留的是开局时读入的那份，可能已被游戏写脏）；
+ *   - reset() 走 mCoreThreadReset → GBAReset，EWRAM/IWRAM 清零、从 BIOS
+ *     重新开始，等价 loadRom 之后的第 0 帧；SRAM（电池存档）由
+ *     GBASavedataReset 保留，不会被冲掉。
+ * SioLinkHost 的 busHostThread 是独立线程，复位期间监听/accept 照常，
+ * finishFrame 里的 sioLinkPump 会在复位后重新把驱动挂回核心。 */
+bool CoreController::cloudArmReload(const QString& savePath) {
+	if (!hasStarted() || !m_threadContext.core) {
+		return false;
+	}
+	const QString path = savePath;
+	if (!path.isEmpty() && QFileInfo(path).isFile()) {
+		/* mCoreThreadRunFunction 会等核心线程执行完再返回，从链接线程调用是安全的
+		 * （与 saveState(QIODevice*) 同一套同步方式）。它只接受无捕获函数指针，
+		 * 路径经 m_armReloadPath 带进核心线程。 */
+		m_armReloadPath = path;
+		mCoreThreadRunFunction(&m_threadContext, [](mCoreThread* context) {
+			CoreController* controller = static_cast<CoreController*>(context->userData);
+			/* 必须 O_RDWR：GBALoadSave → GBASavedataInit 把 mapMode 设成
+			 * MAP_WRITE，随后 GBASavedataForceType 会按写模式映射存档文件。
+			 * Windows 的 _vfdMap 走 CreateFileMapping(PAGE_READWRITE)，只读
+			 * 句柄上会失败、且没有匿名内存兜底 → savedata->data 变成 NULL，
+			 * 游戏读档等于读到空白（实测 [arm] savedata data=0 nonFF=0，
+			 * 复位后 px=0 py=0 回到新开局）。前端正常载档走的也是 O_RDWR
+			 * （见 loadSave(const QString&) 里的 VFileDevice::open）。 */
+			VFile* vf = VFileDevice::open(controller->m_armReloadPath, O_RDWR);
+			if (!vf) {
+				GbCloud::debugLog(QStringLiteral("[arm] open failed: ") + controller->m_armReloadPath);
+				return;
+			}
+			if (!context->core->loadSave(context->core, vf)) {
+				vf->close(vf);
+			}
+#ifdef M_CORE_GBA
+			if (context->core->platform(context->core) == mPLATFORM_GBA) {
+				struct GBA* gba = static_cast<struct GBA*>(context->core->board);
+				struct GBASavedata* sd = &gba->memory.savedata;
+				size_t nonFF = 0;
+				size_t n = GBASavedataSize(sd);
+				if (sd->data) {
+					for (size_t i = 0; i < n; ++i) {
+						if (sd->data[i] != 0xFF) {
+							++nonFF;
+						}
+					}
+				}
+				GbCloud::debugLog(QStringLiteral("[arm] savedata type=%1 data=%2 size=%3 nonFF=%4")
+				                          .arg(int(sd->type))
+				                          .arg(sd->data ? 1 : 0)
+				                          .arg(n)
+				                          .arg(nonFF));
+			}
+#endif
+		});
+		m_armReloadPath.clear();
+	}
+	/* 必须在暂停之外复位：mCoreThreadReset 会等核心线程真正执行 reset，
+	 * 而暂停中的线程停在帧边界不会接请求。所以调用方先 reload 再 hold。 */
+	reset();
+	return true;
+}
 
+// ---- mobile-parity features ----
 void CoreController::setChannelVolumes(const int gains[6]) {
 	for (int i = 0; i < 6; ++i) {
 		m_channelGains[i] = gains[i];
@@ -874,6 +1054,21 @@ void CoreController::start() {
 	// mirrored into the sync struct (applyPersistedFeatures could not do it at
 	// startup). The SDL audio callback reads them from here.
 	syncAudioHold();
+	/* 【临时诊断，勿提交】MGBAX_ARM_TEST=<sav 路径>：启动 3 秒后在本进程里
+	 * 强制走一遍 cloudArmReload（reload 电池存档 + reset 到第 0 帧），用来
+	 * 单独验证这条路径有没有把存档读进可见核。 */
+	{
+		const QByteArray armTest = qgetenv("MGBAX_ARM_TEST");
+		if (!armTest.isEmpty()) {
+			QTimer::singleShot(3000, this, [this, armTest]() {
+				const QString p = QString::fromLocal8Bit(armTest);
+				const bool ok = cloudArmReload(p);
+				GbCloud::debugLog(QStringLiteral("[armtest] cloudArmReload=%1 path=%2")
+				                          .arg(ok ? 1 : 0)
+				                          .arg(p));
+			});
+		}
+	}
 }
 
 void CoreController::stop() {
@@ -1671,6 +1866,16 @@ void CoreController::updateKeys() {
 	int activeKeys = m_activeKeys | polledKeys;
 	activeKeys |= m_remoteKeys.load(std::memory_order_relaxed);
 	activeKeys |= m_threadContext.core->getKeys(m_threadContext.core) & ~m_removedKeys;
+#ifdef MGBAX_SCRIPTED_MASK
+	/* 脚本注入（MGBAX_SCRIPT_DIR/keys）在 **path A** 里也要能驱动可见核：
+	 * 这份掩码此前只有 CloudLink.cpp 的 path B 镜像核键源在用，
+	 * ScriptedControl 读到 m_mask 就到此为止，导致「两个 PC 实例跑同一局」
+	 * 这种回归场景根本推不动菜单（实测发 START(mask=8) 后 [diag] 的
+	 * menu= 一动不动，两个实例都停在 px=10 py=4 / lstate=1 / pc=0）。
+	 * 正常玩家不设 MGBAX_SCRIPT_DIR，globalMask() 恒 0，行为不变。 */
+	activeKeys |= ScriptedControl::globalMask();
+	ScriptedControl::noteKeysApplied(activeKeys);
+#endif
 	m_removedKeys = polledKeys;
 	m_threadContext.core->setKeys(m_threadContext.core, activeKeys);
 	m_lastKeys.store(activeKeys, std::memory_order_relaxed);
@@ -1697,11 +1902,13 @@ void CoreController::finishFrame() {
 	/* 只读诊断与联机对象无关：联机链路可能要到游戏已经进了菜单才建立，
 	 * 甚至整轮都没建立，脚本仍需靠游戏内存判定光标/项目码。 */
 	sioLinkDiagCore(m_threadContext.core);
-	if (m_lanLink) {
+	/* 锁步房间下 SIO 外设已换成 GBASIOLockstepDriver，不能再让 sioLinkPump
+	 * 的 pollLink 把 GbaLinkDriver 挂回去（那会破坏协调器的会合）。 */
+	if (!m_lockstepSlot.load(std::memory_order_acquire) && m_lanLink) {
 		// Per-frame top-up on the core thread: attaches the SIO driver once
 		// the peer connects, re-attaches after a reset, drains requests and
 		// publishes our current send register (mirrors mgbaMobilePumpLink).
-		sioLinkPump(m_lanLink, m_threadContext.core);
+		sioLinkPump(m_lanLink.load(std::memory_order_relaxed), m_threadContext.core);
 	}
 #endif
 	if (!m_hwaccel) {

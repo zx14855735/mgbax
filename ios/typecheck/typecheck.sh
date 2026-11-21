@@ -21,6 +21,21 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 SRC="$ROOT/ios/mGBA"
 BUILD="$HERE/build"
 
+# Windows: Swift toolchain is not on PATH by default. Probe an absolute path so
+# this harness works even when invoked from a stripped-PATH environment.
+if ! command -v swiftc >/dev/null 2>&1; then
+  # Add every Swift bin dir: swiftc.exe + its DLLs (BlocksRuntime.dll, UCRT)
+  # live across Toolchains/Runtimes/Tools, so PATH needs all of them.
+  for base in \
+    /c/Users/*/AppData/Local/Programs/Swift/Toolchains/*/usr/bin \
+    /c/Users/*/AppData/Local/Programs/Swift/Runtimes/*/usr/bin \
+    /c/Users/*/AppData/Local/Programs/Swift/Tools/* \
+    "/c/Program Files/Swift/Toolchains/"*/usr/bin \
+    "/c/Program Files/Swift/Runtimes/"*/usr/bin; do
+    [ -d "$base" ] && export PATH="$base:$PATH"
+  done
+fi
+
 # 必须清掉大小写重复的代理变量，否则 swiftc 会因为
 # Fatal error: Duplicate values for key 'ProcessEnvironmentKey("http_proxy")' 直接崩。
 CLEAN_ENV=(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u NO_PROXY

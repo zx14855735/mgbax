@@ -385,6 +385,19 @@ struct NetLink {
 	int peerCount;
 	uint32_t peerStale;
 	uint32_t peerDrops;
+	/* 联机排查：本端**实际推出/收到**的 PKT_PUSH 记账。
+	 *
+	 * 「主机推了、从机队列却是空的」这类问题，光看 peerCount 永远分不清
+	 * 「没发」「没收到」「收到了被当旧字丢掉」——三个数必须一起看：
+	 *   pushSent/pushErr  发送侧（主机）到底有没有把包交给 socket
+	 *   pushRecv          接收侧（从机）到底有没有把包投进 peerQ
+	 *   peerStale/peerDrops  收到了但它没被用上
+	 * 只在锁内累加，不打日志。 */
+	uint32_t pushSent;
+	uint32_t pushErr;
+	uint16_t pushSentIndex;
+	uint32_t pushRecv;
+	uint16_t pushRecvIndex;
 	/* 上一条取走的对端字的到达时刻（真实毫秒），用来量「排队时延」。 */
 	uint32_t lastPeerStamp;
 
@@ -701,6 +714,8 @@ static void* readerMain(void* arg) {
 			}
 			pthread_mutex_lock(&link->mu);
 			link->pushSeenAt = nowMs();
+			++link->pushRecv;
+			link->pushRecvIndex = pkt.seq;
 			if (link->peerCount == PEER_QUEUE) {
 				/* 队列满了说明有一轮的推送永远收不到（对端多推/丢包），
 				 * 丢掉最老的一条继续跑，至少别把整条链路卡死。 */
@@ -1256,13 +1271,28 @@ static int openListen(int port) {
 		return -1;
 	}
 	int one = 1;
+#ifdef _WIN32
+	/* 【同机双实例端口串号 2026-11-17】Windows 的 SO_REUSEADDR 允许**别人**
+	 * 重复绑定同一端口，于是 CloudLink 的 18781..18788 扫描形同虚设：同一台
+	 * PC 上 A/B 两个实例都「成功」监听 18781，各自的镜像核连 127.0.0.1:18781
+	 * 时按内核调度随机落到另一个进程的总线上（PB13/PB14 现场：镜像 1 秒连上、
+	 * 镜像 2/3 各耗满 4s 超时；link.log 里出现 `accepted slot=1 players=2` 与
+	 * `room full` 交错）。四核房间永远凑不齐，可见核 st=0/pc=0。
+	 * SO_EXCLUSIVEADDRUSE 才是独占语义：端口被占时 bind 直接失败，CloudLink
+	 * 会顺延到 18782/18783…，每个实例拿到自己的端口。remote_link.c:606 有同样
+	 * 的结论与实测（TIME_WAIT 下独占 bind 仍成功，不影响快速重启）。 */
+	setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*) &one, sizeof(one));
+#else
 	setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*) &one, sizeof(one));
+#endif
 	struct sockaddr_in addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons((uint16_t) port);
 	addr.sin_addr.s_addr = htonl(INADDR_ANY);
-	if (bind(fd, (struct sockaddr*) &addr, sizeof(addr)) < 0 || listen(fd, 1) < 0) {
+	/* backlog 至少覆盖全部镜像核：过去是 1，三个镜像核几乎同时 connect 时
+	 * 第二个/第三个 SYN 可能被延后到 accept 之后，start() 的 4s 等待因此空转。 */
+	if (bind(fd, (struct sockaddr*) &addr, sizeof(addr)) < 0 || listen(fd, BUS_MAX_PLAYERS) < 0) {
 		link_close(fd);
 		return -1;
 	}
@@ -1623,7 +1653,38 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 	struct LocalBus* lb = link->localBus;
 	int slot = link->player;
 	if (!lb || slot < 0 || slot >= BUS_MAX_PLAYERS) {
+		/* 【诊断】从机 busGot<0 时可能是压根没拿到 lb（link 被关过），
+		 * 也可能是轮次没对上；没有这条就分不清。env-gated，默认零开销。 */
+		static int noLbLogged;
+		if (getenv("MGBAX_LOCALBUS_DIAG") && noLbLogged++ < 8) {
+			fprintf(stderr, "LOCALBUS no-lb link=%p slot=%d host=%d\n",
+			        (void*) link, slot, link->busHost ? 1 : 0);
+		}
 		return -1;
+	}
+	if (getenv("MGBAX_LOCALBUS_DIAG")) {
+		static int hostLogged, slaveLogged[BUS_MAX_PLAYERS];
+		if (link->busHost && hostLogged++ < 8) {
+			fprintf(stderr, "LOCALBUS host key=%d lb=%p idx=%u players=%d attached=%d open=%d stop=%d aborted=%d\n",
+			        lb->key, (void*) lb, (unsigned) index, lb->players, lb->attached,
+			        lb->roundOpen ? 1 : 0, lb->stop ? 1 : 0, lb->roundAborted ? 1 : 0);
+		} else if (!link->busHost && lb->index > 50
+		           && slot >= 0 && slot < BUS_MAX_PLAYERS && slaveLogged[slot] < 12) {
+			/* 只记「主机已经跑过 50 轮」之后的现场：boot 期 open=0 的调用没有
+			 * 诊断价值，还会把配额吃光（PB17）。每个槽位单独配额，否则最快的
+			 * slot 会挡住其它槽位（PB18）。这里不再要求 have=true —— PB22 里
+			 * slot 1 只在 idx=2 push 过，必须看它后面对 hostIdx/doneIdx 的读数。 */
+			++slaveLogged[slot];
+			fprintf(stderr, "LOCALBUS slave key=%d lb=%p slot=%d myIdx=%u hostIdx=%u done=%u have=%d open=%d stop=%d aborted=%d pushed=%d pushIdx=%u bcastIdx=%u gen=%d\n",
+			        lb->key, (void*) lb, slot, (unsigned) index, (unsigned) lb->index,
+			        (unsigned) lb->doneIdx[slot],
+			        (!lb->stop && lb->roundOpen
+			         && (int16_t) (lb->index - lb->doneIdx[slot]) > 0) ? 1 : 0,
+			        lb->roundOpen ? 1 : 0, lb->stop ? 1 : 0,
+			        lb->roundAborted ? 1 : 0,
+			        lb->pushed[slot] ? 1 : 0, (unsigned) lb->pushIdx[slot],
+			        (unsigned) lb->bcastIndex, lb->bcastGen);
+		}
 	}
 	if (players < 2 || players > BUS_MAX_PLAYERS) {
 		players = lb->players;
@@ -1686,6 +1747,19 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 					++consumed;
 				}
 			}
+			{
+				static int hostLoopLogged;
+				if (getenv("MGBAX_LOCALBUS_DIAG") && index > 50 && hostLoopLogged++ < 24) {
+					fprintf(stderr, "LOCALBUS HOSTLOOP idx=%u got=%d need=%d con=%d p=%d%d%d pi=%u,%u,%u di=%u,%u,%u bc=%d/%u gen=%d\n",
+					        (unsigned) index, got, lb->attached, consumed,
+					        lb->pushed[1] ? 1 : 0, lb->pushed[2] ? 1 : 0, lb->pushed[3] ? 1 : 0,
+					        (unsigned) lb->pushIdx[1], (unsigned) lb->pushIdx[2],
+					        (unsigned) lb->pushIdx[3],
+					        (unsigned) lb->doneIdx[1], (unsigned) lb->doneIdx[2],
+					        (unsigned) lb->doneIdx[3],
+					        lb->roundBroadcast ? 1 : 0, (unsigned) lb->bcastIndex, lb->bcastGen);
+				}
+			}
 			if (got >= lb->attached && !lb->roundBroadcast) {
 				/* 收齐即快照广播一次（缺席槽只可能是掉线的从机）。 */
 				++lb->rounds;
@@ -1712,7 +1786,9 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 					lb->bcastWord[i] = ok ? lb->word[i] : (uint16_t) 0xFFFFu;
 				}
 				lb->bcastWord[0] = (uint16_t) own;
-				if (lb->bcastGen <= 3 || (lb->bcastGen % 400) == 0) {
+				/* 生产态静默：BCAST 逐轮诊断只在 MGBAX_LOCALBUS_DIAG=1 时输出。 */
+				if (getenv("MGBAX_LOCALBUS_DIAG")
+				    && (lb->bcastGen <= 3 || (lb->bcastGen % 400) == 0)) {
 					fprintf(stderr,
 					        "BCAST gen=%d idx=%u pw=%d%d%d%d pi=%u,%u,%u w=%04X,%04X,%04X bw=%04X,%04X,%04X,%04X\n",
 					        lb->bcastGen, (unsigned) index,
@@ -1794,6 +1870,14 @@ static int busRoundLocal(struct NetLink* link, uint16_t index, uint32_t own,
 			lb->pushed[slot] = true;
 			lb->pushIdx[slot] = want;
 			pthread_cond_broadcast(&lb->cv);
+			{
+				static int pushLogged[BUS_MAX_PLAYERS];
+				if (getenv("MGBAX_LOCALBUS_DIAG") && slot >= 0 && slot < BUS_MAX_PLAYERS
+				    && pushLogged[slot]++ < 24) {
+					fprintf(stderr, "LOCALBUS PUSH slot=%d want=%u word=%04X attached=%d\n",
+					        slot, (unsigned) want, (unsigned) (uint16_t) own, lb->attached);
+				}
+			}
 			/* 广播可能已经先到（主机收齐**别的**从机就把这一轮发了），
 			 * 那就直接消费；否则等新的一轮广播。用 bcastIndex 而不是
 			 * 单增的 bcastGen 判定，否则「错过的那一轮」会永远等不到
@@ -1844,8 +1928,14 @@ bool netLinkBusHostLocal(struct NetLink* link, int key, int players) {
 	if (!link) {
 		return false;
 	}
-	if (players < 3) {
-		players = 3;
+	/* 2 核也走进程内总线：跨设备 2P 的 fallback 是「每台设备各跑 2 核、
+	 * 网络只传按键」，本机这 2 核（可见核=1P + 1 镜像核=2P）就靠这条
+	 * LocalBus 会合。旧版本把下限焊死在 3，导致 players=2 被悄悄抬成 3，
+	 * netLinkBusPlayers() 报 3 人、SIO 槽位按 3 人铺，2P 会话从起点就错位。
+	 * 2 人时 host 占链路槽位 0、唯一镜像占槽位 1，busRoundLocal 用
+	 * lb->attached（=1）而不是 lb->players 判断收齐，天然支持。 */
+	if (players < 2) {
+		players = 2;
 	}
 	if (players > BUS_MAX_PLAYERS) {
 		players = BUS_MAX_PLAYERS;
@@ -2137,6 +2227,42 @@ void netLinkBusDiagTiming(struct NetLink* link, uint64_t* totalUs, int* slaveCal
 	if (slaveCalls) {
 		*slaveCalls = lb->slaveCalls;
 	}
+	pthread_mutex_unlock(&lb->mu);
+}
+
+/* 收敛快照：一次性读出轮次计数 + 内部墙钟 + 主机/各从机的轮次对齐状态。
+ * 与 netLinkBusDiag / netLinkBusDiagTiming 读同一把 lb->mu，字段取自同一
+ * 临界区，避免「计数是这一轮的、hostIndex 是下一轮的」这类采样错位。 */
+void netLinkBusDiagLocal(struct NetLink* link, struct NetLinkBusLocalDiag* out) {
+	if (!out) {
+		return;
+	}
+	memset(out, 0, sizeof(*out));
+	struct LocalBus* lb = link ? link->localBus : NULL;
+	if (!lb) {
+		return;
+	}
+	pthread_mutex_lock(&lb->mu);
+	out->players = lb->players;
+	out->attached = lb->attached;
+	for (int i = 0; i < BUS_MAX_PLAYERS; ++i) {
+		out->slotTaken[i] = lb->slotTaken[i] ? 1 : 0;
+		out->doneIdx[i] = lb->doneIdx[i];
+	}
+	out->roundOpen = lb->roundOpen ? 1 : 0;
+	out->roundAborted = lb->roundAborted ? 1 : 0;
+	out->stopped = lb->stop ? 1 : 0;
+	out->rounds = lb->rounds;
+	out->full = lb->full;
+	out->empty = lb->empty;
+	out->stale = lb->stale;
+	out->future = lb->future;
+	out->minLead = lb->minLead;
+	out->maxLead = lb->maxLead;
+	out->hostIndex = lb->index;
+	out->bcastIndex = lb->bcastIndex;
+	out->totalUs = lb->totalUs;
+	out->slaveCalls = lb->slaveCalls;
 	pthread_mutex_unlock(&lb->mu);
 }
 
@@ -2615,7 +2741,16 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
 	}
 	pthread_mutex_unlock(&link->mu);
 	if (!bus) {
-		sendPacket(link, PKT_PUSH, index, mode, local);
+		bool sent = sendPacket(link, PKT_PUSH, index, mode, local);
+		/* 发送侧记账：sendPacket 失败时只会返回 false（fd<0 / write 失败），
+		 * 以前这个返回值被直接丢掉，主机的推送在日志里完全不可见。 */
+		pthread_mutex_lock(&link->mu);
+		++link->pushSent;
+		link->pushSentIndex = index;
+		if (!sent) {
+			++link->pushErr;
+		}
+		pthread_mutex_unlock(&link->mu);
 		return;
 	}
 	if (!host) {
@@ -2644,8 +2779,15 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
  * strict = false —— 宽松模式（从机用）：不比 want，只要求轮次号比 minIndex 新
  *                   （即本机还没消费过的那一轮）。这样启动阶段堆积的旧推送会被
  *                   跳过，不会把从机拖慢一格；取到的轮次号由主机决定，从机直接
- *                   跟随。 */
-static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
+ *                   跟随。
+ *
+ * dropFutureOnTimeout —— 等待窗耗尽时，队首若是**后续轮次**的字，不再把它当
+ *                   本轮真字交出去，而是原样留在队列里并返回 false（下一轮
+ *                   want 前进到它时正好命中）。训练家卡片块交换期必须开这个：
+ *                   否则第 k+1 轮的块片段被当第 k 轮消费，ProcessRecvCmds 的
+ *                   逐块拼装永久错位 ⇒ rem 恒 0（FULLAUDIT D8）。非 cmd 期保持
+ *                   原来的恢复语义不变。 */
+static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut, bool dropFutureOnTimeout) {
 	if (!link) {
 		return false;
 	}
@@ -2709,6 +2851,14 @@ static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint1
 		}
 		uint32_t now = nowMs();
 		if ((int32_t) (expireAt - now) <= 0) {
+			/* 【CMD-GUARD / FULLAUDIT D8】块交换期绝不把「后续轮次」的字当
+			 * 本轮真字交付 —— 那会让训练家卡片块片段喂进错轮次、逐块校验
+			 * 永久错位（rem 恒 0）。返回 false 让本轮落回严格等待；队首那
+			 * 个字留在队列里，下一轮 want 前进到它时正好命中，不会丢字。
+			 * 非 cmd 期沿用原来的恢复语义。 */
+			if (dropFutureOnTimeout && ahead) {
+				break;
+			}
 			/* 等待窗耗尽：若队首是后续轮次，说明对端已经跳过去了（它自己
 			 * 超时收尾过、或从机刚加入时对齐），本轮永远不会再来。这时把
 			 * 队首交出去（调用方记一次 misorder）比死等/喂空槽都好 ——
@@ -2740,11 +2890,18 @@ static bool takePeerWord(struct NetLink* link, uint16_t want, bool strict, uint1
 }
 
 bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
-	return takePeerWord(link, want, true, want, timeoutMs, value, indexOut, cyclesOut);
+	return takePeerWord(link, want, true, want, timeoutMs, value, indexOut, cyclesOut, false);
+}
+
+/* CMD-GUARD 版：严格匹配且等待窗耗尽时**不**把未来轮次字冒成本轮真字。
+ * 只在训练家卡片块交换期（state>=4 && rem!=1）由调用方选用；其余路径语义
+ * 与 netLinkTakePeerWord 逐字节一致。 */
+bool netLinkTakePeerWordCmd(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
+	return takePeerWord(link, want, true, want, timeoutMs, value, indexOut, cyclesOut, true);
 }
 
 bool netLinkTakePeerWordAny(struct NetLink* link, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut) {
-	return takePeerWord(link, 0, false, minIndex, timeoutMs, value, indexOut, cyclesOut);
+	return takePeerWord(link, 0, false, minIndex, timeoutMs, value, indexOut, cyclesOut, false);
 }
 
 /* 对端队列里现在有几个字（只看不取）。
@@ -2819,6 +2976,50 @@ void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops) {
 	}
 	if (drops) {
 		*drops = link->peerDrops;
+	}
+	pthread_mutex_unlock(&link->mu);
+}
+
+/* 联机排查：PKT_PUSH 在两端各自「发出/收到」的计数（只看不改）。
+ *
+ * 唯一能区分三种情形的证据：主机 pushSent 涨而从机 pushRecv 不涨 = 包没到；
+ * 两边都涨但 peerQ 空 = 到了又被判旧字丢掉（peerStale 涨）；两边都不涨 =
+ * 主机侧根本没有起轮（游戏不再写 SIOCNT 起 MULTI）。 */
+void netLinkWireStats(struct NetLink* link, uint32_t* sent, uint32_t* errors,
+                      uint32_t* recv, unsigned* sentIndex, unsigned* recvIndex) {
+	if (sent) {
+		*sent = 0;
+	}
+	if (errors) {
+		*errors = 0;
+	}
+	if (recv) {
+		*recv = 0;
+	}
+	if (sentIndex) {
+		*sentIndex = 0;
+	}
+	if (recvIndex) {
+		*recvIndex = 0;
+	}
+	if (!link) {
+		return;
+	}
+	pthread_mutex_lock(&link->mu);
+	if (sent) {
+		*sent = link->pushSent;
+	}
+	if (errors) {
+		*errors = link->pushErr;
+	}
+	if (recv) {
+		*recv = link->pushRecv;
+	}
+	if (sentIndex) {
+		*sentIndex = link->pushSentIndex;
+	}
+	if (recvIndex) {
+		*recvIndex = link->pushRecvIndex;
 	}
 	pthread_mutex_unlock(&link->mu);
 }

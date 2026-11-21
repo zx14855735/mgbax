@@ -62,6 +62,11 @@ void netLinkPush(struct NetLink* link, uint16_t mode, uint32_t local, uint16_t i
  * cyclesOut 回带对端那一轮推送时的模拟时钟戳（对端没带就为 0）。 */
 bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut);
 
+/* CMD-GUARD 专用：严格取字，但等待窗耗尽时若队首是**后续轮次**的字则不交付、
+ * 返回 false（字留在队列里给下一轮）。只在训练家卡片块交换期使用，避免把
+ * 第 k+1 轮的块片段当第 k 轮消费导致 rem 恒 0（FULLAUDIT D8）。 */
+bool netLinkTakePeerWordCmd(struct NetLink* link, uint16_t want, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut);
+
 /* 【宽松取字】取队列里轮次号比 minIndex 新的最早一条。
  *
  * 为什么需要它：GBA 联机的轮次号必须由**主机单方面决定**（主机是链路的
@@ -78,6 +83,12 @@ bool netLinkTakePeerWord(struct NetLink* link, uint16_t want, int timeoutMs, uin
  * cyclesOut 语义与 netLinkTakePeerWord 相同。 */
 bool netLinkTakePeerWordAny(struct NetLink* link, uint16_t minIndex, int timeoutMs, uint32_t* value, uint16_t* indexOut, uint32_t* cyclesOut);
 void netLinkPeerStats(struct NetLink* link, uint32_t* stale, uint32_t* drops);
+/* 诊断：PKT_PUSH 的发出/收到计数（任一指针可为 NULL）。
+ * sent/errors = 本端 netLinkPush 实际写出/失败的包数；recv = 本端收包线程
+ * 投进 peerQ 的包数；sentIndex/recvIndex = 最近一次的轮次号。
+ * 用来把「没发」「没收到」「收到被判旧字丢掉」三件事分开。 */
+void netLinkWireStats(struct NetLink* link, uint32_t* sent, uint32_t* errors,
+                      uint32_t* recv, unsigned* sentIndex, unsigned* recvIndex);
 uint32_t netLinkPeerAge(struct NetLink* link);
 
 /* 对端队列里现在有几个字（不消费）。
@@ -143,6 +154,36 @@ void netLinkBusDiag(struct NetLink* link, int32_t* out);
 /* 进程内总线的墙钟诊断：busRoundLocal 内部累计微秒数与从机调用次数。
  * 非本地总线时两者都返回 0。不占用 netLinkBusDiag 的 7 项契约。 */
 void netLinkBusDiagTiming(struct NetLink* link, uint64_t* totalUs, int* slaveCalls);
+
+/* 一站式「收敛快照」诊断（供跨设备 2P 跑批断言，不改动上面两个函数的 7 项/2 项契约）。
+ *
+ * 把 netLinkBusDiag 的轮次计数、netLinkBusDiagTiming 的墙钟，以及
+ * 「主机当前轮次 / 各从机已消费轮次 / 槽位占用 / 本轮是否 abort」一次性读出。
+ * 跨设备 2P（每设备 2 核：host 槽 0 + 1 镜像槽 1）可用下列判据证明收敛：
+ *   rounds 持续递增、full≈rounds、empty≈0、stale/future≈0、lead≈[0,0]、
+ *   doneIdx[1] 跟随 hostIndex、slotTaken[0]=1 且 slotTaken[1]=1。
+ * 数组固定 4 项（GBA MULTI 槽位数）；非本地总线时所有字段为 0。 */
+struct NetLinkBusLocalDiag {
+	int32_t players;
+	int32_t attached;
+	int32_t slotTaken[4];
+	int32_t roundOpen;
+	int32_t roundAborted;
+	int32_t stopped;
+	int32_t rounds;
+	int32_t full;
+	int32_t empty;
+	int32_t stale;
+	int32_t future;
+	int32_t minLead;
+	int32_t maxLead;
+	uint16_t hostIndex;
+	uint16_t bcastIndex;
+	uint16_t doneIdx[4];
+	uint64_t totalUs;
+	int32_t slaveCalls;
+};
+void netLinkBusDiagLocal(struct NetLink* link, struct NetLinkBusLocalDiag* out);
 /* 一轮聚合。values[0..players-1] 按槽位排列，缺席的槽位填 0xFFFF。
  *
  * 主机：等所有**已连接**从机把 index 这一轮的字推上来，然后广播给所有从机。

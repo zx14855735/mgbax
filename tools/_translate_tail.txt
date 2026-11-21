@@ -1,0 +1,25 @@
+
+};
+
+} // namespace
+
+QString SimpleTranslator::translate(const char* context, const char* sourceText,
+                                    const char* disambiguation, int n) const
+{
+	Q_UNUSED(context);
+	Q_UNUSED(disambiguation);
+	if (!sourceText) {
+		return QString();
+	}
+	/* 首次调用时建表；QHash 查不到即返回空 QString，Qt 会回退到源串。 */
+	static const QHash<QString, QString> table = [] {
+		QHash<QString, QString> t;
+		t.reserve(int(sizeof(kZh) / sizeof(kZh[0])));
+		for (const Entry& e : kZh) {
+			t.insert(QString::fromUtf8(e.src), QString::fromUtf8(e.zh));
+		}
+		return t;
+	}();
+	Q_UNUSED(n);
+	return table.value(QString::fromUtf8(sourceText));
+}

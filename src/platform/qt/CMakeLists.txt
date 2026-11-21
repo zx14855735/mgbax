@@ -168,6 +168,8 @@ set(SOURCE_FILES
 	PlacementControl.cpp
 	RegisterView.cpp
 	ReportView.cpp
+	RecentRoms.cpp
+	RomCache.cpp
 	ROMInfo.cpp
 	RotatedHeaderView.cpp
 	SaveConverter.cpp
@@ -501,7 +503,7 @@ else()
 	qt5_wrap_ui(UI_SRC ${UI_FILES})
 endif()
 
-	add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
+	add_executable(${BINARY_NAME}-qt WIN32 MACOSX_BUNDLE main.cpp MgbaTranslate.cpp ${PROJECT_SOURCE_DIR}/res/mgba.icns ${SOURCE_FILES} ${PLATFORM_SRC} ${UI_SRC} ${AUDIO_SRC} ${RESOURCES})
 	if(WIN32)
 		target_link_libraries(${BINARY_NAME}-qt ws2_32)
 	endif()

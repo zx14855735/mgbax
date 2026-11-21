@@ -4,6 +4,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "DirectLink.h"
+#include "GbCloud.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -79,6 +80,33 @@ QString candidateText(quint32 ip, quint16 port) {
 	char buf[INET_ADDRSTRLEN] = {0};
 	inet_ntop(AF_INET, &addr, buf, sizeof(buf));
 	return QStringLiteral("%1:%2").arg(QString::fromLatin1(buf)).arg(port);
+}
+
+/**
+ * 候选地址优先级（数字越小越优先）。公告侧 candidates() 与接收侧
+ * setPeerCandidates() 必须用**同一把尺子**，否则会出 11-16 实测的那次
+ * 死锁：本机公告按 192.168 优先发出，但两端各自枚举网卡/STUN 时机不同，
+ * 对端实际收到的顺序被打乱（B 发 192.168 在前，A 收到却是 172.18 在前）。
+ * 打洞是「第一个 RESP 到达即锁定」，两端各按自己看到的顺序打，就锁到了
+ * 不同网卡（A→172.18 虚拟网卡、B→192.168 内网），此后互相的包全被
+ * 「忽略来自…」丢弃 ⇒ pushIn=0、联机 pc 永远停在 0。
+ *
+ * 收侧按同一规则重排后，两端都会优先打 192.168，锁到同一地址。
+ * 网段判断用**主机字节序**（ntohl 还原），不能用网络序去比掩码 ——
+ * 小端机上网络序的 192.168.1.5 是 0x0501A8C0，掩码永不匹配（11-15 踩过）。
+ */
+int candidatePriority(quint32 ipNetworkOrder) {
+	const quint32 host = ntohl(ipNetworkOrder);
+	if ((host & 0xFFFF0000u) == 0xC0A80000u) { // 192.168/16
+		return 0;
+	}
+	if ((host & 0xFF000000u) == 0x0A000000u) { // 10/8
+		return 1;
+	}
+	if ((host & 0xFFF00000u) == 0xAC100000u) { // 172.16/12（容器/虚拟机网卡）
+		return 3;
+	}
+	return 2; // 其它（公网网卡 / STUN 映射）
 }
 
 bool parseCandidate(const QString& text, quint32* ip, quint16* port) {
@@ -240,7 +268,17 @@ QStringList DirectLink::candidates() {
 	}
 	// 本机网卡地址：同局域网时这是最快路径（1-3ms），也顺手覆盖"公网打洞
 	// 失败但两台机器其实在同一台路由器后面"的情况。
+	//
+	// 【排序要按"这条路径实际有多快"来】枚举顺序是随机的，机器上常见的
+	// 172.16/12 地址（Hyper-V / WSL / Docker 的虚拟网卡）会排到真正的
+	// 192.168.x 前面；打洞是"第一个 RESP 到达即锁定对端"，于是两端会锁在
+	// 虚拟网卡上——实测 172.18.0.1 路径 RTT 22~74ms，而同一台机器的
+	// 192.168.1.5 只有 1~3ms。这里按网段给优先级：
+	//   192.168/16 与 10/8 是真局域网 → 最前
+	//   其它（公网网卡）           → 中间
+	//   172.16/12                  → 最后（几乎总是容器/虚拟机虚拟网卡）
 	const auto addresses = QNetworkInterface::allAddresses();
+	QList<QPair<int, QString>> ranked;
 	for (const QHostAddress& address : addresses) {
 		if (address.protocol() != QAbstractSocket::IPv4Protocol || address.isLoopback()) {
 			continue;
@@ -249,7 +287,18 @@ QStringList DirectLink::candidates() {
 		if (ip == 0) {
 			continue;
 		}
-		local.append(candidateText(ip, m_localPort));
+		// 用与接收侧共用的同一把尺子排序（网段判断在 candidatePriority 内，
+		// 内部按主机字节序还原；详见该函数注释里 11-16 的死锁根因）。
+		ranked.append(qMakePair(candidatePriority(ip), candidateText(ip, m_localPort)));
+	}
+	std::stable_sort(ranked.begin(), ranked.end(),
+	                 [](const QPair<int, QString>& a, const QPair<int, QString>& b) {
+		                 return a.first < b.first;
+	                 });
+	for (const auto& entry : ranked) {
+		if (!local.contains(entry.second)) {
+			local.append(entry.second);
+		}
 		if (local.size() >= 3) {
 			break;
 		}
@@ -297,7 +346,44 @@ void DirectLink::setPeerCandidates(const QStringList& list) {
 			m_peerCandidates.append(candidate);
 		}
 	}
+	/* 【11-16 死锁修复】必须按与公告侧 candidates() 相同的规则重排。
+	 * 原实现原样保留收到的顺序就打洞，而两端枚举网卡/STUN 的时机不同，
+	 * 对端实际收到的顺序会和它本地公告的不一致：B 本地发的是
+	 * 192.168 在前，A 收到的却是 172.18 在前。打洞「第一个 RESP 锁定」，
+	 * 于是 A 锁 172.18、B 锁 192.168，之后互相的包全被「忽略来自…」丢弃，
+	 * pushIn=0、联机 pc 永远 0（所有历史 flow 都卡在这里）。
+	 * 两端都用 candidatePriority 重排后，都会优先打 192.168，锁同一地址。
+	 * stable_sort 保留同优先级候选的原有相对顺序（如多块 192.168 网卡）。 */
+	std::stable_sort(m_peerCandidates.begin(), m_peerCandidates.end(),
+	                 [](const Candidate& a, const Candidate& b) {
+		                 return candidatePriority(a.ip) < candidatePriority(b.ip);
+	                 });
 	m_sendTargets = m_peerCandidates;
+	/* 机器可读的排序结果：下一次 P2P 死锁排查只要看这一行就能确认两端
+	 * 是否都把 192.168/10 排在前、172.16 虚拟网卡垫底（F7 的现场证据）。 */
+	GbCloud::debugLog(QStringLiteral("[direct] 对端候选排序 n=%1 sorted=%2")
+	                          .arg(m_peerCandidates.size())
+	                          .arg(sendTargetsText().join(QLatin1Char(','))));
+}
+
+QStringList DirectLink::sendTargetsText() const {
+	QStringList out;
+	for (const Candidate& c : m_sendTargets) {
+		out.append(candidateText(c.ip, c.port));
+	}
+	return out;
+}
+
+QString DirectLink::diagnosticsText() const {
+	const bool active = m_connected && m_havePeer && !m_closed;
+	const int avgMs = (m_rttUs + 500) / 1000;
+	return QStringLiteral("via=%1 avg=%2ms peerCandidates=%3 direct=%4 ignored=%5 peer=%6")
+	    .arg(active ? QStringLiteral("p2p") : QStringLiteral("tunnel"))
+	    .arg(avgMs)
+	    .arg(m_peerCandidates.size())
+	    .arg(active ? 1 : 0)
+	    .arg(m_ignoredFromCount)
+	    .arg(m_peerText.isEmpty() ? QStringLiteral("-") : m_peerText);
 }
 
 void DirectLink::startPunching() {
@@ -395,6 +481,7 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 	QByteArray payload(data + HEADER_BYTES, len - HEADER_BYTES);
 
 	if (type == TYPE_BYE) {
+		GbCloud::debugLog(QStringLiteral("[direct] 收到对端 BYE（seq=%1）→ 直连关闭").arg(seq));
 		m_closed = true;
 		return;
 	}
@@ -415,10 +502,25 @@ void DirectLink::handlePacket(const char* data, int len, const Candidate& from) 
 		m_havePeer = true;
 		m_lastRecv = nowMs();
 		pumpSend(); // 打通前攒下的消息（含整份存档的分片）立刻放行
+		GbCloud::debugLog(QStringLiteral("[direct] P2P 已启用 %1").arg(diagnosticsText()));
+	} else if (m_connected && (from.ip != m_peer.ip || from.port != m_peer.port)) {
+		/* 【连通后不再跟随来源地址】原来这里无条件 `m_peer = from;`，
+		 * 任何来源的包都会把对端改指过去。两台在同一局域网时，对端会
+		 * 同时出现在「内网地址」和「公网回环地址」两处，于是流量会在
+		 * 一次 RTT 抖动后悄悄从内网 1~3ms 迁到公网回环几十上百毫秒上，
+		 * 而界面上仍显示「直连已启用」——11-15 实测 PC↔模拟器 P2P
+		 * 每轮 72~159ms（真机同 Wi-Fi 只有 6~11ms），根因就在这里。
+		 * NAT 重绑定极少见，且换地址时对端会重新发 PROBE/CTRL 走新
+		 * 候选；真需要换地址时上面的 !m_connected 分支会接住。 */
+		++m_ignoredFromCount;
+		GbCloud::debugLog(QStringLiteral("[direct] 忽略来自 %1 的包（已连 %2） ignored=%3")
+		                          .arg(candidateText(from.ip, from.port))
+		                          .arg(m_peerText)
+		                          .arg(m_ignoredFromCount));
+		m_lastRecv = nowMs();
+	} else {
+		m_lastRecv = nowMs();
 	}
-	m_peer = from;
-	m_havePeer = true;
-	m_lastRecv = nowMs();
 
 	if (type == TYPE_RESP) {
 		if (payload.size() >= 4) {
@@ -508,6 +610,16 @@ void DirectLink::flushRetransmits(qint64 now) {
 			continue;
 		}
 		if (++out.tries > 40) {
+			/* 排障必需：重传超限是「直连悄悄消失」最常见的原因，但原来只把
+			 * m_closed 置真，日志里只剩上层一句「隧道连接已断开」，看不出是
+			 * 哪个分片、多大、RTT 多少。 */
+			GbCloud::debugLog(QStringLiteral(
+			        "[direct] 重传超限 → 关闭：seq=%1 kind=%2 %3B 待确认=%4 rtt=%5us")
+			                          .arg(out.seq)
+			                          .arg(int(out.kind))
+			                          .arg(out.payload.size())
+			                          .arg(m_outgoing.size())
+			                          .arg(m_rttUs));
 			m_closed = true;
 			return;
 		}
@@ -544,10 +656,18 @@ bool DirectLink::pump(int timeoutMs) {
 		sendPacket(TYPE_PROBE, 0, stamp, m_peer);
 	}
 	flushRetransmits(now);
+	/* 每 10 秒把机器可读的 P2P 状态落盘一次：avg= 是握手段快慢的唯一
+	 * 现场量（ADR-003 §6 / §7 R-2），direct=1 + ignored>0 用来证明 F5
+	 * 真的生效，而不是界面显示「直连已启用」的假象。 */
+	if (m_connected && now - m_lastDiagLog >= 10000) {
+		m_lastDiagLog = now;
+		GbCloud::debugLog(QStringLiteral("[direct] p2p-rtt %1").arg(diagnosticsText()));
+	}
 	// 空闲看门狗：对端掉线（切基站、NAT 表被清、程序退出）时 UDP 不会
 	// 报错，只会在重传里越耗越久。超过 IDLE_CLOSE_MS 一个包都没收到就
 	// 主动关掉，让上层回落到服务器隧道——总比游戏卡在等对端强。
 	if (m_connected && m_lastRecv && now - m_lastRecv > IDLE_CLOSE_MS) {
+		GbCloud::debugLog(QStringLiteral("[direct] %1ms 无入站包 → 空闲关闭").arg(now - m_lastRecv));
 		m_closed = true;
 	}
 	return got;

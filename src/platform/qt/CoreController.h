@@ -25,6 +25,8 @@
 #include <mgba/core/thread.h>
 #include <mgba/core/cache-set.h>
 
+#include "platform/mobile/link_lockstep.h"
+
 #ifdef M_CORE_GB
 #include <mgba/internal/gb/sio/printer.h>
 #endif
@@ -243,6 +245,12 @@ public slots:
 	/** 3/4 人：走 link_net 的星型总线（主机 accept 多个从机、每轮汇聚广播）。
 	 * players 为 2 时行为与上面的两参数版本完全一致。 */
 	bool lanLinkHostPlayers(quint16 port, int players);
+	/** path B：可见核与 3 个镜像核都在本进程，总线走进程内共享内存，
+	 *  key 由 CloudLink 每局生成并按同一值传给镜像核。 */
+	bool lanLinkHostPlayersLocal(int key, int players);
+	/** path B 锁步：创建/挂载进程内 GBASIOLockstepCoordinator 房间，
+	 *  可见核用 mCoreThread 的 wait/stopWaiting 参与 sleep/wake。 */
+	bool lanLinkHostLockstep(int key, int players, int slot);
 	bool lanLinkJoinPlayers(const QString& host, quint16 port, int players);
 	void lanLinkClose();
 	int lanLinkState() const;
@@ -254,8 +262,15 @@ public slots:
 	// interface so it does not have to link CoreController.
 	bool sioHost(quint16 port) override { return lanLinkHost(port); }
 	bool sioHostPlayers(quint16 port, int players) override { return lanLinkHostPlayers(port, players); }
+	bool sioHostPlayersLocal(int key, int players) override { return lanLinkHostPlayersLocal(key, players); }
+	bool sioLockstepHost(int key, int players, int slot) override { return lanLinkHostLockstep(key, players, slot); }
 	bool sioJoin(const QString& host, quint16 port) override { return lanLinkJoin(host, port); }
 	void sioClose() override { lanLinkClose(); }
+	/** cloud-arm：锁/放可见核帧循环（等价 Android 的 linkArmHold）。 */
+	void cloudArmHold(bool held) override { setPaused(held); }
+	/** cloud-arm：按电池存档字节重新载入并复位到帧 0（等价 Android 的
+	 *  restoreInitialSaveSnapshot + loadRom）。 */
+	bool cloudArmReload(const QString& savePath) override;
 #endif
 
 #if defined(M_CORE_GBA) || defined(M_CORE_GB)
@@ -391,6 +406,9 @@ private:
 	int m_stateSlot = 1;
 	QString m_statePath;
 	VFile* m_stateVf;
+	/** cloud-arm：cloudArmReload 要载入的电池存档路径（mCoreThreadRunFunction
+	 *  只收无捕获函数指针，参数靠成员带进核心线程）。 */
+	QString m_armReloadPath;
 	int m_loadStateFlags;
 	int m_saveStateFlags;
 
@@ -424,7 +442,18 @@ private:
 	MultiplayerController* m_multiplayer = nullptr;
 #ifdef M_CORE_GBA
 	GBASIODolphin m_dolphin;
-	struct SioLink* m_lanLink = nullptr;
+	/* finishFrame() 在核心线程每帧读它；lanLinkClose() 可能从云端线程关，
+	 * 所以用原子指针，保证「关闭中」不会把已释放的对象再 pump 一遍。 */
+	std::atomic<struct SioLink*> m_lanLink{nullptr};
+	/* path B 锁步：房间与挂载槽位。sioClose() 统一拆掉；为非 NULL 时
+	 * finishFrame() 跳过 sioLinkPump（SIO 外设已被锁步驱动接管）。 */
+	std::atomic<struct MgbaLockstepRoom*> m_lockstepRoom{nullptr};
+	std::atomic<struct MgbaLockstepSlot*> m_lockstepSlot{nullptr};
+	/* 跨线程拆锁步的交接槽（与 m_lanLinkGarbage 同理，必须落在核心线程）。 */
+	struct MgbaLockstepSlot* m_lockstepGarbageSlot = nullptr;
+	struct MgbaLockstepRoom* m_lockstepGarbageRoom = nullptr;
+	/* 跨线程关闭的交接槽：lanLinkClose() 写，核心线程上的 run-function 取走。 */
+	struct SioLink* m_lanLinkGarbage = nullptr;
 	int m_solarLevel = -1;
 	bool m_cartRumble = false;
 #endif

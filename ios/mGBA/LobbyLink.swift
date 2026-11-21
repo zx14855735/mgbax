@@ -29,6 +29,33 @@ import Foundation
  *      with an empty type 3, the relay sends type 0 and we acknowledge with
  *      an empty type 1.
  */
+/**
+ * 云端数据通道的最小公共接口。`LobbyKcpChannel`（KCP over UDP）与
+ * `LobbyWsTunnel`（WSS 信令隧道）都承载**完全相同的 LobbyFrames 字节流**，
+ * 上层握手/收发循环只依赖这个接口，切换通道不改一字节帧格式。
+ *
+ * 这是 PC `ILink` / Android `ILink` 的 iOS 最小等价物：
+ * `LobbyWsTunnel` 就是 PC `WsLink` / Android `WsLink` 的对位实现（见文件末尾）。
+ */
+private protocol LobbyDataLink: AnyObject {
+    func send(_ payload: Data)
+    func recv(timeoutMs: Int) -> Data?
+    var isClosed: Bool { get }
+    func close()
+}
+
+extension LobbyKcpChannel: LobbyDataLink {}
+
+/**
+ * RELEASE-OPS / 已知风险（2026-11-17，Agent 9）：
+ * 1) 本文件的 C0 能力协商与 WSS 隧道回退只在 Windows 上过了 `swiftc -parse`
+ *    （语法解析）。本机无 Xcode / iOS SDK，**未做类型检查、未做真机验证**，
+ *    交付前必须由 macOS runner（mgbax ios-build）编译并在双账号双 uuid 房间
+ *    实测「两端模式一致放行 / 不一致可见 fail / KCP 不通自动切隧道」。
+ * 2) 2P 云端交付门仍为 FAIL；本改动只补齐 iOS 的 C0 互操作面，不构成放行依据。
+ * 3) 隧道回退走的是大厅 `send_message` 短键名信封（≤100 字符），关键词过滤
+ *    与限流可能被服务器拒收；PC 侧记过 3 连拒收才收尾，iOS 侧同样只做最小实现。
+ */
 final class LobbyLink {
     struct Failure: Error {
         let message: String
@@ -38,6 +65,13 @@ final class LobbyLink {
     private static let roomWaitMs: Int64 = 15000
     /// Public relay slots are recycled slowly; keep retrying for a while.
     private static let relayWaitMs: Double = 300000
+    /// KCP 节点彻底无应答时的有界窗口：过去这段时间就切 WSS 隧道，
+    /// 避免 iOS 像以前那样在 `startRelayLink` 里空等 5 分钟（PC/Android 同款回退）。
+    private static let relayGraceMs: Int64 = 12000
+    /// C0 协商的对端模式有界等待窗口（PC `kPeerModeWaitMs = 2000`）。
+    private static let peerModeWaitMs: Int64 = 2000
+    /// 隧道 hello / 大厅模式标记的发送间隔（PC `TUNNEL_HELLO_MS = 2000`）。
+    private static let tunnelHelloMs: Int64 = 2000
     /// How long to wait for the peer's first key state before starting anyway.
     private static let peerKeyWaitMs: Int64 = 4000
     private static let keyIntervalMs: Int64 = 50
@@ -101,6 +135,15 @@ final class LobbyLink {
     private(set) var remoteSpeed: Int = -1
     /// 对端在 type 3 里上报的 RTT（官方 A5SV6n.f5293B9tovu），-1 = 未知。
     private(set) var remoteRtt: Int32 = -1
+    /// 对端 type 15 上报的诊断计数器，-1 = 未知（PC/Android `remoteCounter()` 同构）。
+    private(set) var remoteCounter: Int32 = -1
+    /// 当前云端房间的有效本机核数（房间人数，夹到 [2,4]）。与 PC
+    /// CloudLink.cpp 的 `qBound(2, room->playerCount, 4)` 同构；会话与镜像核
+    /// 集合共用此值，避免同一间 2P 房在 iOS 上仍跑 4 核（SYNC-AUDIT D1）。
+    /// player_joined 信令写入权威人数，默认 2。
+    var cloudPlayerCount: Int {
+        return max(2, min(4, Int(currentRoom?.playerCount ?? 2)))
+    }
     /// 本次连接是否已经发过 type 6（连接级去重）。每连一条新通道在
     /// `onConnected` 之前清零：一次会话最多发一份初始存档，重连后可以再发一份。
     private var stateSentThisConnection = false
@@ -110,6 +153,27 @@ final class LobbyLink {
     private var authToken: String?
     private var currentRoom: Room?
     private var hostRole = false
+
+    // MARK: - C0 能力协商状态（ADR-002）
+
+    /// 程序化/预置的模式覆盖（等价 PC `MGBAX_LINK_MODE` / Android `gboy_link_mode`）。
+    /// iOS 没有广播入口，提供 `setLinkMode(...)` + `UserDefaults` 两个入口。
+    private var linkModeOverride: GBoyLinkMode = .unknown
+    /// 是否显式许可回落（等价 `MGBAX_LINK_ALLOW_LEGACY` / `allow_legacy`）。
+    private var allowLegacyPeer = false
+    /// 已将 UserDefaults 里的预置读进覆盖值（每个实例只读一次，避免覆盖显式 setter）。
+    private var linkModePrefsApplied = false
+    /// 本次连接解析出的本机模式（`prepareLinkMode` 在握手前定下来）。
+    private var linkMode: GBoyLinkMode = .unknown
+    /// 对端声明的模式；由 type-1 能力位或 WSS `"m"` 标记写入。
+    private var peerLinkMode: GBoyLinkMode = .unknown
+    /// 已发出失败文案 / 已判定拒绝，防止重复 fail（PC `m_modeRejected`）。
+    private var modeRejected = false
+    /// C0 有界等待期间为真：房主广告线程的recv暂停，避免它抢走对端 hello。
+    private var isNegotiating = false
+
+    /// WSS 隧道回退通道（KCP 节点无应答时建立）；close()/重连时要一起收掉。
+    private var wsTunnel: LobbyWsTunnel?
 
     private var isClosed: Bool {
         lock.lock()
@@ -242,6 +306,81 @@ final class LobbyLink {
         lock.unlock()
     }
 
+    // MARK: - C0 mode entry points (ADR-002 / D4)
+
+    /// 程序化设置联机模式覆盖。传 `.unknown` 回到 iOS 默认（云端恒 B，见
+    /// `prepareLinkMode`：iOS 没有 path A，不能照搬 PC/Android 的「AUTO 2P→A」）。
+    func setLinkMode(_ mode: GBoyLinkMode) {
+        lock.lock()
+        linkModeOverride = mode
+        lock.unlock()
+    }
+
+    /// 字符串入口："A"/"B"/"AUTO"（大小写不敏感，等价 Android 的 `--es mode`）。
+    func setLinkMode(string: String) {
+        switch string.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+        case "A": setLinkMode(.a)
+        case "B": setLinkMode(.b)
+        default:  setLinkMode(.unknown)
+        }
+    }
+
+    /// 是否显式许可与未声明能力的旧端互通（等价 `allow_legacy=true`）。
+    func setAllowLegacyPeer(_ enabled: Bool) {
+        lock.lock()
+        allowLegacyPeer = enabled
+        lock.unlock()
+    }
+
+    /// iOS 没有 Android 那种广播入口，但 `UserDefaults` 是等价的持久化预置面：
+    /// `gboy_link_mode`（"A"/"B"/"AUTO"）与 `gboy_link_allow_legacy`（Bool）。
+    /// 每个实例只读一次，先于显式 `setLinkMode` 调用不会把调用方的值覆盖掉。
+    func applyStoredLinkModePrefs() {
+        lock.lock()
+        if linkModePrefsApplied {
+            lock.unlock()
+            return
+        }
+        linkModePrefsApplied = true
+        lock.unlock()
+        let defaults = UserDefaults.standard
+        if let text = defaults.string(forKey: "gboy_link_mode") {
+            setLinkMode(string: text)
+        }
+        if defaults.object(forKey: "gboy_link_allow_legacy") != nil {
+            setAllowLegacyPeer(defaults.bool(forKey: "gboy_link_allow_legacy"))
+        }
+    }
+
+    /// 握手前定下本机模式：显式覆盖优先，否则 **iOS 恒 B**。
+    ///
+    /// 这里有意不照搬 PC/Android 的 `AUTO 2P→A`：ADR-003 §5 / ADR-002 R3 说得很清楚，
+    /// iOS 云端 2P 不走 path A，而是 `armCloudMulticore` → `GBoyConsoleSet(players:4,
+    /// localSlot:1)` 的本机多核 lockstep，网络只传按键 —— 本质就是 path B。
+    /// 若声明 A 却跑 B，对端会按 path A 发 20 字节 SIO 包而我们只收按键，
+    /// 变成「协商通过但链路静默错配」，比直接 fail 更糟。声明 B 还能和官方
+    /// 4 核客户端（默认 official mode = B）直接互通；对端显式 A 时按 D3 可见 fail。
+    private func prepareLinkMode(_ room: Room) {
+        lock.lock()
+        let override = linkModeOverride
+        let resolved: GBoyLinkMode
+        if override == .a || override == .b {
+            resolved = override
+        } else {
+            resolved = .b
+        }
+        linkMode = resolved
+        peerLinkMode = .unknown
+        modeRejected = false
+        lock.unlock()
+    }
+
+    private var modeIsRejected: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return modeRejected
+    }
+
     /**
      * 官方 B25kr6:144-152：对端存档载入失败（`-5` → 会话错误 3、其它非 0 → 1）
      * 时直接 `return i` 结束这条对端会话。iOS 的载入发生在镜像线程的帧边界，
@@ -273,10 +412,13 @@ final class LobbyLink {
         channel = nil
         let open = session
         session = nil
+        let tunnel = wsTunnel
+        wsTunnel = nil
         keyIntervalRate = 1   // 上行节拍回 1x，别让下一局带着上一局的倍速起来
         lock.unlock()
         current?.close()
         open?.close()
+        tunnel?.close()
         onRemoteKeys(0)
         onRemoteSpeed(1)   // 会话结束把倍速还原成 1x（官方断开时速度归 1）
     }
@@ -289,6 +431,7 @@ final class LobbyLink {
      * skipped. `DBG:`/`DBGJ:` are the older spellings.
      */
     private func run(user: String, password: String, roomId: String?, token existing: String? = nil) throws {
+        applyStoredLinkModePrefs()
         if let roomId, let spec = LobbyLink.manualSpec(roomId) {
             try runManual(spec.node, asHost: spec.asHost, conv: spec.conv)
             return
@@ -379,15 +522,58 @@ final class LobbyLink {
                 room.nodePort = port
             }
         }
-        let link = try startRelayLink(host: room.nodeAddress ?? "", port: room.nodePort, room: room) {
-            self.currentNode(sig: sig, token: token, room: room, creator: asHost)
+        // C0：本机模式必须在注册帧之前定下来——注册帧能力位与 WSS `"m"` 都要用它。
+        prepareLinkMode(room)
+        let kcp: LobbyKcpChannel?
+        do {
+            kcp = try startRelayLink(host: room.nodeAddress ?? "", port: room.nodePort,
+                                     room: room, query: {
+                self.currentNode(sig: sig, token: token, room: room, creator: asHost)
+            }, windowMs: LobbyLink.relayGraceMs)
+        } catch {
+            kcp = nil
+            if !isClosed {
+                status("中继连接失败：\(LobbyLink.message(error))，自动切换到服务器隧道模式")
+            }
         }
         if isClosed {
-            link.close()
+            kcp?.close()
             return
         }
-        let text = asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P"
-        status("房号 \(room.roomId ?? "")\n中继 \(room.nodeAddress ?? ""):\(room.nodePort)\n\(text)")
+
+        let link: LobbyDataLink
+        if let kcp {
+            // KCP 路径：startRelayLink 内已完成注册帧 + GBoy 握手。
+            link = kcp
+            let text = asHost ? "云端联机已连接，你是 1P" : "云端联机已连接，你是 2P"
+            status("房号 \(room.roomId ?? "")\n中继 \(room.nodeAddress ?? ""):\(room.nodePort)\n\(text)")
+        } else {
+            // WSS 隧道回退：PC WsLink / Android WsLink 的最小 iOS 等价物，
+            // 承载完全相同的 LobbyFrames 字节流，只换传输。
+            status("中继节点没有回应，自动切换到服务器隧道模式")
+            let tunnel = LobbyWsTunnel(sig: sig, token: token, uuid: gameUuid(),
+                                       roomTag: room.roomId, mode: linkMode) { [weak self] mode, whereText in
+                self?.notePeerLinkMode(mode, where: whereText)
+            }
+            wsTunnel = tunnel
+            link = tunnel
+            sendRegister(link: link, room: room)
+            do {
+                try handshake(link: link, room: room)
+            } catch {
+                fail(LobbyLink.message(error))
+                return
+            }
+            let text = asHost ? "云端联机已连接，你是 1P（服务器隧道）"
+                              : "云端联机已连接，你是 2P（服务器隧道）"
+            status("房号 \(room.roomId ?? "")\n\(text)")
+        }
+
+        // C0 / ADR-002 D3：任何游戏帧发出之前过协商门，禁止静默降级。
+        guard negotiateLinkMode(sig: sig, token: token, uuid: gameUuid(), room: room,
+                                where: "云端中继") else {
+            return
+        }
         beginConnection()
         onConnected(asHost, nil)
         serve(link)
@@ -427,8 +613,11 @@ final class LobbyLink {
         lock.lock()
         let old = channel
         channel = nil
+        let oldTunnel = wsTunnel
+        wsTunnel = nil
         lock.unlock()
         old?.close()
+        oldTunnel?.close()
         status("正在重新连接中继…")
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else {
@@ -527,7 +716,11 @@ final class LobbyLink {
                 guard let address = room.nodeAddress, room.nodePort > 0 else {
                     throw Failure(message: "服务器没有返回中继节点")
                 }
-                link = try startRelayLink(host: address, port: room.nodePort, room: room, query: nil)
+                link = try startRelayLink(host: address, port: room.nodePort, room: room,
+                                          query: nil, windowMs: 60000)
+                guard link != nil else {
+                    throw Failure(message: "服务器没有返回中继节点")
+                }
                 self.status("✅ 联机自检通过：\n房号 \(room.roomId ?? "")"
                     + "\n中继 \(address):\(room.nodePort)"
                     + "\n信令与中继 UDP/KCP 均可达，本机可以云端联机对战。")
@@ -567,6 +760,8 @@ final class LobbyLink {
         room.nodeAddress = host
         room.nodePort = port
         room.playerCount = 2
+        // C0：注册帧能力位依赖本机模式，必须先解析（双通道：type-1 + WSS）。
+        prepareLinkMode(room)
         let link: LobbyKcpChannel
         if tcp {
             // A tunnel endpoint is a plain TCP listener: no session table, no
@@ -593,11 +788,20 @@ final class LobbyLink {
             sendRegister(link: link, room: room)
             try handshake(link: link, room: room)
         } else {
-            link = try startRelayLink(host: host, port: port, room: room, query: nil)
+            guard let relay = try startRelayLink(host: host, port: port, room: room, query: nil) else {
+                throw Failure(message: "中继节点没有回应")
+            }
+            link = relay
             if isClosed {
                 link.close()
                 return
             }
+        }
+        // C0：手动中继同样要过协商门（PC `runManual` → negotiateLinkMode("手动中继")）。
+        guard negotiateLinkMode(sig: nil, token: nil, uuid: gameUuid(), room: room,
+                                where: "手动中继") else {
+            link.close()
+            return
         }
         status("云端联机已连接，你是 \(asHost ? "1P" : "2P")（手动中继）")
         beginConnection()
@@ -619,10 +823,15 @@ final class LobbyLink {
      * - A node can be recycled by the server at any time, so every 30 seconds
      *   we ask for the current node and switch over when it changed.
      */
+    /// - `windowMs`：KCP 节点「完全没应答」的有界窗口。节点握手成功（HK）之后
+    ///   仍按 `relayWaitMs` 长等对手加入；但一直无应答时到点返回 nil，让调用方
+    ///   切 WSS 隧道，不再空等 5 分钟（PC `startRelayLink(..., windowMs)` 同构）。
     private func startRelayLink(host: String, port: UInt16, room: Room,
-                                query: (() -> String?)?) throws -> LobbyKcpChannel {
+                                query: (() -> String?)?,
+                                windowMs: Int64 = Int64(LobbyLink.relayWaitMs)) throws -> LobbyKcpChannel? {
         var failure: String?
         let deadline = Date().addingTimeInterval(Double(LobbyLink.relayWaitMs) / 1000.0)
+        let windowEnd = Date().addingTimeInterval(Double(windowMs) / 1000.0)
         let started = Date()
         var nextQuery = Date()
         var lastNotice = Date.distantPast
@@ -650,10 +859,12 @@ final class LobbyLink {
                         try handshake(link: current, room: room)
                         return current
                     } catch {
-                        // 已经连上中继，但对方还没注册：保留同一个会话继续等
+                        // 已经连上中继，但对方还没注册：保留同一个会话继续等。
+                        // 不要 `continue`：必须落到底部的窗口判断，否则 KCP 握手
+                        // 已成、GBoy 注册却一直等不到对端时，本端会空等满 5 分钟，
+                        // 永远不切隧道（PC 的 probe 失败也是 fall through 到窗口判断）。
                         failure = LobbyLink.message(error)
                         Thread.sleep(forTimeInterval: 1.0)
-                        continue
                     }
                 }
                 // 节点可能被回收了，重新问一次
@@ -687,6 +898,19 @@ final class LobbyLink {
                         + "公共节点要等对方也进入房间才会应答，请把房号发给对方\n"
                         + "若始终无回应，可能是网络拦截了 UDP（试试关闭 VPN/加速器）")
                 }
+                // 节点一直不应答（HS/HK 都收不到）：窗口到点就放弃 KCP，
+                // 返回 nil 让 connectRelay 切 WSS 隧道。节点已经应答时上面
+                // `handshake()` 成功分支早已 return，不会走到这里。
+                if Date() >= windowEnd {
+                    status("中继节点没有回应（已等待 \(windowMs / 1000) 秒），"
+                        + "自动切换到服务器隧道模式")
+                    link?.close()
+                    link = nil
+                    lock.lock()
+                    channel = nil
+                    lock.unlock()
+                    return nil
+                }
                 Thread.sleep(forTimeInterval: 1.0)
             } catch {
                 failure = LobbyLink.message(error)
@@ -718,7 +942,7 @@ final class LobbyLink {
      * 按键掩码（B25kr6.AYUAbz case 0）。所以握手期的 type 0 不能往镜像核喂键，
      * 由 `handle(_:steady:false)` 单独消化。
      */
-    private func handshake(link: LobbyKcpChannel, room: Room) throws {
+    private func handshake(link: LobbyDataLink, room: Room) throws {
         /* AUDIT C8：官方服务端从不主动发 type 3（它是「就绪 + 现在去灌各槽
          * 存档」的单向指令，客户端回空体 3 当 ack）。所以这里不能硬等：
          * 超时只说明对端没先发，按「玩家数未知」继续注册即可。
@@ -744,17 +968,20 @@ final class LobbyLink {
     }
 
     /// Registers this console at the relay. Sent exactly once per session.
-    private func sendRegister(link: LobbyKcpChannel, room: Room) {
+    private func sendRegister(link: LobbyDataLink, room: Room) {
         let players = max(1, room.playerCount)
+        // C0：2 参数版本保持官方 16 字节不变；多人房用 3 参数写能力位，
+        // 单人房（playerCount==1）由 registerFrame 内部保证不写 wire[15]。
         link.send(LobbyFrames.registerFrame(playerCount: players,
-                                            baseStateCount: room.baseStateCount))
+                                            baseStateCount: room.baseStateCount,
+                                            linkMode: linkMode))
     }
 
     /**
      * Reads frames until one of `type` shows up. 握手期还会收到中继的 type 0
      * （节奏值）与残留 type 3，交给 `handle(_:steady:false)` 消化而不是丢掉。
      */
-    private func expect(link: LobbyKcpChannel, type: Int, timeoutMs: Int64) throws -> Data {
+    private func expect(link: LobbyDataLink, type: Int, timeoutMs: Int64) throws -> Data {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
         while true {
             if let body = reader.next() {
@@ -777,7 +1004,7 @@ final class LobbyLink {
 
     // MARK: - Game loop
 
-    private func serve(_ link: LobbyKcpChannel) {
+    private func serve(_ link: LobbyDataLink) {
         var lastKey: Int64 = 0
         var sentKeys = Int32.min
         while !isClosed && !link.isClosed {
@@ -826,7 +1053,16 @@ final class LobbyLink {
     /// Official protocol tags key frames with the target console slot once
     /// more than two consoles are in play. 官方稳态按键号是 0（`AYUAbz` case 0），
     /// 9 是倍速；11/12/17 是我们自己的「带槽位按键」扩展，避开官方 0/1/2/3/5/6/9。
+    /// Mirrors GBoyLinkSession.keyFrameForLocalSlot() on PC/Android: a 2P
+    /// session (or localSlot==1) always sends bare TYPE_KEYS; only 3/4P rooms
+    /// tag the frame with the target slot. Previously this Swift version keyed
+    /// only off localSlot, so a 2P localSlot==2 would emit TYPE_INPUT_2 while
+    /// PC/Android emit TYPE_KEYS (SYNC-AUDIT-SESSION D4). iOS cloud currently
+    /// pins localSlot=1 so this is a latent, not live, divergence.
     private func keyFrameType() -> Int {
+        if cloudPlayerCount <= 2 || localSlot == 1 {
+            return LobbyFrames.typeKeys
+        }
         switch localSlot {
         case 2: return LobbyFrames.typeInput2
         case 3: return LobbyFrames.typeInput3
@@ -850,7 +1086,14 @@ final class LobbyLink {
     /// the opponent. Delivering slot 1 would overwrite our own visible
     /// core's keys（Android 实测教训）。
     private var bareKeysSenderSlot: Int {
-        localSlot == 1 ? 2 : 1
+        // Mirrors GBoyLinkSession.defaultSenderSlot() / GBoyLinkSession.java:
+        // the playerCount gate matters for anomalous/3P+ slots; for the normal
+        // 2P localSlot=1/2 case both branches agree (1→2, 2→1).
+        // FULL-SOURCE-AUDIT D9: the old Swift version ignored playerCount.
+        if cloudPlayerCount > 2 {
+            return localSlot == 1 ? 2 : 1
+        }
+        return localSlot == 2 ? 1 : 2
     }
 
     /**
@@ -872,6 +1115,24 @@ final class LobbyLink {
             return
         }
         switch type {
+        case LobbyFrames.typeName:
+            // 官方 type 2：32 字节定长 ROM 哈希 + int16 长度 + ROM 名，只用于
+            // 显示对端身份。与 PC `GBoyLinkSession.cpp:178-196` / Android
+            // `GBoyLinkSession.java:253-270` 同口径（官方此步不校验，别加校验）。
+            let nameBytes = [UInt8](LobbyFrames.payload(of: body))
+            if nameBytes.count >= 34 {
+                let end = nameBytes[0..<32].firstIndex(of: 0) ?? 32
+                let hash = String(decoding: nameBytes[0..<end], as: UTF8.self)
+                let len = Int(nameBytes[32]) << 8 | Int(nameBytes[33])
+                let descCount = min(len, max(0, nameBytes.count - 34))
+                let desc = String(decoding: nameBytes[34..<(34 + descCount)], as: UTF8.self)
+                status("peer \(hash) (\(desc))")
+            }
+        case LobbyFrames.typeRegister:
+            // C0 / ADR-002：对端 type-1 注册帧的能力位（body[11] == wire[15]）。
+            // 旧客户端/官方 APK 的空体或 0x00 → UNKNOWN，notePeerLinkMode 会忽略；
+            // 中继不转发本帧时还有 WSS 主协商通道兜底。
+            notePeerLinkMode(LobbyFrames.linkModeOf(body: body), where: "type-1 注册帧能力位")
         case LobbyFrames.typeKeysLocal:
             deliverKeys(bareKeysSenderSlot, body)
         case LobbyFrames.typeInput2:
@@ -897,6 +1158,18 @@ final class LobbyLink {
                     }
                 }
             }
+        case LobbyFrames.typeReconnect:
+            /* 官方重连握手（AmA8tU.ARc23Z(Socket):263-272）：对端重连上同一条
+             * 会话，语义等同一次握手。PC `GBoyLinkSession.cpp:135-159` /
+             * Android `GBoyLinkSession.java:286-301` 都把 type 100 当 ready
+             * 处理、刷新 RTT、报一条状态，绝不能落到 default 当未知帧丢掉。
+             * iOS 云端通道自身的重连走 `reconnectRelay()` 的完整握手，这里收到
+             * type 100 只补记账（RTT + 状态文案），不重复触发 onConnected。 */
+            let rtt = LobbyFrames.intValue(of: body)
+            lock.lock()
+            remoteRtt = rtt
+            lock.unlock()
+            status("peer reconnected, rtt=\(rtt)")
         case LobbyFrames.typeSpeed:
             // 官方 9：倍速（1 = 1x、-1 = 0.5x、2 = 2x、4 = 4x）。官方收到后
             // 直接写 AaHO0E.AZkASS 并重算帧闸；iOS 交给帧循环按倍率缩放。
@@ -915,6 +1188,14 @@ final class LobbyLink {
             if let state = LobbyFrames.state(of: body), !state.isEmpty {
                 onRemoteState(state)
             }
+        case LobbyFrames.typeCounter:
+            // 诊断计数器，与 PC/Android `remoteCounter()` 对齐。
+            lock.lock()
+            remoteCounter = LobbyFrames.intValue(of: body)
+            lock.unlock()
+        case LobbyFrames.typeEvent:
+            // 带外事件，PC/Android 只写状态文案，iOS 同口径。
+            status("event \(LobbyFrames.intValue(of: body))")
         case LobbyFrames.typeDisconnect:
             /* 官方 10 = 对端通知断开（`AYUAbz` case 10 → UI msg 2，无 payload）。
              * 与 type 1 空体同一条收尾：正常断开，不当作错误。close() 让
@@ -1024,6 +1305,15 @@ final class LobbyLink {
             }
             var last: Int64 = 0
             while !self.isClosed {
+                // C0 有界等待期间让出 recv：信令 socket 的入站消息是一个共享队列，
+                // 广告线程若在协商窗口里抢先把对端 hello 读走，对端模式会永远 UNKNOWN。
+                self.lock.lock()
+                let negotiating = self.isNegotiating
+                self.lock.unlock()
+                if negotiating {
+                    Thread.sleep(forTimeInterval: 0.05)
+                    continue
+                }
                 // Keep the websocket alive; recv() also drains server pings.
                 _ = sig.recv(timeoutMs: 1500)
                 let now = Int64(Date().timeIntervalSince1970 * 1000)
@@ -1176,13 +1466,130 @@ final class LobbyLink {
         return prefix + "," + hex
     }
 
+    // MARK: - C0 negotiation gate (ADR-002 D3)
+
+    /// 记录对端声明的模式。任一通道先到都生效（type-1 能力位 / WSS `"m"`）。
+    /// 冲突与畸形都直接 fail（置 closedFlag），绝不静默降级。
+    private func notePeerLinkMode(_ mode: GBoyLinkMode, where whereText: String) {
+        guard mode != .unknown else { return }
+        lock.lock()
+        if modeRejected || peerLinkMode == .invalid {
+            lock.unlock()
+            return
+        }
+        let local = linkMode
+        if mode == .invalid {
+            peerLinkMode = .invalid
+            modeRejected = true
+            lock.unlock()
+            fail("【联机模式协商失败】本机=\(local.displayName)，对端能力位畸形（\(whereText)）。"
+                + "畸形 = 缺少能力位标记（0x40）或保留了非 0 位，无法确认两端帧格式一致，"
+                + "已断开以避免两套帧格式同流。请两端使用相同版本，并确认两端联机模式设置相同"
+                + "（程序化入口 setLinkMode 或预置 gboy_link_mode=A|B）。")
+            return
+        }
+        if local != .unknown && mode != local {
+            peerLinkMode = mode
+            modeRejected = true
+            lock.unlock()
+            fail("【联机模式协商失败】本机=\(local.displayName)，对端=\(mode.displayName)（\(whereText)）。"
+                + "两套帧格式不能同流，已断开；请在两端设置相同的联机模式"
+                + "（程序化入口 setLinkMode 或预置 gboy_link_mode=A|B）。")
+            return
+        }
+        peerLinkMode = mode
+        lock.unlock()
+    }
+
+    /// 协商门。必须在任何游戏帧发出之前调用；对端未知时给 2s 有界等待
+    /// （PC `kPeerModeWaitMs = 2000`，期间只排空信令，不消费游戏帧）。
+    private func negotiateLinkMode(sig: LobbySignaling.Session?, token: String?, uuid: String,
+                                   room: Room, where whereText: String) -> Bool {
+        lock.lock()
+        if modeRejected {
+            lock.unlock()
+            return false
+        }
+        let local = linkMode
+        let legacy = allowLegacyPeer
+        lock.unlock()
+
+        if local != .unknown, let sig, let token {
+            let deadline = Date().addingTimeInterval(Double(LobbyLink.peerModeWaitMs) / 1000.0)
+            lock.lock()
+            isNegotiating = true
+            lock.unlock()
+            defer {
+                lock.lock()
+                isNegotiating = false
+                lock.unlock()
+            }
+            var lastHello = Date.distantPast
+            while !isClosed && !modeIsRejected && Date() < deadline {
+                lock.lock()
+                let peer = peerLinkMode
+                lock.unlock()
+                if peer != .unknown { break }
+                // 主协商通道：WSS hello/accept 带 `"m"`，两端必然互见。
+                if Date().timeIntervalSince(lastHello) >= Double(LobbyLink.tunnelHelloMs) / 1000.0 {
+                    lastHello = Date()
+                    LobbyWsTunnel.sendHelloMarker(sig: sig, token: token, uuid: uuid,
+                                                  roomTag: room.roomId, mode: local)
+                }
+                guard let text = sig.recv(timeoutMs: 100) else { continue }
+                if let peerMode = LobbyWsTunnel.modeInMarker(text, roomTag: room.roomId) {
+                    notePeerLinkMode(peerMode, where: "WSS 信令 hello/accept")
+                }
+            }
+        }
+
+        lock.lock()
+        let peer = peerLinkMode
+        let rejected = modeRejected
+        lock.unlock()
+        if rejected { return false }
+
+        switch peer {
+        case .a, .b:
+            if peer == local {
+                status("联机模式协商通过：\(local.displayName)（\(whereText)，\(max(1, room.playerCount)) 人房）")
+                return true
+            }
+            return false   // 冲突已在 notePeerLinkMode 里 fail，这里是第二道锁
+        case .invalid:
+            return false   // notePeerLinkMode 已 fail
+        case .unknown:
+            if legacy {
+                lock.lock()
+                linkMode = .b
+                peerLinkMode = .b
+                lock.unlock()
+                status("警告：对端未声明联机模式（旧客户端/官方 APK），按显式许可回落为 B（\(whereText)）。"
+                    + "此路径未经 2P 云端验收，不建议用于交付。")
+                return true
+            }
+            lock.lock()
+            modeRejected = true
+            lock.unlock()
+            fail("【联机模式协商失败】本机=\(local.displayName)，对端未声明联机模式"
+                + "（旧客户端/官方 APK，\(whereText)）。"
+                + "无法确认两端帧格式一致，已断开以避免同流事故。"
+                + "请两端使用相同版本的客户端，并确认两端联机模式设置相同"
+                + "（程序化入口 setLinkMode 或预置 gboy_link_mode=A|B）。")
+            return false
+        }
+    }
+
     // MARK: - Status
 
     private func fail(_ text: String) {
         lock.lock()
         closedFlag = true
         keyIntervalRate = 1   // 上行节拍回 1x
+        let tunnel = wsTunnel
+        wsTunnel = nil
         lock.unlock()
+        tunnel?.close()
         onRemoteKeys(0)
         onRemoteSpeed(1)   // 同上：链路没了就把倍速还原成 1x
         status(text)
@@ -1236,5 +1643,237 @@ final class LobbyLink {
             }
         }
         return nil
+    }
+}
+
+/**
+ * WSS 服务器隧道 —— iOS 上 PC `CloudLink::WsLink` / Android `WsLink` 的最小等价物。
+ *
+ * 大厅的 `send_message` 广播既传信令也能当数据通道：把 `LobbyFrames` 的原始字节
+ * 按 20 字节切片、hex 编码，塞进短键名信封 `{"w":"f","r":<room>,"o":<nonce>,"d":<hex>}`，
+ * 外层再套 `action=send_message`。hex 只含 [0-9a-f]，既躲开服务器关键词过滤，
+ * 又与 PC 新版逐字节同构（老端仍可读 base64 长信封，这里两种都解）。
+ *
+ * 关键点：**载荷就是原样的 LobbyFrames 字节流**，经 LobbyFrames.Reader 拆帧后
+ * 走与 KCP 完全相同的 `handle()`，不引入第二种帧格式（ADR-002 D5）。
+ * hello/accept 标记还带 C0 的 `"m":0|1` 能力位，作为主协商通道。
+ *
+ * 注意（未验证）：服务器可能按关键词/长度/频率拒收；PC 侧记过「3 连拒收才收尾」，
+ * 这里只做最小实现，没有把那套拒收计数搬过来。真机联调由 macOS runner 承担。
+ */
+private final class LobbyWsTunnel: LobbyDataLink {
+    /// PC `TUNNEL_CHUNK_BYTES = 20`：20 字节 → 40 hex 字符，短信封仍在 100 字符内。
+    private static let chunkBytes = 20
+    private static let helloMs: Int64 = 2000
+    /// 进程级随机 nonce：过滤服务器回显的自己推流（对端 nonce 必然不同）。
+    private static let processNonce = String(format: "%08x", arc4random_uniform(0xFFFFFFFF))
+
+    private let sig: LobbySignaling.Session
+    private let token: String
+    private let uuid: String
+    private let roomTag: String?
+    private let mode: GBoyLinkMode
+    private let onPeerMode: (GBoyLinkMode, String) -> Void
+
+    private let lock = NSLock()
+    private var inbox: [Data] = []
+    private var closed = false
+    private var peerSeen = false
+    private var lastHello = Date.distantPast
+    private var lastAccept = Date.distantPast
+
+    init(sig: LobbySignaling.Session, token: String, uuid: String, roomTag: String?,
+         mode: GBoyLinkMode, onPeerMode: @escaping (GBoyLinkMode, String) -> Void) {
+        self.sig = sig
+        self.token = token
+        self.uuid = uuid
+        self.roomTag = roomTag
+        self.mode = mode
+        self.onPeerMode = onPeerMode
+    }
+
+    // MARK: - LobbyDataLink
+
+    func send(_ payload: Data) {
+        if isClosed { return }
+        let bytes = [UInt8](payload)
+        var off = 0
+        while off < bytes.count {
+            let end = min(off + LobbyWsTunnel.chunkBytes, bytes.count)
+            let hex = bytes[off..<end].map { String(format: "%02x", $0) }.joined()
+            var marker: [String: Any] = [
+                "w": "f",
+                "o": LobbyWsTunnel.processNonce,
+                "d": hex,
+                "c": 1
+            ]
+            if let roomTag, !roomTag.isEmpty { marker["r"] = roomTag }
+            LobbyWsTunnel.post(sig: sig, token: token, uuid: uuid, marker: marker)
+            off = end
+        }
+    }
+
+    func recv(timeoutMs: Int) -> Data? {
+        lock.lock()
+        if !inbox.isEmpty {
+            let first = inbox.removeFirst()
+            lock.unlock()
+            return first
+        }
+        lock.unlock()
+        let deadline = Date().addingTimeInterval(Double(max(timeoutMs, 1)) / 1000.0)
+        while !isClosed {
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0 { break }
+            maybeHello()
+            guard let text = sig.recv(timeoutMs: Int(min(200.0, remaining * 1000.0))) else {
+                continue
+            }
+            demux(text)
+            lock.lock()
+            let next = inbox.isEmpty ? nil : inbox.removeFirst()
+            lock.unlock()
+            if let next { return next }
+        }
+        return nil
+    }
+
+    var isClosed: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return closed || sig.transportError() != nil
+    }
+
+    func close() {
+        lock.lock()
+        closed = true
+        lock.unlock()
+    }
+
+    // MARK: - Markers
+
+    private func maybeHello() {
+        lock.lock()
+        let skip = peerSeen || closed
+        let now = Date()
+        let due = now.timeIntervalSince(lastHello) >= Double(LobbyWsTunnel.helloMs) / 1000.0
+        if due { lastHello = now }
+        lock.unlock()
+        guard !skip, due else { return }
+        LobbyWsTunnel.sendHelloMarker(sig: sig, token: token, uuid: uuid,
+                                      roomTag: roomTag, mode: mode)
+    }
+
+    /// hello/accept 都带 C0 `"m"`；与 PC `sendWsMarker` / WsLink::sendMarker 同构。
+    static func sendHelloMarker(sig: LobbySignaling.Session, token: String, uuid: String,
+                                roomTag: String?, mode: GBoyLinkMode) {
+        var marker: [String: Any] = [
+            "gboy_ws": "hello",
+            "from": processNonce,
+            "c": 1
+        ]
+        if let roomTag, !roomTag.isEmpty { marker["room"] = roomTag }
+        if mode == .a || mode == .b { marker["m"] = mode.wireValue }
+        post(sig: sig, token: token, uuid: uuid, marker: marker)
+    }
+
+    private func sendAcceptMarker() {
+        var marker: [String: Any] = [
+            "gboy_ws": "accept",
+            "from": LobbyWsTunnel.processNonce,
+            "c": 1
+        ]
+        if let roomTag, !roomTag.isEmpty { marker["r"] = roomTag }
+        if mode == .a || mode == .b { marker["m"] = mode.wireValue }
+        LobbyWsTunnel.post(sig: sig, token: token, uuid: uuid, marker: marker)
+    }
+
+    static func post(sig: LobbySignaling.Session, token: String, uuid: String,
+                     marker: [String: Any]) {
+        guard let inner = LobbyLink.jsonText(marker) else { return }
+        sig.send(LobbyLink.sendMessage(token: token, uuid: uuid, text: inner))
+    }
+
+    /// 从一条信令 push 里取对端声明的联机模式（C0 主协商通道）。
+    /// 服务器回显自己推流时会带 `"self":true`，必须跳过，否则会把自己的模式
+    /// 当成对端已声明（假阳性放行）。
+    static func modeInMarker(_ text: String, roomTag: String?) -> GBoyLinkMode? {
+        guard let outer = LobbySignaling.lastJSONObject(from: text),
+              outer["type"] as? String == "send_message" else { return nil }
+        if let own = outer["self"] as? Bool, own { return nil }
+        guard let message = outer["message"] as? String,
+              let marker = LobbySignaling.lastJSONObject(from: message) else { return nil }
+        if let tagged = (marker["room"] as? String ?? marker["r"] as? String),
+           !tagged.isEmpty, let roomTag, !roomTag.isEmpty, tagged != roomTag {
+            return nil
+        }
+        guard let wire = marker["m"] as? Int else { return nil }
+        return GBoyLinkMode.from(wire: wire)
+    }
+
+    /// 解析一条信令 push：数据块入 inbox，hello/accept 记账，能力位上报。
+    private func demux(_ text: String) {
+        guard let outer = LobbySignaling.lastJSONObject(from: text),
+              outer["type"] as? String == "send_message" else { return }
+        if let own = outer["self"] as? Bool, own { return }
+        guard let message = outer["message"] as? String,
+              let marker = LobbySignaling.lastJSONObject(from: message) else { return }
+        let kind = marker["gboy_ws"] as? String ?? marker["w"] as? String ?? ""
+        let tagged = marker["room"] as? String ?? marker["r"] as? String ?? ""
+        if let roomTag, !roomTag.isEmpty, !tagged.isEmpty, tagged != roomTag { return }
+        let from = marker["from"] as? String ?? marker["o"] as? String ?? ""
+        if !from.isEmpty && (from == LobbyWsTunnel.processNonce
+                             || LobbyWsTunnel.processNonce.hasPrefix(from)) {
+            return   // 服务器回显我们自己的 push
+        }
+        // C0：PC WsLink::demux 在判 kind 之前先把 "m" 交给网关。
+        if let wire = marker["m"] as? Int {
+            let peerMode = GBoyLinkMode.from(wire: wire)
+            if peerMode != .unknown {
+                onPeerMode(peerMode, "WSS 隧道 hello/accept")
+            }
+        }
+        if kind == "f" {
+            guard let dataText = marker["d"] as? String else { return }
+            let compact = (marker["c"] as? Int) == 1
+            let decoded = compact
+                ? LobbyWsTunnel.decodeHex(dataText)
+                : LobbyWsTunnel.decodeBase64(dataText)
+            if let data = decoded, !data.isEmpty {
+                lock.lock()
+                inbox.append(data)
+                lock.unlock()
+            }
+        } else if kind == "hello" {
+            lock.lock()
+            peerSeen = true
+            let now = Date()
+            let due = now.timeIntervalSince(lastAccept) >= 1.0
+            if due { lastAccept = now }
+            lock.unlock()
+            if due { sendAcceptMarker() }
+        } else if kind == "accept" {
+            lock.lock()
+            peerSeen = true
+            lock.unlock()
+        }
+    }
+
+    private static func decodeHex(_ text: String) -> Data? {
+        guard text.count % 2 == 0 else { return nil }
+        var out = [UInt8]()
+        out.reserveCapacity(text.count / 2)
+        var index = text.startIndex
+        while index < text.endIndex {
+            let next = text.index(index, offsetBy: 2)
+            guard let byte = UInt8(text[index..<next], radix: 16) else { return nil }
+            out.append(byte)
+            index = next
+        }
+        return Data(out)
+    }
+
+    private static func decodeBase64(_ text: String) -> Data? {
+        return Data(base64Encoded: text)
     }
 }

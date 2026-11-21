@@ -67,6 +67,29 @@ static void expect(int cond, const char* message) {
 	}
 }
 
+/* 严格模式：MGBA_TEST_REQUIRE_ROM=1 时，因外部 ROM 缺失/不可读而整组跳过的
+ * 用例改为计入失败，让"一条断言都没跑"无法再伪装成通过。默认关闭，
+ * 保证没有 ROM 的开发机/CI 仍按旧行为运行。 */
+static int requireRom(void) {
+	const char* v = getenv("MGBA_TEST_REQUIRE_ROM");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
+/* 报告一个整组被跳过的用例。
+ * skip 行同时写 stdout 和 stderr：两个流都可能被单独重定向或单独 grep，
+ * 只看其中一个的人必须也能看到"这一组没跑过"，否则 0 条断言会被当成绿。
+ * 严格模式下走 expect() 的失败通道，也就是同一个 g_failed、同一份汇总，
+ * 不再另造一套并行计数器。 */
+static void skipGroup(const char* group, const char* why) {
+	printf("skip %s: %s\n", group, why);
+	fprintf(stderr, "skip %s: %s\n", group, why);
+	if (requireRom()) {
+		char message[640];
+		snprintf(message, sizeof(message), "%s: %s (MGBA_TEST_REQUIRE_ROM=1)", group, why);
+		expect(0, message);
+	}
+}
+
 static void testBios(void) {
 	char name[32];
 	mgbaMobileBiosFileName("GBA_BIOS.BIN", 10, name, sizeof(name));
@@ -1739,10 +1762,82 @@ static void testBusLocalSlots(void) {
 	netLinkDestroy(links[0]);
 }
 
+/* 跨设备 2P fallback 的本地 2 核总线（Agent 7 / 660fd1329）：旧版
+ * netLinkBusHostLocal 把 players<3 钳成 3，2P 被悄悄抬成 3 人房、链路槽位
+ * 按 3 人铺，从起点就错位。这里钉死「2 就是 2」、槽 0/1 占用，并用
+ * netLinkBusDiagLocal 的一次性快照证明 64 轮全部收齐。 */
+static void testBusLocalTwoPlayers(void) {
+	const int key = 91010;
+	const int rounds = 64;
+	struct NetLink* links[2];
+	struct LocalBusArg args[2];
+	pthread_t th[2];
+	struct LocalBusBarrier barrier;
+	struct NetLinkBusLocalDiag d;
+	int i;
+
+	links[0] = netLinkCreate();
+	links[1] = netLinkCreate();
+	expect(netLinkBusHostLocal(links[0], key, 2), "local bus 2P: host up with players=2");
+	expect(netLinkBusPlayers(links[0]) == 2, "local bus 2P: players=2 NOT promoted to 3");
+	expect(netLinkBusLocalSlot(links[0]) == 0, "local bus 2P: host owns slot 0");
+	expect(netLinkBusJoinLocalSlot(links[1], key, 1), "local bus 2P: join explicit slot 1");
+	expect(netLinkBusLocalSlot(links[1]) == 1, "local bus 2P: slot 1 recorded");
+	expect(netLinkBusPlayers(links[1]) == 2, "local bus 2P: joiner also sees 2 players");
+
+	localBusBarrierInit(&barrier, 2);
+	for (i = 0; i < 2; ++i) {
+		args[i].link = links[i];
+		args[i].barrier = &barrier;
+		args[i].slot = i;
+		args[i].players = 2;
+		args[i].rounds = rounds;
+		args[i].okRounds = 0;
+		args[i].badIndex = 0;
+		args[i].badWords = 0;
+	}
+	for (i = 0; i < 2; ++i) {
+		expect(pthread_create(&th[i], NULL, localBusThread, &args[i]) == 0,
+		       "local bus 2P: worker started");
+	}
+	for (i = 0; i < 2; ++i) {
+		pthread_join(th[i], NULL);
+	}
+	for (i = 0; i < 2; ++i) {
+		expect(args[i].okRounds == rounds, "local bus 2P: all 64 rounds completed");
+		expect(args[i].badIndex == 0 && args[i].badWords == 0,
+		       "local bus 2P: indices and words agree");
+	}
+
+	netLinkBusDiagLocal(links[0], &d);
+	fprintf(stderr, "[local-bus-2p] players=%d attached=%d slots=%d/%d rounds=%d full=%d empty=%d stale=%d future=%d lead=%d/%d host=%u done1=%u\n",
+	        d.players, d.attached, d.slotTaken[0], d.slotTaken[1],
+	        d.rounds, d.full, d.empty, d.stale, d.future,
+	        d.minLead, d.maxLead, (unsigned) d.hostIndex, (unsigned) d.doneIdx[1]);
+	/* attached 只数从机（host 不计，link_net.c:1524/1643/1997）：
+	 * 2P = 主机槽0 + 从机槽1 ⇒ attached==1 才是正确值。 */
+	expect(d.players == 2, "local bus 2P snapshot: players stays 2");
+	expect(d.attached == 1, "local bus 2P snapshot: 1 slave attached (host not counted)");
+	expect(d.slotTaken[0] == 1 && d.slotTaken[1] == 1, "local bus 2P snapshot: slots 0/1 taken");
+	expect(d.slotTaken[2] == 0 && d.slotTaken[3] == 0, "local bus 2P snapshot: no phantom slot");
+	expect(d.rounds == rounds, "local bus 2P snapshot: 64 rounds");
+	expect(d.full == rounds, "local bus 2P snapshot: every round full");
+	expect(d.empty == 0, "local bus 2P snapshot: no empty rounds");
+	expect(d.stale == 0 && d.future == 0, "local bus 2P snapshot: no stale/future pushes");
+	expect(d.minLead == 0 && d.maxLead == 0, "local bus 2P snapshot: lead=[0,0]");
+	expect(d.doneIdx[1] != 0, "local bus 2P snapshot: slave consumed host rounds");
+
+	netLinkDestroy(links[1]);
+	netLinkDestroy(links[0]);
+	pthread_mutex_destroy(&barrier.mu);
+	pthread_cond_destroy(&barrier.cv);
+}
+
 static void testBusLocal(void) {
 	struct NetLink* stray = netLinkCreate();
 	expect(!netLinkBusJoinLocal(stray, 987654), "local bus: unknown key is rejected");
 	netLinkDestroy(stray);
+	testBusLocalTwoPlayers();
 	testBusLocalCase(4, 91001, 120);
 	testBusLocalCase(3, 91002, 120);
 	testBusLocalCase(4, 91003, 120);
@@ -2482,7 +2577,9 @@ static void testTurboB(const char* dir) {
 	/* Copy the ROM next to the test so a run can never touch a real save
 	 * file sitting next to the original. */
 	if (!copyFile(romPath, path)) {
-		printf("skip turboB: no rom at %s\n", romPath);
+		char why[600];
+		snprintf(why, sizeof(why), "no rom at %s", romPath);
+		skipGroup("turboB", why);
 		return;
 	}
 	emu = mgbaMobileCreate(dir, dir, "test");
@@ -2527,6 +2624,495 @@ static void testTurboB(const char* dir) {
 	expect(trace.released == 60 && trace.pressed == 0, "turboB: releasing B lets it up for good");
 
 	mgbaMobileDestroy(emu);
+}
+
+/*
+ * 联机快帧门（mobileFastFrame）的确定性回归。
+ *
+ * 为什么单独立一条用例：这条门已经静默失效过两次（从机侧守卫 sioFastRemote
+ * Valid 恒假 → 快帧是死代码；门多要求 gFieldLinkPlayerCount>=2 → 有线俱乐部
+ * 那条路恒 0，门永不命中）。两次的表现都是「帧率掉到 4.6fps，所有既有断言
+ * 全绿」，只能靠人翻 logcat 找 `SIO fast`。这里把门本身钉住：
+ *   - 一个 MgbaMobile 以 guest 身份 join 本地 netLink（player=1），走的正是
+ *     从机侧 sioSlaveDoneEvent → mobileFastFrame 的那条路（历史故障 1 现场）；
+ *   - 对端不是模拟器，而是一个持续推 SIO 字的 NetLink 线程（模拟对端活跃）；
+ *   - gLink 判据用 poke 写死 state=4 / playerCount=2，而 0x03004A38
+ *     （fieldLinkPlayerCount）**显式保持 0**：门不许再依赖它（历史故障 2）；
+ *   - 从机轮次事件按 18363 cycles 自走（≈15 轮/帧），跑够 256 轮门必须锁存。
+ *
+ * 断言口径：latched==1（门真的锁存过）、n>0（快帧分支真的跑到）、
+ * reuse<=n（账要平）、reuse*4<n（对端持续供字时复用比例必须 <25%；实测
+ * 正常值接近 0，25% 已经是「对端偶尔掉拍」的上限，不是放水线）。
+ */
+static volatile int g_sfFeedStop;
+
+struct SioFastFeed {
+	struct NetLink* peer;
+	int pushed;
+	int drained;
+};
+
+static void* sioFastFeedThread(void* arg) {
+	struct SioFastFeed* feed = (struct SioFastFeed*) arg;
+	uint16_t consumed = 0;
+	uint16_t nextOut = 0;
+	while (!g_sfFeedStop) {
+		if (netLinkState(feed->peer) != 2) {
+#ifdef _WIN32
+			Sleep(1);
+#else
+			usleep(1000);
+#endif
+			continue;
+		}
+		/* 从机每收尾一轮就把自己的字按「主机给的轮次号」回推，所以这里能
+		 * 直接读出它消费到了第几轮。按消费进度只保持 32 轮前瞻：既不会让
+		 * 索引跑到 16 位回绕（netLinkTakePeerWordAny 用 int16 比新旧），
+		 * 也不会把对端队列（64 格）灌满后丢字。 */
+		{
+			uint32_t value;
+			uint16_t got;
+			while (netLinkTakePeerWordAny(feed->peer, 0, 0, &value, &got, NULL)) {
+				consumed = got;
+				++feed->drained;
+			}
+		}
+		while ((int16_t) (nextOut - consumed) < 32) {
+			++nextOut;
+			netLinkPush(feed->peer, GBA_SIO_MULTI, 0x1234u, nextOut, 0);
+			++feed->pushed;
+		}
+#ifdef _WIN32
+		Sleep(0);
+#else
+		usleep(200);
+#endif
+	}
+	return NULL;
+}
+
+/* 负向用例的固定开销：一个干净的 emu + 一个只推字的对端 + 喂字线程。
+ *
+ * 为什么每条负向地形都要新开一个 emu：门一旦锁存就不会自己退回（只有断线、
+ * 或连续 240 轮取不到新字才清），共用 emu 时后面的用例读到的是上一条的锁存
+ * 态，「不该放行时没放行」就永远测不出来 —— 而这正是把 gBlockReceivedStatus
+ * 打回 0 的那条故障路径（复用旧字污染 LINKUP 块交换）。
+ */
+struct SioFastCase {
+	struct MgbaMobile* emu;
+	struct NetLink* peer;
+	struct SioFastFeed feed;
+	pthread_t feeder;
+	int live;
+};
+
+static void sioFastCaseClose(struct SioFastCase* c) {
+	if (c->live) {
+		g_sfFeedStop = 1;
+		pthread_join(c->feeder, NULL);
+		c->live = 0;
+	}
+	if (c->peer) {
+		netLinkDestroy(c->peer);
+		c->peer = NULL;
+	}
+	if (c->emu) {
+		mgbaMobileDestroy(c->emu);
+		c->emu = NULL;
+	}
+}
+
+static bool sioFastCaseOpen(struct SioFastCase* c, const char* dir, const char* romPath) {
+	int port = 0;
+	int tries;
+	int joined = 0;
+	int connected = 0;
+	memset(c, 0, sizeof(*c));
+	c->emu = mgbaMobileCreate(dir, dir, "test");
+	if (!c->emu) {
+		return false;
+	}
+	if (!mgbaMobileLoad(c->emu, romPath)) {
+		sioFastCaseClose(c);
+		return false;
+	}
+	c->peer = netLinkCreate();
+	if (!c->peer) {
+		sioFastCaseClose(c);
+		return false;
+	}
+	/* 端口段与正向用例错开：两个 netLink 在同一进程里并行跑时不会抢端口。 */
+	for (port = 18921; port <= 18930; ++port) {
+		if (netLinkHost(c->peer, port)) {
+			break;
+		}
+	}
+	if (port > 18930) {
+		sioFastCaseClose(c);
+		return false;
+	}
+	for (tries = 0; tries < 50 && !joined; ++tries) {
+		joined = mgbaMobileLinkJoin(c->emu, "127.0.0.1", port, 2);
+		if (!joined) {
+#ifdef _WIN32
+			Sleep(20);
+#else
+			usleep(20000);
+#endif
+		}
+	}
+	for (tries = 0; tries < 100 && joined; ++tries) {
+		if (netLinkState(c->peer) == 2) {
+			connected = 1;
+			break;
+		}
+#ifdef _WIN32
+		Sleep(10);
+#else
+		usleep(10000);
+#endif
+	}
+	if (!joined || !connected) {
+		sioFastCaseClose(c);
+		return false;
+	}
+	c->feed.peer = c->peer;
+	g_sfFeedStop = 0;
+	if (pthread_create(&c->feeder, NULL, sioFastFeedThread, &c->feed) != 0) {
+		sioFastCaseClose(c);
+		return false;
+	}
+	c->live = 1;
+	return true;
+}
+
+/* 从机每轮的固定动作：钉住门读的那两个字节（gl0 = 0x03002AF4，高字节是
+ * gLink.state；gl1 = 0x03002AF6，高字节是 playerCount），再跑一帧。
+ * MULTI 位是 0x2000：从机的时钟由主机产生，不置 START。 */
+static void sioFastPokeAndRun(struct SioFastCase* c, uint16_t gl0, uint16_t gl1) {
+	mgbaMobilePoke16(c->emu, 0x03002AF4u, gl0);
+	mgbaMobilePoke16(c->emu, 0x03002AF6u, gl1);
+	mgbaMobilePoke16(c->emu, 0x03004A38u, 0x0000u);   /* fieldLinkPlayerCount = 0 */
+	mgbaMobilePoke16(c->emu, 0x04000128u, 0x2000u);
+	mgbaMobileRunFrames(c->emu, 1);
+}
+
+/* ===== path A 纯逻辑契约（与 Qt test-gboylink --fastgate 逐条对齐） =====
+ *
+ * Agent 2（mgba_mobile.c 从机快帧 idx 跟随）的产品实现须与此规格对齐。
+ * 这些 helper 无 IO、无全局状态，只钉死判据契约，不是真实会话测试
+ * （不能证明跨设备 E2E）。取值来源：ADR-003 §4.2 h.6（MGBAX_FAST_MIN_OK=8、
+ * 从机 idx=50 / 主机 576）、h.5（LINKUP st 含 MASTER=0x20、linkup=1 陷阱）。
+ * idx 用 int16 比较（与 netLinkTakePeerWordAny 一致）；mis≈ok 是健康读数，
+ * 所以陈旧字守卫只看 idx 对齐，不看 mis 是否为 0。 */
+#define PATH_A_FAST_MIN_OK 8u
+#define PATH_A_MASTER_BIT  0x20u
+
+static uint16_t pathAFastIdxSelect(uint16_t localIdx, uint16_t peerIdx) {
+	int delta = (int16_t) (peerIdx - localIdx);
+	return delta > 0 ? peerIdx : localIdx;
+}
+
+/* 与产品 mobileFastSlaveIdxAligned / sioFastSlaveIdxAligned 同契约：
+ * wrap-safe min(ahead,behind) <= window，任一侧 0 = 无可靠基准 ⇒ 未对齐。 */
+static bool pathAFastIdxAligned(uint16_t localIdx, uint16_t peerIdx, uint16_t tol) {
+	if (localIdx == 0 || peerIdx == 0) {
+		return false;
+	}
+	uint16_t ahead = (uint16_t) (peerIdx - localIdx);
+	uint16_t behind = (uint16_t) (localIdx - peerIdx);
+	uint16_t gap = ahead < behind ? ahead : behind;
+	return gap <= tol;
+}
+
+/* 两种可选修法都建模：followLatest=1 跟随主机最新 idx；=0 则门等对齐才放行。 */
+static bool pathAFastWordSafe(uint16_t localIdx, uint16_t peerIdx, uint16_t tol, bool followLatest) {
+	if (localIdx == 0 || peerIdx == 0) {
+		return false;   /* 无可靠基准：哪条修法都不许放行 */
+	}
+	if (pathAFastIdxAligned(localIdx, peerIdx, tol)) {
+		return true;
+	}
+	return followLatest && pathAFastIdxSelect(localIdx, peerIdx) == peerIdx;
+}
+
+static bool pathALinkupStable(unsigned state, unsigned pc, uint32_t st) {
+	return state == 4u && pc == 2u && (st & PATH_A_MASTER_BIT) != 0u;
+}
+
+static void testPathAFastContract(void) {
+	/* idx 跟随：主机领先必须跟随最新，不能抱着冻结的 localIdx 永远 miss。 */
+	expect(pathAFastIdxSelect(50, 576) == 576, "pathA idx: follow host latest 50->576");
+	expect(pathAFastIdxSelect(50, 50) == 50, "pathA idx: equal stays");
+	expect(pathAFastIdxSelect(576, 50) == 576, "pathA idx: peer behind does not rewind");
+	expect(pathAFastIdxSelect(0xFFF0u, 0x0010u) == 0x0010u, "pathA idx: 16-bit wrap +32 follows host");
+	expect(pathAFastIdxAligned(50, 50, 0), "pathA idx: tol0 equal aligned");
+	expect(!pathAFastIdxAligned(50, 51, 0), "pathA idx: tol0 delta1 not aligned");
+	expect(pathAFastIdxAligned(50, 51, 8), "pathA idx: tol8 delta1 aligned");
+	expect(!pathAFastIdxAligned(50, 576, 8), "pathA idx: tol8 delta526 not aligned");
+	expect(pathAFastIdxAligned(0xFFF0u, 0x0010u, 64), "pathA idx: wrap-safe min-gap +32 aligned");
+	expect(!pathAFastIdxAligned(0, 576, 8), "pathA idx: hostIdx=0 no baseline, not aligned");
+	expect(!pathAFastIdxAligned(50, 0, 8), "pathA idx: slaveIdx=0 no baseline, not aligned");
+	/* 与产品 mobileFastSlaveIdxAligned(host, slave, window) 同参同值。 */
+	expect(!pathAFastIdxAligned(576, 50, 4), "pathA align: (576,50,4) gap26 not aligned");
+	expect(pathAFastIdxAligned(100, 99, 4), "pathA align: (100,99,4) gap1 aligned");
+	expect(pathAFastIdxAligned(0xFFFFu, 1, 4), "pathA align: wrap (0xFFFF,1,4) gap2 aligned");
+
+	/* 陈旧字守卫：只看 idx，不看 mis（从机 mis≈成功轮数是健康读数）。 */
+	expect(pathAFastWordSafe(50, 576, 8, true), "pathA stale: host ahead 526 follows latest, safe");
+	expect(!pathAFastWordSafe(50, 576, 8, false), "pathA stale: host ahead 526 no-follow, gate shut");
+	expect(!pathAFastWordSafe(576, 50, 8, true), "pathA stale: host behind 526 beyond tol, gate shut");
+	expect(pathAFastWordSafe(50, 50, 0, false), "pathA stale: equal safe");
+	expect(!pathAFastWordSafe(50, 51, 0, false), "pathA stale: strict tol delta1 no-follow, gate shut");
+	expect(pathAFastWordSafe(50, 51, 0, true), "pathA stale: strict tol delta1 follows latest, safe");
+	expect(pathAFastWordSafe(0xFFF0u, 0x0010u, 64, true), "pathA stale: wrap +32 follows latest, safe");
+	expect(!pathAFastWordSafe(0, 576, 8, true), "pathA stale: idx=0 no baseline, gate shut even with follow");
+
+	/* LINKUP 真判据 + linkup=1 菜单残留陷阱（state/pc/st 都不成立）。 */
+	expect(pathALinkupStable(4, 2, 0x228u), "pathA judge: st=0x228 state4 pc2 is success");
+	expect(pathALinkupStable(4, 2, 0x368u), "pathA judge: st=0x368 state4 pc2 is success");
+	expect(!pathALinkupStable(2, 2, 0x228u), "pathA judge: state2 handshake is not success");
+	expect(!pathALinkupStable(4, 0, 0x228u), "pathA judge: pc0 is not success");
+	expect(!pathALinkupStable(4, 2, 0x208u), "pathA judge: st without MASTER is not success");
+	expect(!pathALinkupStable(1, 0, 0u), "pathA judge: linkup=1 menu leftover is not success");
+	expect(!pathALinkupStable(4, 2, 0x209u), "pathA judge: slave st=0x209 has no MASTER");
+}
+
+static void testSioFastGate(const char* dir) {
+	const char* romPath = getenv("MGBA_TEST_ROM");
+	char path[512];
+	char why[600];
+	char msg[256];
+	struct MgbaMobile* emu;
+	struct NetLink* peer;
+	struct SioFastFeed feed;
+	pthread_t feeder;
+	int port;
+	int joined = 0;
+	int connected = 0;
+	int latched = 0;
+	unsigned n = 0;
+	unsigned reuse = 0;
+	unsigned miss = 0;
+
+	if (!romPath) {
+		romPath = "D:/gen8/rom.gba";
+	}
+	snprintf(path, sizeof(path), "%s/siofast_rom.gba", dir);
+	/* 拷到输出目录再加载：跑帧会让核心在 ROM 旁边落 .sav，不能碰原 ROM。 */
+	if (!copyFile(romPath, path)) {
+		snprintf(why, sizeof(why), "no rom at %s", romPath);
+		skipGroup("sioFastGate", why);
+		return;
+	}
+	emu = mgbaMobileCreate(dir, dir, "test");
+	expect(emu != NULL, "sioFastGate create emu");
+	if (!emu) {
+		return;
+	}
+	expect(mgbaMobileLoad(emu, path), "sioFastGate load rom");
+
+	peer = netLinkCreate();
+	expect(peer != NULL, "sioFastGate peer create");
+	if (!peer) {
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	/* 端口可能被并行跑的其他用例占着：顺延重试，而不是直接失败。 */
+	for (port = 18911; port <= 18920; ++port) {
+		if (netLinkHost(peer, port)) {
+			break;
+		}
+	}
+	expect(port <= 18920, "sioFastGate peer listening");
+	if (port > 18920) {
+		netLinkDestroy(peer);
+		mgbaMobileDestroy(emu);
+		return;
+	}
+	{
+		int tries;
+		for (tries = 0; tries < 50 && !joined; ++tries) {
+			joined = mgbaMobileLinkJoin(emu, "127.0.0.1", port, 2);
+			if (!joined) {
+#ifdef _WIN32
+				Sleep(20);
+#else
+				usleep(20000);
+#endif
+			}
+		}
+		expect(joined, "sioFastGate emu joins as guest");
+	}
+	{
+		int tries;
+		for (tries = 0; tries < 100; ++tries) {
+			if (netLinkState(peer) == 2) {
+				connected = 1;
+				break;
+			}
+#ifdef _WIN32
+			Sleep(10);
+#else
+			usleep(10000);
+#endif
+		}
+		expect(connected, "sioFastGate link up");
+	}
+	if (!joined || !connected) {
+		netLinkDestroy(peer);
+		mgbaMobileDestroy(emu);
+		return;
+	}
+
+	memset(&feed, 0, sizeof(feed));
+	feed.peer = peer;
+	g_sfFeedStop = 0;
+	pthread_create(&feeder, NULL, sioFastFeedThread, &feed);
+
+	/* 从机不需要游戏真的走到 LINKUP：门读的就是这两个字节，poke 成真值后
+	 * 每帧补写一次（游戏自己的初始化可能把它们清 0）。0x03004A38
+	 * （fieldLinkPlayerCount）每帧显式钉 0 —— 门如果又去要求它 >=2，
+	 * 这条用例会红。 */
+	for (int f = 0; f < 180; ++f) {
+		mgbaMobilePoke16(emu, 0x03002AF4u, 0x0400u); /* state = 4 */
+		mgbaMobilePoke16(emu, 0x03002AF6u, 0x0200u); /* playerCount = 2 */
+		mgbaMobilePoke16(emu, 0x03004A38u, 0x0000u); /* fieldLinkPlayerCount = 0 */
+		/* 从机只需要 MULTI 模式，不置 START（时钟由 1P 产生）。 */
+		mgbaMobilePoke16(emu, 0x04000128u, 0x2000u);
+		mgbaMobileRunFrames(emu, 1);
+	}
+
+	g_sfFeedStop = 1;
+	pthread_join(feeder, NULL);
+	mgbaMobileSioFastStats(emu, &latched, &n, &reuse, &miss, NULL, NULL);
+	printf("sioFast gate: latched=%d n=%u reuse=%u miss=%u feed(pushed=%d drained=%d)\n",
+	       latched, n, reuse, miss, feed.pushed, feed.drained);
+
+	snprintf(msg, sizeof(msg), "sioFast: gate latched (latched=%d n=%u reuse=%u miss=%u)",
+	         latched, n, reuse, miss);
+	expect(latched == 1, msg);
+	snprintf(msg, sizeof(msg), "sioFast: fast rounds taken (n=%u latched=%d reuse=%u)",
+	         n, latched, reuse);
+	expect(n > 0, msg);
+	snprintf(msg, sizeof(msg), "sioFast: reuse accounting balances (reuse=%u n=%u)",
+	         reuse, n);
+	expect(reuse <= n, msg);
+	snprintf(msg, sizeof(msg), "sioFast: reuse under 25%% with live peer (reuse=%u n=%u)",
+	         reuse, n);
+	expect(reuse * 4u < n, msg);
+
+	/* ===== 负向地形：对齐 Qt test-gboylink --fastgate 的真值表 =====
+	 * 上面 4 条只证明「该放行时放行了」；「不该放行时没放行」才是把
+	 * gBlockReceivedStatus 打回 0 的那条故障路径，必须单独钉住 ——
+	 * 历史上两次静默失效（从机守卫恒假、门多要求一个恒 0 的字段）都是
+	 * 「所有正向断言全绿、只有帧率掉到 4.6fps」的形态。 */
+	{
+		struct SioFastCase c;
+		int f;
+		int negLatched = 0;
+		unsigned negN = 0;
+		unsigned ok = 0;
+		int valid = 0;
+
+		/* 1) 握手期 state=1 / pc=0：60 帧内一个快帧都不许出现。 */
+		if (!sioFastCaseOpen(&c, dir, path)) {
+			expect(false, "sioFast: negative case setup (handshake)");
+		} else {
+			for (f = 0; f < 60; ++f) {
+				sioFastPokeAndRun(&c, 0x0100u, 0x0000u);   /* state=1 pc=0 */
+			}
+			mgbaMobileSioFastStats(c.emu, &negLatched, &negN, NULL, NULL, &ok, &valid);
+			printf("sioFast[state=1 pc=0]: latched=%d n=%u ok=%u valid=%d\n",
+			       negLatched, negN, ok, valid);
+			snprintf(msg, sizeof(msg),
+			         "sioFast: handshake (state=1 pc=0) never latches "
+			         "(latched=%d n=%u ok=%u state=1 pc=0)",
+			         negLatched, negN, ok);
+			expect(negLatched == 0 && negN == 0, msg);
+
+			/* 2) 只对一半：state=1 / pc=2，同样不许放行（两者必须同时 >=2）。 */
+			for (f = 0; f < 60; ++f) {
+				sioFastPokeAndRun(&c, 0x0100u, 0x0200u);   /* state=1 pc=2 */
+			}
+			mgbaMobileSioFastStats(c.emu, &negLatched, &negN, NULL, NULL, &ok, &valid);
+			printf("sioFast[state=1 pc=2]: latched=%d n=%u ok=%u valid=%d\n",
+			       negLatched, negN, ok, valid);
+			snprintf(msg, sizeof(msg),
+			         "sioFast: state=1 with pc=2 still never latches "
+			         "(latched=%d n=%u ok=%u state=1 pc=2)",
+			         negLatched, negN, ok);
+			expect(negLatched == 0 && negN == 0, msg);
+		}
+		sioFastCaseClose(&c);
+	}
+	{
+		/* 3) sioOk 门槛：<256 时门必须关着，越过 256 才允许锁存。
+		 * 逐帧读 ok 而不是按固定帧数猜：不同轮距下一帧可能是 15 轮也可能是
+		 * 70 轮，按帧数写死的断言迟早变脆。 */
+		struct SioFastCase c;
+		int f;
+		int negLatched = 0;
+		unsigned negN = 0;
+		unsigned ok = 0;
+		unsigned okAtLatch = 0;
+		int valid = 0;
+		int earlyLatch = 0;
+
+		if (!sioFastCaseOpen(&c, dir, path)) {
+			expect(false, "sioFast: negative case setup (ok gate)");
+		} else {
+			for (f = 0; f < 200; ++f) {
+				sioFastPokeAndRun(&c, 0x0400u, 0x0200u);   /* state=4 pc=2：真值 */
+				mgbaMobileSioFastStats(c.emu, &negLatched, &negN, NULL, NULL, &ok, &valid);
+				if (ok < 256 && negLatched) {
+					earlyLatch = 1;   /* 门槛失效：还没到 256 轮就放行了 */
+				}
+				if (negLatched) {
+					okAtLatch = ok;
+					break;
+				}
+			}
+			printf("sioFast[ok gate]: ok=%u okAtLatch=%u latched=%d n=%u\n",
+			       ok, okAtLatch, negLatched, negN);
+			snprintf(msg, sizeof(msg),
+			         "sioFast: gate stays shut while ok<256 "
+			         "(earlyLatch=%d ok=%u latched=%d state=4 pc=2)",
+			         earlyLatch, ok, negLatched);
+			expect(!earlyLatch, msg);
+			snprintf(msg, sizeof(msg),
+			         "sioFast: gate latches only after 256 rounds "
+			         "(okAtLatch=%u n=%u latched=%d)",
+			         okAtLatch, negN, negLatched);
+			expect(negLatched == 1 && okAtLatch >= 256, msg);
+
+			/* 4) 断线必须把「可复用的上一轮对端字」一起清掉。
+			 * 不清的话：战斗中被踢再重连时 gLink 往往还是 state=4/pc=2、
+			 * sioOk 早已 >256，重连第一轮就会拿断线前的旧字收尾 —— 那正是
+			 * LINKUP 块交换的轮次，gBlockReceivedStatus 会当场打回 0。 */
+			{
+				int validBefore = valid;
+				unsigned nBefore = negN;
+				mgbaMobileLinkClose(c.emu);
+				for (f = 0; f < 10; ++f) {
+					mgbaMobileRunFrames(c.emu, 1);
+				}
+				mgbaMobileSioFastStats(c.emu, &negLatched, &negN, NULL, NULL, &ok, &valid);
+				printf("sioFast[disconnect]: validBefore=%d valid=%d latched=%d n=%u/%u ok=%u\n",
+				       validBefore, valid, negLatched, nBefore, negN, ok);
+				snprintf(msg, sizeof(msg),
+				         "sioFast: disconnect clears the reusable word "
+				         "(valid %d -> %d latched=%d n=%u ok=%u)",
+				         validBefore, valid, negLatched, negN, ok);
+				expect(validBefore == 1 && valid == 0 && negLatched == 0, msg);
+			}
+		}
+		sioFastCaseClose(&c);
+	}
+
+	mgbaMobileDestroy(emu);
+	netLinkDestroy(peer);
+	remove(path);
 }
 
 /*
@@ -4001,6 +4587,11 @@ int main(int argc, char** argv) {
 		testAudioConstPitchDevicePump(dir);
 		return g_failed ? 1 : 0;
 	}
+	/* path A 快帧/idx/LINKUP 判据的纯逻辑契约；无需 ROM / 网络 / 线程。 */
+	if (argc >= 2 && strcmp(argv[1], "--patha") == 0) {
+		testPathAFastContract();
+		return g_failed ? 1 : 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--bus") == 0) {
 		testBusSlots();
 	testBusSlotReuse();
@@ -4059,6 +4650,8 @@ int main(int argc, char** argv) {
 	testCoreSurface(dir);
 	testRom64(dir);
 	testTurboB(dir);
+	testSioFastGate(dir);
+	testPathAFastContract();
 	testAudioOut(dir);
 	testAudioPitch(dir);
 	testAudioConstPitch(dir);

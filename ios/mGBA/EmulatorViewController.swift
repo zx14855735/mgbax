@@ -14,6 +14,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var core: OpaquePointer?
     /// 3/4 人显式启用进程内锁步时的 N 核集合（默认 nil，保持原单核路径）。
     private var consoleSet: GBoyConsoleSet?
+    /// GENTRIAD: 当前活动集合代次（-1 = 无活动房间；gate 保护）。与 PC
+    /// currentGenReader / Android activeSeedGen 三端同名同值语义；换房/重建
+    /// 经 bindConsoleSet 同步，供 GBoyConsoleSet 帧边界 stale 校验读取。
+    private var activeSeedGen: Int64 = -1
+    /// 统一赋值口：consoleSet 与 activeSeedGen 必须联动（RACE9 §1.3 的 iOS
+    /// 8 处赋值缺口），避免 token 与引用脱钩。iOS 天然安全，仅作语义防伪。
+    private func bindConsoleSet(_ set: GBoyConsoleSet?) {
+        gate.lock()
+        consoleSet = set
+        activeSeedGen = set?.instanceGen ?? -1
+        gate.unlock()
+    }
     /// 镜像帧钟的全局帧号（跨 ROM 重载累计，GBoyConsoleSet 内部定纪元）。
     private var netFrameNo: Int = 0
     /// CI/无音频环境：-gboySilent 时跳过 audio.start（CI runner 常无音频设备）。
@@ -74,6 +86,12 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// 重载 ROM 再重建房间，这期间到的存档没有镜像核可灌，丢掉对端就一直
     /// 停在电池存档上（与 Android 侧 pending 队列同义）。
     private var pendingPeerState: [UInt8]?
+    /// ISYNC1: 与 Android peerStateRetryGen 同义——每次新状态/成功/断链自增，让
+    /// 在途的有界重试自动失效（gate 保护）。
+    private var isyncPeerStateRetryGen = 0
+    /// ISYNC1: 有界重试 100ms × 100 = 10s（与 Android ISYNC_RETRY_* 同值）。
+    private static let isyncRetryMax = 100
+    private static let isyncRetryInterval: TimeInterval = 0.1
     /// 官方 type 9（倍速）下发的模拟速度（gate 保护）：1 = 正常，0.5 / 2 / 4 见菜单。
     private var linkSpeed: Double = 1
     private var command = 0
@@ -403,6 +421,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         muted = defaults.bool(forKey: "muted")
         applyVolume()
         audio.lowLatency = defaults.bool(forKey: "low_latency")
+        audio.preferredRate = defaults.integer(forKey: "sample_rate")
         controls.onKeysChanged = { [weak self] mask in
             guard let self else { return }
             let prev = self.touchKeys
@@ -1546,11 +1565,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         applyRomSaveLocation(path)
         stopTimedSave()
         audio.stop()
-        // The checksum keys the per-game overrides; compute it before the load
-        // and cache it because a 32 MB ROM is not worth reading twice.
+        // S12：身份锚定「原始字节」，必须在补零之前锁定。identity(of:) 会识别
+        // 已被本版本补零到 32MB 的存量文件并复用旧身份，保证首开/次开 rom_id 一致。
+        let romURL = URL(fileURLWithPath: path)
+        let recentIdentity = RecentRoms.identity(of: romURL)
+        // The checksum keys the per-game overrides; 与身份同源（修次生 crc 漂移）。
         if let cached = crcCache[path] {
             romCrc = cached
-        } else if let crc = RomSettings.crc32(ofFile: URL(fileURLWithPath: path)) {
+        } else if recentIdentity.crc >= 0 {
+            let crc = UInt32(truncatingIfNeeded: recentIdentity.crc)
             romCrc = crc
             crcCache[path] = crc
         } else {
@@ -1560,8 +1583,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         // 小 ROM 原地补零到 32MB：iOS 的 VFile 以只读 mmap 映射文件，
         // GBALoadROM 会向映射内 memset 补零（gba.c:513），小于 32MB 会在
         // 映射外写 → Translation fault（CI 崩溃栈实证）。PC 的 VFile 实现
-        // 无此问题。对真 32MB ROM 是空操作。
-        let romURL = URL(fileURLWithPath: path)
+        // 无此问题。对真 32MB ROM 是空操作。身份已在上方锁定，补零不再触碰 rom_id。
         if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
            let size = attrs[.size] as? UInt64, size < 33_554_432,
            let fh = try? FileHandle(forWritingTo: romURL) {
@@ -1584,6 +1606,23 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 self?.showMenu()
             }
             return
+        }
+        // S12：仅加载成功后记「最近打开」，身份用补零前锁定的原始字节身份。
+        // 文件 I/O（MD5/JSON/复制）放后台，不阻塞 emu 关键线程。
+        // D5/C10 A1：缓存路径设备私有，绝不写 paths / 同步并集。
+        let fromCache = RomCache.isCachePath(romURL.standardizedFileURL.path)
+        let romId = recentIdentity.md5.map { RecentRoms.idMD5 + $0 }
+                    ?? (RecentRoms.idPath + romURL.standardizedFileURL.path)
+        DispatchQueue.global(qos: .utility).async {
+            if fromCache {
+                // 缓存副本已补零，identity(of:) 原路径证据不成立，走清单反查真实 romId
+                guard let cachedRomId = RomCache.romId(fromCachedPath: path) else { return }
+                RecentRoms.touchById(cachedRomId)      // 只刷 recency，不写 paths
+                RomCache.touch(cachedRomId)            // 缓存 LRU 同步
+            } else {
+                RecentRoms.recordWithIdentity(romURL, identity: recentIdentity, bindPath: true)
+                RomCache.ensureCached(romId: romId, sourcePath: path, originPath: path)
+            }
         }
         DispatchQueue.main.async { [weak self] in
             self?.aiOverlay.hide()
@@ -1633,7 +1672,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.lock()
         let allowAutoState = !suppressAutoLoadState
         gate.unlock()
-        if allowAutoState, defaults.bool(forKey: "auto_load_state"), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
+        if allowAutoState, autoLoadStatePref(), mgbaMobileLoadState(core, Int32(Self.autoSlot)) {
             mgbaMobileClearAudio(core)
             _ = mgbaMobileRunFrames(core, 1)
         }
@@ -2143,7 +2182,9 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 defaults.removeObject(forKey: "lastRomBookmark")
             }
         }
-        defaults.set(path, forKey: "lastRom")
+        if !RomCache.isCachePath(URL(fileURLWithPath: path).standardizedFileURL.path) {
+            defaults.set(path, forKey: "lastRom")   // 缓存路径不写，防清空后悬空
+        }
         gate.lock()
         pendingPath = path
         gate.signal()
@@ -2157,9 +2198,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         }
         if FileManager.default.isReadableFile(atPath: url.path) {
             // Remember the file so the next launch can reopen it directly.
-            if let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
+            // 缓存路径不写 bookmark（防清空后 resolveBookmark 悬空），K3 双守卫。
+            if !RomCache.isCachePath(url.standardizedFileURL.path),
+               let bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil) {
                 defaults.set(bookmark, forKey: "lastRomBookmark")
-            } else {
+            } else if RomCache.isCachePath(url.standardizedFileURL.path) {
                 defaults.removeObject(forKey: "lastRomBookmark")
             }
             return url.path
@@ -2508,6 +2551,44 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
         }, for: .touchUpInside)
         box.addArrangedSubview(route)
+        // 跨端设置键 sample_rate：与 PC sampleRate / Android audio_rate 同概念。
+        // 0 = 跟随系统；通过 AVAudioSession.setPreferredSampleRate 提出偏好，
+        // 蓝牙 / HFP 路由可能忽略它（见 AudioOut.preferredRate 的注释）。
+        let sampleRateValues = [0, 44100, 48000, 96000]
+        let sampleRateLabels = ["跟随系统", "44100 Hz", "48000 Hz", "96000 Hz"]
+        func sampleRateTitle(_ value: Int) -> String {
+            value == 0
+                ? "采样率：跟随系统（当前 \(Int(AVAudioSession.sharedInstance().sampleRate.rounded())) Hz）"
+                : "采样率：\(value) Hz"
+        }
+        let sampleRateButton = UIButton(type: .system)
+        sampleRateButton.contentHorizontalAlignment = .left
+        var sampleRateValue = defaults.integer(forKey: "sample_rate")
+        sampleRateButton.setTitle(sampleRateTitle(sampleRateValue), for: .normal)
+        sampleRateButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let current = sampleRateValues.firstIndex(of: sampleRateValue) ?? 0
+            self.pickOption(title: "采样率", current: current, options: sampleRateLabels) { [weak self] index in
+                guard let self else { return }
+                let value = sampleRateValues[index]
+                sampleRateValue = value
+                self.defaults.set(value, forKey: "sample_rate")
+                self.audio.preferredRate = value
+                if !self.silentMode {
+                    self.audio.stop()
+                    self.audio.start()
+                    if let activeCore = self.core { _ = mgbaMobileSetAudioOutput(activeCore, Int32(self.audio.outputRate)) }
+                }
+                sampleRateButton.setTitle(sampleRateTitle(value), for: .normal)
+            }
+        }, for: .touchUpInside)
+        box.addArrangedSubview(sampleRateButton)
+        let sampleRateHint = UILabel()
+        sampleRateHint.text = "0 = 跟随系统；切回 0 需重启 App 才会撤销先前的偏好。蓝牙/HFP 路由可能忽略此设置，实际速率以系统回报为准。"
+        sampleRateHint.textColor = .secondaryLabel
+        sampleRateHint.font = .systemFont(ofSize: 11)
+        sampleRateHint.numberOfLines = 0
+        box.addArrangedSubview(sampleRateHint)
         // Per-channel gains, in the spirit of Pizza Boy's 声道音量.
         let channelKeys = ["vol_ch1", "vol_ch2", "vol_ch3", "vol_ch4", "vol_cha", "vol_chb"]
         let channelNames = ["声道 1", "声道 2", "声道 3", "声道 4", "声道 A", "声道 B"]
@@ -2838,7 +2919,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 saveType.setTitle("存档类型：\(Self.saveTypeName(self.saveTypePref()))", for: .normal)
             }
         }, for: .touchUpInside)
-        let autoLoad = labeledSwitch("进入游戏时自动读档（上次退出的进度）", defaults.bool(forKey: "auto_load_state"))
+        let autoLoad = labeledSwitch("进入游戏时自动读档（上次退出的进度）", autoLoadStatePref())
         autoLoad.1.addAction(UIAction { [weak self] _ in
             self?.defaults.set(autoLoad.1.isOn, forKey: "auto_load_state")
         }, for: .valueChanged)
@@ -4101,9 +4182,17 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
 
     // == Shell skin ==
 
+    /// 与 PC 的 autoload 默认值统一为 true：未显式设置过时进入游戏自动读档。
+    /// 显式写过的 false 仍优先；云端 4 核冷链由 suppressAutoLoadState 单独拦截。
+    private func autoLoadStatePref() -> Bool {
+        defaults.object(forKey: "auto_load_state") == nil || defaults.bool(forKey: "auto_load_state")
+    }
+
     private func skinStylePref() -> Int {
+        // 与 Android 的 skin_style 默认值（0 = 经典）保持一致：同一个账号跨端
+        // 搬运设置时，未显式设置过皮肤样式的用户两端看到的应该是同一种外观。
         defaults.object(forKey: "skin_style") == nil
-            ? ControlsView.styleHandheld
+            ? ControlsView.styleClassic
             : (defaults.integer(forKey: "skin_style") == ControlsView.styleClassic
                 ? ControlsView.styleClassic : ControlsView.styleHandheld)
     }
@@ -4954,6 +5043,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     /// ROM 旁路存档判定（applyRomSaveLocation 与云端重挂 restore 共用，
     /// 保证 restore 写入的正是 reload 后可见核读取的目录）。
     private func romSaveBesideRom(_ rom: URL) -> Bool {
+        if RomCache.isCachePath(rom.path) { return false } // 缓存副本强制旁路 saves_beside_rom
         let parent = rom.deletingLastPathComponent()
         return FileManager.default.isWritableFile(atPath: parent.path)
             && (hasBesideSaves(rom) || defaults.bool(forKey: "saves_beside_rom"))
@@ -5023,6 +5113,27 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             empty.textColor = .secondaryLabel
             box.addArrangedSubview(empty)
         }
+        // —— 需求②/④：最近游戏（渲染跨端同步的 recent 元数据；lastRom 仍是"上次"单点，D8）——
+        let recents = RecentRoms.list()
+        var recentShownPaths = Set<String>()          // 标准化路径，供下方扫描列表去重
+        if !recents.isEmpty {
+            let sectionTitle = UILabel()
+            sectionTitle.text = "最近游戏"
+            sectionTitle.font = .boldSystemFont(ofSize: 14)
+            box.addArrangedSubview(sectionTitle)
+            for e in recents {
+                if let url = RecentRoms.resolve(e) {                    // 原路径，哈希证实
+                    recentShownPaths.insert(url.standardizedFileURL.path)
+                    box.addArrangedSubview(recentRow(e, url: url, fromCache: false))
+                } else if let cp = cachedPath(for: e.romId),             // ④预留：本端缓存副本
+                          let cURL = verifiedCacheURL(cp, e) {          // 只读核验，不 bindPath
+                    recentShownPaths.insert(cURL.standardizedFileURL.path)
+                    box.addArrangedSubview(recentRow(e, url: cURL, fromCache: true))
+                } else {
+                    box.addArrangedSubview(recentMissingRow(e))        // 无文件/未证实 → 灰显无点击
+                }
+            }
+        }
         let favs = romLibrary.favorites()
         let last = romLibrary.lastRom()?.path
         var ordered: [RomLibrary.Entry] = []
@@ -5036,12 +5147,64 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         for entry in found where seen.insert(entry.url.path).inserted {
             ordered.append(entry)
         }
-        for entry in ordered {
+        for entry in ordered where !recentShownPaths.contains(entry.url.standardizedFileURL.path) {
             box.addArrangedSubview(romLibraryRow(entry,
                                                  favorite: favs.contains(entry.url.path),
                                                  last: entry.url.path == last))
         }
         presentSheet(SheetController(title: "图库", content: box))
+    }
+
+    /// 最近条目可点行：复用 romLibraryRow 视觉，但不放 star（最近表不写 rom_favs）。
+    private func recentRow(_ e: RecentRoms.Entry, url: URL, fromCache: Bool) -> UIView {
+        let row = UIStackView()
+        row.axis = .horizontal
+        row.spacing = 6
+        row.alignment = .center
+        let open = UIButton(type: .system)
+        open.contentHorizontalAlignment = .left
+        open.titleLabel?.numberOfLines = 2
+        open.titleLabel?.font = .systemFont(ofSize: 14)
+        let name = e.displayName.isEmpty ? url.lastPathComponent : e.displayName
+        let mark = fromCache ? "  [缓存]" : ""
+        open.setTitle("↺ \(name)\(mark)\n\(url.deletingLastPathComponent().path)", for: .normal)
+        open.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
+        open.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.topmostPresenter.dismiss(animated: true) {
+                self.openFoundRom(url)     // → openExternal → pendingPath → loadRom（钩子按路径感知是否缓存）
+            }
+        }, for: .touchUpInside)
+        row.addArrangedSubview(open)
+        return row
+    }
+
+    /// 跨端条目本端无文件/哈希未证实 → 灰显，无点击（不伪造打开、不写猜测路径）。
+    private func recentMissingRow(_ e: RecentRoms.Entry) -> UIView {
+        let row = UIStackView(); row.axis = .vertical; row.spacing = 2
+        let name = UILabel()
+        name.text = "↺ \(e.displayName.isEmpty ? e.romId : e.displayName)（本设备未找到）"
+        name.textColor = .secondaryLabel          // stub 无 .tertiaryLabel
+        let sub = UILabel()
+        if e.lastDeviceId == RecentRoms.deviceId() {
+            sub.text = "本机曾打开，原文件已不可达"
+        } else {
+            sub.text = "最近在 \(e.lastDeviceId) 打开"
+        }
+        sub.textColor = .systemGray
+        sub.font = .systemFont(ofSize: 11)
+        row.addArrangedSubview(name); row.addArrangedSubview(sub)
+        return row
+    }
+
+    // —— ④落地：清单命中且文件/尺寸自愈通过才返回路径；否则 nil（不伪造）——
+    private func cachedPath(for romId: String) -> String? {
+        return RomCache.getCachedPath(romId)
+    }
+
+    private func verifiedCacheURL(_ path: String, _ e: RecentRoms.Entry) -> URL? {
+        guard RecentRoms.verify(path, against: e) else { return nil }
+        return URL(fileURLWithPath: path)
     }
 
     private func romLibraryRow(_ entry: RomLibrary.Entry, favorite: Bool, last: Bool) -> UIView {
@@ -5187,6 +5350,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         muted = defaults.bool(forKey: "muted")
         applyVolume()
         audio.lowLatency = defaults.bool(forKey: "low_latency")
+        audio.preferredRate = defaults.integer(forKey: "sample_rate")
         audio.setSoundEnabled(defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio"))
         loadMacroSettings()
         controls.setMuted(muted)
@@ -6692,7 +6856,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 return
             }
             self.consoleSet?.stop()
-            self.consoleSet = nil
+            self.bindConsoleSet(nil)
             self.defaults.set(false, forKey: "link_use_lockstep")
             if let core = self.core, mgbaMobileLinkHost(core, p, n) {
                 self.defaults.set(Int(p), forKey: "link_port")
@@ -6723,7 +6887,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 return
             }
             self.consoleSet?.stop()
-            self.consoleSet = nil
+            self.bindConsoleSet(nil)
             self.defaults.set(false, forKey: "link_use_lockstep")
             self.defaults.set(ip, forKey: "link_host")
             self.defaults.set(Int(p), forKey: "link_port")
@@ -6919,7 +7083,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         box.addArrangedSubview(linkButton("断开") { [weak self] in
             guard let self else { return }
             self.consoleSet?.stop()
-            self.consoleSet = nil
+            self.bindConsoleSet(nil)
             if let remote = self.remote {
                 remote.close()
             } else if let core = self.core {
@@ -6999,12 +7163,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             status.text = "锁步参数无效（人数需为 2、3 或 4）"
             return "锁步参数无效（人数需为 2、3 或 4）"
         }
+        /* GENTRIAD: 注入当前代次读取器（三端对称）；换房/重建经 bindConsoleSet 联动。 */
+        set.setCurrentGenProvider { [weak self] in self?.activeSeedGen ?? -1 }
         if let error = set.start(visible: core) {
             status.text = error
             return error
         }
         consoleSet?.stop()
-        consoleSet = set
+        bindConsoleSet(set)
         gate.lock()
         cloudConsoleActive = false   // 本机多核锁步不是云端房间，NPC 注入必须关闭
         gate.unlock()
@@ -7032,38 +7198,96 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         gate.unlock()
     }
 
-    /// 云端 2P：每端 4 核（1 可见核 + 3 镜像核）——大竞技场要求 4 名玩家才
-    /// 放开球场走位并进入 battle_main（11-14 实测 2 核 st=4 pc=2 后角色锁
-    /// 在球场、pos 恒 5,8/6,8，两端模拟线程同步 park）。slot 2 = 对手真人
-    /// 按键，slot 3/4 = NPC 陪位（按键恒 0）。Android 同款决策。
+    /// 云端本机核数由房间人数决定（与 PC CloudLink 的 qBound 同构）：
+    /// 1 可见核 + (players-1) 镜像核。2P 房 = 2 核，3/4 人房多出的槽位作
+    /// NPC 陪位（大竞技场要求 4 人才放开走位），按键恒 0、只提供人数。
+    /// 原来硬编码 4 会让 2P 房悄悄跑 4 核，与 PC/Android 的槽位布局错位。
     /// 云重挂：重载完成后在 emu 线程重建房间。可见核刚复位到帧 0、
     /// 锁步驱动已被复位卸掉，此刻整房间重建干净无死锁（Android 同款）。
     /// 失败时保持单核旧路径（consoleSet 为空，远端按键回落可见核）。
+    /// ISYNC1: 把暂存的对端 type 6 种子灌进「代表对端」的镜像核（与 Android
+    /// applyPendingPeerStateIfReady 对称）。只在 consoleSet 已就绪时执行；成功
+    /// 清缓存并打与 PC/Android 同口径的 `remote state loaded` 里程碑。载入本身
+    /// 仍由 GBoyConsoleSet 入队、镜像线程在帧边界做，绝不灌可见核/造 state。
+    @discardableResult
+    private func consumePendingPeerStateIfReady() -> Bool {
+        gate.lock()
+        let bytes = pendingPeerState
+        let set = consoleSet
+        let ready = set?.isReady ?? false
+        gate.unlock()
+        guard let bytes = bytes, !bytes.isEmpty, ready, let set = set else { return false }
+        guard set.applyRemoteState(bytes) else { return false }
+        gate.lock()
+        pendingPeerState = nil
+        isyncPeerStateRetryGen += 1
+        gate.unlock()
+        /* ISYNC19/G1: applyRemoteState 只是入队，真实 load 是镜像线程异步完成的。
+         * 这里的 "loaded" 会造成 PB22 同类假阳性——真里程碑已收敛到
+         * GBoyConsoleSet.swift 里 result==.ok 处，本行只报「已入队」。 */
+        if ISyncGate.stateApply {
+            NSLog("[ISYNC] TYPE_STATE queued %ld bytes (mirror slot=2; real load is async)", bytes.count)
+        }
+        return true
+    }
+
+    /// ISYNC1: consoleSet 晚到时的有界重试（门开才调用），与 Android
+    /// schedulePeerStateRetry 对称。主队列 asyncAfter，100ms×100 上限；代次
+    /// 变化（新状态/成功/断链）立即失效。措辞避开 loaded/applied/ok 防假阳性。
+    private func schedulePeerStateRetry() {
+        let gen = isyncPeerStateRetryGen
+        var tries = 0
+        var tick: (() -> Void)!
+        tick = { [weak self] in
+            guard let self = self else { return }
+            self.gate.lock()
+            let currentGen = self.isyncPeerStateRetryGen
+            self.gate.unlock()
+            if gen != currentGen { return }
+            if self.consumePendingPeerStateIfReady() { return }
+            tries += 1
+            if tries <= Self.isyncRetryMax {
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.isyncRetryInterval,
+                                              execute: tick)
+            } else {
+                NSLog("[ISYNC] TYPE_STATE still pending: bounded wait exhausted tries=%d (seed unconsumed)", tries)
+                self.gate.lock()
+                self.pendingPeerState = nil
+                self.gate.unlock()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.isyncRetryInterval, execute: tick)
+    }
+
     private func rebuildCloudConsoleSet(romPath: String, visible: OpaquePointer) {
         consoleSet?.stop()
-        consoleSet = nil
+        bindConsoleSet(nil)
         gate.lock()
         cloudConsoleActive = false   // 重建失败也要掉标志，成功后才重新置位
         gate.unlock()
         let saves = docs.appendingPathComponent("saves").path
         let states = docs.appendingPathComponent("states").path
+        /* 与会话、PC/Android 共用同一个房间人数，避免同一间 2P 房三端核数不同。 */
+        let cloudPlayers = lobbyLink?.cloudPlayerCount ?? 2
         guard let set = GBoyConsoleSet(romPath: romPath, saveDir: saves, stateDir: states,
-                                       players: 4, localSlot: 1, roomKey: 18781) else {
-            NSLog("GBOY_RT cloud arm rebuild failed: invalid params")
+                                       players: cloudPlayers, localSlot: 1, roomKey: 18781) else {
+            NSLog("GBOY_RT cloud arm rebuild failed: invalid params (players=%d)", cloudPlayers)
             gate.lock()
             suppressAutoLoadState = false
             gate.unlock()
             return
         }
+        /* GENTRIAD: 注入当前代次读取器（三端对称）；新集合绑定后 bump 到新 gen。 */
+        set.setCurrentGenProvider { [weak self] in self?.activeSeedGen ?? -1 }
         if let error = set.start(visible: visible) {
             NSLog("GBOY_RT cloud arm rebuild failed: %@", error)
-            toast("四核联机启动失败：\(error)")
+            toast("联机多核启动失败（\(cloudPlayers) 核）：\(error)")
             /* 房间没建起来也要发本机即时存档：链路是好的，对端那颗「代表本机」
              * 的镜像核不能停在电池存档上。此时可见核已经是重载后的帧 0，快照
              * 就是「当前」状态；LobbyLink 的连接级去重保证一次会话只发一份。 */
             lobbyLink?.sendInitialState()
         } else {
-            consoleSet = set
+            bindConsoleSet(set)
             /* 官方 type 6 的载入返回码：0 成功、3 = 尺寸不符（-5）、1 = 其它失败
              * （B25kr6:148-152）。镜像线程里回调，owner hop 主线程。官方的做法是
              * 拿到非 0 直接结束会话；这里先如实报出来，是否断链由上层决定。 */
@@ -7080,14 +7304,11 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             gate.lock()
             cloudConsoleActive = true
-            let pending = pendingPeerState
-            pendingPeerState = nil
             gate.unlock()
             NSLog("GBOY_RT cloud arm rebuilt players=4 visible slot=1")
-            // 重建前收到的对端存档：现在有镜像核了，补灌（入队，帧边界载入）。
-            if let pending, !pending.isEmpty, set.applyRemoteState(pending) {
-                NSLog("GBOY_RT peer state replayed (\(pending.count) bytes)")
-            }
+            /* ISYNC1: 统一走 applied 路径（成功打 remote state loaded 里程碑；
+             * 与 Android re-arm 补灌 / 有界重试共用同一判据）。 */
+            _ = consumePendingPeerStateIfReady()
             /* 官方 type 6 双向：本端也把刚冷启动（帧 0）的可见核存档推给对端，
              * 让对方的槽位 2 镜像核与本机可见核停在同一幕。必须在重建之后发：
              * 之前发出去的是上一局推进过的进度，会把对端拉回旧状态。 */
@@ -7175,7 +7396,7 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.consoleSet?.stop()
-                self.consoleSet = nil
+                self.bindConsoleSet(nil)
                 self.gate.lock()
                 self.cloudConsoleActive = false
                 self.gate.unlock()
@@ -7257,7 +7478,15 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             // Swift 的 free：所有权在 mgba_mobile.c，将来换成别的分配器时
             // 只有一处需要改（GBoyConsoleSet.snapshotState 同样走它）。
             defer { mgbaMobileFreeState(buffer) }
-            return [UInt8](Data(bytes: buffer, count: size))
+            let seed = [UInt8](Data(bytes: buffer, count: size))
+            /* ISYNC-EV/A1-SEND: 真发送点只读记录本机种子 sha256+字节数（具名门
+             * MGBAX_ISYNC_EVIDENCE + MGBAX_ISYNC_EVIDENCE_A1 默认关，独立于
+             * stateApply）。不造/不改 seed，不预设成功，仅供观测。 */
+            if GBoyConsoleSet.isyncEvidenceA1 {
+                NSLog("[ISYNC-EV][A1-SEND] role=iOS bytes=%ld sha256=%@",
+                      Int64(seed.count), GBoyConsoleSet.isyncSeedSha256Hex(seed))
+            }
+            return seed
         }
         /* 收到对端存档：交给多核集合，由镜像线程在帧边界灌进槽位 2 那颗核。
          * 直连路径没有 consoleSet（单核跨设备联机），此时没有「对端镜像核」
@@ -7366,13 +7595,14 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                 // 会话结束就拆掉 4 核房间，可见核不再等一条死掉的 SIO 房间
                 // （Android onDisconnected → stopGBoyLink 同构）。
                 self.consoleSet?.stop()
-                self.consoleSet = nil
+                self.bindConsoleSet(nil)
                 self.gate.lock()
                 self.pendingCloudRearm = false
                 self.suppressAutoLoadState = false
                 self.cloudConsoleActive = false
                 // 会话结束就丢掉没来得及灌的对端存档，别让它漏进下一局。
                 self.pendingPeerState = nil
+                self.isyncPeerStateRetryGen += 1  // ISYNC1: 让在途有界重试失效
                 self.gate.unlock()
                 self.setLinkSpeed(1)   // 见「断开」按钮：倍速是会话级的
                 self.toast("云端联机已断开")
@@ -7398,15 +7628,18 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
                  * 那是本机玩家自己的进度，灌了就等于把对面的游戏搬到本地
                  * （NETPLAY_SPEC.md 第 6 节第 7 行）。 */
                 let bytes = [UInt8](state)
-                if let set = self.consoleSet, set.isReady,
-                   set.applyRemoteState(bytes) {
-                    return
-                }
-                // 四核房间还没建好（云重挂重载中）：先缓存，重建成功后补灌。
                 self.gate.lock()
                 self.pendingPeerState = bytes
+                self.isyncPeerStateRetryGen += 1  // 让上一轮在途重试失效
                 self.gate.unlock()
-                NSLog("GBOY_RT peer state buffered (\(bytes.count) bytes)")
+                if self.consumePendingPeerStateIfReady() { return }
+                /* 四核房间还没建好（云重挂重载中）：已缓存。门开时有界重试
+                 * 直到真正 applied；门关时沿用旧的「重建成功后补灌」措辞。 */
+                if ISyncGate.stateApply {
+                    self.schedulePeerStateRetry()
+                } else {
+                    NSLog("GBOY_RT peer state buffered (\(bytes.count) bytes)")
+                }
             }
         }
         /* 官方 type 9：对端切换倍速，交给帧循环按倍率缩放帧闸。 */

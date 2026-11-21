@@ -1,0 +1,38 @@
+tag=E2-FAST
+topology=p2p scope=PROXY-2PC
+BATTLE=NO
+linkup_stable=False
+linkup_stable_A=False linkup_stable_B=False  # judge_side: state4/pc2/MASTER
+lstate4_pc2_A=False lstate4_pc2_B=False st_master_A=True st_master_B=False
+linkup_raw_A=1 linkup_raw_B=1  # gSpecialVar_Result 残留值，仅诊断不判绿
+in_battle_frame=False battle_samples=0
+in_battle_cb2_A= in_battle_cb2_B=
+battle_window=[0x80B30C0,0x80BCA78) source=rom.map
+fps_pc_A=59.5 fps_pc_B=60.5
+via=p2p  # [MGBAX_P2P]/diagnosticsText 优先
+peerCandidates_A=True peerCandidates_B=True
+peerCandidateCount_A=3 peerCandidateCount_B=3
+p2p_result_A result=ok directEnabled=1 | p2p_result_B result=ok directEnabled=1
+p2p_avg_A=11ms p2p_avg_B=4ms p2p_ignored_A=1 p2p_ignored_B=2
+path_A=A path_B=A
+bus_A=- bus_B=-  # 仅 path B 有本机 4 核总线（LocalBus key 天然每实例独立）
+alive_A=True alive_B=True
+mode_requested=A mode_negotiated_A=A mode_negotiated_B=A
+official_mode_A=False official_mode_B=False nav_at_leak=False
+gate_A envLinkMode=A envOfficialLink=<unset> envRearm=1 fastMinOk=8 fastMinOkSlave=8 sioFast=<unset>
+gate_B envLinkMode=A envOfficialLink=<unset> envRearm=1 fastMinOk=8 fastMinOkSlave=8 sioFast=<unset>
+env_fast_slave_align=4  # 本轮驱动钉死值（C 侧未设时为 0=关闭）
+rearm_A fired=3 hs1=145 rounds=145 | rearm_B fired=0 hs1=0 rounds=0
+slave_fast_align_blocked_A=0 slave_fast_align_blocked_B=0
+badchecksum_A=0 badchecksum_B=0  # 应为 0（[diag] st 的 0x2000 位）
+bus_diag_A players=- attached=- slot=- idx=- hostIdx=-
+bus_diag_B players=- attached=- slot=- idx=- hostIdx=-
+pathB_2p_bus_ok=N/A reason=not path B
+exitcode_A=None exitcode_B=None
+linkup_s=83 stable_s=-
+final_A=A l=2 pc=0 mu=0 rem=0 brs=0000/0000 fps=59.5 px=10 py=4 menu=c0/0/1/w2 mt=-1 mid=-1 cb=0816D08B
+final_B=B l=1 pc=0 mu=0 rem=0 brs=0101/0000 fps=60.5 px=6 py=8 menu=c0/0/1/w2 mt=-1 mid=-1 cb=0816C96D
+rtt_A=01:30:18.474 [sio-rtt] me=1645f544 n=194 avg=10ms peak=39ms via=p2p
+rtt_B=01:30:18.491 [sio-rtt] me=a6e299ed n=234 avg=11ms peak=34ms via=p2p
+multi_A=SIO multi me=0 role=0 mst=1 idx=27905 ok=27904 last=0.4ms peak=101.6ms to=1 fb=14131 mis=11 lgc=695 m0=8FFF m1=0011 wait=4/31ms n=64 cp=0/60 cf=0 pushOut=27905/0 pushIn=27904
+multi_B=SIO multi me=1 role=1 mst=0 idx=27904 ok=27904 last=20518.5ms peak=256110.1ms to=555435 fb=448648 mis=27904 lgc=3011 m0=8FFF m1=0011 wait=0/0ms n=0 cp=0/60 cf=0 pushOut=27903/0 pushIn=27904

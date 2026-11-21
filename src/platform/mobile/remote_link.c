@@ -461,11 +461,18 @@ static void* guestRoom(void* arg) {
 		return NULL;
 	}
 	room->guestFd = fd;
+	snprintf(line, sizeof(line), "MGBA1 ROOM %s GUEST", room->code);
+	/* GUEST 必须在持有 room->mu 时写完，然后才发布 guestReady。
+	 * hostRoom 在另一线程等 guestReady，一看到就立刻把 "MGBA1 PEER" 写到同一个
+	 * socket（下面 hostRoom 里那两处 writeLine）。若这里的 GUEST 放到 unlock 之后
+	 * 再写，PEER 就可能抢在它前面到达 guest：guest 的第一行必须是
+	 * "MGBA1 ROOM <code> GUEST"，读到 PEER 会直接判「中继协议不匹配」并放弃加入，
+	 * 而 host 侧仍能拿到自己的 PEER、照常显示「你是 1P」—— 表现为只有 guest 失败。
+	 * 顺序不能改：先 GUEST，再 guestReady。 */
+	writeLine(fd, line);
 	room->guestReady = 1;
 	pthread_cond_broadcast(&room->cv);
 	pthread_mutex_unlock(&room->mu);
-	snprintf(line, sizeof(line), "MGBA1 ROOM %s GUEST", room->code);
-	writeLine(fd, line);
 	while (spins < 15 * 60 * 5) {
 		pthread_mutex_lock(&room->mu);
 		if (room->finished || !room->used) {
@@ -595,7 +602,19 @@ static int startEmbedded(struct MobileRelay* relay, int gen, int* portOut) {
 		if (fd < 0) {
 			continue;
 		}
+#ifdef _WIN32
+		/* Windows 的 SO_REUSEADDR 语义与 Unix **不同**：它允许**他人**重复绑定同一端口，
+		 * 于是下面 8766..8773 的扫描形同虚设 —— 第二个实例会「成功地」绑上同一端口，
+		 * 并与先到者抢连接（表现为对端读到不属于本协议的报文 / 握手错乱）。
+		 * SO_EXCLUSIVEADDRUSE 才是「独占」语义：端口被占时 bind 直接失败，
+		 * 让下面的循环真正顺延到 8767+。
+		 * 实测（2026-11-15，本机 Windows）：宿主已监听时第二个独占 bind 失败（WSAEADDRINUSE/10048）；
+		 * **TIME_WAIT 存在时独占 bind 仍成功 20/20**（服务端先关、留下 8766→* 的 TIME_WAIT），
+		 * 因此不会破坏「退出房间后立刻重新建房」这条快速重启路径。 */
+		setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char*) &one, sizeof(one));
+#else
 		setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*) &one, sizeof(one));
+#endif
 		memset(&addr, 0, sizeof(addr));
 		addr.sin_family = AF_INET;
 		addr.sin_port = htons((uint16_t) port);

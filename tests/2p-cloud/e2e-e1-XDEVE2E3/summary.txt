@@ -1,0 +1,34 @@
+tag=XDEVE2E3
+topology=avd scope=CROSS-DEVICE-AVD
+room=983045 mode_requested=A
+room_app=983045 room_pc=983045 rooms_match=True
+room_resyncs=0
+BATTLE=NO
+linkup_stable=False
+in_battle_frame=False battle_samples=0
+in_battle_cb2_PC=
+battle_window=[0x80B30C0,0x80BCA78) source=rom.map
+app_link_seen=False app_alive=True app_restarts=0
+fps_pc=60.2
+via=tunnel
+peerCandidates_PC=False
+peerCandidateCount_PC=0 directEnabled_PC=0 p2p_result_PC=no-peer-candidates
+p2p_avg_PC=- p2p_ignored_PC=-
+path_PC=A
+mode_negotiated_PC=A
+official_mode_PC=False
+gate_PC envLinkMode=A envOfficialLink=<unset> envRearm=1 fastMinOk=8 fastMinOkSlave=<unset>
+env_fast_slave_align=4
+rearm_PC fired=0 hs1=0 rounds=0
+slave_fast_align_blocked_PC=0 badchecksum_PC=0
+bus_diag_PC players=- attached=- slot=- idx=- hostIdx=-
+pathB_2p_bus_ok=N/A reason=not path B
+linkup_raw_PC=1  # gSpecialVar_Result 残留值，仅诊断不判绿
+accounts_distinct=True
+uuid_app=BPEE,503802278d29e565208ada4d1df52c14 uuid_pc=BPEE,919646730d3830bac2fe202e41f2278c uuids_distinct=True
+rom_load_verified=1  # logcat 命中 rom broadcast load + emu loop reloading 的推送路径
+host_first=True
+final_PC=PC l=2 pc=0 mu=0 rem=0 brs=0000/0000 fps=60.2 px=10 py=4 menu=c0/0/1/w2 mt=-1 mid=-1 cb=0816D08B
+rtt_PC=01:52:51.209 [sio-rtt] me=86da75e8 n=15 avg=312ms peak=550ms via=tunnel
+multi_PC=-
+note=PROXY-2PC 不算跨设备；本轮为 PC↔AVD/真机

@@ -146,8 +146,9 @@ final class ControlsView: UIView {
     private var last = CGPoint.zero
     private var dragMoved = false
 
-    // == Handheld shell skin ==
-    private var skinStyle = ControlsView.styleHandheld
+    // == Shell skin == 默认值与 Android ControlsView(STYLE_CLASSIC=0) 及
+    // skin_style 键的缺省值统一为经典样式（applying skin 会再按用户设置覆盖）。
+    private var skinStyle = ControlsView.styleClassic
     private var theme = SkinTheme.purple
     private var portrait = false
     private var ffOn = false

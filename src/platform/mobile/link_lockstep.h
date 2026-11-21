@@ -33,6 +33,7 @@ extern "C" {
  */
 struct MgbaLockstepRoom;
 struct MgbaLockstepSlot;
+struct mCoreThread;
 
 /* key 为进程内唯一标识；players 2..4。Host 创建房间，Join 拿到同一房间。
  * 两者都按 key 索引，不监听端口、不建 socket。失败返回 NULL。 */
@@ -43,6 +44,14 @@ struct MgbaLockstepRoom* mgbaLockstepJoin(int key);
  * 内部完成 DriverCreate / CoordinatorAttach / setPeripheral。 */
 struct MgbaLockstepSlot* mgbaLockstepAttach(struct MgbaLockstepRoom* room,
                                            struct mCore* core, int slot);
+
+/* 给已经跑在 mCoreThread 上的核（Qt CoreController 可见核）用：sleep/wake
+ * 走 mCoreThreadWaitFromThread/StopWaiting，而不是 mgbaLockstepRunFrame 的
+ * 自管 cond park。mCoreThread 本身每帧就是 core->runLoop，正好满足锁步
+ * 驱动「小步推进」的要求。slot 语义同 mgbaLockstepAttach。 */
+struct MgbaLockstepSlot* mgbaLockstepAttachThread(struct MgbaLockstepRoom* room,
+                                                  struct mCore* core,
+                                                  struct mCoreThread* thread, int slot);
 
 /* 小步驱动一帧：协调器 sleep 时本线程在 runLoop 之后自我 park。
  * 只能用于已 Attach 的 GBA core。 */
@@ -57,6 +66,10 @@ void mgbaLockstepRelease(struct MgbaLockstepRoom* room);
 
 /* 诊断 / 单元测试 */
 size_t mgbaLockstepAttached(struct MgbaLockstepRoom* room);
+/* 一次性读出房间配置人数与实际 attach 的核数。跨设备 2P fallback（每设备
+ * 2 核）在下发帧之前用它断言 players==2 && attached==2，避免只挂了 1 核
+ * 就开始跑锁步导致协调器一直等不到 ACK 而假死。任一出参可为 NULL。 */
+void mgbaLockstepRoomInfo(struct MgbaLockstepRoom* room, int* players, int* attached);
 int mgbaLockstepSlotId(struct MgbaLockstepSlot* slot);
 bool mgbaLockstepPaused(struct MgbaLockstepSlot* slot);
 void mgbaLockstepUserSleep(struct MgbaLockstepSlot* slot);

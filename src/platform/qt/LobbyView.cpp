@@ -11,8 +11,12 @@
 #include "GbCloud.h"
 #include "Window.h"
 
+#include <QComboBox>
+#include <QBuffer>
 #include <QDir>
 #include <QFileInfo>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QRandomGenerator>
 #include <QSettings>
 #include <QTimer>
@@ -82,6 +86,39 @@ LobbyView::LobbyView(Window* window, QWidget* parent)
 			m_link->sendReset();
 		}
 	});
+
+	/* C0 / ADR-002：联机模式显式入口。历史上 PC 默认 A、Android 默认 B，
+	 * 全仓只有环境变量 / 私有 pref 能改，两套帧格式同流曾耗死读线程。
+	 * 这里补一个大厅可见下拉框（AUTO / A / B），选择写进 QSettings；
+	 * 环境变量 MGBAX_LINK_MODE 仍可作为无人值守脚手架的覆盖入口。 */
+	QWidget* modeRow = new QWidget(this);
+	QHBoxLayout* modeLayout = new QHBoxLayout(modeRow);
+	modeLayout->setContentsMargins(0, 0, 0, 0);
+	modeLayout->addWidget(new QLabel(tr("联机模式："), modeRow));
+	QComboBox* modeCombo = new QComboBox(modeRow);
+	modeCombo->setObjectName(QStringLiteral("linkModeCombo"));
+	modeCombo->addItem(tr("AUTO（2P→A / 3·4P→B）"), GBoyFrames::LINK_MODE_UNKNOWN);
+	modeCombo->addItem(tr("A：每端 1 核 + SIO 包中继"), GBoyFrames::LINK_MODE_A);
+	modeCombo->addItem(tr("B：本机多核 + 网络只传按键"), GBoyFrames::LINK_MODE_B);
+	const QString savedMode = cloudSettings().value(QStringLiteral("link_mode"),
+	                                                QStringLiteral("AUTO")).toString();
+	if (savedMode == QStringLiteral("A")) {
+		modeCombo->setCurrentIndex(1);
+	} else if (savedMode == QStringLiteral("B")) {
+		modeCombo->setCurrentIndex(2);
+	}
+	connect(modeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+	        [modeCombo](int) {
+		        const int value = modeCombo->currentData().toInt();
+		        const QString key = value == GBoyFrames::LINK_MODE_A ? QStringLiteral("A")
+		                            : value == GBoyFrames::LINK_MODE_B ? QStringLiteral("B")
+		                                                               : QStringLiteral("AUTO");
+		        cloudSettings().setValue(QStringLiteral("link_mode"), key);
+	        });
+	modeLayout->addWidget(modeCombo, 1);
+	if (layout()) {
+		layout()->addWidget(modeRow);
+	}
 
 	m_ui.email->setText(cloudSettings().value(SETTING_EMAIL).toString());
 	QString savedUser = cloudSettings().value(SETTING_USER).toString();
@@ -250,7 +287,33 @@ void LobbyView::startRoom(bool asHost) {
 
 	m_controller = m_window->controller();
 	m_link = new CloudLink(this);
+	/* C0：把大厅下拉框的选择下发到 CloudLink；AUTO 时由 CloudLink 按房间人数
+	 * 解析（2P→A、3/4P→B）。两端必须一致，不一致由 CloudLink 在分派前 fail。 */
+	QComboBox* modeCombo = findChild<QComboBox*>(QStringLiteral("linkModeCombo"));
+	if (modeCombo) {
+		const int chosen = modeCombo->currentData().toInt();
+		/* AUTO 时不覆盖 CloudLink 构造器从 MGBAX_LINK_MODE /
+		 * MGBAX_OFFICIAL_LINK 读到的显式值，保留 flow.sh 等无人值守脚手架的
+		 * 兼容入口；只有用户在大厅里显式选了 A/B 才覆盖。 */
+		if (chosen == GBoyFrames::LINK_MODE_A || chosen == GBoyFrames::LINK_MODE_B) {
+			m_link->setLinkMode(chosen);
+		}
+	}
+	m_link->setAllowLegacyPeer(qgetenv("MGBAX_LINK_ALLOW_LEGACY").toInt() != 0);
 	m_link->setController(m_controller.get());
+	/* PC cloud-arm 的种子：type-6 要发的是可见核的 state。AUTOLINK 那条路
+	 * 在 Window.cpp 里早已接了同样的 provider，大厅这条路以前**没接**——
+	 * 于是 maybeSendInitialState() 永远拿不到字节，对端的镜像核收不到本机
+	 * 存档，这就是 2P 云端 BATTLE=0 的直接原因之一。 */
+	m_link->setStateSnapshotProvider([this]() -> QByteArray {
+		if (!m_controller) {
+			return QByteArray();
+		}
+		QBuffer buffer;
+		buffer.open(QIODevice::WriteOnly);
+		m_controller->saveState(&buffer);
+		return buffer.data();
+	});
 	connect(m_link, &CloudLink::statusMessage, this, &LobbyView::status);
 	connect(m_link, &CloudLink::linkEnded, this, &LobbyView::ended);
 	connect(m_link, &CloudLink::remoteKeys, m_controller.get(), &CoreController::setRemoteKeys);

@@ -70,6 +70,8 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.widget.ArrayAdapter;   // 需求⑤：浏览器列表适配器
+import android.widget.ListView;       // 需求⑤：浏览器列表容器
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
@@ -81,6 +83,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.FilenameFilter;        // 需求⑤：listFiles(FilenameFilter) 枚举阶段过滤
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
@@ -130,6 +133,8 @@ public class EmulatorActivity extends AppCompatActivity {
     /** How often a rewind snapshot is taken for 逐帧倒带 (frames). */
     private static final int FRAME_SNAPSHOT_EVERY = 8;
     private static final int FRAME_SNAPSHOT_MAX = 4;
+    /** GBA 硬件固定的 DISPCNT IO 寄存器；bus 读写一律用具名地址。 */
+    private static final int IO_REG_DISPCNT = 0x04000000;
     /** Desktop-shortcut intent (PC's "create forwarder"). */
     private static final String ACTION_OPEN_ROM = "io.mgba.android.OPEN_ROM";
     private static final String EXTRA_ROM_PATH = "rom_path";
@@ -521,6 +526,47 @@ public class EmulatorActivity extends AppCompatActivity {
             pendingPath.set(path);
         }
     };
+    /** ISYNC1: 运行时开关 TYPE_STATE 有界重试门（默认关，可回退）。 */
+    private final BroadcastReceiver isyncStateApplyReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            isyncStateApply = intent.getBooleanExtra("on", false)
+                    || "1".equals(System.getenv(GATE_ISYNC_STATE_APPLY));
+            Log.i(TAG, "[ISYNC] MGBAX_ISYNC_STATE_APPLY="
+                    + (isyncStateApply ? 1 : 0) + " (bounded retry "
+                    + ISYNC_RETRY_MAX + "x" + ISYNC_RETRY_MS + "ms)");
+        }
+    };
+    /** RACE/C3: 具名根治门 MGBAX_ISYNC_SEED_FRAME_BOUNDARY（默认关，可回退，独立门）。
+     *  Android stock 无 setprop，门靠前台广播或进程环境下发；GCS.seedFrameBoundary 为真源。 */
+    private final BroadcastReceiver isyncSeedFrameBoundaryReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean on = intent.getBooleanExtra("on", false)
+                    || "1".equals(System.getenv(GATE_ISYNC_SEED_FRAME_BOUNDARY));
+            isyncSeedFrameBoundary = on;
+            GBoyConsoleSet.seedFrameBoundary = on;
+            Log.i(TAG, "[ISYNC] MGBAX_ISYNC_SEED_FRAME_BOUNDARY=" + (on ? 1 : 0)
+                    + " (enqueue + owner-thread frame-boundary load + gen token)");
+        }
+    };
+    /** ISYNC-EV: 具名总门 MGBAX_ISYNC_EVIDENCE + 子开关 MGBAX_ISYNC_EVIDENCE_A1
+     *  （默认关，与 PC C++ / iOS Swift 同名同值，独立于 MGBAX_ISYNC_STATE_APPLY）。
+     *  只启只读 A1 seed sha256 埋点（SEND/LAND/BOOT），不造 seed / party / 信任位，
+     *  不预设成功。Android stock 无 setprop，门只能靠前台动态广播下发。 */
+    private final BroadcastReceiver isyncEvidenceReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            boolean on = intent.getBooleanExtra("on", false)
+                    || "1".equals(System.getenv(GATE_ISYNC_EVIDENCE));
+            GBoyConsoleSet.ISyncEvidence.total = on;
+            GBoyConsoleSet.ISyncEvidence.a1 = on
+                    || "1".equals(System.getenv(GATE_ISYNC_EVIDENCE_A1));
+            Log.i(TAG, "[ISYNC-EV] MGBAX_ISYNC_EVIDENCE=" + (on ? 1 : 0)
+                    + " A1=" + (GBoyConsoleSet.ISyncEvidence.a1 ? 1 : 0)
+                    + " (read-only seed sha256, no state/party fabrication)");
+        }
+    };
     private ControlsView controls;
     private TextView hint;
     private TextView fpsView;
@@ -536,6 +582,29 @@ public class EmulatorActivity extends AppCompatActivity {
     private Button speedCustom;
 
     private final AtomicReference<String> pendingPath = new AtomicReference<>();
+
+    // ===== 需求⑤ 全盘文件浏览器状态（Android 专属，全部私有）=====
+    private AlertDialog browserDialog;
+    private TextView browserPathTitle;                              // setCustomTitle：动态显示当前绝对路径
+    private ListView browserListView;
+    private ArrayAdapter<String> browserAdapter;
+    private final List<File> browserEntries = new ArrayList<>();    // 真实条目（目录 + ROM，不含「..」）
+    private final List<String> browserPathStack = new ArrayList<>(); // canonical 访问栈（回退 + 环检测）
+    private File browserCurrentDir = new File("/storage/emulated/0");// 初始兜底；showFileBrowser() 按 firstReadableBrowserRoot() 重设
+    private boolean browserUpAvailable = false;                     // 是否显示首行「..」
+    private boolean browserLoading = false;                         // 加载中禁点
+    private final AtomicInteger browserGen = new AtomicInteger();    // 代次 token，防旧列表覆盖新列表
+    private static List<String> sBrowserAllowedRoots;                // 惰性缓存的共享存储 canonical 根（白名单）
+    private static final int BROWSER_LIST_LIMIT = 1000;              // 单目录条数上限
+    private static final int BROWSER_MAX_DEPTH = 32;                 // canonical 路径深度上限
+    private static final int BROWSER_PATH_MAX = 4096;                // 手动输入长度上限
+
+    /** 浏览器一次列目录的结果（后台线程产出，含诚实截断/不可访问标记）。 */
+    private static final class BrowserListing {
+        final List<File> files = new ArrayList<>();
+        int omitted = 0;
+        boolean unreadable = false;
+    }
     /** busgame 调试脚本：>=0 表示重载完成后由模拟线程以该 menuAt 武装可见核。 */
     private volatile int pendingBusGameMenuAt = -1;
     /** 云端连上后排队的一次重载：重载完把可见核按原槽位重挂回锁步房间。 */
@@ -543,6 +612,100 @@ public class EmulatorActivity extends AppCompatActivity {
     /* 对端最近一次 TYPE_STATE。云端会重建核房间，重建后要把它补灌进新的
      * 镜像核 0，否则对端那把存档就白发了。 */
     private volatile byte[] pendingPeerState;
+    /* ISYNC1 — 输入同步方向「TYPE_STATE 种子真正 applied」可回退门。
+     * 三端同名同值：PC C++ / Android Java / iOS Swift 都是
+     * MGBAX_ISYNC_STATE_APPLY，默认关（0/false）。开关只影响「到达时核还没
+     * 建好」时的有界重试与诊断口径，不改变载入本身（对端真实 savestate 种子
+     * 永远只灌进对端镜像核，绝不造 state/party/信任位）。
+     * 打开方式（与现有 headless 广播同套路）：
+     *   adb shell am broadcast -a io.mgba.android.action.ISYNC_STATE_APPLY --ez on true
+     * 也可用进程环境 MGBAX_ISYNC_STATE_APPLY=1 默认打开。 */
+    private static final String ACTION_ISYNC_STATE_APPLY = "io.mgba.android.action.ISYNC_STATE_APPLY";
+    private static final String GATE_ISYNC_STATE_APPLY = "MGBAX_ISYNC_STATE_APPLY";
+    /* ISYNC-EV: 具名总门 + 子开关（三端同名同值，默认关，独立门）。 */
+    private static final String ACTION_ISYNC_EVIDENCE = "io.mgba.android.action.ISYNC_EVIDENCE";
+    private static final String GATE_ISYNC_EVIDENCE = "MGBAX_ISYNC_EVIDENCE";
+    private static final String GATE_ISYNC_EVIDENCE_A1 = "MGBAX_ISYNC_EVIDENCE_A1";
+    /* RACE/C3: 根治门 MGBAX_ISYNC_SEED_FRAME_BOUNDARY（三端同名同值、默认关、可逆）。
+     * 门开 = apply 只入队 + owner 镜像线程帧边界 load + 代次 token；门关 = ISYNC1 现状。
+     * 独立于 MGBAX_ISYNC_STATE_APPLY / MGBAX_ISYNC_EVIDENCE，不打开任何灰区门。 */
+    private static final String ACTION_ISYNC_SEED_FRAME_BOUNDARY =
+            "io.mgba.android.action.ISYNC_SEED_FRAME_BOUNDARY";
+    private static final String GATE_ISYNC_SEED_FRAME_BOUNDARY =
+            "MGBAX_ISYNC_SEED_FRAME_BOUNDARY";
+    private static final int ISYNC_NOT_ATTEMPTED = -1;
+    private static final long ISYNC_RETRY_MS = 100L;
+    private static final int ISYNC_RETRY_MAX = 100; // 有界 10s，绝不无限重试
+    private volatile boolean isyncStateApply = "1".equals(System.getenv(GATE_ISYNC_STATE_APPLY));
+    /** RACE/C3: 根治门在 Activity 侧的镜像（GCS.seedFrameBoundary 为真源，receiver 同步）。 */
+    private volatile boolean isyncSeedFrameBoundary =
+            "1".equals(System.getenv(GATE_ISYNC_SEED_FRAME_BOUNDARY));
+    /** 每次成功/失败/新状态都会自增，让在途的有界重试自动失效。
+     *  与 instanceGen 正交：本字段只作废重试 runnable，绝不跨房间代次 token 用。 */
+    private volatile int peerStateRetryGen;
+
+    /* ===== RACE/C3 根治：代次 token + handoff 小锁 + 真 load 计数 ===== */
+    /** 当前活动 GBoyConsoleSet 的代次；-1=无活动房间（重建窗口/停止）。volatile 让镜像线程
+     *  帧边界二次校验读到最新 bump。由 bindConsoleSet 与 consoleSet 原子联动。 */
+    private volatile long activeSeedGen = -1L;
+    /** 仅保护「读 set+gen → 校验 → 入队/清缓存」的 handoff（非根治，不跨住 native load，
+     *  不靠 handle!=0 判断——那是 TOCTOU）。固定顺序：seedGate → GBoyConsoleSet.lock，禁反向。 */
+    private final Object seedGate = new Object();
+    /** 缓存种子属于哪一代（retarget 的 oldGen/newGen 证据，RACE9 §4.1）。 */
+    private volatile long pendingPeerGen = -1L;
+    /** 真 load 计数：只有 native load==0 才 +1；入队/STATE_QUEUED/re-target 一律不计（PB22 教训）。 */
+    private final java.util.concurrent.atomic.AtomicInteger seedAppliedCount =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** RACE/C3: 镜像线程真 load 结果回调（native load==0 才清缓存/打里程碑/计数）。
+     *  STATE_QUEUED / 入队 / re-target 一律不算 applied（PB22 假阳性教训）。 */
+    private final GBoyConsoleSet.SeedLoadCallback seedLoadCallback =
+            new GBoyConsoleSet.SeedLoadCallback() {
+        @Override
+        public void onSeedLoaded(long gen, int bytes, byte[] loadedState) {
+            synchronized (seedGate) {
+                /* 只清「正是本次载入的那份」缓存：多包快速到达时后包可能已覆盖缓存，
+                 * 不能把后包一起清掉（单槽覆盖语义，RACE9 §4.1）。 */
+                if (pendingPeerState == loadedState) {
+                    pendingPeerState = null;
+                    pendingPeerGen = -1L;
+                }
+            }
+            peerStateRetryGen++; // 让在途重试失效（真 load 已落地）
+            final int n = seedAppliedCount.incrementAndGet();
+            if (isyncSeedFrameBoundary) {
+                GBoyLinkSession s = cloudLink == null ? null : cloudLink.linkSession();
+                int players = s != null ? s.playerCount()
+                        : (cloudLink == null ? 2 : cloudLink.cloudPlayerCount());
+                int mirrorSlot = GBoyConsoleSet.mirrorSlotFor(1, players, 0);
+                Log.i(TAG, "[ISYNC] TYPE_STATE remote state loaded " + bytes
+                        + " bytes index=0 mirrorSlot=" + mirrorSlot
+                        + " hash=" + isyncHashHex(loadedState)
+                        + " gen=" + gen + " applied_count=" + n);
+            }
+        }
+
+        @Override
+        public void onSeedRejected(long gen, int code) {
+            synchronized (seedGate) {
+                pendingPeerState = null;
+                pendingPeerGen = -1L;
+            }
+            peerStateRetryGen++;
+            Log.w(TAG, "[ISYNC] TYPE_STATE rejected code=" + code + " gen=" + gen
+                    + " (link owner closes)");
+            runOnUiThread(() -> {
+                GBoyCloudLink cl = cloudLink;
+                if (cl != null) cl.close();
+                GBoySocketLink ll = localLink;
+                if (ll != null) ll.close();
+            });
+        }
+
+        @Override
+        public void onSeedDroppedStale(long gen, long current) {
+            /* 审计日志已在 GCS 打出；不清缓存、不打里程碑（留给重建后 retarget）。 */
+        }
+    };
     /** 云端建锁步房间期间的闸门：可见核必须停在第 0 帧上，和镜像核一起入房。
      *  让一个已经跑了几万帧的核中途挂进房间，会让协调器在一场 SIO 回合里
      *  永远等不齐这个核（它停在自己的回合号上），核被 park、模拟线程停摆、
@@ -655,6 +818,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private boolean emulatorStarted;
     private boolean awaitingStorage;
     private boolean leftForStorage;
+    /** 存储权限请求来源：true=从设置主动进入（返回后不重启模拟器），false=启动引导流程。 */
+    private boolean storageRequestFromSettings;
     private TextView savePathView;
     private KeyLayout keyLayout = new KeyLayout();
     private boolean layoutEditing;
@@ -845,6 +1010,13 @@ public class EmulatorActivity extends AppCompatActivity {
         } else {
             registerReceiver(noRelayReceiver, noRelayFilter);
         }
+        /* C0 / ADR-002：联机模式（A/B/AUTO）与旧客户端互通许可的 ADB 入口。 */
+        IntentFilter linkModeFilter = new IntentFilter("io.mgba.android.action.GBOY_LINK_MODE");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(linkModeReceiver, linkModeFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(linkModeReceiver, linkModeFilter);
+        }
         IntentFilter btFilter = new IntentFilter("io.mgba.android.action.BT");
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(btReceiver, btFilter, Context.RECEIVER_EXPORTED);
@@ -879,6 +1051,28 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(romReceiver, romFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(romReceiver, romFilter);
+        }
+        /* ISYNC1: TYPE_STATE applied 有界重试门（默认关）。 */
+        IntentFilter isyncStateApplyFilter = new IntentFilter(ACTION_ISYNC_STATE_APPLY);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(isyncStateApplyReceiver, isyncStateApplyFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(isyncStateApplyReceiver, isyncStateApplyFilter);
+        }
+        /* RACE/C3: 根治门（默认关，可回退）。启动时把 env 初值同步到 GCS 真源。 */
+        GBoyConsoleSet.seedFrameBoundary = isyncSeedFrameBoundary;
+        IntentFilter isyncSeedFrameFilter = new IntentFilter(ACTION_ISYNC_SEED_FRAME_BOUNDARY);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(isyncSeedFrameBoundaryReceiver, isyncSeedFrameFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(isyncSeedFrameBoundaryReceiver, isyncSeedFrameFilter);
+        }
+        /* ISYNC-EV: A1 seed sha256 只读埋点门（默认关，独立门）。 */
+        IntentFilter isyncEvidenceFilter = new IntentFilter(ACTION_ISYNC_EVIDENCE);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(isyncEvidenceReceiver, isyncEvidenceFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(isyncEvidenceReceiver, isyncEvidenceFilter);
         }
         hint = findViewById(R.id.hint);
         // When launched with --ez shot true, grab the GBA frame after the ROM
@@ -953,8 +1147,19 @@ public class EmulatorActivity extends AppCompatActivity {
 
         findViewById(R.id.btn_open).setOnClickListener(v -> openDocument(REQ_ROM));
         findViewById(R.id.btn_open).setOnLongClickListener(v -> {
-            showRomScan();
-            return true;
+            new AlertDialog.Builder(this)
+                    .setTitle(R.string.browser_pick_source)
+                    .setItems(new CharSequence[]{
+                            getString(R.string.browser_system_picker),
+                            getString(R.string.browser_full_disk),
+                            getString(R.string.scan_button)},
+                        (d, which) -> {
+                            if (which == 0) openDocument(REQ_ROM);
+                            else if (which == 1) showFileBrowser();
+                            else showRomScan();
+                        })
+                    .show();
+            return true;   // 吞掉长按期后续的 click
         });
         findViewById(R.id.btn_bios).setOnClickListener(v -> openDocument(REQ_BIOS));
         pauseButton.setOnClickListener(v -> setPaused(!paused));
@@ -1147,6 +1352,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private void requestSaveAccess() {
         awaitingStorage = true;
         leftForStorage = false;
+        // 「去允许」真正发起时打破「以后再说」写入的永久压制，授权失败下次仍可再弹
+        getPreferences(MODE_PRIVATE).edit().putBoolean("save_access_declined", false).apply();
         if (Build.VERSION.SDK_INT >= 30) {
             try {
                 Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
@@ -1161,10 +1368,30 @@ public class EmulatorActivity extends AppCompatActivity {
             } catch (Exception ignored) {
             }
             awaitingStorage = false;
-            startEmulator();
+            // 从设置主动进入时，跳转失败不应重启/中断正在运行的模拟器
+            if (!storageRequestFromSettings) {
+                startEmulator();
+            }
+            storageRequestFromSettings = false;
             return;
         }
         requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQ_STORAGE);
+    }
+
+    /** 设置里的「文件管理器权限」主动入口：显示当前权限真值并提供授权按钮。 */
+    private void showFilesAccessDialog() {
+        boolean granted = SaveLocation.hasAccess(this);
+        String body = getString(granted ? R.string.files_access_granted : R.string.files_access_denied);
+        // 未授予=去授权；已授予=可再次进入系统设置查看/撤销。两条路径都拉起系统设置页。
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_files_access)
+                .setMessage(body)
+                .setPositiveButton(R.string.save_access_allow, (d, w) -> {
+                    storageRequestFromSettings = true;
+                    requestSaveAccess();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     private void startEmulator() {
@@ -1448,6 +1675,14 @@ public class EmulatorActivity extends AppCompatActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
         if (requestCode == REQ_STORAGE) {
+            if (storageRequestFromSettings) {
+                // 设置主动入口返回：不重启/中断正在运行的模拟器，只刷新状态
+                storageRequestFromSettings = false;
+                awaitingStorage = false;
+                leftForStorage = false;
+                showFilesAccessDialog();
+                return;
+            }
             startEmulator();
             return;
         }
@@ -2001,6 +2236,369 @@ public class EmulatorActivity extends AppCompatActivity {
         }, "rom-scan").start();
     }
 
+    // ===== 需求⑤：全盘文件浏览器（Android 专属）=====
+
+    /** 入口：先清旧框 → 未授权降级 → 建 UI；默认根按 firstReadableBrowserRoot() 裁决。 */
+    private void showFileBrowser() {
+        // 防重入叠框
+        if (browserDialog != null && browserDialog.isShowing()) {
+            browserDialog.dismiss();
+            browserDialog = null;
+        }
+        if (!SaveLocation.hasAccess(this)) {                       // 未授权降级，零新增 requestCode
+            toast(getString(R.string.browser_needs_permission));
+            showFilesAccessDialog();
+            return;
+        }
+        String root = firstReadableBrowserRoot();
+        if (root == null) root = "/";                              // 极端兜底
+        browserPathStack.clear();
+        browserPathStack.add(root);
+        browserCurrentDir = new File(root);
+
+        browserPathTitle = new TextView(this);
+        browserPathTitle.setTextSize(16f);
+        browserPathTitle.setPadding(dp(20), dp(12), dp(20), dp(12));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        Button up     = browserButton(getString(R.string.browser_up));
+        Button home   = browserButton(getString(R.string.browser_shared_root));
+        Button manual = browserButton(getString(R.string.browser_manual_path));
+        Button slash  = browserButton(getString(R.string.browser_root));
+        LinearLayout.LayoutParams hp =
+                new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        up.setLayoutParams(hp); home.setLayoutParams(hp);
+        manual.setLayoutParams(hp); slash.setLayoutParams(hp);
+        up.setOnClickListener(v -> navigateUp());
+        home.setOnClickListener(v -> {
+            String r = firstReadableBrowserRoot();
+            if (r != null) navigateTo(new File(r), true);
+        });
+        manual.setOnClickListener(v -> promptBrowserPath());
+        slash.setOnClickListener(v -> confirmSwitchToRoot());
+        header.addView(up); header.addView(home);
+        header.addView(manual); header.addView(slash);
+        content.addView(header);
+
+        browserListView = new ListView(this);
+        browserAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_list_item_1, new ArrayList<String>());
+        browserListView.setAdapter(browserAdapter);
+        browserListView.setOnItemClickListener((parent, view, pos, id) -> onBrowserItemClick(pos));
+        browserListView.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        content.addView(browserListView);
+
+        browserDialog = new AlertDialog.Builder(this)
+                .setCustomTitle(browserPathTitle)
+                .setView(content)
+                .setCancelable(false)
+                .setNegativeButton(android.R.string.cancel, (d, w) -> {
+                    browserGen.incrementAndGet();
+                    d.dismiss();
+                })
+                .show();
+
+        // Dialog 自身兜底吞 BACK，与 onBackPressed 分支共用 handleBrowserBack
+        browserDialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
+                handleBrowserBack();
+                return true;
+            }
+            return false;
+        });
+        reloadBrowser();
+    }
+
+    private Button browserButton(String text) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(12f);
+        return b;
+    }
+
+    /** 切换到 Linux 根 /：二次警告（高级入口）。 */
+    private void confirmSwitchToRoot() {
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.browser_root)
+                .setMessage(R.string.browser_root_warn)
+                .setPositiveButton(android.R.string.ok, (d, w) -> navigateTo(new File("/"), true))
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** 共享存储 canonical 根：Environment 真源优先，/storage/emulated/0 回退；取第一个可读的。 */
+    private String firstReadableBrowserRoot() {
+        File[] candidates = { Environment.getExternalStorageDirectory(), new File("/storage/emulated/0") };
+        for (File f : candidates) {
+            if (f == null) continue;
+            try {
+                String canon = f.getCanonicalPath();
+                File cf = new File(canon);
+                if (cf.isDirectory() && cf.canRead()) return canon;
+            } catch (IOException ignored) { }
+        }
+        return null;
+    }
+
+    private static String canonicalOrAbsolute(File f) {
+        try { return f.getCanonicalPath(); }
+        catch (IOException e) { return f.getAbsolutePath(); }
+    }
+
+    /** 允许根集合（共享存储根为主），惰性缓存。 */
+    private List<String> allowedRoots() {
+        if (sBrowserAllowedRoots != null) return sBrowserAllowedRoots;
+        List<String> roots = new ArrayList<>();
+        File ext = Environment.getExternalStorageDirectory();
+        if (ext != null) {
+            String canon = canonicalOrAbsolute(ext);
+            if (!roots.contains(canon)) roots.add(canon);
+        }
+        if (!roots.contains("/storage/emulated/0")) roots.add("/storage/emulated/0");
+        sBrowserAllowedRoots = roots;
+        return roots;
+    }
+
+    /** 手动输入路径规范化：控制字符 → 长度 → URI scheme → canonical(失败即拒) → 共享存储前缀白名单。 */
+    private String normalizeBrowserPath(String raw) {
+        if (raw == null) { toast(getString(R.string.browser_path_bad)); return null; }
+        String s = raw.trim();
+        if (s.isEmpty()) { toast(getString(R.string.browser_path_bad)); return null; }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x20 || c == 0x7f) { toast(getString(R.string.browser_path_illegal)); return null; }
+        }
+        if (s.length() > BROWSER_PATH_MAX) { toast(getString(R.string.browser_path_illegal)); return null; }
+        if (s.matches("^[A-Za-z][A-Za-z0-9+.-]*:.*")) { toast(getString(R.string.browser_path_illegal)); return null; }
+        final String canon;
+        try { canon = new File(s).getCanonicalPath(); }
+        catch (IOException e) { toast(getString(R.string.browser_path_bad)); return null; }
+        boolean allowed = false;
+        for (String root : allowedRoots()) {
+            if (canon.equals(root) || canon.startsWith(root + File.separator)) { allowed = true; break; }
+        }
+        if (!allowed) { toast(getString(R.string.browser_path_outside)); return null; }
+        return canon;
+    }
+
+    /** 虚拟目录 / 其他 app 私有区黑名单。/ 本身不在黑名单内，允许经警告入口进入。 */
+    private boolean isRestrictedDir(String canon) {
+        if (canon == null) return false;
+        String[] black = {"/proc", "/sys", "/dev", "/data", "/acct", "/debug", "/apex", "/metadata"};
+        for (String b : black) {
+            if (canon.equals(b) || canon.startsWith(b + File.separator)) return true;
+        }
+        for (String root : allowedRoots()) {
+            String a = root + File.separator + "Android" + File.separator + "data";
+            String o = root + File.separator + "Android" + File.separator + "obb";
+            if (canon.equals(a) || canon.startsWith(a + File.separator)) return true;
+            if (canon.equals(o) || canon.startsWith(o + File.separator)) return true;
+        }
+        return false;
+    }
+
+    private static int countSegments(String canonical) {
+        if (canonical == null || canonical.isEmpty()) return 0;
+        int n = 0;
+        for (int i = 0; i < canonical.length(); i++) {
+            if (canonical.charAt(i) == File.separatorChar) n++;
+        }
+        return n;
+    }
+
+    /** 导航层：对所有入口生效（点目录 / .. / 手动输入 / 切换到 /）。黑名单 + 环 + 深度 + 可读校验。 */
+    private void navigateTo(File dir, boolean resetRoot) {
+        if (dir == null) return;
+        final String canon;
+        try { canon = dir.getCanonicalPath(); }
+        catch (IOException e) { toast(getString(R.string.browser_path_bad)); return; }
+        if (isRestrictedDir(canon)) { toast(getString(R.string.browser_restricted)); return; }
+        if (!resetRoot && browserPathStack.contains(canon)) { toast(getString(R.string.browser_loop)); return; }
+        if (countSegments(canon) > BROWSER_MAX_DEPTH) { toast(getString(R.string.browser_too_deep)); return; }
+        File target = new File(canon);
+        if (!target.isDirectory() || !target.canRead()) { toast(getString(R.string.browser_path_bad)); return; }
+        if (resetRoot) browserPathStack.clear();
+        browserPathStack.add(canon);
+        browserCurrentDir = target;
+        reloadBrowser();
+    }
+
+    /** 逐层回退：弹栈；到栈底（size==1）时 no-op。 */
+    private void navigateUp() {
+        if (browserPathStack.size() > 1) {
+            browserPathStack.remove(browserPathStack.size() - 1);
+            browserCurrentDir = new File(browserPathStack.get(browserPathStack.size() - 1));
+            reloadBrowser();
+        }
+    }
+
+    /** 手动输入路径对话框：先规范化+白名单，后文件系统判断。 */
+    private void promptBrowserPath() {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        input.setHint(R.string.browser_manual_hint);
+        String cur = canonicalOrAbsolute(browserCurrentDir);
+        input.setText(cur);
+        input.setSelection(input.getText().length());
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.browser_manual_title)
+                .setView(input)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String canon = normalizeBrowserPath(input.getText().toString());
+                    if (canon == null) return;
+                    File target = new File(canon);
+                    if (!target.isDirectory() || !target.canRead()) {
+                        toast(getString(R.string.browser_path_bad)); return;
+                    }
+                    navigateTo(target, true);
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** 后台 listFiles + 主线程刷新 + 代次 token 防旧覆盖。 */
+    private void reloadBrowser() {
+        final File dir = browserCurrentDir;
+        final int gen = browserGen.incrementAndGet();
+        browserLoading = true;
+        browserAdapter.clear();
+        browserAdapter.add(getString(R.string.browser_loading));
+        browserAdapter.notifyDataSetChanged();
+        updateBrowserTitle();
+        new Thread(() -> {
+            final BrowserListing listing = listBrowserDir(dir);
+            final List<File> entries = listing.files;
+            final List<String> labels = buildBrowserLabels(entries, listing.omitted, listing.unreadable);
+            runOnUiThread(() -> {
+                if (isFinishing() || gen != browserGen.get()
+                        || browserDialog == null || !browserDialog.isShowing()) return;
+                browserEntries.clear();
+                browserEntries.addAll(entries);
+                browserAdapter.clear();
+                browserUpAvailable = browserPathStack.size() > 1;
+                if (browserUpAvailable) browserAdapter.add(getString(R.string.browser_up));
+                browserAdapter.addAll(labels);
+                browserAdapter.notifyDataSetChanged();
+                browserLoading = false;
+                updateBrowserTitle();
+            });
+        }, "rom-browser").start();
+    }
+
+    /** 后台列目录：过滤隐藏/临时文件；目录优先 + 字母序；黑名单；条数上限 1000。 */
+    private BrowserListing listBrowserDir(File dir) {
+        BrowserListing result = new BrowserListing();
+        FilenameFilter filter = (parent, name) -> {
+            if (name.startsWith(".")) return false;
+            String low = name.toLowerCase(Locale.ROOT);
+            if (low.endsWith(".part") || low.endsWith(".tmp") || low.endsWith(".temp")) return false;
+            return true;
+        };
+        File[] kids;
+        try { kids = dir.listFiles(filter); }
+        catch (SecurityException e) { kids = null; }
+        if (kids == null) {
+            Log.w(TAG, "browser listFiles null: " + dir);
+            result.unreadable = true;
+            return result;
+        }
+        Arrays.sort(kids, (a, b) -> String.CASE_INSENSITIVE_ORDER.compare(a.getName(), b.getName()));
+        List<File> dirs = new ArrayList<>(), roms = new ArrayList<>();
+        int count = 0;
+        for (File f : kids) {
+            String canon = canonicalOrAbsolute(f);
+            if (f.isDirectory()) {
+                if (isRestrictedDir(canon)) continue;
+                dirs.add(f);
+            } else if (isRomEntry(f)) {
+                roms.add(f);
+            } else continue;
+            if (++count >= BROWSER_LIST_LIMIT) {
+                result.omitted = kids.length - count;
+                break;
+            }
+        }
+        result.files.addAll(dirs);
+        result.files.addAll(roms);
+        return result;
+    }
+
+    /** 条目文案：目录 / ROM + 大小；空/不可访问/截断用占位行。 */
+    private List<String> buildBrowserLabels(List<File> entries, int omitted, boolean unreadable) {
+        List<String> labels = new ArrayList<>();
+        for (File f : entries) {
+            if (f.isDirectory()) {
+                labels.add("📁 " + f.getName() + "/");
+            } else {
+                long bytes;
+                try { bytes = (f.isFile() && f.canRead()) ? f.length() : -1; }
+                catch (SecurityException e) { bytes = -1; }
+                String size = bytes < 0 ? "—" : (bytes >= (1 << 20)
+                        ? String.format(Locale.ROOT, "%.1fMB", bytes / 1048576.0)
+                        : Math.max(1, (bytes + 1023) / 1024) + "KB");
+                labels.add("🎮 " + f.getName() + "  " + size);
+            }
+        }
+        if (entries.isEmpty()) {
+            labels.add(getString(unreadable ? R.string.browser_unreadable : R.string.browser_empty));
+        }
+        if (omitted > 0) labels.add(getString(R.string.browser_omitted, omitted));
+        return labels;
+    }
+
+    /** ROM 识别：复用现有 isRomFile(String) 后缀集，过滤隐藏/临时文件。 */
+    private static boolean isRomEntry(File f) {
+        if (f == null || !f.isFile()) return false;
+        try { if (!f.canRead()) return false; }
+        catch (SecurityException e) { return false; }
+        String n = f.getName().toLowerCase(Locale.ROOT);
+        if (n.startsWith(".") || n.endsWith(".part") || n.endsWith(".tmp") || n.endsWith(".temp")) return false;
+        return isRomFile(n);
+    }
+
+    private void updateBrowserTitle() {
+        if (browserPathTitle != null) {
+            browserPathTitle.setText(getString(R.string.browser_title_path,
+                    canonicalOrAbsolute(browserCurrentDir)));
+        }
+    }
+
+    /** 点击：先判「..」→ 目录 → ROM；占位行不可点。 */
+    private void onBrowserItemClick(int pos) {
+        if (browserLoading) return;
+        if (pos < 0 || browserAdapter == null || pos >= browserAdapter.getCount()) return;
+        int idx = pos;
+        if (browserUpAvailable) {
+            if (pos == 0) { navigateUp(); return; }
+            idx = pos - 1;
+        }
+        if (idx < 0 || idx >= browserEntries.size()) return;
+        File f = browserEntries.get(idx);
+        if (f.isDirectory()) { navigateTo(f, false); return; }
+        if (isRomEntry(f)) {
+            openFoundRom(f);
+            browserGen.incrementAndGet();
+            if (browserDialog != null) browserDialog.dismiss();
+        }
+    }
+
+    /** P0-1：BACK 统一收敛点——有上级则逐层回退，到根则关闭浏览器。 */
+    private void handleBrowserBack() {
+        if (browserPathStack.size() > 1) {
+            navigateUp();
+        } else {
+            browserGen.incrementAndGet();
+            if (browserDialog != null) browserDialog.dismiss();
+        }
+    }
+
     private void showRomList(List<File> found) {
         if (isFinishing()) {
             return;
@@ -2039,7 +2637,11 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.load_failed));
             return;
         }
-        getPreferences(MODE_PRIVATE).edit().putString("lastRom", file.getAbsolutePath()).apply();
+        // 从缓存副本打开时不写 lastRom：缓存路径可能被 LRU/手动清空，写进去会导致下次启动加载悬空路径。
+        // 正常原路径仍写入，保持启动回填语义。
+        if (!RomCache.isCachePath(this, file.getAbsolutePath())) {
+            getPreferences(MODE_PRIVATE).edit().putString("lastRom", file.getAbsolutePath()).apply();
+        }
         hint.setText(R.string.loading);
         hint.setVisibility(View.VISIBLE);
         pendingPath.set(file.getAbsolutePath());
@@ -2248,11 +2850,14 @@ public class EmulatorActivity extends AppCompatActivity {
          * 可供协调器会合时，模拟线程从房间建立那一刻起完全停止输出 FRM，
          * 画面冻结、按键无效。本机锁步的 59.7fps 实测是 GBOY_LOCAL_LINK +
          * busgame 帧脚本驱动的组合，云端路径缺这套帧驱动，不能直接套用。 */
-        /* 云端 2P：每端 4 核（1 可见核 + 3 镜像核）。大竞技场要求 4 名玩家才放开
-         * 球场走位并进入 battle_main.o；11-14 实测 2 核 st=4 pc=2 后角色锁位
-         * （pos 恒 5,8/6,8、cb2 恒 08170A81）、两端模拟线程同时 park。
-         * slot3/4 作 NPC 队位，槽位恒 0 不发键，只提供人数。 */
-        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port, 4, 1, true);
+        /* 云端本机核数由房间人数决定（与 PC CloudLink 的 qBound 同构）：1 可见核
+         * + (players-1) 镜像核。2P 房 = 2 核，3/4 人房多出的槽位作 NPC 陪位
+         * （大竞技场要求 4 人才放开走位），槽位恒 0 不发键、只提供人数。
+         * 原来硬编码 4 会让 2P 房悄悄跑 4 核、总线与会话槽位错位。 */
+        final int cloudPlayers = session != null ? session.playerCount()
+                : (cloudLink == null ? 2 : cloudLink.cloudPlayerCount());
+        GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, port,
+                cloudPlayers, 1, true);
         boolean ok = set.start(core, session);
         if (!ok) {
             /* 锁步房间起不来就退回旧的环回 TCP 布局，至少还能单核+镜像跑起来。 */
@@ -2260,7 +2865,7 @@ public class EmulatorActivity extends AppCompatActivity {
             set = new GBoyConsoleSet(rom, saveDir, stateDir, port);
             ok = set.start(core, session);
         }
-        consoleSet = set;
+        bindConsoleSet(set); // RACE/C3: 引用与代次原子联动（5 处裸赋值之一）
         return ok;
     }
 
@@ -2417,13 +3022,21 @@ public class EmulatorActivity extends AppCompatActivity {
                 Log.i(TAG, "local link TYPE_STATE " + state.length + " bytes");
                 GBoyConsoleSet set = consoleSet;
                 if (set == null) {
-                    Log.w(TAG, "local link TYPE_STATE not applied: consoles not ready");
+                    /* 措辞避开 applied/loaded/ok：driver 的 state_sync 正则会把
+                     * "TYPE_STATE ... applied" 误判成 loaded（PB22 假阳性）。 */
+                    Log.w(TAG, "local link TYPE_STATE deferred: consoles not ready");
                     return;
                 }
+                /* RACE9 P0-②: 门开时 applyRemoteState 只入队（session 线程零 native load），
+                 * 真 load 由 owner 镜像线程帧边界执行；失败回调里再断链。
+                 * 这条入口原先在 GLS session 线程直接同步 JNI load，是本地联机的同类 UAF。 */
                 int code = set.applyRemoteState(state);
-                if (code != GBoyConsoleSet.STATE_OK) {
+                if (code != GBoyConsoleSet.STATE_OK
+                        && code != GBoyConsoleSet.STATE_QUEUED
+                        && code != GBoyConsoleSet.STATE_STALE) {
                     /* 官方 B25kr6:148-152：-5 → 3（尺寸不符），其它非 0 → 1，
-                     * 非 0 直接断链。 */
+                     * 非 0 直接断链。STATE_QUEUED=已受理未落地；STATE_STALE=代次已变，
+                     * 两者都不断链（stale 由 GCS 打 SEED_DROPPED_STALE，不补灌）。 */
                     Log.w(TAG, "local link TYPE_STATE rejected code=" + code + ", closing link");
                     GBoySocketLink link = localLink;
                     if (link != null) {
@@ -2482,7 +3095,7 @@ public class EmulatorActivity extends AppCompatActivity {
             GBoyConsoleSet set = new GBoyConsoleSet(rom, saveDir, stateDir, sioPort,
                     consoleCount, slot, useLockstep);
             boolean ok = set.start(core, link.session());
-            consoleSet = set;
+            bindConsoleSet(set); // RACE/C3: 引用与代次原子联动（5 处裸赋值之一）
             Log.i(TAG, "local link ncore=" + consoleCount + " slot=" + slot
                     + " useLockstep=" + useLockstep + " started=" + ok
                     + " err=" + gboyLinkFailure());
@@ -2501,7 +3114,11 @@ public class EmulatorActivity extends AppCompatActivity {
     /** Stops the mirror core and closes the loopback and TCP links. */
     public void stopGBoyLink() {
         GBoyConsoleSet set = consoleSet;
-        consoleSet = null;
+        bindConsoleSet(null); // RACE/C3: 先失效代次(-1)再 stop（与重建点同范式）
+        synchronized (seedGate) {
+            pendingPeerState = null;      // teardown 清缓存，避免上一房间 seed 被后续 retarget
+            pendingPeerGen = -1L;
+        }
         if (set != null) {
             set.stop();
         }
@@ -2567,6 +3184,142 @@ public class EmulatorActivity extends AppCompatActivity {
         return set == null ? "" : set.failure();
     }
 
+    /* RACE/C3: consoleSet 与 activeSeedGen 的唯一联动下发点。全类 5 处 consoleSet=
+     * （2337/2561/2580/2786/2798）必须全部改走这里，漏一处即 token 与引用脱钩。
+     * 对新 set 注入「当前代次读取器」（指向本 Activity.activeSeedGen，非 set.instanceGen）
+     * 与真 load 回调；null 时把代次失效为 -1（重建窗口/teardown）。 */
+    private void bindConsoleSet(GBoyConsoleSet s) {
+        synchronized (seedGate) {
+            consoleSet = s;
+            activeSeedGen = (s == null ? -1L : s.instanceGen);
+            if (s != null) {
+                s.setCurrentGenSupplier(() -> activeSeedGen);
+                s.setSeedLoadCallback(seedLoadCallback);
+            }
+        }
+    }
+
+    /* ISYNC1 — TYPE_STATE 种子 applied 的统一路径（三端对称，见 PC GBoyMirror /
+     * iOS GBoyConsoleSet）。把对端真实 savestate 种子灌进「代表对端」的镜像核
+     * 0，绝不灌可见核、绝不造状态/party/信任位。返回：
+     *   ISYNC_NOT_ATTEMPTED = 缓存或 consoleSet 还没就绪；
+     *   STATE_OK            = 真正 applied（清缓存、打里程碑日志）；
+     *   其它                = 官方口径拒绝（清缓存，由调用方按链路类型断链）。
+     */
+    private int applyPendingPeerStateIfReady() {
+        byte[] state = pendingPeerState;
+        if (state == null) {
+            return ISYNC_NOT_ATTEMPTED;
+        }
+        if (GBoyConsoleSet.seedFrameBoundary) {
+            /* RACE/C3 根治：门开——读 set+gen、校验、入队全在 seedGate 小锁内原子完成，
+             * 只入队返回 STATE_QUEUED，调用方线程零 native load。真 load 在 owner 镜像线程
+             * 帧边界；缓存只由 seedLoadCallback(native load==0) 清，里程碑同处打。 */
+            synchronized (seedGate) {
+                GBoyConsoleSet s = consoleSet;
+                long gen = activeSeedGen;
+                if (s == null || gen < 0 || s.instanceGen != gen) {
+                    return ISYNC_NOT_ATTEMPTED; // 重建窗口/未就绪：缓存保留，等 retarget
+                }
+                int code = s.applyRemoteState(state); // 门开 → enqueueRemoteState → STATE_QUEUED
+                if (code == GBoyConsoleSet.STATE_STALE) {
+                    /* 代次已变（重建窗口）：保留缓存等 retarget，不当链路级拒绝断链。 */
+                    return ISYNC_NOT_ATTEMPTED;
+                }
+                if (code == GBoyConsoleSet.STATE_QUEUED) {
+                    return code; // 已受理未落地：不清缓存、不打里程碑
+                }
+                if (code != GBoyConsoleSet.STATE_OK) {
+                    /* 入队被拒（尺寸/空）：官方口径拒绝，清缓存让在途重试失效。 */
+                    pendingPeerState = null;
+                    pendingPeerGen = -1L;
+                    peerStateRetryGen++;
+                    Log.w(TAG, "[ISYNC] TYPE_STATE rejected code=" + code + " (link owner closes)");
+                }
+                return code;
+            }
+        }
+        /* 门关：ISYNC1 现状同步 load（A/B 回退），行为逐字节不变。 */
+        GBoyConsoleSet set = consoleSet;
+        if (set == null) {
+            return ISYNC_NOT_ATTEMPTED;
+        }
+        int code = set.applyRemoteState(state);
+        if (code != GBoyConsoleSet.STATE_OK) {
+            pendingPeerState = null;      // 拒绝的种子不反复灌
+            peerStateRetryGen++;          // 让在途重试失效
+            Log.w(TAG, "[ISYNC] TYPE_STATE rejected code=" + code + " (link owner closes)");
+            return code;
+        }
+        pendingPeerState = null;
+        peerStateRetryGen++;
+        /* ISYNC1/G2: 里程碑只认真槽证据——代表对端的镜像核 index=0 的全局槽位
+         * mirrorSlotFor(1, players, 0)=2；绝不拿 visibleSlotIdx()（可见核/SELF_ECHO）
+         * 当槽证据。G3: 门开才打里程碑，与 PC / iOS 同口径。 */
+        if (isyncStateApply) {
+            GBoyLinkSession isyncSession = cloudLink == null ? null : cloudLink.linkSession();
+            int isyncPlayers = isyncSession != null ? isyncSession.playerCount()
+                    : (cloudLink == null ? 2 : cloudLink.cloudPlayerCount());
+            int mirrorSlot = GBoyConsoleSet.mirrorSlotFor(1, isyncPlayers, 0);
+            Log.i(TAG, "[ISYNC] TYPE_STATE remote state loaded " + state.length
+                    + " bytes index=0 mirrorSlot=" + mirrorSlot
+                    + " (visibleSlot=" + set.visibleSlotIdx() + ")"
+                    + " hash=" + isyncHashHex(state));
+        }
+        return GBoyConsoleSet.STATE_OK;
+    }
+
+    /** ISYNC1: 种子块 FNV-1a（诊断口径，非 native 核状态 hash）。 */
+    private static String isyncHashHex(byte[] bytes) {
+        long h = 0xcbf29ce484222325L;
+        for (byte b : bytes) {
+            h ^= (b & 0xffL);
+            h *= 0x100000001b3L;
+        }
+        return Long.toHexString(h);
+    }
+
+    /** ISYNC1: consoleSet 晚到时的有界重试（门开才调用）。每轮重读
+     *  pendingPeerState/consoleSet，被新状态、成功、拒绝或断链自动取代。 */
+    private void schedulePeerStateRetry() {
+        final int gen = peerStateRetryGen;
+        inputHandler.postDelayed(new Runnable() {
+            int tries = 0;
+            @Override
+            public void run() {
+                if (gen != peerStateRetryGen || pendingPeerState == null || cloudLink == null) {
+                    return; // 已被成功/新状态/断链取代
+                }
+                int code = applyPendingPeerStateIfReady();
+                if (code == GBoyConsoleSet.STATE_OK || code == GBoyConsoleSet.STATE_QUEUED) {
+                    /* 门开: QUEUED=已交给 owner 线程帧边界真 load，重试到此为止；
+                     * 门关: OK=已同步 applied。两者都不打 loaded 里程碑（由回调/上层打）。 */
+                    Log.i(TAG, "[ISYNC] TYPE_STATE queued to owner thread after bounded wait tries=" + tries);
+                    return;
+                }
+                if (code != ISYNC_NOT_ATTEMPTED) {
+                    Log.w(TAG, "[ISYNC] TYPE_STATE rejected during bounded wait code=" + code
+                            + ", closing link");
+                    if (cloudLink != null) {
+                        cloudLink.close();
+                    }
+                    return;
+                }
+                if (++tries <= ISYNC_RETRY_MAX) {
+                    inputHandler.postDelayed(this, ISYNC_RETRY_MS);
+                } else {
+                    /* 措辞避开 loaded/applied/ok，防止 driver 正则再误判成功。 */
+                    Log.w(TAG, "[ISYNC] TYPE_STATE still pending: bounded wait exhausted tries="
+                            + tries + " (seed unconsumed)");
+                    /* 门开: 保留缓存，留给重建后 2817 retarget；门关: 旧行为清缓存。 */
+                    if (!GBoyConsoleSet.seedFrameBoundary) {
+                        pendingPeerState = null;
+                    }
+                }
+            }
+        }, ISYNC_RETRY_MS);
+    }
+
     private void emulationLoop() {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY);
         long frames = 0;
@@ -2620,19 +3373,27 @@ public class EmulatorActivity extends AppCompatActivity {
                          * 不推进）。重建时可见核重新当 host（先 attach），两核
                          * 又都在第 0 帧，起点一致。 */
                         GBoyConsoleSet old = consoleSet;
+                        /* RACE9 P0-①: 必须先捕获 old，再把代次失效(-1)前移到 old.stop() 之前。
+                         * 否则 free(emu) 之后 consoleSet 仍指向已死旧 set、activeSeedGen 仍是旧 gen，
+                         * 任一 apply 入口都会「gen 匹配」把 seed 入到已 join 的旧队列 → seed 滞留/丢失。 */
+                        bindConsoleSet(null);
                         if (old != null) {
                             old.stop();
                         }
-                        consoleSet = null;
                         File save = defaultSaveDir != null ? defaultSaveDir : getFilesDir();
                         File state = defaultStateDir != null
                                 ? defaultStateDir : new File(getFilesDir(), "state");
                         GBoyLinkSession session = cloudLink == null ? null : cloudLink.linkSession();
+                        /* 与会话使用同一人数，避免房间重建后核数漂移（D1）。 */
+                        final int cloudPlayers = session != null ? session.playerCount()
+                                : (cloudLink == null ? 2 : cloudLink.cloudPlayerCount());
                         GBoyConsoleSet rebuilt = new GBoyConsoleSet(
-                                new File(currentRomPath), save, state, 18781, 4, 1, true);
+                                new File(currentRomPath), save, state, 18781,
+                                cloudPlayers, 1, true);
                         if (rebuilt.start(core, session)) {
-                            consoleSet = rebuilt;
-                            Log.i(TAG, "cloud arm: 4-core room rebuilt, visible slot="
+                            bindConsoleSet(rebuilt); // RACE/C3: 新代次在 2817 单一消费者之前生效
+                            Log.i(TAG, "cloud arm: " + cloudPlayers
+                                    + "-core room rebuilt, visible slot="
                                     + rebuilt.visibleSlotIdx());
                         } else {
                             Log.e(TAG, "cloud arm: rebuild failed: " + rebuilt.failure());
@@ -2646,14 +3407,24 @@ public class EmulatorActivity extends AppCompatActivity {
                          * 的镜像核（之前到达时可能还没有核可灌，或灌的是马上要
                          * 被重建掉的那一套），再把本机可见核的存档推给对方。 */
                         GBoyConsoleSet rebuiltSet = consoleSet;
-                        byte[] peerState = pendingPeerState;
-                        if (rebuiltSet != null && peerState != null) {
-                            int stateCode = rebuiltSet.applyRemoteState(peerState);
-                            if (stateCode == GBoyConsoleSet.STATE_OK) {
-                                Log.i(TAG, "cloud arm: peer state re-applied "
-                                        + peerState.length + " bytes");
-                            } else {
-                                Log.w(TAG, "cloud arm: peer state rejected code=" + stateCode);
+                        /* RACE/C3: 单一消费者——重建后把缓存 seed 以新代次一次性入队。
+                         * RACE9 P1: 入队用的 gen 取自当前 activeSeedGen（此时已是 rebuilt.instanceGen），
+                         * 等价于把 pendingGen 重写为新 gen，合法 seed 不会被 SEED_DROPPED_STALE 误丢。 */
+                        if (isyncSeedFrameBoundary && pendingPeerState != null) {
+                            Log.i(TAG, "[ISYNC] seed retarget oldGen=" + pendingPeerGen
+                                    + " newGen=" + activeSeedGen);
+                        }
+                        int stateCode = applyPendingPeerStateIfReady();
+                        if (stateCode == GBoyConsoleSet.STATE_OK
+                                || stateCode == GBoyConsoleSet.STATE_QUEUED) {
+                            /* 门开: STATE_QUEUED=已入队等 owner 线程真 load（里程碑由回调打）；
+                             * 门关: STATE_OK=已同步 applied。两者都不再打额外里程碑、不断链。 */
+                            Log.i(TAG, "cloud arm: peer state accepted by ISYNC path");
+                        } else if (stateCode != ISYNC_NOT_ATTEMPTED) {
+                            Log.w(TAG, "cloud arm: peer state rejected code=" + stateCode
+                                    + ", closing link");
+                            if (cloudLink != null) {
+                                cloudLink.close();
                             }
                         }
                         if (cloudLink != null && rebuiltSet != null) {
@@ -2944,7 +3715,10 @@ public class EmulatorActivity extends AppCompatActivity {
     private void applyRomSaveLocation(String romPath) {
         File rom = new File(romPath).getAbsoluteFile();
         File parent = rom.getParentFile();
-        boolean beside = parent != null && parent.canWrite()
+        // 缓存副本强制旁路 saves_beside_rom：rom_cache 目录会被 LRU/清空删除，
+        // 若把存档/状态写在那里，点"清空缓存"会连带删掉玩家存档（数据丢失）。
+        boolean fromCache = RomCache.isCachePath(this, romPath);
+        boolean beside = !fromCache && parent != null && parent.canWrite()
                 && (hasBesideSaves(rom)
                     || getPreferences(MODE_PRIVATE).getBoolean("saves_beside_rom", false));
         File saveDir = beside ? parent : defaultSaveDir;
@@ -2991,6 +3765,29 @@ public class EmulatorActivity extends AppCompatActivity {
             toast(getString(R.string.load_failed));
             return;
         }
+        // 最近 ROM + 本地缓存：core.load 成功后记一次。MD5/CRC/复制是文件 I/O，放后台线程，
+        // 绝不阻塞 emu 循环（THREAD_PRIORITY_URGENT_DISPLAY）。
+        // 从缓存副本打开时只 touch 时间（缓存路径是设备私有，不写进 paths 污染三端同步）。
+        final String loadedPath = path;
+        new Thread(() -> {
+            Context app = getApplicationContext();
+            if (RomCache.isCachePath(app, loadedPath)) {
+                // 从缓存打开：romId = md5:<缓存文件名去后缀>，只更新时间不写 paths
+                File cf = new File(loadedPath);
+                String name = cf.getName();
+                String hex = name.endsWith(".gba") ? name.substring(0, name.length() - 4) : name;
+                RecentRoms.touchById(app, "md5:" + hex);
+                RomCache.touch(app, "md5:" + hex); // 缓存 LRU 时间同步更新，避免近期副本被误淘汰
+                return;
+            }
+            RecentRoms.record(app, loadedPath);
+            // 缓存副本：直接从加载路径算 MD5 得 romId（不依赖 record 后的 list 顺序，避免快速切 ROM 竞态）。
+            // md5Of 返回 hex 串时与 RecentRoms 的 rom_id="md5:"+hex 同源；失败则跳过缓存、降级不影响打开。
+            String hex = RecentRoms.md5Of(new File(loadedPath));
+            if (hex != null) {
+                RomCache.ensureCached(app, "md5:" + hex, loadedPath);
+            }
+        }, "recent-rom").start();
         applyPerRomSettings();
         long frameNanos = core.frameNanos();
         sliceNanos = frameNanos > 0 ? frameNanos : 1_000_000_000L / 60L;
@@ -2998,7 +3795,9 @@ public class EmulatorActivity extends AppCompatActivity {
         nextFastPresent = 0L;
         setupAudio();
         paused = false;
-        boolean autoState = getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false)
+        // 与 PC 的 autoload 默认值统一为 true；云端 4 核冷链由 suppressAutoState
+        // 单独拦截，不受此默认值影响。
+        boolean autoState = getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", true)
                 && !suppressAutoState;
         if (autoState
                 && core.loadState(AUTO_SLOT)) {
@@ -3951,10 +4750,10 @@ public class EmulatorActivity extends AppCompatActivity {
         if (mask == 0x1F) {
             return;
         }
-        int dispcnt = core.busRead(16, 0x04000000);
+        int dispcnt = core.busRead(16, IO_REG_DISPCNT);
         int wanted = (dispcnt & ~0x1F00) | ((mask & 0x1F) << 8);
         if (wanted != dispcnt) {
-            core.busWrite(16, 0x04000000, wanted);
+            core.busWrite(16, IO_REG_DISPCNT, wanted);
         }
     }
 
@@ -4069,7 +4868,13 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private void showSaveLocation() {
-        String path = SaveLocation.displayPath(this, core.saveFile());
+        // loadRom() posts this to the UI thread from the emulation thread. An
+        // activity relaunch (e.g. rotation) can run onDestroy() in between, which
+        // joins the emulation thread and nulls out `core`; the posted callback
+        // then runs against a dead activity. Never dereference `core` here.
+        MgbaCore c = core;
+        String path = c == null || !c.isLoaded()
+                ? null : SaveLocation.displayPath(this, c.saveFile());
         if (path == null || path.isEmpty()) {
             savePathView.setVisibility(View.GONE);
             return;
@@ -5440,8 +6245,22 @@ public class EmulatorActivity extends AppCompatActivity {
                         if (cloudLink == null || !cloudLink.officialMode()) {
                             return;
                         }
-                        String path = getPreferences(MODE_PRIVATE)
-                                .getString("lastRom", null);
+                        /* BOOTSTRAP/ISYNC31 根修：driver 的 pm clear 清空 lastRom 偏好，
+                         * ROM 广播加载只写 pendingPath→loadRom() 只写 currentRomPath，
+                         * 都不回写 lastRom。原实现只读 lastRom 会拿到 null 并在此静默
+                         * return，consoleSet 整轮不创建、种子永远 deferred。与同文件
+                         * 既有的 currentRomPath 优先、偏好回落的范式一致：先取内存中的
+                         * 当前路径，再回落到偏好。非伪造——只是不再丢掉已经真实加载的
+                         * ROM 路径。 */
+                        String path = currentRomPath != null ? currentRomPath
+                                : getPreferences(MODE_PRIVATE).getString("lastRom", null);
+                        if (GBoyConsoleSet.ISyncEvidence.a1Enabled()) {
+                            Log.i(TAG, "[ISYNC-EV][BOOT] role=APP official=1 hasCurrent="
+                                    + (currentRomPath != null ? 1 : 0) + " hasLast="
+                                    + (getPreferences(MODE_PRIVATE).getString("lastRom", null) != null ? 1 : 0)
+                                    + " coreReady=" + (core != null && core.isLoaded() ? 1 : 0)
+                                    + " pathResolved=" + (path != null ? 1 : 0));
+                        }
                         if (path == null || core == null || !core.isLoaded()) {
                             return;
                         }
@@ -5483,22 +6302,33 @@ public class EmulatorActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         /* 云端会重建一次核房间（reload → 4 核重挂），存档到达
                          * 时目标核可能还不存在或马上就要被销毁，所以先缓存一份，
-                         * 重建完成后再补灌。 */
-                        pendingPeerState = state;
-                        GBoyConsoleSet set = consoleSet;
-                        if (set == null) {
-                            Log.w(TAG, "TYPE_STATE not applied yet (consoles not ready)");
-                        } else {
-                            int stateCode = set.applyRemoteState(state);
-                            if (stateCode != GBoyConsoleSet.STATE_OK) {
-                                /* 官方 B25kr6:148-152：load 失败（-5→3、其它→1）
-                                 * 会回一个 type 1 错误体并结束会话。我们不做那条
-                                 * 反向包，直接断链；对端读到 EOF 等价。 */
-                                Log.w(TAG, "TYPE_STATE rejected code=" + stateCode
-                                        + ", closing link");
-                                if (cloudLink != null) {
-                                    cloudLink.close();
+                         * 重建完成后再补灌。ISYNC1: 缓存后统一走 applied 路径；
+                         * 若 consoleSet 还没就绪，门开时有界重试直到真正 applied，
+                         * 门关时沿用旧行为（仅把日志措辞改掉，消除 PB22 假阳性）。 */
+                        synchronized (seedGate) {
+                            pendingPeerState = state;
+                            pendingPeerGen = activeSeedGen; // 本包归属代次（retarget 的 oldGen 证据）
+                        }
+                        peerStateRetryGen++; // 让上一轮在途重试失效，以本包为准
+                        int stateCode = applyPendingPeerStateIfReady();
+                        if (stateCode == ISYNC_NOT_ATTEMPTED) {
+                            if (consoleSet == null) {
+                                Log.w(TAG, "TYPE_STATE deferred: consoles not ready, queued"
+                                        + (isyncStateApply ? " (ISYNC bounded retry)" : ""));
+                                if (isyncStateApply || isyncSeedFrameBoundary) {
+                                    schedulePeerStateRetry();
                                 }
+                            }
+                        } else if (stateCode != GBoyConsoleSet.STATE_OK
+                                && stateCode != GBoyConsoleSet.STATE_QUEUED) {
+                            /* 官方 B25kr6:148-152：load 失败（-5→3、其它→1）
+                             * 会回一个 type 1 错误体并结束会话。我们不做那条
+                             * 反向包，直接断链；对端读到 EOF 等价。
+                             * STATE_QUEUED=已入队等 owner 线程真 load，不断链。 */
+                            Log.w(TAG, "TYPE_STATE rejected code=" + stateCode
+                                    + ", closing link");
+                            if (cloudLink != null) {
+                                cloudLink.close();
                             }
                         }
                     });
@@ -5522,11 +6352,78 @@ public class EmulatorActivity extends AppCompatActivity {
                     });
                 }
             });
-            cloudLink.setOfficialMode(getPreferences(MODE_PRIVATE)
-                    .getBoolean("gboy_official_link", true));
+            /* C0 / ADR-002：默认不再是「PC=A / Android=B」的硬编码分叉。
+             * 新开关 gboy_link_mode = A | B | AUTO（默认 AUTO：2P→A、3/4P→B），
+             * 由 ADB 广播 io.mgba.android.action.GBOY_LINK_MODE 或下方对话框设置；
+             * 旧的私有开关 gboy_official_link 只在显式存在时作为兼容覆盖保留。
+             * 两端在 type-1 握手帧 / WSS hello 里各带 1 bit mode，不一致直接
+             * 断开并给出可见提示，禁止静默降级。 */
+            android.content.SharedPreferences linkPrefs = getPreferences(MODE_PRIVATE);
+            int modeOverride = gboyLinkModeOverride();
+            cloudLink.setOfficialMode(modeOverride == GBoyFrames.LINK_MODE_B);
+            cloudLink.setLinkMode(modeOverride);
+            cloudLink.setAllowLegacyPeer(linkPrefs.getBoolean("gboy_link_allow_legacy", false));
+            Log.i(TAG, "[C0] link mode override=" + GBoyCloudLink.modeName(modeOverride)
+                    + " allow_legacy=" + linkPrefs.getBoolean("gboy_link_allow_legacy", false));
         }
         return cloudLink;
     }
+
+    /**
+     * 解析联机模式覆盖值：gboy_link_mode 优先；未设置时兼容旧的私有开关
+     * gboy_official_link（仅在它确实被写过时才生效）；否则 AUTO。
+     */
+    private int gboyLinkModeOverride() {
+        android.content.SharedPreferences p = getPreferences(MODE_PRIVATE);
+        String raw = p.getString("gboy_link_mode", null);
+        if (raw != null) {
+            String mode = raw.trim().toUpperCase();
+            if ("A".equals(mode)) {
+                return GBoyFrames.LINK_MODE_A;
+            }
+            if ("B".equals(mode)) {
+                return GBoyFrames.LINK_MODE_B;
+            }
+            return GBoyFrames.LINK_MODE_UNKNOWN; // AUTO / 其它值都按 AUTO
+        }
+        if (p.contains("gboy_official_link")) {
+            return p.getBoolean("gboy_official_link", true)
+                    ? GBoyFrames.LINK_MODE_B : GBoyFrames.LINK_MODE_A;
+        }
+        return GBoyFrames.LINK_MODE_UNKNOWN; // AUTO：2P→A、3/4P→B
+    }
+
+    /**
+     * C0 能力协商的可达入口（ADB，无需 UI）：
+     *   am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode A
+     *   am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode B
+     *   am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode AUTO
+     *   am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode AUTO --ez allow_legacy true
+     * 设置立刻持久化，并在下次建房/入房时生效；allow_legacy 是唯一允许与
+     * 未声明能力的旧客户端互通的显式开关，默认关闭。
+     */
+    private final BroadcastReceiver linkModeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String raw = intent.getStringExtra("mode");
+            boolean allowLegacy = intent.getBooleanExtra("allow_legacy", false);
+            android.content.SharedPreferences.Editor edit = getPreferences(MODE_PRIVATE).edit();
+            if (raw != null) {
+                edit.putString("gboy_link_mode", raw.trim().toUpperCase());
+            }
+            edit.putBoolean("gboy_link_allow_legacy", allowLegacy);
+            edit.apply();
+            int override = gboyLinkModeOverride();
+            if (cloudLink != null) {
+                cloudLink.setLinkMode(override);
+                cloudLink.setAllowLegacyPeer(allowLegacy);
+            }
+            String shown = "联机模式已设为 " + GBoyCloudLink.modeName(override)
+                    + (allowLegacy ? "（允许旧客户端）" : "") + "，下次连接生效";
+            Log.i(TAG, "[C0] " + shown);
+            toast(shown);
+        }
+    };
 
     /**
      * Mails a registration/login code to the address, the same
@@ -6075,6 +6972,9 @@ public class EmulatorActivity extends AppCompatActivity {
         final int IDX_SHORTCUT = 8;
         final int IDX_DIAG = 9;
         final int IDX_HELP = 10;
+        final int IDX_FILES_ACCESS = 11;
+        final int IDX_ROM_CACHE = 12;
+        final int IDX_FILE_BROWSER = 13;
         String[] items = {
                 getString(R.string.orientation_title),
                 getString(R.string.settings_sound),
@@ -6087,6 +6987,10 @@ public class EmulatorActivity extends AppCompatActivity {
                 getString(R.string.shortcut_create),
                 getString(R.string.diag_export),
                 getString(R.string.settings_help),
+                // 实时查询权限真值（hasAccess 无缓存），重开菜单即为最新状态
+                getString(R.string.settings_files_access) + (SaveLocation.hasAccess(this) ? "  ✓" : "  ✗"),
+                getString(R.string.settings_rom_cache) + "  " + romCacheSizeLabel(),
+                getString(R.string.browser_full_disk),
         };
         new AlertDialog.Builder(this)
                 .setTitle(R.string.settings)
@@ -6118,9 +7022,39 @@ public class EmulatorActivity extends AppCompatActivity {
                         launchPicker(intent, REQ_DIAG);
                     } else if (which == IDX_HELP) {
                         showHelpDialog();
+                    } else if (which == IDX_FILES_ACCESS) {
+                        showFilesAccessDialog();
+                    } else if (which == IDX_ROM_CACHE) {
+                        showRomCacheDialog();
+                    } else if (which == IDX_FILE_BROWSER) {
+                        showFileBrowser();
                     }
                 })
                 .show();
+    }
+
+    /** 设置里的「ROM 缓存」入口：显示占用、提供清空。 */
+    private void showRomCacheDialog() {
+        int count = RomCache.cachedCount(this);
+        String size = romCacheSizeLabel();
+        String body = getString(R.string.rom_cache_status, count, size);
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.settings_rom_cache)
+                .setMessage(body)
+                .setPositiveButton(R.string.rom_cache_clear, (d, w) -> {
+                    new Thread(() -> RomCache.clearAll(getApplicationContext()), "rom-cache-clear").start();
+                    toast(getString(R.string.rom_cache_cleared));
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    private String romCacheSizeLabel() {
+        long bytes = RomCache.cachedSize(this);
+        if (bytes >= 1024L * 1024L) {
+            return String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024.0));
+        }
+        return (bytes / 1024L) + " KB";
     }
 
     private void showOrientationDialog() {
@@ -6488,9 +7422,12 @@ public class EmulatorActivity extends AppCompatActivity {
     };
 
     /**
-     * Hardware key remapping (PC has this in Settings→Keyboard). Ten rows, one
-     * per virtual button; tapping a row waits for the next key press. Bindings
-     * live in {@code key_<mask>} and are read by {@link #mapKey}.
+     * Hardware key remapping (PC has this in Settings→Keyboard). Keyboard and
+     * gamepad bindings are independent tables so one GBA action can keep a
+     * binding from each source at the same time. Keyboard bindings live in
+     * {@code key_<mask>}, gamepad bindings in {@code pad_<mask>}; a legacy
+     * gamepad value left in the single {@code key_<mask>} slot is still read
+     * as a fallback (see {@link #padPref}).
      */
     private void showKeyRemapDialog() {
         ScrollView scroll = new ScrollView(this);
@@ -6505,32 +7442,27 @@ public class EmulatorActivity extends AppCompatActivity {
         hint.setTextSize(13);
         hint.setPadding(0, 0, 0, dp(8));
         box.addView(hint);
-        Button[] rows = new Button[KEY_ACTION_MASKS.length];
+
+        Button[] keyboardRows = new Button[KEY_ACTION_MASKS.length];
+        Button[] padRows = new Button[KEY_ACTION_MASKS.length];
         Runnable refresh = () -> {
-            for (int i = 0; i < rows.length; i++) {
-                if (rows[i] != null) {
-                    rows[i].setText(remapRowText(i));
+            for (int i = 0; i < KEY_ACTION_MASKS.length; i++) {
+                if (keyboardRows[i] != null) {
+                    keyboardRows[i].setText(remapRowText(i, false));
+                }
+                if (padRows[i] != null) {
+                    padRows[i].setText(remapRowText(i, true));
                 }
             }
         };
-        for (int i = 0; i < KEY_ACTION_MASKS.length; i++) {
-            final int index = i;
-            Button row = new Button(this);
-            row.setAllCaps(false);
-            row.setText(remapRowText(i));
-            row.setOnClickListener(v -> captureKey(KEY_ACTION_MASKS[index], index, refresh));
-            rows[i] = row;
-            box.addView(row);
-        }
+        addRemapSection(box, false, keyboardRows, refresh);
+        addRemapSection(box, true, padRows, refresh);
+
         Button resetAll = new Button(this);
         resetAll.setAllCaps(false);
         resetAll.setText(R.string.key_remap_reset_all);
         resetAll.setOnClickListener(v -> {
-            SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit();
-            for (int mask : KEY_ACTION_MASKS) {
-                editor.remove("key_" + mask);
-            }
-            editor.apply();
+            clearAllRemaps();
             refresh.run();
         });
         box.addView(resetAll);
@@ -6541,18 +7473,44 @@ public class EmulatorActivity extends AppCompatActivity {
                 .show();
     }
 
-    private String remapRowText(int index) {
+    /** Builds one labelled block of ten rows for a single input source. */
+    private void addRemapSection(LinearLayout box, boolean pad, Button[] rows, Runnable refresh) {
+        TextView header = new TextView(this);
+        header.setText(pad ? R.string.key_remap_pad_header : R.string.key_remap_keyboard_header);
+        header.setTextColor(0xFF444444);
+        header.setTextSize(14);
+        header.setPadding(0, dp(8), 0, dp(4));
+        box.addView(header);
+        for (int i = 0; i < KEY_ACTION_MASKS.length; i++) {
+            final int index = i;
+            Button row = new Button(this);
+            row.setAllCaps(false);
+            row.setText(remapRowText(index, pad));
+            row.setOnClickListener(v -> captureKey(KEY_ACTION_MASKS[index], index, pad, refresh));
+            rows[i] = row;
+            box.addView(row);
+        }
+    }
+
+    private String remapRowText(int index, boolean pad) {
         int mask = KEY_ACTION_MASKS[index];
-        int code = keyPref(mask);
-        String key = code == 0 ? defaultKeyLabel(mask) : keyCodeLabel(code);
+        int code = pad ? padPref(mask) : keyPref(mask);
+        String key = code == 0 ? defaultKeyLabel(mask, pad) : keyCodeLabel(code);
         return getString(R.string.key_remap_row, getString(KEY_ACTION_LABELS[index]), key);
     }
 
-    /** First keycode the built-in table still maps to this action. */
-    private String defaultKeyLabel(int mask) {
-        for (int code = 1; code <= KeyEvent.getMaxKeyCode(); code++) {
-            if (defaultMapKey(code) == mask) {
-                return keyCodeLabel(code);
+    /**
+     * First keycode the built-in table maps to this action. Gamepad D-pads
+     * arrive as DPAD_* keycodes, so for directions fall back to the keyboard
+     * class rather than showing "unbound" in the gamepad section.
+     */
+    private String defaultKeyLabel(int mask, boolean pad) {
+        for (int pass = 0; pass < 2; pass++) {
+            boolean gamepadPass = pass == 0 ? pad : !pad;
+            for (int code = 1; code <= KeyEvent.getMaxKeyCode(); code++) {
+                if (isGamepadKey(code) == gamepadPass && defaultMapKey(code) == mask) {
+                    return keyCodeLabel(code);
+                }
             }
         }
         return getString(R.string.key_none);
@@ -6572,15 +7530,19 @@ public class EmulatorActivity extends AppCompatActivity {
         return name.replace('_', ' ');
     }
 
-    /** Waits for one key press and stores it as the binding for {@code mask}. */
-    private void captureKey(int mask, int index, Runnable onChanged) {
+    /**
+     * Waits for one key press and stores it as the binding for {@code mask}.
+     * The table is chosen from the keycode itself (BUTTON_* = gamepad), so a
+     * keyboard row can never shadow a gamepad binding (or vice versa).
+     */
+    private void captureKey(int mask, int index, boolean pad, Runnable onChanged) {
         String action = getString(KEY_ACTION_LABELS[index]);
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(getString(R.string.key_remap_capture, action))
                 .setMessage(R.string.key_remap_waiting)
                 .setNegativeButton(android.R.string.cancel, null)
                 .setNeutralButton(R.string.key_remap_reset, (d, w) -> {
-                    getPreferences(MODE_PRIVATE).edit().remove("key_" + mask).apply();
+                    clearRemap(mask, pad);
                     toast(getString(R.string.key_remap_reset_one, action));
                     onChanged.run();
                 })
@@ -6601,13 +7563,48 @@ public class EmulatorActivity extends AppCompatActivity {
                 toast(getString(R.string.key_remap_reserved));
                 return true;
             }
-            getPreferences(MODE_PRIVATE).edit().putInt("key_" + mask, keyCode).apply();
+            boolean targetPad = isGamepadKey(keyCode);
+            SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+            SharedPreferences.Editor editor = prefs.edit();
+            if (!targetPad) {
+                // Preserve a legacy gamepad value that shared this slot.
+                int legacy = prefs.getInt("key_" + mask, 0);
+                if (isGamepadKey(legacy)) {
+                    editor.putInt("pad_" + mask, legacy);
+                }
+            }
+            editor.putInt(prefKey(mask, targetPad), keyCode);
+            editor.apply();
             toast(getString(R.string.key_remap_done, action, keyCodeLabel(keyCode)));
             d.dismiss();
             onChanged.run();
             return true;
         });
         dialog.show();
+    }
+
+    /** Clears one row without disturbing a binding in the other table. */
+    private void clearRemap(int mask, boolean pad) {
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        SharedPreferences.Editor editor = prefs.edit();
+        int legacy = prefs.getInt("key_" + mask, 0);
+        if (pad) {
+            editor.remove("pad_" + mask);
+            if (isGamepadKey(legacy)) {
+                editor.remove("key_" + mask);
+            }
+        } else if (!isGamepadKey(legacy)) {
+            editor.remove("key_" + mask);
+        }
+        editor.apply();
+    }
+
+    private void clearAllRemaps() {
+        SharedPreferences.Editor editor = getPreferences(MODE_PRIVATE).edit();
+        for (int mask : KEY_ACTION_MASKS) {
+            editor.remove("key_" + mask).remove("pad_" + mask);
+        }
+        editor.apply();
     }
 
     private void showExtraKeysDialog() {
@@ -6693,7 +7690,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     dialog.dismiss();
                 })
                 .show());
-        CheckBox autoLoad = check(R.string.save_auto_load, getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", false));
+        CheckBox autoLoad = check(R.string.save_auto_load, getPreferences(MODE_PRIVATE).getBoolean("auto_load_state", true));
         CheckBox autoSave = check(R.string.save_auto_write, getPreferences(MODE_PRIVATE).getBoolean("auto_save_state", false));
         CheckBox confirmClose = check(R.string.save_confirm, getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false));
         CheckBox patches = check(R.string.save_patches, getPreferences(MODE_PRIVATE).getBoolean("patches", true));
@@ -8663,18 +9660,72 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         Set<String> favs = favoriteRoms();
         String last = getPreferences(MODE_PRIVATE).getString("lastRom", null);
+
+        // ── 需求②：最近 ROM 分区（数据源 = RecentRoms.list(this)）────────────────
+        // 诚实口径：只有「本端 device_id 路径存在且 isFile」的条目才当可点行；
+        // 仅存在于对端、本端无此文件的条目落灰显行，绝不伪造打开。
+        List<RecentRoms.Entry> recents = RecentRoms.list(this);
+        String myDev = RecentRoms.deviceId(this);
+        Set<String> shownPaths = new HashSet<>();
+
+        TextView recentHeader = new TextView(this);
+        recentHeader.setText(R.string.recent_roms_section);
+        recentHeader.setTextColor(0xFF666666);
+        recentHeader.setTextSize(13);
+        recentHeader.setPadding(0, pad, 0, dp(2));
+        list.addView(recentHeader);
+
+        // 本端有文件 → 可点；复用 libraryRow → openFoundRom → pendingPath → loadRom
+        for (RecentRoms.Entry e : recents) {
+            String own = e.paths.get(myDev);
+            if (own == null) {
+                continue;
+            }
+            File f = new File(own);
+            if (!f.isFile()) {
+                continue; // 本端无此文件 → 落到下面的灰显分支（不伪造打开）
+            }
+            String key = f.getAbsolutePath();
+            if (!shownPaths.add(key)) {
+                continue; // 去重：同路径只显示一次
+            }
+            list.addView(libraryRow(holder, f, favs.contains(key), key.equals(last)));
+        }
+
+        // 本端原路径失效 → 查本地缓存副本：有则可点（从缓存打开）；真无文件才灰显。
+        // 缓存检索不写 paths、不作为身份，仅本端落脚点（C1 契约 §1.3 / C10 A1）。
+        for (RecentRoms.Entry e : recents) {
+            String own = e.paths.get(myDev);
+            File f = (own == null) ? null : new File(own);
+            if (f != null && f.isFile()) {
+                continue; // 已在上面可点分区显示
+            }
+            String cached = RomCache.getCachedPath(this, e.romId);
+            if (cached != null && new File(cached).isFile()
+                    && shownPaths.add(new File(cached).getAbsolutePath())) {
+                list.addView(libraryRow(holder, new File(cached), false, false,
+                        e.displayName, true));
+                continue;
+            }
+            list.addView(recentMissingRow(e));
+        }
+        // ──────────────────────────────────────────────────────────────
+
         // Favorites first, then the rest; the last played game tops the list.
+        // 去重：shownPaths 已含最近可点行 → 扫描结果/收藏/lastRom 不再重复显示
         List<File> ordered = new ArrayList<>();
-        if (last != null && new File(last).isFile()) {
+        if (last != null && new File(last).isFile()
+                && shownPaths.add(new File(last).getAbsolutePath())) {
             ordered.add(new File(last));
         }
         for (File file : found) {
-            if (favs.contains(file.getAbsolutePath())) {
+            if (favs.contains(file.getAbsolutePath())
+                    && shownPaths.add(file.getAbsolutePath())) {
                 ordered.add(file);
             }
         }
         for (File file : found) {
-            if (!ordered.contains(file)) {
+            if (!ordered.contains(file) && shownPaths.add(file.getAbsolutePath())) {
                 ordered.add(file);
             }
         }
@@ -8694,6 +9745,12 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     private View libraryRow(AlertDialog[] holder, File file, boolean favorite, boolean isLast) {
+        return libraryRow(holder, file, favorite, isLast, null, false);
+    }
+
+    /** displayName 非空时覆盖文件名显示；fromCache=true 打来源标记且禁用长按收藏（易失路径不写 rom_favs）。 */
+    private View libraryRow(AlertDialog[] holder, File file, boolean favorite, boolean isLast,
+                            String displayName, boolean fromCache) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -8702,14 +9759,16 @@ public class EmulatorActivity extends AppCompatActivity {
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
         TextView name = new TextView(this);
-        String label = file.getName() + (isLast ? "　" + getString(R.string.library_last) : "")
+        String shownName = (displayName != null && !displayName.isEmpty()) ? displayName : file.getName();
+        String label = shownName + (isLast ? "　" + getString(R.string.library_last) : "")
+                + (fromCache ? "　" + getString(R.string.rom_from_cache) : "")
                 + (hasBesideSaves(file) ? getString(R.string.scan_has_save) : "");
         name.setText((favorite ? "★ " : "○ ") + label);
         name.setTextColor(0xFF222222);
         name.setTextSize(15);
         name.setSingleLine(true);
         TextView path = new TextView(this);
-        path.setText(file.getParent());
+        path.setText((fromCache ? "缓存: " : "") + file.getParent());
         path.setTextColor(0xFF888888);
         path.setTextSize(11);
         path.setSingleLine(true);
@@ -8722,26 +9781,49 @@ public class EmulatorActivity extends AppCompatActivity {
                 holder[0].dismiss();
             }
         });
-        row.setOnLongClickListener(v -> {
-            Set<String> favs = favoriteRoms();
-            String key = file.getAbsolutePath();
-            if (favs.contains(key)) {
-                favs.remove(key);
-                toast(getString(R.string.library_fav_off));
-            } else {
-                favs.add(key);
-                toast(getString(R.string.library_fav_on));
-            }
-            StringBuilder csv = new StringBuilder();
-            for (String fav : favs) {
-                if (csv.length() > 0) {
-                    csv.append('\n');
+        if (!fromCache) {
+            row.setOnLongClickListener(v -> {
+                Set<String> favs = favoriteRoms();
+                String key = file.getAbsolutePath();
+                if (favs.contains(key)) {
+                    favs.remove(key);
+                    toast(getString(R.string.library_fav_off));
+                } else {
+                    favs.add(key);
+                    toast(getString(R.string.library_fav_on));
                 }
-                csv.append(fav);
-            }
-            getPreferences(MODE_PRIVATE).edit().putString("rom_favs", csv.toString()).apply();
-            return true;
-        });
+                StringBuilder csv = new StringBuilder();
+                for (String fav : favs) {
+                    if (csv.length() > 0) {
+                        csv.append('\n');
+                    }
+                    csv.append(fav);
+                }
+                getPreferences(MODE_PRIVATE).edit().putString("rom_favs", csv.toString()).apply();
+                return true;
+            });
+        }
+        return row;
+    }
+
+    /** 最近列表里本端无文件的跨端条目：灰显、不可点，绝不伪造打开。 */
+    private View recentMissingRow(RecentRoms.Entry e) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(6);
+        row.setPadding(pad, pad, pad, pad);
+        row.setAlpha(0.45f); // 灰显
+        TextView name = new TextView(this);
+        String title = (e.displayName == null || e.displayName.isEmpty())
+                ? e.romId : e.displayName;
+        String dev = (e.lastDeviceId == null || e.lastDeviceId.isEmpty())
+                ? "?" : e.lastDeviceId;
+        name.setText("○ " + title + getString(R.string.recent_roms_missing, dev));
+        name.setTextColor(0xFF888888);
+        name.setTextSize(15);
+        name.setSingleLine(true);
+        row.addView(name);
+        // 故意不设 OnClickListener：本端无文件 → 不可点，不进入 openFoundRom/loadRom
         return row;
     }
 
@@ -9673,7 +10755,8 @@ public class EmulatorActivity extends AppCompatActivity {
 
     /**
      * Hardware keys the remap dialog offers, in table order. The preference
-     * key for each is {@code key_<mask>} and holds the KeyEvent code.
+     * key for each is {@code key_<mask>} (keyboard) or {@code pad_<mask>}
+     * (gamepad) and holds the KeyEvent code.
      */
     private static final int[] KEY_ACTION_MASKS = {
             ControlsView.UP, ControlsView.DOWN, ControlsView.LEFT, ControlsView.RIGHT,
@@ -9687,36 +10770,58 @@ public class EmulatorActivity extends AppCompatActivity {
             R.string.key_a_start, R.string.key_a_select,
     };
 
+    /** Keyboard binding only — a legacy gamepad value in this slot is not one. */
     private int keyPref(int mask) {
-        return getPreferences(MODE_PRIVATE).getInt("key_" + mask, 0);
+        int code = getPreferences(MODE_PRIVATE).getInt("key_" + mask, 0);
+        return isGamepadKey(code) ? 0 : code;
+    }
+
+    /** Gamepad binding, falling back to a legacy single-slot gamepad value. */
+    private int padPref(int mask) {
+        SharedPreferences prefs = getPreferences(MODE_PRIVATE);
+        int code = prefs.getInt("pad_" + mask, 0);
+        if (code != 0) {
+            return code;
+        }
+        int legacy = prefs.getInt("key_" + mask, 0);
+        return isGamepadKey(legacy) ? legacy : 0;
+    }
+
+    private static String prefKey(int mask, boolean pad) {
+        return (pad ? "pad_" : "key_") + mask;
     }
 
     /**
-     * Maps a hardware key to a virtual button: user bindings first, then the
-     * built-in table. A key that the player rebound away from its default is
-     * dropped from its old action, the way a desktop keymap behaves.
+     * BUTTON_* keycodes are gamepad buttons. DPAD_* stays on the keyboard side
+     * because Android delivers both keyboard arrows and gamepad D-pads that
+     * way, so they cannot be told apart from the keycode alone.
+     */
+    private static boolean isGamepadKey(int keyCode) {
+        return (keyCode >= KeyEvent.KEYCODE_BUTTON_A
+                        && keyCode <= KeyEvent.KEYCODE_BUTTON_THUMBR)
+                || (keyCode >= KeyEvent.KEYCODE_BUTTON_1
+                        && keyCode <= KeyEvent.KEYCODE_BUTTON_16);
+    }
+
+    /**
+     * Maps a hardware key to a virtual button: user bindings of the matching
+     * input source first, then the built-in table. A default key that the
+     * player rebound on that same source no longer belongs to its old action;
+     * a rebind on the other source leaves it active (PC/iOS semantics).
      */
     private int mapKey(int keyCode) {
-        int customMask = 0;
+        boolean pad = isGamepadKey(keyCode);
         for (int mask : KEY_ACTION_MASKS) {
-            if (keyPref(mask) == keyCode) {
-                customMask = mask;
-                break;
+            if ((pad ? padPref(mask) : keyPref(mask)) == keyCode) {
+                return mask;
             }
-        }
-        if (customMask != 0) {
-            return customMask;
         }
         int def = defaultMapKey(keyCode);
         if (def == 0) {
             return 0;
         }
-        // The default key of an action that was rebound elsewhere no longer
-        // belongs to it.
-        for (int mask : KEY_ACTION_MASKS) {
-            if (mask == def && keyPref(mask) != 0) {
-                return 0;
-            }
+        if ((pad ? padPref(def) : keyPref(def)) != 0) {
+            return 0;
         }
         return def;
     }
@@ -9806,6 +10911,11 @@ public class EmulatorActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
+        // 需求⑤：浏览器优先消费 BACK，逐层回退/到根关闭；不触发 confirm_close、不退应用
+        if (browserDialog != null && browserDialog.isShowing()) {
+            handleBrowserBack();
+            return;
+        }
         if (core != null && core.isLoaded() && getPreferences(MODE_PRIVATE).getBoolean("confirm_close", false)) {
             new AlertDialog.Builder(this)
                     .setTitle(R.string.app_name)
@@ -9855,6 +10965,14 @@ public class EmulatorActivity extends AppCompatActivity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_STORAGE) {
+            if (storageRequestFromSettings) {
+                // 设置主动入口返回（SDK<30 运行时权限）：不重启模拟器，只刷新状态
+                storageRequestFromSettings = false;
+                awaitingStorage = false;
+                leftForStorage = false;
+                showFilesAccessDialog();
+                return;
+            }
             startEmulator();
             return;
         }
@@ -9887,6 +11005,9 @@ public class EmulatorActivity extends AppCompatActivity {
 
     @Override
     protected void onDestroy() {
+        // 需求⑤：Activity 销毁时先关浏览器 Dialog，防 setCancelable(false) 下 WindowLeaked
+        if (browserDialog != null && browserDialog.isShowing()) browserDialog.dismiss();
+        browserDialog = null;
         running = false;
         // Finish and publish an in-flight recording before the process goes away.
         stopVideoRecording();
@@ -9917,6 +11038,18 @@ public class EmulatorActivity extends AppCompatActivity {
         } catch (Exception ignored) {
         }
         try {
+            unregisterReceiver(isyncStateApplyReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(isyncSeedFrameBoundaryReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(isyncEvidenceReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
             unregisterReceiver(noRelayReceiver);
         } catch (Exception ignored) {
         }
@@ -9930,6 +11063,10 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         try {
             unregisterReceiver(speedReceiver);
+        } catch (Exception ignored) {
+        }
+        try {
+            unregisterReceiver(linkModeReceiver);
         } catch (Exception ignored) {
         }
         stopTimedSave();

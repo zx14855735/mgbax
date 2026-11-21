@@ -1,0 +1,25 @@
+/* 本项目自带的中文翻译表（自行翻译，非第三方语言包）。
+ *
+ * 为什么不用 .ts/.qm：Qt 的翻译查找键是「context + 源串」，而 context 由 tr() 所在类的
+ * Q_OBJECT 决定，靠脚本从源码反推并不可靠；一旦 context 对不上，译文会静默不生效。
+ * 这里改为按「源串」直接查表，忽略 context，行为可预测、可 grep 验证。
+ *
+ * 维护约定：
+ *   - 新增界面文案后，在 kZh 表里补一条 { "English source", "中文" }；
+ *   - 源码里本来就是中文的串不要进表（查不到会原样返回，正好是中文）；
+ *   - 占位符 %1/%2/%n、扩展名、\n 必须与源串逐字一致，否则 Qt 的参数替换会失效。
+ *   - 需要看原版英文时设 MGBAX_LANG=none（main.cpp 里不再装本翻译器）。
+ */
+#include "MgbaTranslate.h"
+
+#include <QHash>
+#include <QString>
+
+namespace {
+
+struct Entry {
+	const char* src;
+	const char* zh;
+};
+
+const Entry kZh[] = {

@@ -18,12 +18,16 @@ namespace QGBA {
  * is `[u32 payload length][payload]` and the payload starts with a `u16`
  * message type.
  *
+ *   0 KEYS    u16 type + u32 GBA key mask (same bit layout mGBA uses).
  *   1 HELLO   u16 type + u32 6; the client sends it first, the server echoes.
  *   2 ROMINFO u16 type + 32-byte ASCII MD5 of the ROM + u16 name length + name.
  *   3 READY   u16 type only, sent once the local console is loaded.
- *   4 KEYS    u16 type + u32 GBA key mask (same bit layout mGBA uses).
  *   5 RESET   u16 type only.
  *   6 STATE   u16 type + u32 size + zlib-compressed GBASTATE v4 image.
+ *
+ * NOTE: this LAN protocol is separate from the cloud GBoyFrames protocol
+ * (LobbyView); the two use different type-number meanings and never share a
+ * socket, so KEYS being 0 here as well as in GBoyFrames is intentional.
  *
  * After the handshake each side sends its key mask about every five frames
  * (~83 ms) and applies the mask it receives. This port uses the merged-keys

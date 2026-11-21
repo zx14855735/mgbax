@@ -30,6 +30,12 @@ enum LobbyFrames {
     /// never received a state.
     static let maxFrameLength = 16 * 1024 * 1024
 
+    /// C0 / ADR-002：能力位写在官方 16 字节注册帧的 wire[15]（= body[11]）。
+    /// bit6 `0x40` = 已声明；bit0 = mode（0=A / 1=B）；其它位必须为 0。
+    /// 与 PC `GBoyFrames.h` / Android `GBoyFrames.java` 的 `LINK_CAP_*` 逐位一致。
+    static let linkCapMagic: UInt8 = 0x40
+    static let linkCapModeBit: UInt8 = 0x01
+
     /*
      * 类型号按官方**字节码**逐条核对（tmp_gboy_apk/NETPLAY_AUDIT.md §0、
      * .workbuddy/gboy/dd/p1/p2.txt）：
@@ -69,6 +75,13 @@ enum LobbyFrames {
     static let typeSpeed = 9
     /// 官方 10：断开通知（无 payload；`AYUAbz` case 10 → UI msg 2）。
     static let typeDisconnect = 10
+
+    /// 官方断线重连握手（AmA8tU.ARc23Z(Socket):263-272）：裸 10 字节
+    /// `int32 6 + int16 100 + int32 rtt`，在线上天然就是一条 type=100 的普通帧。
+    /// PC `GBoyFrames::TYPE_RECONNECT` / Android `GBoyFrames.TYPE_RECONNECT`
+    /// 与 iOS 直连层 `GBoyLink.msgReconnect` 都是这个号，三端逐项一致；接收侧
+    /// 必须把它当握手处理，绝不能当未知帧丢掉（旧版缺失导致对端以为我们没回来）。
+    static let typeReconnect = 100
 
     // ---- 以下是我们自己的扩展，从 11 起，不与官方撞号 ----
 
@@ -139,6 +152,14 @@ enum LobbyFrames {
         return Data(payload[4..<(4 + length)])
     }
 
+    /// 官方重连握手包：字节与 `frame(typeReconnect, rtt)` 完全相同
+    /// （`int32 6 + int16 100 + int32 rtt`，共 10 字节）。
+    /// 与 PC `GBoyFrames::reconnectFrame` / Android `GBoyFrames.reconnectFrame`
+    /// 逐字节一致；iOS 直连层 `GBoyLink.reconnectFrame(rtt:)` 用的也是这套线格式。
+    static func reconnectFrame(_ rtt: Int32) -> Data {
+        return frame(typeReconnect, rtt)
+    }
+
     /// The registration frame the official client sends right after the KCP
     /// handshake completes:
     ///
@@ -153,6 +174,20 @@ enum LobbyFrames {
     /// 与 PC `GBoyFrames::registerFrame` / Android `GBoyFrames.registerFrame`
     /// 逐字节一致（AUDIT C6 / B 表第 19 行）。
     static func registerFrame(playerCount: Int32, baseStateCount: Int32) -> Data {
+        return registerFrame(playerCount: playerCount, baseStateCount: baseStateCount,
+                             linkMode: .unknown)
+    }
+
+    /**
+     * C0 / ADR-002：带能力位的注册帧。线上仍恒 16 字节、长度字段恒 12，只在
+     * `playerCount != 1` 且 `linkMode ∈ {A, B}` 时写 `wire[15]`（= body[11]）：
+     *   `0x40` = A（0x40 | 0）、`0x41` = B（0x40 | 0x01）、`0x00` = 未声明。
+     * 单人房尾部 6 字节承载 `short 0 + int baseStateCount`，绝不能占用，
+     * 否则 `body[11]` 是 baseStateCount 最低字节，会被对端误判成畸形能力位。
+     * 与 PC `GBoyFrames::registerFrame(3 args)` / Android 三参数版本逐字节一致。
+     */
+    static func registerFrame(playerCount: Int32, baseStateCount: Int32,
+                              linkMode: GBoyLinkMode) -> Data {
         var out = [UInt8](repeating: 0, count: 16)
         putInt(&out, 0, 12)
         putShort(&out, 4, typeRegister)
@@ -160,8 +195,45 @@ enum LobbyFrames {
         if playerCount == 1 {
             putShort(&out, 10, 0)
             putInt(&out, 12, baseStateCount)
+            return Data(out)
+        }
+        if linkMode == .a || linkMode == .b {
+            out[15] = linkCapMagic | (linkMode == .b ? linkCapModeBit : 0)
         }
         return Data(out)
+    }
+
+    /**
+     * C0 解码：对端 type-1 注册帧（body = type + payload）→ 联机模式。
+     * body 是 `LobbyFrames.Reader.next()` 返回的「去掉 4 字节长度头」的部分，
+     * 因此 `body[11]` 正好等于线上的 `wire[15]`。
+     * - 帧太短 / 非 type-1 / 单人房（intValue==1）→ 未声明（单人房尾部是 baseStateCount）；
+     * - `0x00` → 未声明（官方 APK / 旧客户端）；
+     * - 缺 0x40 或保留位非 0 → 畸形（按不一致处理，禁止猜测）；
+     * - `0x40` → A，`0x41` → B。
+     */
+    static func linkModeOf(body: Data) -> GBoyLinkMode {
+        let bytes = [UInt8](body)
+        guard bytes.count >= 12, type(of: body) == typeRegister else { return .unknown }
+        if intValue(of: body) == 1 { return .unknown }
+        let cap = bytes[11]
+        if cap == 0 { return .unknown }
+        if (cap & linkCapMagic) == 0 || (cap & (~(linkCapMagic | linkCapModeBit))) != 0 {
+            return .invalid
+        }
+        return (cap & linkCapModeBit) != 0 ? .b : .a
+    }
+
+    /// C0 的 AUTO 映射：1/2 人 → A，3/4 人 → B。PC `autoLinkMode` / Android
+    /// `resolveLinkMode` 的唯一同源实现，三端口径必须一致。
+    static func autoLinkMode(playerCount: Int) -> GBoyLinkMode {
+        return playerCount >= 3 ? .b : .a
+    }
+
+    /// 显式 A/B 覆盖优先；UNKNOWN/INVALID 回落 AUTO。
+    static func resolveLinkMode(playerCount: Int, override: GBoyLinkMode) -> GBoyLinkMode {
+        if override == .a || override == .b { return override }
+        return autoLinkMode(playerCount: playerCount)
     }
 
     /// The message type of a frame body, -1 when the body is too short.
@@ -264,6 +336,44 @@ enum LobbyFrames {
                 position = 0
             }
             return body
+        }
+    }
+}
+
+/**
+ * C0 / ADR-002：两套联机架构的协商模式，与 PC `GBoyFrames::LinkMode` /
+ * Android `GBoyFrames.LinkMode` 的数值逐项相同。
+ *   A = 每端 1 核 + SIO 包中继（type 6 借壳承载裸 20 字节 netLink 包）
+ *   B = 本机多核（可见核 + 镜像核）+ 网络只传按键（官方 case 6 整份 savestate）
+ *
+ * iOS 云端 2P 走 path B（`armCloudMulticore` → `GBoyConsoleSet(players:4, localSlot:1)`），
+ * 但必须把模式声明出去，否则 PC/Android 按「对端未声明」断开。
+ */
+enum GBoyLinkMode: Int {
+    case unknown = -1   // 旧客户端 / 官方 APK 未声明能力位
+    case invalid = -2   // 能力位畸形（缺 0x40 或保留位非 0）
+    case a = 0          // SIO 包中继
+    case b = 1          // 本机多核 + 按键
+
+    /// WSS hello/accept 的 `"m"` 标记值；与三端 LinkMode 枚举数值一致。
+    var wireValue: Int { return rawValue }
+
+    static func from(wire: Int) -> GBoyLinkMode {
+        switch wire {
+        case 0: return .a
+        case 1: return .b
+        case -2: return .invalid
+        default: return .unknown
+        }
+    }
+
+    /// 失败文案用的可读名（含本机/对端模式时必须能区分 A/B/未声明/畸形）。
+    var displayName: String {
+        switch self {
+        case .a: return "A（每端 1 核 + SIO 包中继）"
+        case .b: return "B（本机多核 + 网络只传按键）"
+        case .invalid: return "畸形"
+        case .unknown: return "未声明"
         }
     }
 }

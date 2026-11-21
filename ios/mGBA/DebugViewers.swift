@@ -12,6 +12,28 @@ import UIKit
  * exactly like a debugger would.
  */
 enum DebugViewers {
+    // GBA 硬件固定内存映射基址（不随 ROM 重建平移）。所有 bus 读取一律
+    // 走这些具名常量，禁止在读取点写裸地址。
+    private static let ewramBase: UInt32 = 0x02000000
+    private static let iwramBase: UInt32 = 0x03000000
+    private static let ioBase: UInt32 = 0x04000000
+    private static let palBase: UInt32 = 0x05000000
+    private static let vramBase: UInt32 = 0x06000000
+    private static let oamBase: UInt32 = 0x07000000
+    private static let romBase: UInt32 = 0x08000000
+
+    // IO 寄存器 / 显存子区基址
+    private static let ioRegDispcnt: UInt32 = 0x04000000
+    private static let ioRegDispstat: UInt32 = 0x04000004
+    private static let ioRegVcount: UInt32 = 0x04000006
+    private static let ioRegBg0Cnt: UInt32 = 0x04000008
+    private static let ioRegBg0Hofs: UInt32 = 0x04000010
+    private static let ioRegBg0Vofs: UInt32 = 0x04000012
+    private static let ioRegMosaic: UInt32 = 0x0400004C
+    private static let ioRegBldCnt: UInt32 = 0x04000050
+    private static let ioRegBldY: UInt32 = 0x04000054
+    private static let palObjBase: UInt32 = 0x05000400
+
     /// A block of memory the tools can look at.
     struct Region {
         let name: String
@@ -20,13 +42,13 @@ enum DebugViewers {
     }
 
     private static let gbaRegions: [Region] = [
-        Region(name: "IWRAM", address: 0x03000000, size: 0x8000),
-        Region(name: "EWRAM", address: 0x02000000, size: 0x40000),
-        Region(name: "PAL", address: 0x05000000, size: 0x400),
-        Region(name: "VRAM", address: 0x06000000, size: 0x18000),
-        Region(name: "OAM", address: 0x07000000, size: 0x400),
-        Region(name: "IO", address: 0x04000000, size: 0x400),
-        Region(name: "ROM", address: 0x08000000, size: 0x2000000)
+        Region(name: "IWRAM", address: iwramBase, size: 0x8000),
+        Region(name: "EWRAM", address: ewramBase, size: 0x40000),
+        Region(name: "PAL", address: palBase, size: 0x400),
+        Region(name: "VRAM", address: vramBase, size: 0x18000),
+        Region(name: "OAM", address: oamBase, size: 0x400),
+        Region(name: "IO", address: ioBase, size: 0x400),
+        Region(name: "ROM", address: romBase, size: 0x2000000)
     ]
 
     private static let gbRegions: [Region] = [
@@ -65,6 +87,7 @@ enum DebugViewers {
         sheet.add(button("内存查看", action: { sheet.dismiss(animated: false); showMemory(core: core, presenter: presenter) }))
         sheet.add(button("数值搜索（金手指）", action: { sheet.dismiss(animated: false); showSearch(core: core, presenter: presenter) }))
         let bg = button("BG 图层", action: { sheet.dismiss(animated: false); showBg(core: core, presenter: presenter) })
+        let map = button("地图（Tilemap）", action: { sheet.dismiss(animated: false); showMap(core: core, presenter: presenter) })
         let oam = button("OAM 精灵", action: { sheet.dismiss(animated: false); showOam(core: core, presenter: presenter) })
         let palette = button("调色板", action: { sheet.dismiss(animated: false); showPalette(core: core, presenter: presenter) })
         let tiles = button("图块（VRAM）", action: { sheet.dismiss(animated: false); showTiles(core: core, presenter: presenter) })
@@ -73,12 +96,13 @@ enum DebugViewers {
             showIo(core: core, presenter: presenter)
         })
         if !gba {
-            for item in [bg, oam, palette, tiles, io] {
+            for item in [bg, map, oam, palette, tiles, io] {
                 item.isEnabled = false
                 item.alpha = 0.4
             }
         }
         sheet.add(bg)
+        sheet.add(map)
         sheet.add(oam)
         sheet.add(palette)
         sheet.add(tiles)
@@ -409,26 +433,26 @@ enum DebugViewers {
     }
 
     private static func renderBg(core: OpaquePointer, bg: Int) -> UIImage? {
-        let dispcnt = Int(mgbaMobileBusRead(core, 16, 0x04000000))
+        let dispcnt = Int(mgbaMobileBusRead(core, 16, ioRegDispcnt))
         let mode = dispcnt & 7
         if mode == 3 {
-            return bitmapMode(core: core, base: 0x06000000, width: 240, height: 160, bpp: 16)
+            return bitmapMode(core: core, base: vramBase, width: 240, height: 160, bpp: 16)
         }
         if mode == 4 {
             let frame = (dispcnt & 0x10) != 0 ? 0xA000 : 0
-            return bitmapMode(core: core, base: 0x06000000 + UInt32(frame), width: 240, height: 160, bpp: 8)
+            return bitmapMode(core: core, base: vramBase + UInt32(frame), width: 240, height: 160, bpp: 8)
         }
         if mode == 5 {
-            return bitmapMode(core: core, base: 0x06000000, width: 160, height: 128, bpp: 16)
+            return bitmapMode(core: core, base: vramBase, width: 160, height: 128, bpp: 16)
         }
-        let cnt = Int(mgbaMobileBusRead(core, 16, 0x04000008 + UInt32(bg * 2)))
+        let cnt = Int(mgbaMobileBusRead(core, 16, ioRegBg0Cnt + UInt32(bg * 2)))
         let affine = bg >= 2 && (mode == 2 || (mode == 1 && bg == 2))
         let charBase = ((cnt >> 2) & (affine ? 7 : 3)) * (affine ? 0x8000 : 0x4000)
         let pal256 = !affine && (cnt & 0x80) != 0
         let screenBase = ((cnt >> 8) & 31) * 0x800
         let size = (cnt >> 14) & 3
-        let mapBase = 0x06000000 + UInt32(screenBase)
-        let tilesBase = 0x06000000 + UInt32(charBase)
+        let mapBase = vramBase + UInt32(screenBase)
+        let tilesBase = vramBase + UInt32(charBase)
         let wTiles: Int
         let hTiles: Int
         if affine {
@@ -473,6 +497,69 @@ enum DebugViewers {
             }
         }
         return image(pixels: pixels, width: pixelW, height: pixelH)
+    }
+
+    // MARK: - Standalone tile map viewer
+
+    /// PC `mapWindow` / Android `showMap` 的等价物：独立的 tilemap 查看器。
+    /// 复用 `renderBg` 的 tilemap 解码，按 BG 分页并可导出（与 Android B4 同构）。
+    static func showMap(core: OpaquePointer?, presenter: UIViewController) {
+        guard let core, mgbaMobileIsLoaded(core), mgbaMobileWidth(core) == 240 else {
+            alert(title: "地图（Tilemap）", message: "仅 GBA 游戏可用", presenter: presenter)
+            return
+        }
+        let mode = Int(mgbaMobileBusRead(core, 16, ioRegDispcnt)) & 7
+        let sheet = DebugSheet(title: "地图（Tilemap）")
+        let info = label("")
+        if mode >= 3 {
+            // 位图模式没有独立的字符 tilemap，与 Android showMap 的提示一致。
+            info.text = "模式 \(mode) 为位图模式，没有独立 tilemap；请用「BG 图层」查看器。"
+            sheet.add(info)
+            presenter.present(sheet, animated: true)
+            return
+        }
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFit
+        imageView.backgroundColor = .black
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.heightAnchor.constraint(equalToConstant: 320).isActive = true
+
+        let tabs = UIStackView()
+        tabs.axis = .horizontal
+        tabs.spacing = 6
+        for bg in 0..<4 {
+            let item = button("BG\(bg)") {
+                if let rendered = renderBg(core: core, bg: bg) {
+                    imageView.image = rendered
+                    info.text = mapInfo(core: core, bg: bg, size: rendered.size)
+                }
+            }
+            tabs.addArrangedSubview(item)
+        }
+        tabs.addArrangedSubview(button("导出") {
+            if let image = imageView.image {
+                saveToPhotos(image, presenter: presenter)
+            }
+        })
+        sheet.add(tabs)
+        sheet.add(info)
+        sheet.add(imageView)
+        if let first = renderBg(core: core, bg: 0) {
+            imageView.image = first
+            info.text = mapInfo(core: core, bg: 0, size: first.size)
+        }
+        presenter.present(sheet, animated: true)
+    }
+
+    private static func mapInfo(core: OpaquePointer, bg: Int, size: CGSize) -> String {
+        let cnt = Int(mgbaMobileBusRead(core, 16, ioRegBg0Cnt + UInt32(bg * 2)))
+        let priority = cnt & 3
+        let charBase = ((cnt >> 2) & 3) * 0x4000
+        let pal256 = (cnt & 0x80) != 0
+        let screenBase = ((cnt >> 8) & 31) * 0x800
+        return "BG\(bg)  \(Int(size.width))x\(Int(size.height))  优先级 \(priority)  "
+            + "字符基址 \(hex(UInt32(charBase)))  屏基址 \(hex(UInt32(screenBase)))  "
+            + "\(pal256 ? 8 : 4)bpp"
     }
 
     private static func drawTile(core: OpaquePointer, pixels: inout [UInt32], outWidth: Int,
@@ -529,7 +616,7 @@ enum DebugViewers {
         let grid = UIStackView()
         grid.axis = .vertical
         grid.spacing = 6
-        let oam = readBlock(core, 0x07000000, 0x400)
+        let oam = readBlock(core, oamBase, 0x400)
         var shown = 0
         var row = UIStackView()
         row.axis = .horizontal
@@ -608,7 +695,7 @@ enum DebugViewers {
         let width = dims.0
         let height = dims.1
         let tileIndex = attr2 & 0x03FF
-        let tileBase = 0x06000000 + UInt32(tileIndex * 32)
+        let tileBase = vramBase + UInt32(tileIndex * 32)
         let palette = (attr2 >> 12) & 15
         let hflip = (attr1 & 0x1000) != 0
         let vflip = (attr1 & 0x2000) != 0
@@ -643,7 +730,7 @@ enum DebugViewers {
         let message = "尺寸 \(dims.0)x\(dims.1)\n"
             + "X \(attr1 & 0x1FF)  Y \(attr0 & 0xFF)\n"
             + "图块 \(attr2 & 0x3FF)  调色板 \((attr2 >> 12) & 15)\n"
-            + "地址 \(hex(0x07000000 + UInt32(index * 8)))"
+            + "地址 \(hex(oamBase + UInt32(index * 8)))"
         alert(title: "精灵 #\(index)", message: message, presenter: presenter)
     }
 
@@ -666,7 +753,7 @@ enum DebugViewers {
         var block = 0
         func refresh() {
             imageView.image = renderTiles(core: core, bpp: bpp, block: block)
-            info.text = "\(bpp)bpp  字符块 \(block)  \(hex(0x06000000 + UInt32(block) * 0x4000))"
+            info.text = "\(bpp)bpp  字符块 \(block)  \(hex(vramBase + UInt32(block) * 0x4000))"
         }
         let tabs = UIStackView()
         tabs.axis = .horizontal
@@ -699,7 +786,7 @@ enum DebugViewers {
     }
 
     private static func renderTiles(core: OpaquePointer, bpp: Int, block: Int) -> UIImage? {
-        let base = 0x06000000 + UInt32(max(0, min(3, block))) * 0x4000
+        let base = vramBase + UInt32(max(0, min(3, block))) * 0x4000
         let vram = readBlock(core, base, 0x4000)
         guard !vram.isEmpty else { return nil }
         let bytesPerTile = bpp == 8 ? 64 : 32
@@ -755,24 +842,24 @@ enum DebugViewers {
         }
         func on(_ value: UInt32) -> String { value != 0 ? "开" : "关" }
         func refresh() {
-            let dispcnt = read(0x04000000)
-            let dispstat = read(0x04000004)
-            let vcount = read(0x04000006)
+            let dispcnt = read(ioRegDispcnt)
+            let dispstat = read(ioRegDispstat)
+            let vcount = read(ioRegVcount)
             var lines: [String] = []
             lines.append("DISPCNT  \(hex(dispcnt))  模式 \(dispcnt & 7)  \(dispcnt & 0x80 != 0 ? "强制空白" : "显示开")")
             lines.append("  BG0 \(on(dispcnt & 0x100))  BG1 \(on(dispcnt & 0x200))  BG2 \(on(dispcnt & 0x400))  BG3 \(on(dispcnt & 0x800))  OBJ \(on(dispcnt & 0x1000))")
             lines.append("DISPSTAT \(hex(dispstat))  VBlank \(on(dispstat & 1))  HBlank \(on(dispstat & 2))  VCount 命中 \(on(dispstat & 4))")
             lines.append("VCOUNT \(vcount & 0xFF)  帧号 \(mgbaMobileFrameCounter(core))")
             for bg in 0..<4 {
-                let cnt = read(0x04000008 + UInt32(bg * 2))
+                let cnt = read(ioRegBg0Cnt + UInt32(bg * 2))
                 lines.append("BG\(bg)CNT \(hex(cnt))  优先级 \(cnt & 3)  字符基址 \(((cnt >> 2) & 3) * 0x4000)  屏基址 \(((cnt >> 8) & 31) * 0x800)  尺寸 \((cnt >> 14) & 3)")
             }
             for bg in 0..<4 {
-                let x = read(0x04000010 + UInt32(bg * 4)) & 0x1FF
-                let y = read(0x04000012 + UInt32(bg * 4)) & 0x1FF
+                let x = read(ioRegBg0Hofs + UInt32(bg * 4)) & 0x1FF
+                let y = read(ioRegBg0Vofs + UInt32(bg * 4)) & 0x1FF
                 lines.append("BG\(bg)HOFS/VOFS \(x), \(y)")
             }
-            lines.append("MOSAIC \(hex(read(0x0400004C)))  BLDCNT \(hex(read(0x04000050)))  BLDY \(read(0x04000054) & 0x1F)")
+            lines.append("MOSAIC \(hex(read(ioRegMosaic)))  BLDCNT \(hex(read(ioRegBldCnt)))  BLDY \(read(ioRegBldY) & 0x1F)")
             dump.text = lines.joined(separator: "\n")
         }
         // 视频层：直接走 core 的 listVideoLayers / enableVideoLayer。
@@ -845,9 +932,9 @@ enum DebugViewers {
         }
         let sheet = DebugSheet(title: "调色板")
         sheet.add(label("背景调色板"))
-        sheet.add(paletteGrid(core: core, base: 0x05000000, title: "背景", presenter: presenter))
+        sheet.add(paletteGrid(core: core, base: palBase, title: "背景", presenter: presenter))
         sheet.add(label("对象调色板"))
-        sheet.add(paletteGrid(core: core, base: 0x05000400, title: "对象", presenter: presenter))
+        sheet.add(paletteGrid(core: core, base: palObjBase, title: "对象", presenter: presenter))
         sheet.add(button("导出调色板") {
             if let out = paletteSheet(core: core) {
                 saveToPhotos(out, presenter: presenter)
@@ -896,7 +983,7 @@ enum DebugViewers {
 
     /// Contact sheet of every visible sprite.
     private static func oamSheet(core: OpaquePointer) -> UIImage? {
-        let oam = readBlock(core, 0x07000000, 0x400)
+        let oam = readBlock(core, oamBase, 0x400)
         let cell = 64
         let columns = 8
         var sprites: [[UInt32]] = []
@@ -952,7 +1039,7 @@ enum DebugViewers {
         let width = 16 * cell
         let height = 32 * cell + 16
         var canvas = [UInt32](repeating: 0xFF202020, count: width * height)
-        let data = readBlock(core, 0x05000000, 512)
+        let data = readBlock(core, palBase, 512)
         for bank in 0..<2 {
             for index in 0..<256 {
                 let position = bank * 256 + index
@@ -1029,7 +1116,7 @@ enum DebugViewers {
     }
 
     private static func paletteColor(_ core: OpaquePointer, _ index: Int) -> Int {
-        bgr15(Int(mgbaMobileBusRead(core, 16, 0x05000000 + UInt32(index * 2))))
+        bgr15(Int(mgbaMobileBusRead(core, 16, palBase + UInt32(index * 2))))
     }
 
     private static func parseNumber(_ text: String) -> UInt32 {

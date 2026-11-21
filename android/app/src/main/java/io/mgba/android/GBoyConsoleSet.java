@@ -10,6 +10,8 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 /**
  * Local counterpart of the official {@code com/game/boy/emu/gba/Link}.
@@ -39,6 +41,44 @@ import java.io.OutputStream;
  * set. Between devices only key masks travel over the network.</p>
  */
 public final class GBoyConsoleSet {
+
+    /** ISYNC-EV: 具名总门 MGBAX_ISYNC_EVIDENCE + 子开关 MGBAX_ISYNC_EVIDENCE_A1，
+     *  三端同名同值、默认关，独立于 MGBAX_ISYNC_STATE_APPLY。只启只读 A1 seed
+     *  sha256 埋点（SEND/LAND/BOOT）；绝不造 seed / party / 信任位，不预设成功。
+     *  由 EmulatorActivity 的前台广播 io.mgba.android.action.ISYNC_EVIDENCE 写入；
+     *  进程环境同名变量=1 也可默认打开（与 PC / iOS 同口径）。 */
+    public static final class ISyncEvidence {
+        public static volatile boolean total = "1".equals(System.getenv("MGBAX_ISYNC_EVIDENCE"));
+        public static volatile boolean a1 = "1".equals(System.getenv("MGBAX_ISYNC_EVIDENCE_A1"));
+        public static boolean a1Enabled() { return total && a1; }
+    }
+
+    /** ISYNC-EV: 种子块 sha256 十六进制（只读诊断口径，非 native 核状态 hash，非伪造）。 */
+    private static String isyncSeedSha256(byte[] seed) {
+        try {
+            byte[] dig = java.security.MessageDigest.getInstance("SHA-256").digest(seed);
+            StringBuilder sb = new StringBuilder(dig.length * 2);
+            for (byte b : dig) {
+                sb.append(Character.forDigit((b >> 4) & 0xf, 16));
+                sb.append(Character.forDigit(b & 0xf, 16));
+            }
+            return sb.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            return ""; // 门开但算法不可用 → 空 hash，判读脚本 fail-closed 记 UNOBSERVED
+        }
+    }
+
+    /** RACE/C3 根治：镜像线程真 load 结果回调。loaded 只在 native load==0 后触发，
+     *  避免把「入队成功 / STATE_QUEUED / re-target」冒充成 applied（PB22 假阳性教训）。
+     *  对称 PC 的帧边界里程碑 / iOS 的成功回调；三端都只认真 load。 */
+    public interface SeedLoadCallback {
+        /** native loadStateFromMemoryEx==0 之后调用（本线程=owner 镜像线程）。 */
+        void onSeedLoaded(long gen, int bytes, byte[] loadedState);
+        /** 官方口径拒绝（尺寸不符/其它错误），由持有链路的一方断链。 */
+        void onSeedRejected(long gen, int code);
+        /** 代次已变：stale 丢弃，不 load、不打里程碑、不清 Activity 缓存。 */
+        void onSeedDroppedStale(long gen, long current);
+    }
 
     public enum State { NEW, LINKING, READY, STOPPED, FAILED }
 
@@ -74,6 +114,32 @@ public final class GBoyConsoleSet {
     private GBoyLinkSession session;
     private volatile State state = State.NEW;
     private volatile String failure = "";
+
+    /* ===== RACE/C3 根治：seed apply 入队 + owner 线程帧边界 load + 代次 token =====
+     * 具名门 MGBAX_ISYNC_SEED_FRAME_BOUNDARY（三端同名同值、默认关、可逆）：
+     *   门开 = apply 只入队、mirrorLoop(0) 帧边界真 load + gen 二次校验；
+     *   门关 = ISYNC1 现状（调用方线程同步 load），A/B 可回退。
+     * 由 EmulatorActivity 的前台广播 io.mgba.android.action.ISYNC_SEED_FRAME_BOUNDARY
+     * 或进程环境同名变量=1 打开（与 PC / iOS 同口径）。 */
+    public static volatile boolean seedFrameBoundary =
+            "1".equals(System.getenv("MGBAX_ISYNC_SEED_FRAME_BOUNDARY"));
+
+    /** immutable 代次 token：每实例唯一、单调（对称 PC m_instanceGen / iOS instanceGen）。
+     *  只做语义防伪 / 防跨房间 stale seed，不是内存安全守卫；
+     *  真正的 UAF 消除靠 owner 线程帧边界 load + stop() join-before-destroy。 */
+    private static final AtomicLong SEED_SET_GEN = new AtomicLong();
+    public final long instanceGen = SEED_SET_GEN.incrementAndGet();
+
+    /** 对端 seed 单槽队列（对称 Swift pendingRemoteState / PC m_pendingState），由 lock 保护。
+     *  单槽覆盖语义：同 gen 多次到达只有最后一包成为候选，杜绝 applied_count>1。 */
+    private byte[] pendingRemoteState;
+    private long pendingGen = -1L;
+    private boolean hasPendingRemoteState;
+    /** Activity 当前活动代次读取器（指向 activeSeedGen，非本类 instanceGen）。由 bindConsoleSet 注入；
+     *  若误指向 instanceGen 则二次校验恒真、token 形同虚设。 */
+    private volatile LongSupplier currentGen;
+    /** 真 load 结果回调，由 Activity.bindConsoleSet 注入。 */
+    private volatile SeedLoadCallback seedLoadCallback;
 
     /* 一轮云联机会 start() 两次：onConnected 先建房间，紧接着 pendingPath
      * 触发可见核 reload 再重建一次。两次之间游戏可能把「保存确认」写回
@@ -608,6 +674,13 @@ public final class GBoyConsoleSet {
         byte[] state = visible == null ? null : visible.saveStateToMemory();
         if (state != null && state.length > 0) {
             stateSizeHint = state.length;
+            /* ISYNC-EV/A1-SEND: 本机发给对端的种子字节在此成型（local link 的
+             * sendState 与 cloud 的 sendInitialState 都拿这份 snapshot）。只读记录
+             * sha256+字节数，供 C5 判 land[对端]⊆send[本机]；不造/不改种子。 */
+            if (ISyncEvidence.a1Enabled()) {
+                android.util.Log.i("mGBA-App", "[ISYNC-EV][A1-SEND] role=APP bytes="
+                        + state.length + " sha256=" + isyncSeedSha256(state));
+            }
         }
         return state;
     }
@@ -617,35 +690,54 @@ public final class GBoyConsoleSet {
     public static final int STATE_OK = 0;
     public static final int STATE_ERROR = 1;
     public static final int STATE_SIZE_MISMATCH = 3;
+    /** RACE/C3: 只入队、真 load 延后到 owner 镜像线程帧边界；禁止冒充 STATE_OK。
+     *  取值避开官方 0/1/3，调用方必须显式把它当「已受理未落地」处理。 */
+    public static final int STATE_QUEUED = 2;
+    /** RACE/C3: 入队时活动代次已变（stale）。与真正的 load 拒绝区分开：
+     *  调用方应保留缓存等 retarget，不得当作链路级错误断链、更不得补灌。 */
+    public static final int STATE_STALE = 4;
 
-    /**
-     * 灌入对端的 type 6 存档，返回官方口径的结果码。
-     *
-     * <p>只给「代表对端的那个镜像核」：本机布局是可见核 slot 1 + 镜像核
-     * slot 2/3/4（{@link GBoyLinkSession#mirrorSlotFor}），对端按键走 slot 2，
-     * 所以是第 0 个镜像。GBoy 的 case 6 同样是 {@code list.get(slot)} 按槽位
-     * 取那一颗控制台；老实现灌进全部镜像会把 slot 3/4 的进度覆盖成对端的，
-     * 四人子状态当场分裂（SIO 报「请确认玩家数量」）。</p>
-     *
-     * <p>载入本身在这里同步做：{@code mgbaMobileLoadStateFromMemory} 与
-     * {@code mgbaMobileRunFrames} 共用同一把核心锁（mgba_mobile.c:4816 /
-     * 4146），和镜像线程并发是安全的。</p>
-     *
-     * <p><b>载入成功不能复位</b>。官方 {@code B25kr6:156-157} 在 load 之后调
-     * {@code reset(false)}，是因为它的 {@code loadStateFromMemory} 只回灌电池
-     * 存档；我们的 native 走 {@code mCoreLoadStateNamed}，而它<b>无条件</b>执行
-     * {@code core->loadState(core, state)}（src/core/serialize.c:538-546，
-     * flags 只筛截图/电池存档/RTC/金手指），CPU 与 WRAM 都在这次载入里恢复。
-     * 此时照抄 reset 会把刚载入的进度清零（{@code mgbaMobileReset} →
-     * {@code GBAReset} → {@code GBAMemoryReset}，src/gba/memory.c:219-228），
-     * 两端都停在开机画面。所以「我们的 load」与「官方的 savedata+reset」等价，
-     * 复位这一步必须省略。</p>
-     */
-    public int applyRemoteState(byte[] state) {
+    /** 由 Activity.bindConsoleSet 注入「当前活动代次」读取器（指向其 activeSeedGen）。 */
+    public void setCurrentGenSupplier(LongSupplier supplier) {
+        this.currentGen = supplier;
+    }
+
+    /** 由 Activity.bindConsoleSet 注入真 load 结果回调。 */
+    public void setSeedLoadCallback(SeedLoadCallback cb) {
+        this.seedLoadCallback = cb;
+    }
+
+    /** RACE/C3: 只把对端 seed 放进单槽队列，绝不解引用 native handle。
+     *  校验+写入在同一把 lock 内（外层还有 Activity.seedGate 小锁，handoff 原子化），
+     *  但这只是交接机制，真正的 UAF 消除靠 owner 线程 load + stop() join-before-destroy。
+     *  返回 STATE_QUEUED；调用方不得把它当 STATE_OK / 打里程碑。 */
+    public int enqueueRemoteState(byte[] state, long expectedGen) {
         if (mirrors == null || mirrors.length == 0 || state == null || state.length == 0) {
             return STATE_ERROR;
         }
-        MgbaCore target = mirrors[0];
+        synchronized (lock) {
+            LongSupplier reader = currentGen;
+            long cur = reader == null ? -1L : reader.getAsLong();
+            if (cur < 0 || cur != instanceGen || cur != expectedGen) {
+                /* 活动房间已变（重建窗口 activeSeedGen=-1）或代次不匹配：拒绝入队。
+                 * 缓存由 Activity 保留，重建后 retarget；不落队、不补造、不冒充 OK。
+                 * 审计：与镜像线程帧边界的 drop 同样打 SEED_DROPPED_STALE，计数可解释。 */
+                android.util.Log.w("mGBA-App", "SEED_DROPPED_STALE gen=" + expectedGen
+                        + " current=" + cur + " (enqueue)");
+                return STATE_STALE;
+            }
+            pendingRemoteState = state;
+            pendingGen = expectedGen;
+            hasPendingRemoteState = true;
+        }
+        return STATE_QUEUED;
+    }
+
+    /* 老同步 load 的本体：门关时由 applyRemoteState 直接调（调用方线程，ISYNC1 现状，
+     * A/B 可回退）；门开时由 mirrorLoop(0) 在 owner 线程帧边界调。
+     * 只操作 mirrors[0]（代表对端的镜像核 index=0），绝不碰可见核 / slot 3/4。 */
+    private int loadRemoteStateOnCore(byte[] state) {
+        MgbaCore target = mirrors == null ? null : (mirrors.length > 0 ? mirrors[0] : null);
         if (target == null) {
             return STATE_ERROR;
         }
@@ -661,11 +753,54 @@ public final class GBoyConsoleSet {
         stateSizeHint = state.length;
         android.util.Log.i("mGBA-App", "peer state loaded (no reset) bytes=" + state.length
                 + " index=0 slot=" + mirrorSlotFor(localSlot, players, 0));
+        /* ISYNC-EV/A1-LAND: 真 load 成功后落地种子的 sha256+字节数+真槽（权威源),
+         * 供 C5 判 land[APP]⊆send[PC]。只读观测，不造 seed/party/信任位；
+         * 措辞避开 applied/loaded/ok 词表，防止 driver 正则假阳性。 */
+        if (ISyncEvidence.a1Enabled()) {
+            android.util.Log.i("mGBA-App", "[ISYNC-EV][A1-LAND] role=APP slot="
+                    + mirrorSlotFor(localSlot, players, 0) + " bytes=" + state.length
+                    + " sha256=" + isyncSeedSha256(state));
+        }
         /* 载入成功后**不要复位**：官方 B25kr6:156-157 的 reset(false) 对应的是
          * 「只回灌电池存档」那套 native；我们的 mCoreLoadStateNamed 会连 CPU/WRAM
          * 一起恢复（src/core/serialize.c:541 无条件 core->loadState），再 reset
          * 等于把刚灌进去的进度清零，两端一起停在开机画面。 */
         return STATE_OK;
+    }
+
+    /**
+     * 灌入对端的 type 6 存档，返回官方口径的结果码。
+     *
+     * <p>只给「代表对端的那个镜像核」：本机布局是可见核 slot 1 + 镜像核
+     * slot 2/3/4（{@link GBoyLinkSession#mirrorSlotFor}），对端按键走 slot 2，
+     * 所以是第 0 个镜像。GBoy 的 case 6 同样是 {@code list.get(slot)} 按槽位
+     * 取那一颗控制台；老实现灌进全部镜像会把 slot 3/4 的进度覆盖成对端的，
+     * 四人子状态当场分裂（SIO 报「请确认玩家数量」）。</p>
+     *
+     * <p>RACE/C3: 门开时本方法只入队（返回 {@link #STATE_QUEUED}），真 load 移到
+     * owner 镜像线程帧边界；门关时保持 ISYNC1 现状（调用方线程同步 load，A/B 可回退）。
+     * 无论哪条路径，载入本体都只碰 mirrors[0]。</p>
+     *
+     * <p><b>载入成功不能复位</b>。官方 {@code B25kr6:156-157} 在 load 之后调
+     * {@code reset(false)}，是因为它的 {@code loadStateFromMemory} 只回灌电池
+     * 存档；我们的 native 走 {@code mCoreLoadStateNamed}，而它<b>无条件</b>执行
+     * {@code core->loadState(core, state)}（src/core/serialize.c:538-546，
+     * flags 只筛截图/电池存档/RTC/金手指），CPU 与 WRAM 都在这次载入里恢复。
+     * 此时照抄 reset 会把刚载入的进度清零（{@code mgbaMobileReset} →
+     * {@code GBAReset} → {@code GBAMemoryReset}，src/gba/memory.c:219-228），
+     * 两端都停在开机画面。所以「我们的 load」与「官方的 savedata+reset」等价，
+     * 复位这一步必须省略。</p>
+     */
+    public int applyRemoteState(byte[] state) {
+        if (mirrors == null || mirrors.length == 0 || state == null || state.length == 0) {
+            return STATE_ERROR;
+        }
+        if (seedFrameBoundary) {
+            /* RACE/C3 根治：门开时只入队，返回 STATE_QUEUED（禁冒充 OK），
+             * 不解引用 native handle；真 load 移到 mirrorLoop(0) 帧边界。 */
+            return enqueueRemoteState(state, instanceGen);
+        }
+        return loadRemoteStateOnCore(state); // 门关：ISYNC1 现状，A/B 可回退
     }
 
     /**
@@ -806,9 +941,56 @@ public final class GBoyConsoleSet {
                             + " slot=" + mirrorSlotFor(localSlot, players, index));
                 }
             }
+            /* RACE/C3 根治（帧边界临界区，与 T1 帧号锚同 writer 串行合入）：
+             * 对端 seed 真 load 放在 owner 镜像线程 index=0 的帧边界，紧邻下面的
+             * setKeys/pumpLink/runFrames，与 stop() 的 join-before-destroy(580-614)
+             * 构成同线程串行——「跨线程 + 悬空 handle + 与 destroy 并发」三个崩溃
+             * 条件同时消失。load 前二次校验代次，stale 直接丢弃。 */
+            if (index == 0 && seedFrameBoundary) {
+                byte[] s = null;
+                long g = -1L;
+                synchronized (lock) {
+                    if (hasPendingRemoteState && pendingRemoteState != null) {
+                        s = pendingRemoteState;
+                        g = pendingGen;
+                        pendingRemoteState = null;
+                        hasPendingRemoteState = false; // 单槽单取：每包只 load 一次
+                    }
+                }
+                if (s != null) {
+                    LongSupplier reader = currentGen;
+                    long cur = reader == null ? -1L : reader.getAsLong();
+                    if (cur != instanceGen) {
+                        /* 活动房间已不是本 set：stale 丢弃。不 load、不打里程碑、
+                         * 不 bump applied_count；Activity 缓存不动，留给重建后 retarget。 */
+                        android.util.Log.w("mGBA-App", "SEED_DROPPED_STALE gen=" + g
+                                + " current=" + cur);
+                        SeedLoadCallback cb = seedLoadCallback;
+                        if (cb != null) cb.onSeedDroppedStale(g, cur);
+                    } else {
+                        int code = loadRemoteStateOnCore(s);
+                        SeedLoadCallback cb = seedLoadCallback;
+                        if (code == STATE_OK) {
+                            if (cb != null) cb.onSeedLoaded(g, s.length, s);
+                        } else if (cb != null) {
+                            cb.onSeedRejected(g, code);
+                        }
+                    }
+                }
+            }
             long ceiling;
             synchronized (lock) {
-                while (state == State.READY && mirrorFrames[index] >= targetFrame) {
+                /* 锁步模式不能吃这层 Java 帧栅栏：native 协调器在 SIO 轮次上
+                 * 会合，可见核在 MULTI 回合里 park 等镜像 ack 时，镜像恰好
+                 * 停在「mirrorFrames == targetFrame」等下一格，而下一格只有
+                 * 可见核跑完本帧才会推 —— 互为等待，建链后一帧都不走
+                 * （debuggerd：可见核在 mgbaLockstepRunFrame 的 cond_wait，
+                 * 三个镜像核在 mirrorLoop 的 lock.wait(250)；把起步余量放到
+                 * 2 帧同样解不掉）。锁步下镜像每轮跑 1 帧、自由推进，节拍交给
+                 * native（非 0 号核每个 LOCKSTEP_INTERVAL 就被 park）；帧栅栏
+                 * 只留给共享内存总线模式。 */
+                while (!lockstepActive && state == State.READY
+                        && mirrorFrames[index] >= targetFrame) {
                     try {
                         lock.wait(FRAME_WAIT_MS);
                     } catch (InterruptedException e) {
@@ -819,7 +1001,7 @@ public final class GBoyConsoleSet {
                 if (state != State.READY) {
                     return;
                 }
-                ceiling = targetFrame;
+                ceiling = lockstepActive ? mirrorFrames[index] + 1 : targetFrame;
             }
             MgbaCore core = mirrors == null ? null : mirrors[index];
             if (core == null) {

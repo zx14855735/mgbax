@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /**
  * 进程内 N 核锁步控制台集合 —— iOS 版 GBoyConsoleSet(useLockstep=true)。
@@ -11,11 +12,11 @@ import Foundation
  *
  * 非 lockstep 模式仍走 iOS 原有的单核跨设备联机（mgbaMobileLinkHost/Join），
  * 本类只在显式勾选「本机多核锁步」或云端对战武装时创建；2/3/4 人均支持
- * （与 Android 2026-11-13 修复后的行为一致）。云端 2P（官方镜像布局）由
- * EmulatorViewController 在 onConnected 后重载 ROM 并以 players=4、
- * localSlot=1 重建本类（每端 1 可见核 + 3 镜像核：大竞技场要求 4 名玩家，
- * slot 2 = 对手真人按键、slot 3/4 = NPC 陪位），两端同构——网络只传按键，
- * 对端按键落 slot 2 镜像核。
+ * （与 Android / PC 一致）。云端路径由 EmulatorViewController 在 onConnected
+ * 后重载 ROM，并以 LobbyLink.cloudPlayerCount（房间人数，夹到 [2,4]）、
+ * localSlot=1 重建本类：1 可见核 + (players-1) 镜像核。2P 房 = 2 核；
+ * 3/4 人房多出的槽位作 NPC 陪位（大竞技场要求 4 人才放开走位），按键恒 0。
+ * 网络只传按键，对端按键落 slot 2 镜像核。
  *
  * 镜像线程自由推进（不按帧放行、不 sleep）：native 协调器在 SIO 传输轮次
  * 上会合各核，跑太快的核会被 park 住等最慢者，这正是锁步语义。
@@ -25,6 +26,24 @@ import Foundation
  * 待真机验证。远端按键由 LobbyLink/GBoyLink 的 onRemoteKeysForSlot
  * 按帧类型解析成全局槽位后调用 setRemoteKeys(slot:mask:)。
  */
+/// ISYNC1: 三端同名门 MGBAX_ISYNC_STATE_APPLY 的 iOS 侧存储（默认 false，
+/// 与 PC 的 #define 0 / Android 的 false 同值）。由 AppDelegate 在启动时按
+/// env / UserDefaults 写入；App 层诊断门，非 native C 门。
+enum ISyncGate {
+    static var stateApply = false
+
+    /// GENTRIAD: 代次 hygiene 独立门 MGBAX_ISYNC_SEED_FRAME_BOUNDARY（三端同名
+    /// 同值、默认 false）。由 AppDelegate 从 env / UserDefaults 写入；env 兜底
+    /// 保证 AppDelegate 未执行时与 PC / Android 同口径。语义防伪，非内存守卫。
+    static var seedFrameBoundary = false
+
+    /// ISYNC-EV: 具名总门 MGBAX_ISYNC_EVIDENCE + 子开关 MGBAX_ISYNC_EVIDENCE_A1
+    /// （默认 false，与 PC #define 0 / Android false 同值，独立于 stateApply）。
+    /// 只启只读 A1 seed sha256 埋点，不造 seed / party / 信任位，不预设成功。
+    static var evidenceTotal = false
+    static var evidenceA1 = false
+}
+
 final class GBoyConsoleSet {
     /// 官方 `loadStateFromMemory` 的返回码契约（KpHwm4.B25kr6:148-152）：
     /// `0` = 载入成功，`-5` = 状态尺寸不符（会话里映射成错误码 3），其它非 0 → 1。
@@ -39,6 +58,45 @@ final class GBoyConsoleSet {
     /// type 6 的载入结果（在镜像线程上回调；owner 自己 hop 到主线程）。
     /// 官方拿到非 0 会结束会话（B25kr6 的 `return i`），iOS 交给上层决定。
     var onStateLoadResult: ((RemoteStateResult) -> Void)?
+
+    /// ISYNC1 — 输入同步方向「TYPE_STATE 种子真正 applied」可回退门的读取口。
+    /// 值由 AppDelegate 从 env / UserDefaults 写进 ISyncGate.stateApply（三端同名
+    /// MGBAX_ISYNC_STATE_APPLY，默认关）。再兜底读一次 env，保证 AppDelegate 未
+    /// 执行（如单测）时语义一致。载入本身无条件发生，门只管诊断里程碑。
+    private static var isyncStateApply: Bool {
+        ISyncGate.stateApply
+            || ProcessInfo.processInfo.environment["MGBAX_ISYNC_STATE_APPLY"] == "1"
+    }
+
+    /// GENTRIAD: 代次 hygiene 独立门（三端同名同值、默认关、独立于 stateApply）。
+    private static var isyncSeedFrameBoundary: Bool {
+        ISyncGate.seedFrameBoundary
+            || ProcessInfo.processInfo.environment["MGBAX_ISYNC_SEED_FRAME_BOUNDARY"] == "1"
+    }
+
+    /// 每实例唯一单调代次源（进程内），与 Android SEED_SET_GEN / PC s_nextSeedGen 同义。
+    private static let seedGenLock = NSLock()
+    private static var sNextSeedGen: Int64 = 0
+    private static func nextSeedGen() -> Int64 {
+        seedGenLock.lock()
+        defer { seedGenLock.unlock() }
+        sNextSeedGen += 1
+        return sNextSeedGen
+    }
+
+    /// ISYNC-EV: 具名总门 && 子开关（三端同名同值、默认关、独立于 stateApply）。
+    /// env 兜底保证 AppDelegate 未写入时语义与 PC / Android 一致。
+    static var isyncEvidenceA1: Bool {
+        (ISyncGate.evidenceTotal
+            || ProcessInfo.processInfo.environment["MGBAX_ISYNC_EVIDENCE"] == "1")
+            && (ISyncGate.evidenceA1
+            || ProcessInfo.processInfo.environment["MGBAX_ISYNC_EVIDENCE_A1"] == "1")
+    }
+
+    /// ISYNC-EV: 种子块 sha256 十六进制（只读诊断口径，非 native 核状态 hash）。
+    static func isyncSeedSha256Hex(_ bytes: [UInt8]) -> String {
+        SHA256.hash(data: Data(bytes)).map { String(format: "%02x", $0) }.joined()
+    }
 
     private let romPath: String
     private let saveDir: String
@@ -56,6 +114,14 @@ final class GBoyConsoleSet {
     /// 待灌进镜像核 1（= 槽位 2，对端那个玩家）的整份存档。由网络线程入队，
     /// 镜像线程在帧边界取走 —— 在别的线程直接 loadState 会与 runFrames 抢核。
     private var pendingRemoteState: [UInt8]?
+    /// GENTRIAD: 本实例唯一单调代次（构造期 immutable；三端同名 instanceGen）。
+    let instanceGen: Int64
+    /// 入队瞬间记录的代次戳（lock 保护），帧边界消费时二次校验。
+    private var pendingGen: Int64 = -1
+    /// owner 注入的「当前活动代次」读取器（lock 保护）；nil → 回落 instanceGen。
+    private var currentGenProvider: (() -> Int64)?
+    /// (seed hash, gen) → 真 load 次数（镜像线程独占；仅诊断门开时填充）。
+    private var appliedByKey: [String: Int] = [:]
     /// 每颗核的"待复位"标记（下标同 cores：0 = 可见核，1.. = 镜像核）。
     /// 镜像核只在自己的线程、自己的帧边界执行 reset；可见核只由主线程在帧
     /// 边界用 takeVisibleReset() 取走 —— 跨线程 reset 会与 runFrames 抢核。
@@ -116,6 +182,23 @@ final class GBoyConsoleSet {
         self.localSlot = localSlot
         self.roomKey = roomKey
         self.remoteKeys = [UInt32](repeating: 0, count: players)
+        self.instanceGen = Self.nextSeedGen()
+    }
+
+    /// 注入「当前活动代次」读取器（三端对称；owner 换房/重建时 bump，返回 -1
+    /// 表示无活动房间）。iOS 天然安全（apply 只入队、load 在镜像线程、stop 先
+    /// join 再 destroy），此门只提供防伪能力，不代表 iOS 存在 C3 竞态。
+    func setCurrentGenProvider(_ provider: (() -> Int64)?) {
+        lock.lock()
+        currentGenProvider = provider
+        lock.unlock()
+    }
+
+    private func currentGenValue() -> Int64 {
+        lock.lock()
+        let provider = currentGenProvider
+        lock.unlock()
+        return provider?() ?? instanceGen
     }
 
     /// 启动 N 核锁步房间。成功返回 nil，失败返回可展示的错误信息。
@@ -235,6 +318,8 @@ final class GBoyConsoleSet {
         // 新一轮会话：清掉上一局残留的复位/待载入标记，别让它漏进新房间。
         resetFlags = [Bool](repeating: false, count: players)
         pendingRemoteState = nil
+        pendingGen = -1
+        appliedByKey.removeAll()
         lock.unlock()
         // 镜像帧钟：可见核每帧 beginFrame 推高 targetFrame（天花板），镜像
         // 追平即等、来了就一口气追平。没有它镜像会在无 SIO 轮的菜单期以
@@ -290,22 +375,66 @@ final class GBoyConsoleSet {
                     if index == 1 {
                         self.lock.lock()
                         let pending = self.pendingRemoteState
+                        let pendingGen = self.pendingGen
                         self.pendingRemoteState = nil
+                        self.pendingGen = -1
                         self.lock.unlock()
                         if let state = pending, !state.isEmpty {
-                            /* 官方 B25kr6:143-152 的返回码契约：0 成功、-5 尺寸不符
-                             * （会话错误 3）、其它非 0 → 1。旧实现用 Bool 版本，把
-                             * 「尺寸不符」和「其它失败」都吞成同一个 false。 */
-                            let raw = state.withUnsafeBytes { buf -> Int32 in
-                                Int32(mgbaMobileLoadStateFromMemoryEx(core, buf.baseAddress, buf.count))
+                            /* GENTRIAD: 代次 hygiene——只在独立门开时做 stale 校验。
+                             * 语义防伪，非内存安全守卫；stale 只丢弃并打日志，
+                             * 不 load、不打 loaded、不回回调造成功/失败。 */
+                            var stale = false
+                            if GBoyConsoleSet.isyncSeedFrameBoundary {
+                                let cur = self.currentGenValue()
+                                if cur != self.instanceGen || pendingGen != self.instanceGen {
+                                    NSLog("[ISYNC] SEED_DROPPED_STALE gen=%lld current=%lld slot=%ld bytes=%ld",
+                                          pendingGen, cur, Int64(self.slotOfCore[1]), Int64(state.count))
+                                    stale = true
+                                }
                             }
-                            let result = Self.remoteStateResult(raw)
-                            // %ld 而不是 %d：NSLog 的 Int 参数是 64 位，%d 只取低
-                            // 32 位，字节数一过 2GB 就打印错值（varargs 未定义）。
-                            NSLog("GBOY_RT peer state applied bytes=%ld code=%ld",
-                                  state.count, Int(raw))
-                            if result != .ok {
-                                self.onStateLoadResult?(result)
+                            if !stale {
+                                /* 官方 B25kr6:143-152 的返回码契约：0 成功、-5 尺寸不符
+                                 * （会话错误 3）、其它非 0 → 1。旧实现用 Bool 版本，把
+                                 * 「尺寸不符」和「其它失败」都吞成同一个 false。 */
+                                let raw = state.withUnsafeBytes { buf -> Int32 in
+                                    Int32(mgbaMobileLoadStateFromMemoryEx(core, buf.baseAddress, buf.count))
+                                }
+                                let result = Self.remoteStateResult(raw)
+                                // %ld 而不是 %d：NSLog 的 Int 参数是 64 位，%d 只取低
+                                // 32 位，字节数一过 2GB 就打印错值（varargs 未定义）。
+                                NSLog("GBOY_RT peer state applied bytes=%ld code=%ld",
+                                      state.count, Int(raw))
+                                var appliedCount = 0
+                                if GBoyConsoleSet.isyncSeedFrameBoundary && result == .ok {
+                                    /* applied_count 按 (seed hash, gen) 计，只认真
+                                     * load==0；同 gen 同 hash 再中即 >1（双灌）。 */
+                                    let key = "\(Self.isyncHashHex(state))/\(pendingGen)"
+                                    self.appliedByKey[key, default: 0] += 1
+                                    appliedCount = self.appliedByKey[key] ?? 0
+                                }
+                                if GBoyConsoleSet.isyncStateApply && result == .ok {
+                                    /* ISYNC1: 与 PC / Android 同口径的里程碑——只在
+                                     * 真正载入成功后打，种子块 hash 供跨端核对。 */
+                                    var milestone = String(format: "[ISYNC] remote state loaded bytes=%ld hash=%@",
+                                                           state.count, Self.isyncHashHex(state))
+                                    if GBoyConsoleSet.isyncSeedFrameBoundary {
+                                        /* frame=na：iOS 路径无 TYPE_STATE_FRAMED 帧号，不伪造。 */
+                                        milestone += String(format: " frame=na gen=%lld applied_count=%d",
+                                                            pendingGen, appliedCount)
+                                    }
+                                    NSLog("%@", milestone)
+                                }
+                                /* ISYNC-EV/A1-LAND: 真 load 成功后落地种子的 sha256+
+                                 * 字节数+真槽（镜像核 1 = 全局槽 2）。只读观测，不造
+                                 * seed/party/信任位；措辞避开 applied/loaded/ok 词表。 */
+                                if GBoyConsoleSet.isyncEvidenceA1 && result == .ok {
+                                    NSLog("[ISYNC-EV][A1-LAND] role=iOS slot=%ld bytes=%ld sha256=%@",
+                                          Int64(self.slotOfCore[1]), Int64(state.count),
+                                          Self.isyncSeedSha256Hex(state))
+                                }
+                                if result != .ok {
+                                    self.onStateLoadResult?(result)
+                                }
                             }
                         }
                     }
@@ -389,6 +518,8 @@ final class GBoyConsoleSet {
         guard !state.isEmpty, cores.count > 1 else { return false }
         lock.lock()
         pendingRemoteState = state
+        /* GENTRIAD: 入队瞬间打本实例 gen 戳（三端对称），帧边界消费时二次校验。 */
+        pendingGen = instanceGen
         lock.unlock()
         return true
     }
@@ -420,6 +551,16 @@ final class GBoyConsoleSet {
         }
         lock.unlock()
         return pending
+    }
+
+    /// ISYNC1: 种子块 FNV-1a（诊断口径，非 native 核状态 hash）。
+    private static func isyncHashHex(_ bytes: [UInt8]) -> String {
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in bytes {
+            h ^= UInt64(b)
+            h = h &* 0x100000001b3
+        }
+        return String(h, radix: 16)
     }
 
     /// C 侧返回码 → 官方会话错误码：0 成功、-5 尺寸不符（3）、其它非 0 → 1。

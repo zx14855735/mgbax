@@ -99,6 +99,10 @@ QByteArray stateOf(const QByteArray& body) {
  * 早先按「只在 playerCount==1 时才补尾部」实现成 10 字节是误读（那是 fill 与
  * not-fill 的区别，不是长度区别），与官方逐字节不一致。 */
 QByteArray registerFrame(int playerCount, int baseStateCount) {
+	return registerFrame(playerCount, baseStateCount, LINK_MODE_UNKNOWN);
+}
+
+QByteArray registerFrame(int playerCount, int baseStateCount, int linkMode) {
 	QByteArray out(16, 0);
 	putInt(&out, 0, 12);
 	putShort(&out, 4, TYPE_REGISTER);
@@ -106,8 +110,52 @@ QByteArray registerFrame(int playerCount, int baseStateCount) {
 	if (playerCount == 1) {
 		putShort(&out, 10, 0);
 		putInt(&out, 12, quint32(baseStateCount));
+		/* 单人房尾部承载 baseStateCount，不写能力位；云端房间永远 >= 2 人。 */
+		return out;
+	}
+	if (linkMode == LINK_MODE_A || linkMode == LINK_MODE_B) {
+		/* wire[15] == body[11]：官方多人房恒为 0，旧端读到非零只当保留字段忽略。 */
+		out[15] = char(LINK_CAP_MAGIC | (linkMode == LINK_MODE_B ? LINK_CAP_MODE_BIT : 0));
 	}
 	return out;
+}
+
+int linkModeOf(const QByteArray& body) {
+	if (body.size() < 12 || typeOf(body) != TYPE_REGISTER) {
+		return LINK_MODE_UNKNOWN;
+	}
+	/* 单人房的尾部 6 字节是 short 0 + int32 baseStateCount（官方 A5SV6n:173-178），
+	 * body[11] 是 baseStateCount 的**最低字节**，不是能力位 —— 写侧只在
+	 * playerCount != 1 时写能力位（registerFrame 的同一条规则），读侧必须镜像它。
+	 * 漏了这一步会怎样：1 人房 + baseStateCount=1 时 body[11] == 0x01，
+	 * magic 0x40 不匹配 → 判成 INVALID → 对端直接 fail 成「对端能力位畸形」。
+	 * 这条是 test-gboylink --c0 抓出来的（首跑 40 ok / 1 FAIL）。 */
+	if (intOf(body) == 1) {
+		return LINK_MODE_UNKNOWN;
+	}
+	const quint8 cap = quint8(uchar(body[11]));
+	if (cap == 0) {
+		return LINK_MODE_UNKNOWN;   // 官方 APK / 旧客户端：未声明
+	}
+	if ((cap & LINK_CAP_MAGIC) == 0 || (cap & ~(LINK_CAP_MAGIC | LINK_CAP_MODE_BIT)) != 0) {
+		return LINK_MODE_INVALID;   // 畸形能力位，按不一致处理，禁止猜测
+	}
+	return (cap & LINK_CAP_MODE_BIT) ? LINK_MODE_B : LINK_MODE_A;
+}
+
+/* C0 的 AUTO 映射。唯一实现，CloudLink::resolveLinkMode() 与测试都走这里，
+ * 避免「测试断言的和线上跑的不是同一份逻辑」。 */
+int autoLinkMode(int playerCount) {
+	/* 1/2 人：path A（SIO 包中继）延迟最低；3/4 人：path A 每端只有 1 核，
+	 * 凑不出第三、第四个玩家，只能走 path B 的本地多核（4 核/设备）。 */
+	return playerCount >= 3 ? LINK_MODE_B : LINK_MODE_A;
+}
+
+int resolveLinkMode(int playerCount, int modeOverride) {
+	if (modeOverride == LINK_MODE_A || modeOverride == LINK_MODE_B) {
+		return modeOverride;
+	}
+	return autoLinkMode(playerCount);
 }
 
 int typeOf(const QByteArray& body) {

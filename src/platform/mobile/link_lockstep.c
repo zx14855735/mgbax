@@ -7,6 +7,9 @@
 
 #include <mgba/core/core.h>
 #include <mgba/core/lockstep.h>
+#ifndef DISABLE_THREADING
+#include <mgba/core/thread.h>
+#endif
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/sio/lockstep.h>
 #include <mgba/internal/gba/video.h>
@@ -41,6 +44,9 @@ struct MgbaLockstepSlot {
 	struct MgbaLockstepRoom* room;
 	struct GBASIOLockstepDriver driver;
 	struct mCore* core;
+#ifndef DISABLE_THREADING
+	struct mCoreThread* thread;  /* 非 NULL = sleep/wake 交给该线程 */
+#endif
 	int slotId;
 	pthread_mutex_t mu;
 	pthread_cond_t cv;
@@ -141,6 +147,29 @@ static int _slotRequestedId(struct mLockstepUser* u) {
 	return ((struct MgbaLockstepSlot*) u)->slotId;
 }
 
+#ifndef DISABLE_THREADING
+/* 可见核跑在 Qt 的 mCoreThread 上：协调器请求 park 时让整个模拟线程
+ * wait，wake 时恢复。mCoreThread 的循环本来就是 core->runLoop，满足锁步
+ * 驱动「小步推进、不能在帧内忙等」的约束（见 MultiplayerController）。 */
+static void _slotThreadSleep(struct mLockstepUser* u) {
+	struct MgbaLockstepSlot* slot = (struct MgbaLockstepSlot*) u;
+	if (slot->thread) {
+		mCoreThreadWaitFromThread(slot->thread);
+	} else {
+		_slotSleep(u);
+	}
+}
+
+static void _slotThreadWake(struct mLockstepUser* u) {
+	struct MgbaLockstepSlot* slot = (struct MgbaLockstepSlot*) u;
+	if (slot->thread) {
+		mCoreThreadStopWaiting(slot->thread);
+	} else {
+		_slotWake(u);
+	}
+}
+#endif
+
 struct MgbaLockstepSlot* mgbaLockstepAttach(struct MgbaLockstepRoom* room,
                                            struct mCore* core, int slotId) {
 	if (!room || !core || slotId < 0 || slotId >= room->players) {
@@ -164,6 +193,27 @@ struct MgbaLockstepSlot* mgbaLockstepAttach(struct MgbaLockstepRoom* room,
 	GBASIOLockstepCoordinatorAttach(&room->coord, &slot->driver);
 	core->setPeripheral(core, mPERIPH_GBA_LINK_PORT, &slot->driver.d);
 	return slot;
+}
+
+struct MgbaLockstepSlot* mgbaLockstepAttachThread(struct MgbaLockstepRoom* room,
+                                                  struct mCore* core,
+                                                  struct mCoreThread* thread, int slotId) {
+#ifdef DISABLE_THREADING
+	(void) thread;
+	return mgbaLockstepAttach(room, core, slotId);
+#else
+	if (!thread) {
+		return mgbaLockstepAttach(room, core, slotId);
+	}
+	struct MgbaLockstepSlot* slot = mgbaLockstepAttach(room, core, slotId);
+	if (!slot) {
+		return NULL;
+	}
+	slot->thread = thread;
+	slot->user.sleep = _slotThreadSleep;
+	slot->user.wake = _slotThreadWake;
+	return slot;
+#endif
 }
 
 /* 看门狗：置 1 后 runFrame 立即返回，避免测试线程被永久 park。 */
@@ -268,6 +318,16 @@ void mgbaLockstepDetach(struct MgbaLockstepSlot* slot) {
 
 size_t mgbaLockstepAttached(struct MgbaLockstepRoom* room) {
 	return room ? GBASIOLockstepCoordinatorAttached(&room->coord) : 0;
+}
+
+void mgbaLockstepRoomInfo(struct MgbaLockstepRoom* room, int* players, int* attached) {
+	if (players) {
+		*players = room ? room->players : 0;
+	}
+	if (attached) {
+		/* 协调器内部加锁，直接读实际 attach 的核数；不依赖全局 regMu。 */
+		*attached = room ? (int) GBASIOLockstepCoordinatorAttached(&room->coord) : 0;
+	}
 }
 
 int mgbaLockstepSlotId(struct MgbaLockstepSlot* slot) {

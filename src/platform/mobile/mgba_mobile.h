@@ -13,6 +13,46 @@
  * 手抄一份同布局结构体、core 改字段时静默错位。 */
 #include <mgba/core/interface.h>
 
+/* 【RACE_STRESS 压测造窗门 — 三端同名同值，默认关】
+ * 合法的时序压测工具：只在 native load 调用前注入可控 sleep，拉宽
+ * apply(主线程 load) vs destroy(模拟线程 free) 的 TOCTOU 易损段，用于复现/
+ * 对照 CRASH5 竞态窗口。只加时序延时，不改 party/RAM/握手字/信任位/CROSSED/
+ * species，不补灌 —— 与「改游戏态」的灰区有本质区别。
+ * 压测轮产物/日志/CROSSED 必须标注「应力诱导、非自然时序、CROSSED 可信度
+ * 存疑、非纯零注入」，绝不进裁决轮。
+ *   Android : 读 prop  debug.mgbax.link.race_stress（driver 下发，值按 ms 解释）
+ *   iOS     : 共享本 C 自动对称（门默认关，延时仅观测）
+ *   PC / Qt : 读 env   MGBAX_RACE_STRESS（no-op readback，不注入延时）
+ * 与根治门 MGBAX_ISYNC_SEED_FRAME_BOUNDARY 正交独立。 */
+#ifndef MGBAX_RACE_STRESS
+#define MGBAX_RACE_STRESS 0
+#endif
+/* 符号自检：门值只能是 0/1，防三端口径漂移；编译期拦截误配。 */
+#if MGBAX_RACE_STRESS != 0 && MGBAX_RACE_STRESS != 1
+#error "MGBAX_RACE_STRESS must be 0 or 1"
+#endif
+#define MGBAX_RACE_STRESS_ENV    "MGBAX_RACE_STRESS"
+#define MGBAX_RACE_STRESS_PROP   "debug.mgbax.link.race_stress"
+#define MGBAX_RACE_STRESS_MAX_MS 500u   /* clamp 防误设卡死；仅压测构建生效 */
+
+/* 【W92 / path B 原生 SIO 字路由门 — 三端同名同值，默认关】
+ * 只改「握手字/块字怎么经进程内 LocalBus 到 tempRecvBuffer」，不改字节来源：
+ * 门开时握手期放行游戏真 SIOMLT_SEND 字、禁 RHSLVINJ/BUS_HS_PRESERVE 写真
+ * 握手字、sidecar 早退（gEnemyParty 由游戏自己 SIO 组装）。不写 gLinkOpen/
+ * 游戏 state/party/brs/信任位。默认关时所有改动早退，零回归。
+ *   PC / Qt : env   MGBAX_PATHB_NATIVE_SIO（=1 开启）
+ *   Android : prop  debug.mgbax.link.pathb_native_sio（=1 开启）
+ *   iOS     : mgbaMobileSetPathBNativeSio / UserDefaults + env（同名同值）
+ * 门开≠成功；零注入 CROSSED（APP 0006 ↔ PC 00D5）仍是唯一裁决。 */
+#ifndef MGBAX_PATHB_NATIVE_SIO
+#define MGBAX_PATHB_NATIVE_SIO 0
+#endif
+#if MGBAX_PATHB_NATIVE_SIO != 0 && MGBAX_PATHB_NATIVE_SIO != 1
+#error "MGBAX_PATHB_NATIVE_SIO must be 0 or 1"
+#endif
+#define MGBAX_PATHB_NATIVE_SIO_ENV  "MGBAX_PATHB_NATIVE_SIO"
+#define MGBAX_PATHB_NATIVE_SIO_PROP "debug.mgbax.link.pathb_native_sio"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -230,6 +270,19 @@ uint16_t mgbaMobilePeek16(struct MgbaMobile* emu, uint32_t addr);
 /* 当前已渲染帧号（gba->video.frameCounter），用于验证锁步帧循环推进。 */
 uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
 
+/* 联机快帧门（mobileFastFrame）的只读计数，仅供测试与诊断：
+ *   latched - 会话判据是否命中过（0/1）
+ *   n       - 走快帧分支的轮次数
+ *   reuse   - 其中「没取到新字、复用上一轮对端字」的次数
+ *   miss    - 当前连续没取到新字的轮数（≥240 会解除锁存）
+ *   ok      - 已完成的真实 MULTI 轮次（快帧门门槛读的就是它：默认 256，
+ *             MGBAX_FAST_MIN_OK / mgbax.sio.fast_min_ok 可下调，见 mobileFastFrame）
+ *   valid   - 是否有一份「可复用的上一轮对端字」（断线时必须归零）
+ * 后两项只给负向用例断言用，产品代码不读。任何指针传 NULL 表示不取该项。
+ * 本函数只读，不改任何联机状态。 */
+void mgbaMobileSioFastStats(struct MgbaMobile* emu, int* latched, unsigned* n,
+                            unsigned* reuse, unsigned* miss, unsigned* ok, int* valid);
+
 /* busgame 调试脚本：PC busgame-lockstep 判据脚本（test/gboylink_test.cpp
  * lsInjectKeys）的设备端移植。Start 后可见核由 beginFrameKeys 接管按键；
  * 镜像核由镜像线程逐帧调 BusGameTick 取掩码。idx 为核的脚本序号
@@ -237,11 +290,50 @@ uint32_t mgbaMobileFrameCounter(const struct MgbaMobile* emu);
 void mgbaMobileBusGameStart(struct MgbaMobile* emu, int idx, int menuAt, int modeDowns);
 void mgbaMobileBusGameStop(struct MgbaMobile* emu);
 uint32_t mgbaMobileBusGameTick(struct MgbaMobile* emu);
+/* 镜像核现场快照（只读）：path B 的握手发生在四核之间，可见核的 [diag]
+ * 看不到镜像核。mask 由 GBoyMirror 线程按帧号节流调用。 */
+void mgbaMobileMirrorDiag(struct MgbaMobile* emu, int idx, int slot);
 
 /* 测试钩子：开启后锁步多玩家传输直接注入 0x1000+playerId 作为发送字，绕开
  * 真实游戏对 SIOMLT_SEND 的改写，得到确定性传输用于验证收集/广播。仅测试使用，
  * 必须在跑锁步集成测试前打开、跑完关闭。 */
 void mgbaMobileSioSetInject(bool inject);
+
+/* ROOTHUNT2 零注入对照总闸：iOS Swift / Android JNI 显式设置（须在首个 linkPoll 前）。
+ * true=关闭所有 ROOTHUNT2 数据/重绘/单端强推补丁，保留握手补丁。 */
+void mgbaMobileSetRhOff(bool enabled);
+
+/* ROOTHUNT2 B7 战斗期命令块中继灰度门 setter（iOS Swift 须在首个 linkPoll 前调）。
+ * true=开启 MGBAX_BATTLE_RELAY 行为；与 RH_OFF 正交。 */
+void mgbaMobileSetBattleRelay(bool enabled);
+
+/* ROOTHUNT2 方案Y：iOS Swift 设 var8004 恢复门（须在首个 linkPoll 前调）。 */
+void mgbaMobileSetLinkBtcfg(bool enabled);
+/* ROOTHUNT2 P0/M1：握手态保真 8FFF 旁路门（默认开，false 秒回退）。 */
+void mgbaMobileSetHsBypass(bool enabled);
+/* ROOTHUNT2 路线A：从机握手保持门（推真 B9A0 + 窗口重装，默认开，false 秒回退）。 */
+void mgbaMobileSetHsHold(bool enabled);
+/* ROOTHUNT2 路线A：0x2222 启动字 sticky 兜底门（真队列帧字逐拍推，默认开，false 秒回退）。 */
+void mgbaMobileSetBlock2222(bool enabled);
+/* path B：LocalBus 握手字保真门（bus abort 时回填真 8FFF 到主机自槽，默认开，false 秒回退）。 */
+void mgbaMobileSetBusHsPreserve(bool enabled);
+/* path B：2P 不被钳成 3 门（默认关，true 开启可逆 A/B）。 */
+void mgbaMobileSetLocalBus2p(bool enabled);
+/* W92 / path B 原生 SIO 字路由门（默认关，true 开启；iOS 须在首个 linkPoll 前调）。
+ * 与 PC env MGBAX_PATHB_NATIVE_SIO / Android debug.mgbax.link.pathb_native_sio 同名同值。 */
+void mgbaMobileSetPathBNativeSio(bool enabled);
+/* M1 seed 崩溃修复：state-rearm 守卫门（默认关，true=修复；只在 armLinkEvent
+ * 调用点加 linkAttached&&callback 守卫，不下沉 armLinkEvent 本体）。 */
+void mgbaMobileSetStateRearmGuard(bool enabled);
+/* P0：LAG 写时拦截禁用门（与 PC MGBAX_NO_LAG_CLEAR 同名同值；true=开拦截吞 LAG）。 */
+void mgbaMobileSetNoLagClear(bool enabled);
+/* ROOTHUNT2 灰区全开（§3.5）：一次性打开合法 7 类灰区（C3/seat-assist/rearm/
+ * RHSLVINJ/RHBRS/var8004/rem-restore）。默认 false；红线 RL1–RL5 不随此开关放开。
+ * iOS 无 setprop，须在首个 SIO linkPoll 前调用；
+ * Android 读 debug.mgbax.link.gray_all（debug 前缀，stock A14 可 setprop）。 */
+void mgbaMobileSetGrayAll(bool enabled);
+/* C3 大厅态 cb2 窗门绕过（独立门，被 GrayAll 蕴含）。默认 false。 */
+void mgbaMobileSetGrayLobbyOpen(bool enabled);
 
 /* 诊断：返回本核 CPU 当前 PC（gba->cpu->gprs[15]）。 */
 uint32_t mgbaMobileCpuPc(struct MgbaMobile* emu);

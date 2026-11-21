@@ -94,8 +94,11 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
     // 宝可梦进对战时会转场并加载双方队伍，游戏有几秒完全不发 SIO 字；
     // 6s 会把这段静默误判成掉线，导致两端一个回落隧道一个还在直连。
     private static final long IDLE_CLOSE_MS = 30000;
-    /** STUN 最多等这么久；手机切网/无 STUN 出口时不要拖住开局。 */
+    /** 首选 STUN（miwifi，通常 <100ms）最多等这么久；切网/无出口时不要拖住开局。 */
     private static final int STUN_TIMEOUT_MS = 900;
+    /** 回落 STUN（Google）超时：VPN/高延迟隧道下往返可达 5s，900ms 会误判「无公网映射」，
+     *  使跨网两端都拿不到公网候选（见 ADR-007）。仅回落路径变长，正常路径不受影响。 */
+    private static final int STUN_FALLBACK_TIMEOUT_MS = 8000;
 
     /** 一个候选地址。 */
     private static final class Candidate {
@@ -241,9 +244,9 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
         } catch (SocketException e) {
             Log.i(TAG, "enumerate interfaces failed: " + e.getMessage());
         }
-        String mapped = stunLookup("stun.miwifi.com", 3478);
+        String mapped = stunLookup("stun.miwifi.com", 3478, STUN_TIMEOUT_MS);
         if (mapped == null) {
-            mapped = stunLookup("stun.l.google.com", 19302);
+            mapped = stunLookup("stun.l.google.com", 19302, STUN_FALLBACK_TIMEOUT_MS);
         }
         if (mapped != null) {
             out.add(mapped);
@@ -260,7 +263,7 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
      * STUN binding request → XOR-MAPPED-ADDRESS，返回 "ip:port" 或 null。
      * 手机在移动数据 / 家用 NAT 后面时只有它能让对面找到我们。
      */
-    private String stunLookup(String host, int port) {
+    private String stunLookup(String host, int port, int timeoutMs) {
         if (socket == null) {
             return null;
         }
@@ -277,7 +280,7 @@ final class GBoyDirectLink implements GBoyCloudLink.Link {
             DatagramPacket packet = new DatagramPacket(request, request.length, server, port);
             socket.send(packet);
 
-            long deadline = System.currentTimeMillis() + STUN_TIMEOUT_MS;
+            long deadline = System.currentTimeMillis() + timeoutMs;
             byte[] buffer = new byte[512];
             while (System.currentTimeMillis() < deadline) {
                 socket.setSoTimeout(100);

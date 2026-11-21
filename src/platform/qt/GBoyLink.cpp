@@ -36,7 +36,14 @@ constexpr quint32 FRAME_MAX = 32 * 1024 * 1024;
 constexpr int MSG_HELLO = 1;
 constexpr int MSG_ROMINFO = 2;
 constexpr int MSG_READY = 3;
-constexpr int MSG_KEYS = 4;
+// LAN keys must be 0 to match iOS GBoyLink.swift (msgKeys = 0) and Android's
+// GBoySocketLink / our cloud GBoyFrames (KEYS = 0). This LAN protocol and the
+// cloud GBoyFrames protocol are two separate protocols carried on separate
+// sockets (LinkView vs LobbyView); reusing type 0 here does NOT mix them.
+// Do not "restore" this to 4: 4 was an arbitrary one-off that made PC LAN key
+// frames invisible to the other two ends. HELLO/STATE numbering (1/2/3/5/6)
+// is identical on all ends, so no slot constraint requires a distinct number.
+constexpr int MSG_KEYS = 0;
 constexpr int MSG_RESET = 5;
 constexpr int MSG_STATE = 6;
 

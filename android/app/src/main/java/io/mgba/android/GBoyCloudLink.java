@@ -130,6 +130,20 @@ public final class GBoyCloudLink {
     /** 会话信息：「重新连接中继」按钮复用它，不重建房间。 */
     private volatile String authToken;
     private volatile Room currentRoom;
+    /**
+     * 当前云端房间的有效本机核数（房间人数，夹到 [2,4]）。会话与镜像核集合
+     * 共用这一个值，避免各端对同一间 2P 房跑不同核数（PC CloudLink.cpp
+     * `qBound(2, room->playerCount, 4)` 的同构实现）。
+     *
+     * <p>决策依据（SYNC-AUDIT D1）：早期 §10.3 把硬编码 4 记为「大竞技场要求 4 人」
+     * 的有意选择，但该记录已被本 sprint 的 B1  blocker（INTEGRATION-REVIEW §3 B1 /
+     * RISK-REGISTER R-03）取代：4 核硬编码会让 2 人房静默跑成 4 核、总线按 4 人铺槽
+     * 而 2P 会话从起点错位，驱动断言 pathB_2p_bus_ok 恒 false。PC 的
+     * `90621f743 fix(pathB): make mirror count runtime-selectable for real 2P rooms`
+     * 已按房间人数运行时选核；三端统一到这一口径。3/4 人房里多余槽位仍作 NPC 陪位，
+     * 大竞技场的 4 人要求只作用于那些房间，不再外推到 2P 房。</p>
+     */
+    private volatile int cloudPlayerCount = 2;
     private volatile boolean hostRole;
     /** 房间信令要的游戏身份，重连中继时复用。 */
     private volatile String identity;
@@ -157,6 +171,37 @@ public final class GBoyCloudLink {
      */
     private volatile boolean officialMode;
 
+    /* ---- C0 能力协商位（ADR-002；与 PC CloudLink 语义逐位一致） ----
+     * A = 每端 1 核 + SIO 包中继；B = 本机多核 + 网络只传按键。
+     * m_linkMode 本端已绑定模式；modeOverride 显式指定（-1 = AUTO）；
+     * peerLinkMode 对端声明（-1 = 未声明/未收到）；modeRejected 已判失败。 */
+    private volatile int modeOverride = GBoyFrames.LINK_MODE_UNKNOWN;
+    private volatile boolean allowLegacyPeer;
+    private volatile int linkMode = GBoyFrames.LINK_MODE_A;
+    private volatile int peerLinkMode = GBoyFrames.LINK_MODE_UNKNOWN;
+    private volatile boolean modeBound;
+    private volatile boolean modeRejected;
+
+    /** C0 决策码：{@link #decideLinkMode} 的返回码，与 PC 侧判定表一一对应。 */
+    static final int LINK_DECISION_ACCEPT = 0;
+    static final int LINK_DECISION_LEGACY_B = 1;
+    static final int LINK_DECISION_PEER_UNKNOWN = 2;
+    static final int LINK_DECISION_CONFLICT = 3;
+    static final int LINK_DECISION_PEER_INVALID = 4;
+    /** B1 有界等待：轮数 × 每轮毫秒（PC CloudLink.cpp:2899-2914 同为 20 × 100ms）。 */
+    private static final int LINK_MODE_WAIT_ROUNDS = 20;
+    private static final long LINK_MODE_WAIT_STEP_MS = 100;
+    /**
+     * B1 有界等待期间暂存、稍后原序补投的传输层字节。等待只允许消费 type-1
+     * 注册帧（它的能力位就是答案），其它帧必须一个不丢、顺序不变地放回这里，
+     * 由 {@link #recvLink} 在链路字节之前先交出去。
+     *
+     * <p>用并发队列：路径 A 的 sio-relay-in 线程与工作线程都可能经过它
+     * （{@code ArrayDeque} 在这种并发下会抛 CME，WsLink 的 inbox 踩过同一个坑）。</p>
+     */
+    private final java.util.concurrent.ConcurrentLinkedQueue<byte[]> replayBytes =
+            new java.util.concurrent.ConcurrentLinkedQueue<>();
+
     /** 强制走服务器隧道、跳过公共 KCP 中继（由 io.mgba.android.action.NO_RELAY
      *  广播置位）。公共中继是回收池端口，常只有一端能注册，导致房主提交中继、
      *  加入方退回隧道而两端碰不上；强制隧道让两端都在同一条已验证可用的信令
@@ -165,10 +210,46 @@ public final class GBoyCloudLink {
 
     public void setOfficialMode(boolean on) {
         officialMode = on;
+        /* 蓝牙 / WiFi 直连沿用 B（本机多核）；也把它记成显式模式，避免这些
+         * 直连路径万一走到协商门时被 AUTO 改回 A。云端路径随后用
+         * setLinkMode(AUTO) 覆盖为按人数自动对齐。 */
+        modeOverride = on ? GBoyFrames.LINK_MODE_B : GBoyFrames.LINK_MODE_A;
     }
 
     public boolean officialMode() {
         return officialMode;
+    }
+
+    /**
+     * C0 / ADR-002：显式指定联机架构。mode 取 GBoyFrames.LINK_MODE_A / B，
+     * 或 LINK_MODE_UNKNOWN(-1) = AUTO（按房间人数 2P→A、3/4P→B）。
+     * 必须在 start() 之前调用；两端不一致直接断开并给可见提示，禁止静默降级。
+     */
+    public void setLinkMode(int mode) {
+        modeOverride = mode;
+    }
+
+    /** 显式许可「对端未声明能力位」（官方 APK / 旧客户端）时按 B 互通；默认关闭。 */
+    public void setAllowLegacyPeer(boolean allow) {
+        allowLegacyPeer = allow;
+    }
+
+    public int linkMode() {
+        return linkMode;
+    }
+
+    /** A / B / AUTO / UNKNOWN 文案，用于状态栏与失败提示。 */
+    public static String modeName(int mode) {
+        switch (mode) {
+            case GBoyFrames.LINK_MODE_A:
+                return "A（每端 1 核 + SIO 包中继）";
+            case GBoyFrames.LINK_MODE_B:
+                return "B（本机多核 + 网络只传按键）";
+            case GBoyFrames.LINK_MODE_INVALID:
+                return "畸形能力位";
+            default:
+                return "未声明 / AUTO";
+        }
     }
     private final GBoyLinkSession.Events sessionEvents = new GBoyLinkSession.Events() {
         @Override
@@ -203,6 +284,12 @@ public final class GBoyCloudLink {
 
     /** {@code roomId} empty or null creates a room, otherwise joins it. */
     public void start(final String user, final String password, final String roomId) {        closed = false;
+        /* 每次连接重新协商：上一局的绑定/拒绝不得泄漏到新房。 */
+        peerLinkMode = GBoyFrames.LINK_MODE_UNKNOWN;
+        modeBound = false;
+        modeRejected = false;
+        /* 上一局有界等待暂存的帧绝不能补投给新链路（那是别的会话的字节）。 */
+        replayBytes.clear();
         Thread thread = new Thread(() -> {
             try {
                 run(user, password, roomId);
@@ -290,9 +377,10 @@ public final class GBoyCloudLink {
                 if (port < 1 || port > 65535) {
                     throw new IOException("端口非法：" + port);
                 }
-                /* localSlot=1 / playerCount=4：与云端镜像模式一致（可见核 1P，
-                 * 对端按键落到镜像核 slot 2，slot 3/4 作 NPC 队位）。 */
-                link = new GBoySocketLink(1, 4, sessionEvents);
+                /* WiFi 直连只有两台设备 = 2 人房，本机核数跟随实际人数（D1）：
+                 * 1 可见核 + 1 镜像核；对端按键落镜像核 slot 2。不再硬编码 4
+                 * 让 2 设备链路按 4 人铺槽（与 PC/Android 云端会话口径一致）。 */
+                link = new GBoySocketLink(1, cloudPlayerCount(), sessionEvents);
                 socketLink = link;
                 linkSession = link.session();
                 /* 官方 WiFi 直连也是 1 → 2 → 3 → 6：把自我介绍绑进会话，
@@ -369,6 +457,7 @@ public final class GBoyCloudLink {
         linkSession = null;
         frameDriven = false;
         servingLink = null;
+        replayBytes.clear();
         // Stop the mirror core before the visible core's link is closed, so
         // its SIO wait cannot outlive the session.
         hooks.onDisconnected();
@@ -563,6 +652,13 @@ public final class GBoyCloudLink {
             runTunnel(sig, token, uuid, room, asHost);
             return;
         }
+        /* C0 / ADR-002：分派之前先绑定两端模式，不一致直接断开并给可见提示。 */
+        if (!negotiateLinkMode(room, "KCP 中继", link)) {
+            if (link != null) {
+                link.close();
+            }
+            return;
+        }
         if (officialMode) {
             // No SIO bridge: the second console lives on this device and only
             // key masks travel over the relay. The session must be created
@@ -634,6 +730,8 @@ public final class GBoyCloudLink {
         // 否则帧号、按键队列和 slot 掩码会从上一条链路继承下来。
         linkSession = null;
         frameDriven = false;
+        /* 新链路是全新字节流：丢弃旧链路在协商等待期暂存的帧。 */
+        replayBytes.clear();
         KcpChannel old = channel;
         channel = null;
         if (old != null) {
@@ -822,6 +920,20 @@ public final class GBoyCloudLink {
                 return;
             }
         }
+        /* B2 / C0：手动中继（NODE:/NODE2: 入口、MGBAX_AUTOLINK 脚手架）原来
+         * 完全没有协商门，直接 onConnected + serve —— 于是路径 A（1 核 + SIO
+         * 包中继）与路径 B（N 核 + 只传按键）两套帧格式可以同流。PC 侧已经记过
+         * 这个事故（CloudLink.cpp:608-610），这里补上与 PC
+         * {@code negotiateLinkMode(&room, "手动中继")} 对齐的门。 */
+        if (!negotiateLinkMode(room, "手动中继", link)) {
+            if (link != null) {
+                if (channel == link) {
+                    channel = null;
+                }
+                link.close();
+            }
+            return;
+        }
         status("云端联机已连接，你是 " + (asHost ? "1P" : "2P") + "（手动中继）");
         hooks.onConnected(asHost, null);
         serve(link);
@@ -991,6 +1103,13 @@ public final class GBoyCloudLink {
             // 长信封（>100 字符），被服务器整条吞掉；新版靠 c:1 识别彼此，
             // 老版本一律回落 base64 长信封。
             marker.put("c", 1);
+            /* C0 / ADR-002：hello/accept 同时带 1 bit mode。WSS 信令是两端必然
+             * 互见的带外通道，比「中继是否转发 type-1 注册帧」可靠，作为主协商通道。 */
+            Room cur = currentRoom;
+            int local = resolveLinkMode(Math.max(1, cur == null ? 2 : cur.playerCount));
+            if (local == GBoyFrames.LINK_MODE_A || local == GBoyFrames.LINK_MODE_B) {
+                marker.put("m", local);
+            }
             sig.send(sendMessage(token, uuid, marker.toString()));
         } catch (Exception e) {
             Log.i(TAG, "ws marker send failed: " + e.getMessage());
@@ -1042,7 +1161,13 @@ public final class GBoyCloudLink {
         if (from.isEmpty()) {
             from = marker.optString("o", "");
         }
-        return from.isEmpty() || from.equals(wsNonce == null ? "" : wsNonce) == false;
+        boolean fromPeer = from.isEmpty() || !from.equals(wsNonce == null ? "" : wsNonce);
+        if (fromPeer) {
+            /* C0：对端标记里的能力位（旧客户端没有 "m"，optInt 落到 UNKNOWN）。 */
+            notePeerLinkMode(marker.optInt("m", GBoyFrames.LINK_MODE_UNKNOWN),
+                    "WSS 信令标记");
+        }
+        return fromPeer;
     }
 
     /** 等一会儿，被打断时安静退出。 */
@@ -1100,6 +1225,11 @@ public final class GBoyCloudLink {
             throw new IOException(link.errorMessage() == null
                     ? "隧道等待对方超时" : link.errorMessage());
         }
+        /* C0 / ADR-002：隧道分派前同样先绑定模式，禁止两套帧格式同流。 */
+        if (!negotiateLinkMode(room, "WSS 隧道", link)) {
+            /* fail() 已经把可见提示发给状态栏并置 closed，不要再抛异常重复收尾。 */
+            return;
+        }
         if (officialMode) {
             // 照抄 GBoy：游戏数据一律 P2P 直连，WSS 只做房间信令。第 6 号
             // 消息是整份 savestate（约 790 KiB），大厅隧道单条被限到 100
@@ -1148,6 +1278,11 @@ public final class GBoyCloudLink {
         }
         java.util.List<String> mine = direct.candidates();
         Log.i(TAG, "[direct] me=" + wsNonce + " 候选 " + mine + " / 本地端口 " + direct.localPort());
+        /* 机器可读：与 PC DirectLink 的候选排序对照用。cand_me 是本端公告的候选数
+         * （排序见 DirectLink.candidatePriority：192.168→10→公网→172），真正决定
+         * 能否打洞的是双方的候选交集，所以 cand_peer 一到就补一条。 */
+        Log.i(TAG, "[PA-DIRECT] cand_me=" + mine.size() + " localPort=" + direct.localPort()
+                + " phase=announce");
         status("正在协商直连加速（P2P，避开服务器中转）…");
 
         long started = System.currentTimeMillis();
@@ -1157,6 +1292,7 @@ public final class GBoyCloudLink {
         long connectedAt = 0;
         int announceCount = 0;
         boolean peerCandidates = false;
+        int peerCandidateCount = 0;
         boolean peerWants = false;
         boolean peerAgreed = false;
         boolean switchSent = false;
@@ -1180,9 +1316,12 @@ public final class GBoyCloudLink {
                             }
                             if (!peer.isEmpty()) {
                                 Log.i(TAG, "[direct] me=" + wsNonce + " 对端候选 " + peer);
+                                Log.i(TAG, "[PA-DIRECT] cand_peer=" + peer.size()
+                                        + " list=" + peer + " phase=recv");
                                 direct.setPeerCandidates(peer);
                                 direct.startPunching();
                                 peerCandidates = true;
+                                peerCandidateCount = peer.size();
                             }
                         }
                     } else if ("s".equals(kind)) {
@@ -1255,15 +1394,32 @@ public final class GBoyCloudLink {
                     + " connected=" + direct.isConnected() + " switchSent=" + switchSent
                     + " peerWants=" + peerWants + " peerAgreed=" + peerAgreed
                     + " aborted=" + aborted);
+            logDirectResult("tunnel", peerCandidateCount, direct);
             if (switchSent) {
                 sendDirectMarker(tunnel, room, "s3", "");
             }
             direct.close();
             return null;
         }
+        logDirectResult("ok", peerCandidateCount, direct);
         status("直连加速已启用（P2P " + direct.peerText() + "，RTT " + direct.rttMs() + " ms）\n"
                 + "数据不再经过服务器中转，延迟比隧道低一个数量级");
         return direct;
+    }
+
+    /**
+     * 机器可读的建链结论行，字段与 PC DirectLink::diagnosticsText（via/peerCandidates/
+     * direct/ignored/peer）一致，便于跨端证据解析器统一消费。ignored 在 Android 侧
+     * 未单独统计（PC 统计的是「已连后来自非对端包的丢弃数」），固定报 0。
+     */
+    private void logDirectResult(String result, int peerCandidateCount, GBoyDirectLink direct) {
+        boolean enabled = "ok".equals(result);
+        Log.i(TAG, "[MGBAX_P2P] me=" + wsNonce + " event=result result=" + result
+                + " via=" + (enabled ? "p2p" : "tunnel")
+                + " peerCandidates=" + peerCandidateCount
+                + " direct=" + (enabled ? 1 : 0)
+                + " ignored=0"
+                + " peer=" + (direct.peerText().isEmpty() ? "-" : direct.peerText()));
     }
 
     /** 发一条直连协商标记；超过 100 字符先把房间标记去掉（服务器有长度上限）。 */
@@ -1361,6 +1517,17 @@ public final class GBoyCloudLink {
         return local;
     }
 
+    /**
+     * SIO 分开控制模式走服务器隧道（或 P2P 直连）时的桥。
+     *
+     * <p><b>帧协议契约（§7.3）：这里收发的是裸 20 字节 netLink 包，没有 TYPE_STATE 帧头、
+     * 没有长度头，也不经 {@link GBoyFrames.Reader}。</b>两端都把 WsLink / GBoyDirectLink 当
+     * 透明字节管道（20 字节切片 + hex/base64 信封），所以不需要封帧；这与
+     * {@link #startSioRelayBridge} 的 KCP 路（必须 {@code frame(TYPE_STATE, ...)}）刻意不同。
+     * 不要把两路的帧格式互换 —— 两套格式同流耗死读线程的事故就是这么来的。</p>
+     *
+     * <p>机器可读诊断：tag {@code GBoyLink}，前缀 {@code [PA-FRAME] ch=ws|p2p}，每 256 块一条。</p>
+     */
     private void startSioBridge(Link link, WsLink tunnel, boolean asHost) throws IOException {
         Socket local = attachDriverLoopback(asHost);
         sioSock = local;
@@ -1377,6 +1544,8 @@ public final class GBoyCloudLink {
                 new java.util.concurrent.atomic.AtomicReference<>(link);
         Thread out = new Thread(() -> {
             byte[] buf = new byte[2048];
+            long chunks = 0;
+            long rawBytes = 0;
             try {
                 java.io.InputStream in = sock.getInputStream();
                 int n;
@@ -1384,6 +1553,13 @@ public final class GBoyCloudLink {
                     byte[] chunk = new byte[n];
                     System.arraycopy(buf, 0, chunk, 0, n);
                     active.get().send(chunk);
+                    ++chunks;
+                    rawBytes += n;
+                    if ((chunks & 0xFF) == 0) {
+                        Log.i(TAG, "[PA-FRAME] ch=" + (active.get() == tunnel ? "ws" : "p2p")
+                                + " dir=tx chunks=" + chunks + " rawbytes=" + rawBytes
+                                + " framing=RAW(no Reader)");
+                    }
                 }
             } catch (Exception ignored) {
                 // 断线由守望线程统一收尾
@@ -1391,14 +1567,23 @@ public final class GBoyCloudLink {
             closeSio();
         }, "sio-bridge-out");
         Thread in = new Thread(() -> {
+            long chunks = 0;
+            long rawBytes = 0;
             try {
                 java.io.OutputStream os = sock.getOutputStream();
                 while (!closed) {
                     try {
-                        byte[] pkt = active.get().recv(100);
+                        byte[] pkt = recvLink(active.get(), 100);
                         if (pkt != null && pkt.length > 0) {
                             os.write(pkt);
                             os.flush();
+                            ++chunks;
+                            rawBytes += pkt.length;
+                            if ((chunks & 0xFF) == 0) {
+                                Log.i(TAG, "[PA-FRAME] ch=" + (active.get() == tunnel ? "ws" : "p2p")
+                                        + " dir=rx chunks=" + chunks + " rawbytes=" + rawBytes
+                                        + " framing=RAW(no Reader)");
+                            }
                         }
                     } catch (Exception e) {
                         // 直连 recv 的一次瞬时异常绝不能终结整局：以前这里
@@ -1463,8 +1648,26 @@ public final class GBoyCloudLink {
      * 对 type 1..6 是透明转发，两条客户端之间它就是一条字节管道。
      * 相比 WS 隧道，官方中继（阿里云上海）的 RTT 低 3-7 倍。
      *
+     * <p><b>帧协议契约（GBoy联机实现拆解与移植方案.md §7.3，勿改）：</b>
+     * 出向 {@code frame(TYPE_STATE, packet)} 是**唯一**合法的封包方式；出向若把裸 20 字节
+     * 直接塞进 KCP，对端 {@link GBoyFrames.Reader} 会把头 4 字节当 length（约 826 MB）而丢掉
+     * 整条流（历史缺陷，PC 侧 3fa798899 已修，Android 必须对齐）。
+     * 入向必须过滤 {@code typeOf(body) != TYPE_STATE}：裸 SIO 包开头的 {@code magic=06000000}
+     * 会被误读成帧头，不过滤就是把 desync 源放进本地驱动 socket。
+     * 注意 <b>WS 隧道那条路（{@link #startSioBridge}）仍然走裸 20 字节</b>，两端都不经 Reader，
+     * 是设计如此 —— 不要把这里的 TYPE_STATE 封装套到隧道上。</p>
+     *
+     * <p><b>跨设备 2P 前置条件</b>（MEMORY.md §5）：两端必须是不同账号（同账号会让先登录者
+     * token 失效），且 game uuid 不同（uuid = {@code "BPEE," + ROM md5}，同 ROM 会被服务器当
+     * 同一个玩家、消息只回显 {@code "self":true}）。这是房间层前置，不是本桥的代码逻辑，
+     * 但排查「连上了却收不到对端帧」时先核对这两条。</p>
+     *
      * <p>房主侧顺带保留节点广播（新加入方要靠它拿中继地址），并监听对方的
      * 隧道 hello——对方的中继不可达时会切到 WS 隧道，本端跟随切换。</p>
+     *
+     * <p>机器可读诊断：tag {@code GBoyLink}，前缀 {@code [PA-FRAME]}，每 256 帧一条 ——
+     * {@code ch=kcp dir=tx|rx frames=N rawbytes=M type=6(STATE)} 及
+     * {@code dir=rx filter-drop n=N type=X}（非 6 帧被丢弃，X 是实际 type）。</p>
      */
     private void startSioRelayBridge(final KcpChannel link, final Socket local,
                                      final GbCloud.Session sig, final String token,
@@ -1472,6 +1675,8 @@ public final class GBoyCloudLink {
         final GBoyFrames.Reader relayReader = new GBoyFrames.Reader();
         Thread out = new Thread(() -> {
             byte[] buf = new byte[2048];
+            long frames = 0;
+            long rawBytes = 0;
             try {
                 java.io.InputStream in = local.getInputStream();
                 int n;
@@ -1479,6 +1684,12 @@ public final class GBoyCloudLink {
                     byte[] packet = new byte[n];
                     System.arraycopy(buf, 0, packet, 0, n);
                     link.send(GBoyFrames.frame(GBoyFrames.TYPE_STATE, packet));
+                    ++frames;
+                    rawBytes += n;
+                    if ((frames & 0xFF) == 0) {
+                        Log.i(TAG, "[PA-FRAME] ch=kcp dir=tx frames=" + frames
+                                + " rawbytes=" + rawBytes + " type=6(STATE) framing=TYPE_STATE");
+                    }
                 }
             } catch (Exception ignored) {
                 // 断线由守望线程统一收尾
@@ -1486,23 +1697,42 @@ public final class GBoyCloudLink {
             closeSio();
         }, "sio-relay-out");
         Thread in = new Thread(() -> {
+            long frames = 0;
+            long rawBytes = 0;
+            long filtered = 0;
             try {
                 java.io.OutputStream os = local.getOutputStream();
                 while (!closed) {
-                    byte[] message = link.recv(200);
+                    /* 走 recvLink：协商门的有界等待期可能已经把几帧（含对端的
+                     * type-6 SIO 包）暂存下来，它们比新到的字节更早，必须先投。 */
+                    byte[] message = recvLink(link, 200);
                     if (message == null) {
                         continue;
                     }
                     relayReader.append(message, message.length);
                     byte[] body;
                     while ((body = relayReader.next()) != null) {
-                        if (GBoyFrames.typeOf(body) != GBoyFrames.TYPE_STATE) {
-                            continue; // 中继的握手残留/心跳推送：忽略
+                        int type = GBoyFrames.typeOf(body);
+                        if (type != GBoyFrames.TYPE_STATE) {
+                            /* 中继的握手残留/心跳推送：忽略。这条过滤同时也是
+                             * 裸 SIO 包 magic=06000000 误入拆包器时的最后一道闸。 */
+                            ++filtered;
+                            if (filtered == 1 || (filtered & 0xFF) == 0) {
+                                Log.i(TAG, "[PA-FRAME] ch=kcp dir=rx filter-drop n=" + filtered
+                                        + " type=" + type + " note=not-type6");
+                            }
+                            continue;
                         }
                         byte[] packet = GBoyFrames.payloadOf(body);
                         if (packet.length > 0) {
                             os.write(packet);
                             os.flush();
+                            ++frames;
+                            rawBytes += packet.length;
+                            if ((frames & 0xFF) == 0) {
+                                Log.i(TAG, "[PA-FRAME] ch=kcp dir=rx frames=" + frames
+                                        + " rawbytes=" + rawBytes + " type=6(STATE)");
+                            }
                         }
                     }
                 }
@@ -1784,6 +2014,41 @@ public final class GBoyCloudLink {
             return closed || sig.isClosed();
         }
 
+        /**
+         * B1 有界等待专用：只推进传输层并处理 hello/accept（对端能力位就在
+         * 这两个标记里），**不搬动任何数据帧** —— {@link #demux} 把数据帧原序
+         * 留在 inbox 里，之后仍由 {@link #recv} 按原序取走。
+         *
+         * <p>这样等待期既让「WSS marker 被处理掉」，又保证之后无论这条隧道被
+         * 当成路径 A 的裸 SIO 字节管道还是路径 B 的帧流，都不会少一个字节。</p>
+         */
+        void pumpMarkers(long ms) {
+            long deadline = System.currentTimeMillis() + Math.max(ms, 1);
+            while (!closed && !sig.isClosed()) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0) {
+                    return;
+                }
+                String text;
+                synchronized (recvLock) {
+                    if (closed || sig.isClosed()) {
+                        return;
+                    }
+                    maybeHello();
+                    try {
+                        text = sig.recv(Math.min(200, remaining));
+                    } catch (IOException e) {
+                        closed = true;
+                        error = "服务器隧道连接中断：" + e.getMessage();
+                        return;
+                    }
+                }
+                if (text != null) {
+                    demux(text);
+                }
+            }
+        }
+
         @Override
         public void close() {
             closed = true;
@@ -1864,6 +2129,9 @@ public final class GBoyCloudLink {
             if (marker.optInt("c", 0) == 1) {
                 peerCompact = true;
             }
+            /* C0：对端模式（旧客户端没有 "m"，optInt 落到 UNKNOWN，交网关判定）。 */
+            notePeerLinkMode(marker.optInt("m", GBoyFrames.LINK_MODE_UNKNOWN),
+                    "WSS 隧道 hello/accept");
             if ("f".equals(kind)) {
                 try {
                     byte[] frame = fromTunnelPayload(marker.optString("d", ""));
@@ -1930,7 +2198,10 @@ public final class GBoyCloudLink {
     /** Registers this console at the relay. Sent exactly once per session. */
     private void sendRegister(Link link, Room room) {
         int players = Math.max(1, room.playerCount);
-        link.send(GBoyFrames.registerFrame(players, room.baseStateCount));
+        /* C0：注册帧即握手帧，能力位必须在这里就带上，对端才有得可判。 */
+        linkMode = resolveLinkMode(players);
+        link.send(GBoyFrames.registerFrame(players, room.baseStateCount, linkMode));
+        Log.i(TAG, "[C0] register mode=" + modeName(linkMode) + " players=" + players);
         /* 官方握手顺序 1 → 2 → 3 → 6：注册帧之后紧跟自我介绍（AZkASS:136，
          * ByteBuffer 里 32 字节 romHash + int16 长度 + romName）。官方双向都发，
          * 我们原来只解析不发送，对端 UI 永远看不到名字。 */
@@ -1958,7 +2229,7 @@ public final class GBoyCloudLink {
                 handle(body);
                 continue;
             }
-            byte[] message = link.recv(Math.max(50, deadline - System.currentTimeMillis()));
+            byte[] message = recvLink(link, Math.max(50, deadline - System.currentTimeMillis()));
             if (message == null) {
                 if (System.currentTimeMillis() >= deadline) {
                     throw new IOException("等待中继回应超时");
@@ -2080,8 +2351,17 @@ public final class GBoyCloudLink {
         return linkSession;
     }
 
+    /** 当前云端房间的有效核数（房间人数，夹到 [2,4]）；供 UI 层按同一人数建镜像房间。 */
+    public int cloudPlayerCount() {
+        return cloudPlayerCount;
+    }
+
     private GBoyLinkSession newSession(Link link) {
         servingLink = link;
+        /* 房间信令的 player_joined 写入权威人数；默认 2，夹到 [2,4]（少于 2 人
+         * 无联机意义，超过 4 人数组放不下），与 PC 的 qBound 完全一致。 */
+        Room room = currentRoom;
+        cloudPlayerCount = Math.max(2, Math.min(4, room == null ? 2 : room.playerCount));
         return new GBoyLinkSession(frame -> {
             synchronized (sendLock) {
                 Link current = servingLink;
@@ -2089,10 +2369,13 @@ public final class GBoyCloudLink {
                     current.send(frame);
                 }
             }
-        /* 4 槽位：本机可见核 slot 1，对手 slot 2（对端真人按键经网络进来），
-         * slot 3/4 恒 0 作 NPC 队位——大竞技场要求 4 人，2 核时游戏锁位。
+        /* 本机核数 = 房间人数（1 可见核 + players-1 镜像核），与 PC
+         * CloudLink.cpp 的 qBound(2, room->playerCount, 4) 同构。原来硬编码 4
+         * 会让 2P 云房跑 4 核、总线按 4 人铺槽而会话只有 2 人，槽位从起点就
+         * 错位（RISK-REGISTER R-03 / INTEGRATION-REVIEW B1）。3/4 人房里多出的
+         * 槽位恒 0 作 NPC 陪位（大竞技场要求 4 人才放开走位）。
          * 网络只传真人按键，镜像核 keysForSlot 取任意槽位。 */
-        }, sessionEvents, 1, 4);
+        }, sessionEvents, 1, cloudPlayerCount());
     }
 
     /** The onConnected callback is posted to the UI thread, so the session has
@@ -2146,7 +2429,7 @@ public final class GBoyCloudLink {
                     }
                 }
             }
-            byte[] message = link.recv(50);
+            byte[] message = recvLink(link, 50);
             if (message == null) {
                 continue;
             }
@@ -2167,6 +2450,11 @@ public final class GBoyCloudLink {
             s.onFrameBody(body);
         }
         switch (type) {
+            case GBoyFrames.TYPE_REGISTER:
+                /* C0：对端 type-1 注册帧带能力位。裸 6 字节 type-1 ack 的 body
+                 * 只有 2 字节，linkModeOf() 返回 UNKNOWN，不会误判。 */
+                notePeerLinkMode(GBoyFrames.linkModeOf(body), "type-1 注册帧");
+                break;
             case GBoyFrames.TYPE_KEYS:
             case GBoyFrames.TYPE_KEYS_LOCAL: {
                 int keys = GBoyFrames.intOf(body);
@@ -2550,6 +2838,260 @@ public final class GBoyCloudLink {
         } catch (Exception e) {
             Log.w(TAG, "cannot read rom identity", e);
             return "BPEE,";
+        }
+    }
+
+    /* ---- C0 能力协商（ADR-002）--------------------------------------------
+     * 硬约束：path A 在 type 6 上跑裸 20 字节 netLink 包，path B 跑整份
+     * savestate（u32 长度 + blob）。两者同流会破坏帧边界（PC 侧 9470 个碎片包
+     * 耗死读线程的事故）。绑定必须发生在任何游戏帧之前，且：
+     *   两端都声明且不同 → fail（可见提示），绝不挑一个「能跑的」静默降级；
+     *   对端未声明       → 默认 fail，仅 ADB allow_legacy=true 显式许可才按 B；
+     *   能力位畸形       → 视为不一致，fail。
+     */
+    private int resolveLinkMode(int playerCount) {
+        if (modeOverride == GBoyFrames.LINK_MODE_A || modeOverride == GBoyFrames.LINK_MODE_B) {
+            return modeOverride;
+        }
+        return playerCount >= 3 ? GBoyFrames.LINK_MODE_B : GBoyFrames.LINK_MODE_A;
+    }
+
+    /**
+     * 「本机=…」里的那一段：模式已绑定就写模式名，未绑定写「尚未绑定（AUTO）」。
+     * 与 PC {@code CloudLink.cpp:2903-2905} 同口径 —— 畸形能力位可能在协商门
+     * 绑定之前就到达，那时 `linkMode` 还是默认值，直接写模式名会误导用户。
+     */
+    private String localModeText() {
+        return modeBound ? modeName(linkMode) : "尚未绑定（AUTO）";
+    }
+
+    private void notePeerLinkMode(int mode, String source) {
+        if (mode == GBoyFrames.LINK_MODE_UNKNOWN) {
+            return; // 官方 APK / 旧客户端：没有能力位
+        }
+        if (mode == GBoyFrames.LINK_MODE_INVALID) {
+            /* 状态先反映事实：收到的就是畸形能力位，peerLinkMode 必须是 INVALID，
+             * 不能停在 UNKNOWN（与 PC F8 回写对齐）。为什么这条回写重要：
+             * 没有它时，一旦有人删掉 negotiateLinkMode() 顶部的 modeRejected 短路，
+             * peer 会停在 UNKNOWN → 落到「未声明」分支 → allowLegacy=true 时**放行回落 B**，
+             * 即「已判失败的门返回成功」。补上回写后，同样的重构会走到 4 号分支干净拒绝。
+             * 注意：回写**不是**挡住「畸形被 allowLegacy 放行」的第一道锁 —— 第一道是下面
+             * 的 modeRejected 短路；回写只是让状态自洽、并让第二道锁（4 号分支）真正能兜住。 */
+            peerLinkMode = GBoyFrames.LINK_MODE_INVALID;
+            /* F9 / 两端一致：与 PC CloudLink.cpp:2882-2921 同格式的三要素文案
+             * （本机模式 / 对端畸形且带来源 / 改法）。旧文案只有「对端能力位畸形，
+             * 已断开。」一句，用户看不出本机是 A 还是 B、也看不出是谁报的。 */
+            if (!modeRejected) {
+                modeRejected = true;
+                fail("【联机模式协商失败】本机=" + localModeText()
+                        + "，对端能力位畸形（来源 " + source + "）。"
+                        + "畸形 = 缺少能力位标记（0x40）或保留了非 0 位，"
+                        + "通常是对端版本不一致/能力位被写坏，无法确认两端帧格式一致，"
+                        + "已断开以避免两套帧格式同流。请两端使用相同版本，并确认两端"
+                        + "联机模式设置相同"
+                        + "（ADB: am broadcast -a io.mgba.android.action.GBOY_LINK_MODE"
+                        + " --es mode A|B）。");
+            }
+            return;
+        }
+        peerLinkMode = mode;
+        Log.i(TAG, "[C0] peer mode=" + modeName(mode) + " from " + source);
+        if (!modeBound) {
+            return; // 本端尚未绑定，等 negotiateLinkMode() 统一判定
+        }
+        if (linkMode != mode && !modeRejected) {
+            modeRejected = true;
+            fail("【联机模式协商失败】本机=" + modeName(linkMode)
+                    + "，对端=" + modeName(mode) + "（来源 " + source + "）。"
+                    + "两套帧格式不能同流，已断开；请在两端设置相同的联机模式"
+                    + "（ADB: am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode A|B）。");
+        }
+    }
+
+    /**
+     * 纯决策函数（C0 / ADR-002）：把「本端模式 / 对端模式 / allowLegacy」映射成
+     * 决策码。与传输层、状态栏、{@code fail()} 完全解耦，便于 JVM 自检
+     * （{@code C0LinkModeTest}）直接覆盖五类结果，不必起线程或造 socket。
+     *
+     * <p>判定顺序与 PC {@code CloudLink::negotiateLinkMode} 一致：先看一致，
+     * 再看畸形，再看未声明（唯一允许回落的分支），最后才是冲突。畸形必须是
+     * 独立结果——它不能被「allowLegacy」当成「未声明」放行。</p>
+     *
+     * @param local 本端已绑定的模式（{@link #resolveLinkMode}：A 或 B）
+     * @param peer  对端声明（{@link GBoyFrames#linkModeOf}：A / B / UNKNOWN / INVALID）
+     * @return {@code 0} = 两端一致，按 {@code local} 接受；{@code 1} = 对端未声明
+     *         且 {@code allowLegacy}，回落为 B；{@code 2} = 对端未声明且不允许
+     *         回落，拒绝；{@code 3} = 两端模式冲突，拒绝；{@code 4} = 对端能力位
+     *         畸形，拒绝。
+     */
+    static int decideLinkMode(int local, int peer, boolean allowLegacy) {
+        if (peer == local) {
+            return LINK_DECISION_ACCEPT;
+        }
+        if (peer == GBoyFrames.LINK_MODE_INVALID) {
+            return LINK_DECISION_PEER_INVALID;
+        }
+        if (peer == GBoyFrames.LINK_MODE_UNKNOWN) {
+            return allowLegacy ? LINK_DECISION_LEGACY_B : LINK_DECISION_PEER_UNKNOWN;
+        }
+        /* 0/1 之间的不一致：两套帧格式不能同流，allowLegacy 也不放行。 */
+        return LINK_DECISION_CONFLICT;
+    }
+
+    /**
+     * B1：有界等待对端能力声明（最多 {@value #LINK_MODE_WAIT_ROUNDS} 轮 ×
+     * {@value #LINK_MODE_WAIT_STEP_MS}ms，**绝不无限等**）。
+     *
+     * <p>为什么需要：WSS hello/accept 与 KCP 握手是两条独立时钟，中继常常先
+     * 握手成功、对端 hello 稍后才到。旧实现在这段窗口里直接判「对端未声明」
+     * 并 {@code fail()} 断开，实测表现为房间刚连上就报协商失败。</p>
+     *
+     * <p>关键约束：不允许吞掉任何挂起的游戏帧。所以按通道分两种推进方式：</p>
+     * <ul>
+     *   <li>WSS 隧道（{@link WsLink}）：只排空信令标记，
+     *       {@link WsLink#pumpMarkers} 把数据帧原序留在 inbox 里，之后由
+     *       {@code recv()} 按原序取走——无论它之后当路径 A 的裸 SIO 字节管道
+     *       还是路径 B 的帧流解析，都不会被提前吃掉；</li>
+     *   <li>KCP 中继：把收到的字节喂进共用拆包器，只消费 type-1 注册帧；
+     *       其它帧用 {@link GBoyFrames#frame(int, byte[])} 还原成**与原帧逐字节
+     *       相同**的字节放回 {@link #replayBytes}，type-0 按键 / type-5 复位 /
+     *       type-6 状态帧一个都不丢、顺序不变（补投队列比拆包器里残留的半帧、
+     *       以及之后到的新字节都更早，所以先投它就能保序）。</li>
+     * </ul>
+     */
+    private void awaitPeerLinkMode(Link link) {
+        if (link == null) {
+            return;
+        }
+        for (int round = 0; round < LINK_MODE_WAIT_ROUNDS; ++round) {
+            if (peerLinkMode != GBoyFrames.LINK_MODE_UNKNOWN || closed || link.isClosed()) {
+                return;
+            }
+            if (link instanceof WsLink) {
+                ((WsLink) link).pumpMarkers(LINK_MODE_WAIT_STEP_MS);
+                continue;
+            }
+            byte[] message = link.recv(LINK_MODE_WAIT_STEP_MS);
+            if (message == null) {
+                continue;
+            }
+            feedForLinkMode(message);
+        }
+    }
+
+    /**
+     * 拆一条刚到的字节块：type-1 注册帧消费掉（顺带记能力位），其余原序放回
+     * {@link #replayBytes}。见 {@link #awaitPeerLinkMode} 的取舍说明。
+     */
+    private void feedForLinkMode(byte[] message) {
+        reader.append(message, message.length);
+        byte[] body;
+        while ((body = reader.next()) != null) {
+            if (GBoyFrames.typeOf(body) == GBoyFrames.TYPE_REGISTER) {
+                notePeerLinkMode(GBoyFrames.linkModeOf(body), "type-1 注册帧");
+                continue;
+            }
+            /* 放回：body = type + payload，frame() 写回的长度字段正好等于
+             * 2 + payload.length，所以还原出来的字节与原来的完全一致。 */
+            replayBytes.offer(GBoyFrames.frame(GBoyFrames.typeOf(body),
+                    GBoyFrames.payloadOf(body)));
+        }
+    }
+
+    /**
+     * 取一条传输层字节：先给有界等待期间暂存的帧（更早到达，必须优先），
+     * 再读链路本身。所有「读数据通道」的入口都必须走这里，否则暂存帧会被
+     * 拖到新字节之后，等于换了顺序。
+     */
+    private byte[] recvLink(Link link, long timeoutMs) {
+        byte[] held = replayBytes.poll();
+        if (held != null) {
+            return held;
+        }
+        return link.recv(timeoutMs);
+    }
+
+    private boolean negotiateLinkMode(Room room, String where, Link link) {
+        if (modeRejected) {
+            Log.i(TAG, "[C0-GATE] gate=SHORT_CIRCUIT reason=modeRejected where=" + where);
+            return false;
+        }
+        int players = Math.max(1, room.playerCount);
+        linkMode = resolveLinkMode(players);
+        officialMode = (linkMode == GBoyFrames.LINK_MODE_B);
+        modeBound = true;
+
+        /* B1：先给对端最多 2s 的有界等待，再判定。循环结束后重读 peerLinkMode。 */
+        if (peerLinkMode == GBoyFrames.LINK_MODE_UNKNOWN && !closed) {
+            awaitPeerLinkMode(link);
+        }
+        int peer = peerLinkMode;
+        switch (decideLinkMode(linkMode, peer, allowLegacyPeer)) {
+            case LINK_DECISION_ACCEPT:
+                status("联机模式协商通过：" + modeName(linkMode)
+                        + "（" + where + "，" + players + " 人房）");
+                /* 机器可读：C0 决策与 path A 快帧门的相关性。path A（mode=A）跑 native
+                 * SIO netLink，快帧门由 mgba_mobile.c::mobileFastFrame 判定并打
+                 * `SIO fast on me=… idx=… lstate=… pc=…`（tag mGBA，不在本文件）。
+                 * path B（mode=B）走本机多核锁步，没有这条快帧门，故 fastgate_expected=0。 */
+                Log.i(TAG, "[C0-GATE] gate=ACCEPT mode="
+                        + (linkMode == GBoyFrames.LINK_MODE_A ? "A" : "B")
+                        + " pc=" + players + " where=" + where
+                        + " pathA=" + (linkMode == GBoyFrames.LINK_MODE_A ? 1 : 0)
+                        + " fastgate_expected=" + (linkMode == GBoyFrames.LINK_MODE_A ? 1 : 0));
+                return true;
+            case LINK_DECISION_LEGACY_B:
+                /* 显式许可才回落，状态栏会明确写出来，不是静默降级。 */
+                Log.i(TAG, "[C0-GATE] gate=LEGACY_B pc=" + players + " where=" + where);
+                linkMode = GBoyFrames.LINK_MODE_B;
+                officialMode = true;
+                status("警告：对端未声明联机模式（旧客户端 / 官方 APK），"
+                        + "按 ADB allow_legacy=true 显式许可回落为 "
+                        + modeName(GBoyFrames.LINK_MODE_B) + "（" + where
+                        + "）。此路径未经 2P 云端验收，不建议用于交付。");
+                return true;
+            case LINK_DECISION_PEER_INVALID:
+                Log.i(TAG, "[C0-GATE] gate=PEER_INVALID mode="
+                        + (linkMode == GBoyFrames.LINK_MODE_A ? "A" : "B")
+                        + " pc=" + players + " where=" + where);
+                /* 与 PC CloudLink.cpp:3006-3018 一致：文案补齐三要素，且**幂等**——
+                 * 已判过一次失败就不再重复发一条（否则「简化掉顶部短路」的重构会让
+                 * 用户收到两条畸形文案）。注意这里**不带「来源」串**：与
+                 * notePeerLinkMode() 那条的区别正是「有来源 / 无来源」，断言靠它区分
+                 * 两条路径，别为了「统一」把来源加进来。 */
+                if (!modeRejected) {
+                    modeRejected = true;
+                    fail("【联机模式协商失败】本机=" + modeName(linkMode)
+                            + "，对端能力位畸形（" + where + "）。"
+                            + "畸形 = 缺少能力位标记（0x40）或保留了非 0 位，"
+                            + "无法确认两端帧格式一致，已断开以避免两套帧格式同流。"
+                            + "请两端使用相同版本，并确认两端联机模式设置相同"
+                            + "（ADB: am broadcast -a io.mgba.android.action.GBOY_LINK_MODE"
+                            + " --es mode A|B）。");
+                }
+                return false;
+            case LINK_DECISION_PEER_UNKNOWN:
+                Log.i(TAG, "[C0-GATE] gate=PEER_UNKNOWN mode="
+                        + (linkMode == GBoyFrames.LINK_MODE_A ? "A" : "B")
+                        + " pc=" + players + " where=" + where
+                        + " allowLegacy=" + (allowLegacyPeer ? 1 : 0));
+                modeRejected = true;
+                fail("【联机模式协商失败】对端未声明联机模式（旧客户端 / 官方 APK）。"
+                        + "本机为 " + modeName(linkMode)
+                        + "，无法确认两端帧格式一致，已断开以避免同流事故。请两端使用相同版本；"
+                        + "确需与旧客户端互通时，两端显式设置 allow_legacy=true。");
+                return false;
+            case LINK_DECISION_CONFLICT:
+            default:
+                Log.i(TAG, "[C0-GATE] gate=CONFLICT local="
+                        + (linkMode == GBoyFrames.LINK_MODE_A ? "A" : "B")
+                        + " peer=" + modeName(peer) + " pc=" + players + " where=" + where);
+                modeRejected = true;
+                fail("【联机模式协商失败】本机=" + modeName(linkMode)
+                        + "，对端=" + modeName(peer) + "（" + where + "）。"
+                        + "两套帧格式不能同流，已断开；请在两端设置相同的联机模式"
+                        + "（ADB: am broadcast -a io.mgba.android.action.GBOY_LINK_MODE --es mode A|B）。");
+                return false;
         }
     }
 

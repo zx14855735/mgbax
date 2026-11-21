@@ -1,0 +1,191 @@
+================================================================================
+BASELINE BEFORE INTEGRATION - cross-device 2P cloud netplay
+Agent 19 (second wave) - captured 2026-11-17, git-bash / MSYS2
+Read-only on the repo except this file. No builds, no ninja, no source edits,
+no processes killed by this agent.
+================================================================================
+
+PURPOSE AND DISCLAIMER (read first)
+--------------------------------------------------------------------------------
+This is the PRE-INTEGRATION local regression baseline: it was produced by running
+EXISTING prebuilt binaries only. It is NOT a validation of any other agent's
+source edits: this agent neither built nor recompiled anything.
+
+IMPORTANT CAVEAT - the binaries were a moving target during this capture:
+other agents were rebuilding in parallel. `.ninja_lock` was observed at
+`build-win/.ninja_lock` (mtime 2026-11-17 23:08:03) and binary md5s changed
+several times (see "BUILD CONTENTION" below). Consequently some binaries sampled
+here ALREADY contain other agents' edits. Do NOT read this report as "the old
+pre-integration binaries were all green". It records what the binaries present
+at each run actually did.
+
+Scope of these gates: frame / logic / decision-layer only. They do NOT prove
+cross-device 2P cloud end-to-end. Per MEMORY.md sec 0 and ADR-003 sec 4.2, the
+2P cloud delivery gate remains FAIL (all flow_*.log BATTLE counts 0; 0 end-to-
+end cross-device assertions).
+
+Reference expectations: docs/architecture/ADR-003-cloud-2p-framerate.md sec 4.2(a)
+  --c0            45 ok / 0 FAIL, EXIT=0
+  --gatetest      85 ok / 0 FAIL, EXIT=0 (wall ~9.34 s)
+  --fastgate      PASS (0 FAIL), EXIT=0
+  frames / buslocal / product-lockstep   EXIT=0
+
+DISCOVERY (first observation, before any run)
+--------------------------------------------------------------------------------
+path                                    mtime                size      md5
+build-win/qt/test-gboylink.exe          2026-11-16 20:40:58  1249067   4aabec3ff47415c3e98c1c0933ffafb8
+build-win/mgba_mobile_test.exe          2026-11-17 22:55:04   418769   9f1f8d9ffa1f60f9dfc60f1fbd0f1cb1
+build-win/dist/mGBA.exe                 2026-11-17 22:29:38  8135311   908ed44be0d2dff14e4da840132846b4
+
+Also present but NOT used (task named the ones above):
+  build-mobile-test/mgba_mobile_test.exe  md5 35d2221c3699dc6f6adb3aa39e841227 at discovery
+  build-win/dist/test-gboylink.exe        (dist copy; qt copy used per task)
+All three task-named binaries were present; none were SKIPPED for missing files.
+
+BUILD CONTENTION (observed; not waited on; no build attempted)
+--------------------------------------------------------------------------------
+  - build-win/.ninja_lock appeared around 23:08 (mtime 23:08:03); absent at
+    23:13 and at report time. Not waited on, no build attempted, no processes
+    belonging to others touched.
+  - test-gboylink.exe md5 churn: 4aab... (discovery) -> a98a... (~23:04) ->
+    529c.../a33ee... (mid-pass) -> e1825b33... (final/current).
+  - mgba_mobile_test.exe md5 churn: 9f1f... (discovery) -> 2f3b... (~23:02) ->
+    ddd479... (~23:11) -> aa0ac4fb... (final/current).
+  - One --link sample exited 127 with truncated output because the exe was
+    replaced mid-execution; that sample is treated as invalid and excluded;
+    it was re-run (3 times) and is reported below.
+
+CURRENT SNAPSHOT (final pass; md5 before == after for every gate in this pass)
+--------------------------------------------------------------------------------
+Invocation: git-bash, `export PATH="/c/msys64/mingw64/bin:$PATH"`, cwd = repo root
+(`/d/mgba-android-version`). Each gate wrapped in `timeout 120s`; none timed out.
+
+gate               | binary md5 (full)                        | exit | ok  | FAIL | note
+-------------------+------------------------------------------+------+-----+------+------------------------------------------
+frames             | e1825b33c8278819ccefaddd5900222e         | 0    | n/a | 0    | PASS: RECONNECT + TCPDIRECT PASS summaries (2 lines; no '^ok ' lines by design)
+buslocal           | e1825b33c8278819ccefaddd5900222e         | 0    | n/a | 0    | PASS: BUSLOCAL + SESSIONSLOT PASS
+product-lockstep   | e1825b33c8278819ccefaddd5900222e         | 0    | n/a | 0    | PASS (4 cores, product SIO lockstep); uses repo-root test.gba
+--c0               | e1825b33c8278819ccefaddd5900222e         | 0    | 45  | 0    | matches ADR-003 sec 4.2(a) 45/0
+--gatetest         | e1825b33c8278819ccefaddd5900222e         | 0    | 85  | 0    | matches ADR-003 sec 4.2(a) 85/0
+--fastgate         | e1825b33c8278819ccefaddd5900222e         | 0    | 55  | 0    | PASS (0 FAIL); ADR only fixes "PASS (0 FAIL)", count here = 55
+direct-order       | e1825b33c8278819ccefaddd5900222e         | 0    | 2*  | 0    | PASS (*'DIRECT-ORDER: ok ...' lines, not '^ok ')
+--bus  (mobile)    | aa0ac4fbe83baaa2b07cb183dd0acb42         | 1    | 184 | 1    | FAIL: local bus 2P snapshot: 2 players attached
+--link (mobile)    | aa0ac4fbe83baaa2b07cb183dd0acb42         | 1    | 189 | 1    | FAIL: same as --bus
+--dual (mobile)    | aa0ac4fbe83baaa2b07cb183dd0acb42         | 0    | 16  | 0    | PASS
+
+Totals for current snapshot: 7 test-gboylink gates PASS (0 FAIL);
+mobile --dual PASS; mobile --bus and --link FAIL (1 FAIL each).
+
+EARLIER SAMPLES (different binaries, kept for honesty about the churn)
+--------------------------------------------------------------------------------
+test-gboylink md5 4aabec3ff47415c3e98c1c0933ffafb8 (first pass, 45/85 expectations):
+  frames EXIT=0 PASS; buslocal EXIT=0 PASS; product-lockstep EXIT=0 PASS;
+  --c0 45 ok/0 FAIL EXIT=0; --gatetest 85 ok/0 FAIL EXIT=0;
+  --fastgate 52 ok/0 FAIL EXIT=0; direct-order EXIT=0 PASS.
+
+mgba_mobile_test md5 2f3b7936e3472455565101c67d986a66 (re-run set):
+  --bus  EXIT=0 164 ok/0 FAIL  PASS
+  --link run1 EXIT=1 168 ok/1 FAIL "link exchanged values" (known flaky)
+         run2 EXIT=0 169 ok/0 FAIL  PASS
+         run3 EXIT=0 169 ok/0 FAIL  PASS
+  --dual EXIT=0 16 ok/0 FAIL   PASS
+
+mgba_mobile_test md5 ddd479280b1495ebbc64227e8cefe3a5 (mid-pass set):
+  --bus   EXIT=1 184 ok/1 FAIL "local bus 2P snapshot: 2 players attached"
+  --link  EXIT=1 189 ok/1 FAIL (same); r2 EXIT=1 188 ok/2 FAIL (same + "link exchanged values"); r3 EXIT=1 189 ok/1 FAIL (same)
+  --dual  EXIT=0 16 ok/0 FAIL PASS
+=> The "local bus 2P snapshot" failure is deterministic in the rebuilt binary;
+   "link exchanged values" is intermittent (seen with md5 2f3b and ddd479).
+   The failing test was added to src/platform/mobile/mobile_test.c:1817 by
+   another agent after this capture started (it did not exist in the 9f1f/2f3b
+   binaries), which is further evidence the binaries are NOT a frozen baseline.
+
+FAILURE DETAIL (first 20 lines of each failing current log + failure context)
+--------------------------------------------------------------------------------
+[--bus, md5 aa0ac4fb..., 1 FAIL, EXIT=1] first 20 lines:
+  ok bus slots: four players copy every slot
+  ok bus slots: three players leave slot 3 empty
+  ok bus slots: two players leave slots 2/3 empty
+  ok bus slots: own slot always uses the local word
+  ok bus slots: invalid player id overrides nothing
+  ok bus slots: player id 4 does not write past the array
+  ok bus-slot host up for 4 players
+  ok bus-slot join
+  ok bus-slot join
+  ok bus-slot join
+  ok bus-slot first three peers take slots 1/2/3
+  ok bus-slot host notices the dropped peer
+  ok bus-slot rejoin
+  ok bus-slot rejoin reuses the freed slot 2
+  ok bus-slot host is back to four players
+  ok bus-slot four players still agree after a rejoin
+  ok bus-p2p host up
+  ok bus-p2p join
+  ok bus rejects point-to-point exchange and barrier
+  ok bus link survives point-to-point pings
+  Failure context (lines 66-70):
+  ok local bus 2P: all 64 rounds completed
+  ok local bus 2P: indices and words agree
+  [local-bus-2p] players=2 attached=1 slots=1/1 rounds=64 full=64 empty=0 stale=0 future=0 lead=0/0 host=64 done1=64
+  FAIL local bus 2P snapshot: 2 players attached
+  ok local bus 2P snapshot: slots 0/1 taken
+  ok local bus 2P snapshot: no phantom slot
+
+[--link, md5 aa0ac4fb..., 1 FAIL, EXIT=1] first 20 lines:
+  ok link host
+  ok link join
+  ok link host connected
+  ok link exchange
+  ok link exchanged values
+  ok bus slots: four players copy every slot
+  ok bus slots: three players leave slot 3 empty
+  ok bus slots: two players leave slots 2/3 empty
+  ok bus slots: own slot always uses the local word
+  ok bus slots: invalid player id overrides nothing
+  ok bus slots: player id 4 does not write past the array
+  ok bus-slot host up for 4 players
+  ok bus-slot join
+  ok bus-slot join
+  ok bus-slot join
+  ok bus-slot first three peers take slots 1/2/3
+  ok bus-slot host notices the dropped peer
+  ok bus-slot rejoin
+  ok bus-slot rejoin reuses the freed slot 2
+  ok bus-slot host is back to four players
+  Failure context (lines 71-75):
+  ok local bus 2P: all 64 rounds completed
+  ok local bus 2P: indices and words agree
+  [local-bus-2p] players=2 attached=1 slots=1/1 rounds=64 full=64 empty=0 stale=0 future=0 lead=0/0 host=64 done1=64
+  FAIL local bus 2P snapshot: 2 players attached
+  ok local bus 2P snapshot: slots 0/1 taken
+  ok local bus 2P snapshot: no phantom slot
+  Root signature: players=2 but attached=1 (expected 2); all 64 rounds completed
+  and slots=1/1, so this is a snapshot/attachment accounting assertion, not a
+  transport failure. Full logs: temp dir baseline19/now/{mobile-bus,mobile-link}.log
+  (temp, not committed).
+
+SKIPPED
+--------------------------------------------------------------------------------
+None. All 10 requested gates were executed. The one EXIT=127 sample was an
+invalid sample caused by the exe being replaced mid-run; it was re-run and is
+reported above. mGBA.exe (build-win/dist) was discovered/md5'd but not run: the
+task did not specify a gate for it, and no mGBA processes were started or killed.
+
+CONCLUSION
+--------------------------------------------------------------------------------
+- PRE-INTEGRATION baseline, NOT a validation of other agents' changes.
+- test-gboylink: all 7 gates green, counts consistent with ADR-003 sec 4.2(a)
+  (c0 45/0, gatetest 85/0, fastgate 0 FAIL).
+- mgba_mobile_test: current binary has a deterministic FAIL in --bus and --link
+  ("local bus 2P snapshot: 2 players attached"); --dual green. Earlier binaries
+  were green on --bus/--dual and showed an intermittent "link exchanged values"
+  flaky. Per MEMORY.md this gate is QUARANTINED and cannot be used as a release
+  signal anyway; the current FAIL is a new, reproducible signal that should be
+  triaged by whoever added the 2P snapshot test.
+- Post-capture note: while this report was being written, commit 620e840cb
+  "test(pathA): fix 2P local-bus attached assertion (slaves only)" landed and
+  changed the same assertion. This baseline does NOT re-run that fixed binary:
+  no builds were done by this agent and build contention is ongoing. The FAIL
+  above is the pre-fix observation, kept as the pre-integration baseline.
+- Cross-device 2P cloud delivery gate remains FAIL; no end-to-end assertions.
+================================================================================

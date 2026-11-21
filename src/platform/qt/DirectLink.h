@@ -70,6 +70,23 @@ public:
 	qint64 punchStartMs() const { return m_punchStart; }
 	/** 本机 UDP 端口（调试用）。 */
 	quint16 localPort() const { return m_localPort; }
+	/**
+	 * 排序后的打洞目标（"ip:port"，供调试与回归测试用）。接收侧按网段
+	 * 优先级重排，保证两端即使收到的候选顺序不同也会锁定同一地址。
+	 */
+	QStringList sendTargetsText() const;
+	/** 对端候选个数（收到并按网段排序后；机器可读诊断用）。 */
+	int peerCandidateCount() const { return m_peerCandidates.size(); }
+	/** 连通后因来源地址与已锁定 peer 不符而忽略的包数（F5 证据）。 */
+	int ignoredFromCount() const { return m_ignoredFromCount; }
+	/**
+	 * 一行机器可读的 P2P 状态，供大厅诊断日志直接落盘：
+	 *   via=p2p avg=15ms peerCandidates=3 direct=1 ignored=2 peer=192.168.1.5:56317
+	 * `via` 只在真正连通且未关闭时为 p2p，否则为 tunnel；`direct=1` 必须同时
+	 * 满足「已连通 + 有 peer + 未关闭」，避免界面显示「直连已启用」但实际
+	 * 流量仍走隧道那种误判。`ignored>0` 证明 F5 的「忽略来源地址」分支命中。
+	 */
+	QString diagnosticsText() const;
 
 	// ILink
 	void send(const QByteArray& payload) override;
@@ -155,6 +172,8 @@ private:
 	qint64 m_lastProbe = 0;
 	qint64 m_lastKeepalive = 0;
 	qint64 m_lastRecv = 0;
+	/** 上次把机器可读 P2P 状态写进大厅日志的时刻（节流 10 秒）。 */
+	qint64 m_lastDiagLog = 0;
 	quint16 m_probeSeq = 0;
 
 	quint16 m_nextSeq = 0;
@@ -175,6 +194,8 @@ private:
 	bool m_ackSeen = false;
 
 	int m_rttUs = 0;
+	/** F5 证据：连通后来源地址与已锁定 peer 不符被忽略的次数。 */
+	int m_ignoredFromCount = 0;
 };
 
 }

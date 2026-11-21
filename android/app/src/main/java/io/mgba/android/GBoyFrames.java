@@ -83,6 +83,16 @@ final class GBoyFrames {
     /** 槽位 3 的按键掩码（官方稳态用 3，但 3 在握手期是 RTT，这里保留 17）。 */
     static final int TYPE_INPUT_3 = 17;
 
+    // ---- C0 能力协商位（ADR-002；与 PC GBoyFrames.h 逐位一致） ----
+    /** A = 每端 1 核 + SIO 包中继；B = 本机多核 + 网络只传按键。 */
+    static final int LINK_MODE_UNKNOWN = -1;
+    static final int LINK_MODE_INVALID = -2;
+    static final int LINK_MODE_A = 0;
+    static final int LINK_MODE_B = 1;
+    /** bit6 = 已声明能力，bit0 = mode，其余位保留且必须为 0。 */
+    static final int LINK_CAP_MAGIC = 0x40;
+    static final int LINK_CAP_MODE_BIT = 0x01;
+
     private GBoyFrames() {
     }
 
@@ -127,6 +137,14 @@ final class GBoyFrames {
      * {@code short 0 + int listSize} (AmA8tU.java:173-178).
      */
     static byte[] registerFrame(int playerCount, int baseStateCount) {
+        return registerFrame(playerCount, baseStateCount, LINK_MODE_UNKNOWN);
+    }
+
+    /**
+     * 带 C0 能力位的注册帧：能力写在 wire[15]（body[11]），官方多人房该字节
+     * 恒为 0，写 0 时与官方逐字节一致。单人房尾部是 baseStateCount，不占用。
+     */
+    static byte[] registerFrame(int playerCount, int baseStateCount, int linkMode) {
         byte[] out = new byte[16];
         putInt(out, 0, 12);
         putShort(out, 4, TYPE_REGISTER);
@@ -134,8 +152,40 @@ final class GBoyFrames {
         if (playerCount == 1) {
             putShort(out, 10, 0);
             putInt(out, 12, baseStateCount);
+            return out;
+        }
+        if (linkMode == LINK_MODE_A || linkMode == LINK_MODE_B) {
+            out[15] = (byte) (LINK_CAP_MAGIC
+                    | (linkMode == LINK_MODE_B ? LINK_CAP_MODE_BIT : 0));
         }
         return out;
+    }
+
+    /** 从 type-1 注册帧体读能力位，返回 LINK_MODE_* 之一。 */
+    static int linkModeOf(byte[] body) {
+        if (body == null || body.length < 12 || typeOf(body) != TYPE_REGISTER) {
+            return LINK_MODE_UNKNOWN;
+        }
+        /* 单人房的尾部 6 字节是 short 0 + int32 baseStateCount（官方 A5SV6n:173-178），
+         * body[11] 是 baseStateCount 的**最低字节**，不是能力位 —— 写侧只在
+         * playerCount != 1 时写能力位（registerFrame 的同一条规则），读侧必须镜像它。
+         * 漏了这一步会怎样：1 人房 + baseStateCount=1 时 body[11] == 0x01，
+         * magic 0x40 不匹配 → 判成 INVALID → 对端直接 fail 成「对端能力位畸形」。
+         * baseStateCount=0 时看不出来，所以是隐性坑。语义上这里严格更保守：
+         * 把误判的 INVALID 换成 UNKNOWN（仍走既有的 fail / allowLegacy 分支），
+         * 不新增任何放行路径。与 PC GBoyFrames.cpp:123-137 逐条一致。 */
+        if (intOf(body) == 1) {
+            return LINK_MODE_UNKNOWN;
+        }
+        int cap = body[11] & 0xff;
+        if (cap == 0) {
+            return LINK_MODE_UNKNOWN;
+        }
+        if ((cap & LINK_CAP_MAGIC) == 0
+                || (cap & ~(LINK_CAP_MAGIC | LINK_CAP_MODE_BIT)) != 0) {
+            return LINK_MODE_INVALID;
+        }
+        return (cap & LINK_CAP_MODE_BIT) != 0 ? LINK_MODE_B : LINK_MODE_A;
     }
 
     /**

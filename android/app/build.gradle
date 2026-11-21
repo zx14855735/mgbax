@@ -111,3 +111,104 @@ android {
 dependencies {
     implementation "androidx.appcompat:appcompat:1.7.0"
 }
+
+/* ------------------------------------------------------------------------- *
+ * T-04 · Plain-JVM link self-tests
+ * ------------------------------------------------------------------------- *
+ * src/test/java 下 7 个 *Test.java 是历史遗留的纯 JVM main() 自检类：没有
+ * @Test，本模块也没有 testImplementation / JUnit 依赖。AGP 的
+ * testDebugUnitTest 因此报 "There are test sources present and no filters are
+ * applied, but the test task did not discover any tests to execute" 并失败；
+ * 离线 Gradle 缓存里没有 junit:junit，不能靠加依赖修好。
+ *
+ * 这里注册一条不依赖 JUnit、不触发 externalNativeBuild/CMake 的门禁入口：
+ *   ./gradlew :app:runLinkSelfTests --offline --console=plain
+ * 它用 JavaCompile 把 7 个自检类编到 build/link-self-tests/classes
+ * （classpath = 上一次 :app:compileDebugJavaWithJavac 的 classes 目录），
+ * 再逐个用 java 运行 main()，任一非 0 退出码即整个任务 FAIL。
+ *
+ * 纯 JVM classpath 不含 android.jar：GBoySocketLinkTest 的后台重连线程会打印
+ * NoClassDefFoundError: android/util/Log，属环境噪声，不影响断言与退出码。
+ * ------------------------------------------------------------------------- */
+def linkSelfTestMainClasses =
+        file("${buildDir}/intermediates/javac/debug/compileDebugJavaWithJavac/classes")
+def linkSelfTestOutput =
+        file("${buildDir}/link-self-tests/classes")
+def linkSelfTestMains = [
+        'io.mgba.android.AudioRateControlTest',
+        'io.mgba.android.C0GateTest',
+        'io.mgba.android.C0LinkModeTest',
+        'io.mgba.android.GBoyLinkSessionTest',
+        'io.mgba.android.GBoySocketLinkTest',
+        'io.mgba.android.KeyLayoutTest',
+        'io.mgba.android.LayoutOverlayTest',
+        'io.mgba.android.ScreenSplitTest',
+]
+
+tasks.register('compileLinkSelfTests', JavaCompile) {
+    group = 'verification'
+    description = 'Compiles the 7 plain-JVM link self-test classes (no JUnit required).'
+    /* classpath 指向 compileDebugJavaWithJavac 的输出目录，所以必须显式声明依赖：
+     * 只靠 doFirst 检查目录存在是挡不住旧 class 的 —— 改了 src/main 却只跑
+     * :app:runLinkSelfTests 时，断言会打在上一版字节码上，绿灯毫无意义
+     * （本任务踩过这个坑：一次变异验证首跑 43/43 PASS，实际跑的是旧 class）。
+     * 实测 :app:compileDebugJavaWithJavac 在 --offline 下只跑 Java/资源任务
+     * （17~23s），不触发 externalNativeBuild / CMake / ninja。 */
+    dependsOn 'compileDebugJavaWithJavac'
+    /* include 覆盖整个 src/test/java：C0GateTest 要反射驱动协商门本体，门会走
+     * Log.d / GbCloud.trace，而纯 JVM classpath 没有 android.util.Log，所以自检里
+     * 放了一个**手写桩** src/test/java/android/util/Log.java（不是 android.jar，
+     * 后者方法体是 throw new RuntimeException("Stub!")）。
+     * 注意：一旦有人给自检 classpath 加真的 android.jar，该桩会变成重复类，必须先删桩。 */
+    source = fileTree('src/test/java') { include '**/*.java' }
+    classpath = files(linkSelfTestMainClasses)
+    destinationDirectory.set(linkSelfTestOutput)
+    options.encoding = 'UTF-8'
+    sourceCompatibility = '17'
+    targetCompatibility = '17'
+    doFirst {
+        if (!linkSelfTestMainClasses.isDirectory()) {
+            throw new GradleException(
+                    "Missing ${linkSelfTestMainClasses}. " +
+                    "Run :app:compileDebugJavaWithJavac first, or use the deterministic " +
+                    "javac/java fallback in tests/2p-cloud/T-04-回归记录.md.")
+        }
+    }
+}
+
+/* Gradle 9 已移除 Project.javaexec()，改用 7 个 JavaExec 任务 + 一个聚合任务。
+ * 每个 JavaExec 默认 ignoreExitValue=false：任一 main() 非 0 退出，Gradle
+ * 立即以退出码 1 失败，并在 "Process ... finished with non-zero exit value"
+ * 里给出真实退出码。成功时 doLast 打印 EXIT_<Class>=0。 */
+def linkSelfTestTaskNames = []
+linkSelfTestMains.each { String cls ->
+    String simple = cls.tokenize('.').last()
+    String taskName = "runLinkSelfTest_${simple}"
+    tasks.register(taskName, JavaExec) {
+        group = 'verification'
+        description = "Runs ${simple}.main() on a plain JVM (no JUnit required)."
+        dependsOn 'compileLinkSelfTests'
+        classpath = files(linkSelfTestMainClasses, linkSelfTestOutput)
+        mainClass.set(cls)
+        /* LayoutOverlayTest reads layout XML and the dimens.xml under every
+         * values folder through relative paths: the working directory must be
+         * the repository root (same as the deterministic javac/java command),
+         * not the app module directory. */
+        workingDir = rootProject.projectDir.parentFile
+        standardOutput = System.out
+        errorOutput = System.err
+        doFirst { println "=== RUN ${simple} ===" }
+        doLast { println "EXIT_${simple}=0" }
+    }
+    linkSelfTestTaskNames << taskName
+}
+
+tasks.register('runLinkSelfTests') {
+    group = 'verification'
+    description = 'Runs all 7 plain-JVM link self-tests; fails on any non-zero exit.'
+    dependsOn linkSelfTestTaskNames
+    doLast {
+        def total = linkSelfTestMains.size()
+        println "runLinkSelfTests: ${total}/${total} PASS (${total} main() self-tests)"
+    }
+}

@@ -1,0 +1,38 @@
+tag=AGENT12-FAST-OFF2
+topology=p2p scope=PROXY-2PC
+BATTLE=NO
+linkup_stable=True
+linkup_stable_A=False linkup_stable_B=False  # judge_side: state4/pc2/MASTER
+lstate4_pc2_A=False lstate4_pc2_B=True st_master_A=False st_master_B=False
+linkup_raw_A=6 linkup_raw_B=0  # gSpecialVar_Result 残留值，仅诊断不判绿
+in_battle_frame=False battle_samples=0
+in_battle_cb2_A= in_battle_cb2_B=
+battle_window=[0x80B30C0,0x80BCA78) source=rom.map
+fps_pc_A=- fps_pc_B=55.0
+via=tunnel  # [MGBAX_P2P]/diagnosticsText 优先
+peerCandidates_A=True peerCandidates_B=False
+peerCandidateCount_A=- peerCandidateCount_B=-
+p2p_result_A result=- directEnabled=- | p2p_result_B result=- directEnabled=-
+p2p_avg_A=- p2p_avg_B=- p2p_ignored_A=- p2p_ignored_B=-
+path_A=A path_B=A
+bus_A=- bus_B=-  # 仅 path B 有本机 4 核总线（LocalBus key 天然每实例独立）
+alive_A=True alive_B=True
+mode_requested=A mode_negotiated_A=A mode_negotiated_B=A
+official_mode_A=False official_mode_B=False nav_at_leak=False
+gate_A envLinkMode=- envOfficialLink=- envRearm=- fastMinOk=- fastMinOkSlave=- sioFast=-
+gate_B envLinkMode=- envOfficialLink=- envRearm=- fastMinOk=- fastMinOkSlave=- sioFast=-
+env_fast_slave_align=0  # 本轮驱动钉死值（C 侧未设时为 0=关闭）
+rearm_A fired=3 hs1=0 rounds=0 | rearm_B fired=0 hs1=0 rounds=0
+slave_fast_align_blocked_A=0 slave_fast_align_blocked_B=0
+badchecksum_A=0 badchecksum_B=0  # 应为 0（[diag] st 的 0x2000 位）
+bus_diag_A players=- attached=- slot=- idx=- hostIdx=-
+bus_diag_B players=- attached=- slot=- idx=- hostIdx=-
+pathB_2p_bus_ok=N/A reason=not path B
+exitcode_A=None exitcode_B=None
+linkup_s=146 stable_s=21.5
+final_A=A l=1 pc=0 mu=0 rem=0 brs=0000/0000 fps=0.2 px=- py=- menu=- mt=- mid=- cb=00000000
+final_B=B l=4 pc=2 mu=0 rem=0 brs=0000/0000 fps=45.9 px=10 py=4 menu=c0/0/1/w2 mt=-1 mid=-1 cb=00000000
+rtt_A=23:22:50.958 [sio-rtt] me=c1b5e0f4 n=8 avg=496ms peak=1237ms via=tunnel
+rtt_B=23:22:50.428 [sio-rtt] me=06f9a180 n=13 avg=401ms peak=1197ms via=tunnel
+multi_A=-
+multi_B=SIO multi me=1 role=1 mst=0 idx=64 ok=64 last=136247.9ms peak=136247.9ms to=733554 fb=0 mis=64 lgc=4690 m0=8FFF m1=B9A0 wait=0/0ms n=0 cp=39791/60 cf=733591 pushOut=63/0 pushIn=64

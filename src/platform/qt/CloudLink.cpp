@@ -32,6 +32,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRandomGenerator>
+#include <QThread>
 
 #include <stdexcept>
 
@@ -333,12 +334,15 @@ static QByteArray decodeTunnelPayload(const QByteArray& text) {
 class WsLink : public ILink {
 public:
 	WsLink(GbCloud::Session* sig, const QString& token, const QString& uuid,
-	       const QString& roomTag, const QString& nonce)
+	       const QString& roomTag, const QString& nonce, int linkMode,
+	       std::function<void(int)> peerModeCb)
 		: m_sig(sig)
 		, m_token(token)
 		, m_uuid(uuid)
 		, m_roomTag(roomTag)
 		, m_nonce(nonce)
+		, m_linkMode(linkMode)
+		, m_peerModeCb(std::move(peerModeCb))
 	{
 	}
 
@@ -511,10 +515,19 @@ private:
 			}
 			// 对端标记带 "c":1 说明它也是新版：能解十六进制、也认短键名信封，
 			// 之后改发 hex 短信封。老版本没有这个键，保持 base64 长信封。
-			if (marker.value(QStringLiteral("c")).toInt() == 1) {
-				m_peerCompact = true;
+		if (marker.value(QStringLiteral("c")).toInt() == 1) {
+			m_peerCompact = true;
+		}
+		/* C0：对端模式（旧客户端没有 "m"，toInt 落到 UNKNOWN，交网关判定）。 */
+		if (m_peerModeCb) {
+			const int peerMode = marker.value(QStringLiteral("m"))
+			                         .toInt(GBoyFrames::LINK_MODE_UNKNOWN);
+			if (peerMode == GBoyFrames::LINK_MODE_A || peerMode == GBoyFrames::LINK_MODE_B
+			    || peerMode == GBoyFrames::LINK_MODE_INVALID) {
+				m_peerModeCb(peerMode);
 			}
-			if (kind == QStringLiteral("f")) {
+		}
+		if (kind == QStringLiteral("f")) {
 				QByteArray frame = decodeTunnelPayload(
 				        marker.value(QStringLiteral("d")).toString().toLatin1());
 				if (!frame.isEmpty()) {
@@ -546,7 +559,17 @@ public:
 		if (!m_sig || !m_sig->isOpen()) {
 			return;
 		}
-		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
+		const QString wire = wsText(marker);
+		QString error;
+		/* 候选公告是 P2P 建链的命脉：服务器一旦拒收（关键词/长度/限流），
+		 * 对端就永远拿不到候选、peerCandidates 恒 0、只能留在 120~200ms
+		 * 隧道里。sendText 的无 error 重载会吞掉失败原因，显式检查并落一条
+		 * 机器可读的行，免得又变成一次「静默丢候选」。 */
+		if (!m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wire)), &error)) {
+			GbCloud::debugLog(QStringLiteral("[MGBAX_P2P] me=%1 event=marker-refused kind=%2 wireLen=%3 error=%4")
+			                          .arg(m_nonce, marker.value(QStringLiteral("w")).toString())
+			                          .arg(wire.size()).arg(error));
+		}
 	}
 
 	/** 取一条待处理的直连协商标记；没有则返回 false。 */
@@ -574,6 +597,11 @@ private:
 		// 长信封（>100 字符），被服务器整条吞掉；新版靠 c:1 识别彼此，
 		// 老版本一律回落 base64 长信封。
 		marker.insert(QStringLiteral("c"), 1);
+		/* C0 / ADR-002：hello/accept 同时带 1 bit mode。WSS 信令是两端必然
+		 * 互见的带外通道，比「中继是否转发 type-1 注册帧」可靠，作为主协商通道。 */
+		if (m_linkMode == GBoyFrames::LINK_MODE_A || m_linkMode == GBoyFrames::LINK_MODE_B) {
+			marker.insert(QStringLiteral("m"), m_linkMode);
+		}
 		m_sig->sendText(wsText(sendMessageJson(m_token, m_uuid, wsText(marker))));
 	}
 
@@ -592,6 +620,9 @@ private:
 	qint64 m_lastHello = 0;
 	qint64 m_lastAccept = 0;
 	qint64 m_lastFrameSend = 0;
+	/** C0：本端模式（随 hello/accept 广播）与对端模式回调。 */
+	int m_linkMode = GBoyFrames::LINK_MODE_UNKNOWN;
+	std::function<void(int)> m_peerModeCb;
 };
 
 }
@@ -605,10 +636,26 @@ CloudLink::CloudLink(QObject* parent)
 {
 	m_remoteKeysEnabled = qgetenv("MGBAX_REMOTE_KEYS").toInt() != 0;
 	// 官方 GBoy 布局：本机多核（可见核 + 隐藏镜像核走回环 SIO），网络只传
-	// 按键掩码。安卓端默认开启（gboy_official_link=true），PC 端由环境变量
-	// 打开——两端必须一致，否则同一条隧道上跑两套帧格式（现场教训：PC 发
+	// 按键掩码。两端必须一致，否则同一条隧道上跑两套帧格式（现场教训：PC 发
 	// 裸 MBL1 包、安卓发 GBoy 帧，9470 个碎片包把读线程活活耗死）。
-	m_officialMode = qgetenv("MGBAX_OFFICIAL_LINK").toInt() != 0;
+	// C0 / ADR-002：默认不再是「PC=A / Android=B」的硬编码分叉，改为按房间
+	// 人数自动对齐（2P→A、3/4P→B）；显式入口 MGBAX_LINK_MODE=A|B|AUTO、
+	// MGBAX_OFFICIAL_LINK=1 兼容旧脚手架（等价 B）。两端在 type-1 握手帧和
+	// WSS hello/accept 标记里各带 1 bit mode，不一致直接 fail，禁止静默降级。
+	const QString explicitMode = QString::fromLatin1(qgetenv("MGBAX_LINK_MODE")).trimmed().toUpper();
+	if (explicitMode == QStringLiteral("A")) {
+		m_modeOverride = GBoyFrames::LINK_MODE_A;
+	} else if (explicitMode == QStringLiteral("B")) {
+		m_modeOverride = GBoyFrames::LINK_MODE_B;
+	} else if (qgetenv("MGBAX_OFFICIAL_LINK").toInt() != 0) {
+		m_modeOverride = GBoyFrames::LINK_MODE_B;   // 旧脚手架 flow.sh
+	} else {
+		m_modeOverride = GBoyFrames::LINK_MODE_UNKNOWN; // AUTO
+	}
+	m_allowLegacyPeer = qgetenv("MGBAX_LINK_ALLOW_LEGACY").toInt() != 0;
+	m_officialMode = (m_modeOverride == GBoyFrames::LINK_MODE_B);
+	m_linkMode.store(m_officialMode ? GBoyFrames::LINK_MODE_B : GBoyFrames::LINK_MODE_A,
+	                 std::memory_order_relaxed);
 }
 
 CloudLink::~CloudLink() {
@@ -622,6 +669,12 @@ void CloudLink::startLink(const Config& config) {
 	m_closed.store(false, std::memory_order_relaxed);
 	m_sendReset.store(false, std::memory_order_relaxed);
 	m_initialStateSent.store(false, std::memory_order_relaxed);
+	m_armSeedState.clear();
+	m_firstSeedState.clear();   /* P0：会话级缓存，防跨房间脏 seed 泄漏 */
+	/* 每次连接重新协商：上一次的绑定/拒绝不得泄漏到新房。 */
+	m_peerLinkMode.store(GBoyFrames::LINK_MODE_UNKNOWN, std::memory_order_relaxed);
+	m_modeBound.store(false, std::memory_order_relaxed);
+	m_modeRejected.store(false, std::memory_order_relaxed);
 	start();
 }
 
@@ -905,6 +958,13 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 	// 官方 KCP 中继活着：officialMode 走镜像按键布局（网络只传按键，
 	// 两端各自全速跑），否则 SIO 分开控制模式把联机线字节过中继
 	// （netLink 包封在 type-6 帧里），RTT 比 WS 隧道低 3-7 倍。
+	/* C0 / ADR-002：分派之前先绑定两端模式，不一致直接断开并给可见提示。 */
+	if (!negotiateLinkMode(room, QStringLiteral("KCP 中继"))) {
+		link->close();
+		delete link;
+		m_channel = nullptr;
+		return;
+	}
 	if (m_officialMode) {
 		startOfficialMatch(link, room);
 		return;
@@ -1180,12 +1240,42 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 		if (!room->roomId.isEmpty()) {
 			marker.insert(QStringLiteral("r"), room->roomId);
 		}
-		if (!payload.isEmpty()) {
-			marker.insert(QStringLiteral("a"), payload);
+		if (payload.isEmpty()) {
+			tunnel->sendRawMarker(marker);
+			return;
 		}
-		if (wsText(marker).size() > 94) {
-			// 服务器对聊天内容有 100 字符上限：退到最短信封
-			marker.remove(QStringLiteral("r"));
+		/* 服务器对聊天内容有 100 字符上限，超了整条拒收（不是截断）。
+		 * 原实现只在超限时删掉 "r"，但真正占位的是 "a" 里的候选地址列表：
+		 * 三个候选（公网映射 + 两块网卡）连 JSON 外壳约 105 字符，
+		 * 删 "r" 只省 ~12 字符，仍然超限 ⇒ 对端只收到一个**没有 "a" 的
+		 * "w":"p"**，直连永远起不来。现场证据：`[demux] w=p` 收到了、
+		 * 但 `peerCandidates=0`，日志里一直没有 `[direct] 对端候选`。
+		 * 这里改为逐条丢弃尾部队列里的候选（至少留 1 条）直到装得下；
+		 * 候选是按优先级排的（本机/局域网在前，STUN 公网在后），
+		 * 丢尾部正好是「先试价值最低的那个」，不影响主路径。 */
+		QStringList cand = payload.split(QLatin1Char(','), Qt::SkipEmptyParts);
+		int dropped = 0;
+		forever {
+			marker.insert(QStringLiteral("a"), cand.join(QLatin1Char(',')));
+			if (wsText(marker).size() <= 94) {
+				break;
+			}
+			if (!marker.contains(QStringLiteral("r")) && cand.size() > 1) {
+				// 已经删过 "r"：从尾部再丢一个候选
+				cand.removeLast();
+				++dropped;
+				continue;
+			}
+			if (marker.contains(QStringLiteral("r"))) {
+				marker.remove(QStringLiteral("r"));
+				continue;
+			}
+			break; // 只剩一条候选仍超限：照发，让对端至少拿到一个
+		}
+		if (dropped > 0) {
+			GbCloud::debugLog(QStringLiteral("[direct] 候选过多，为满足 100 字符上限丢弃 %1 条，实发 %2")
+			                          .arg(dropped)
+			                          .arg(cand.join(QLatin1Char(','))));
 		}
 		tunnel->sendRawMarker(marker);
 	};
@@ -1197,11 +1287,27 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 	qint64 connectedAt = 0;
 	int announceCount = 0;
 	bool peerCandidates = false;
+	int peerCandCount = 0;     // 对端公告里的候选条数（机器可读诊断）
 	bool peerWants = false;    // 对端发过 s：它已经打通，愿意切过来
 	bool peerAgreed = false;   // 对端发过 s2：它已经收到我们的 s
 	bool switchSent = false;
 	bool approved = false;
 	bool aborted = false;
+	/* 机器可读的建链结论行：两端各写一条，驱动 grep 两实例日志即可看到
+	 * 各自的 peerCandidates / peerCandidateCount 与 directEnabled，直接判定
+	 * 「是不是一侧拿到了候选、另一侧 peerCandidates=0 卡在隧道」。 */
+	auto logOutcome = [&](const QString& result) {
+		const bool enabled = (result == QStringLiteral("ok"));
+		GbCloud::debugLog(QStringLiteral("[MGBAX_P2P] me=%1 event=result result=%2 peerCandidates=%3 peerCandidateCount=%4 localCandidates=%5 directEnabled=%6 connected=%7 switchSent=%8 peerWants=%9 peerAgreed=%10 aborted=%11 via=%12")
+		                          .arg(m_wsNonce, result)
+		                          .arg(peerCandidates ? 1 : 0).arg(peerCandCount)
+		                          .arg(mine.size())
+		                          .arg(enabled ? 1 : 0)
+		                          .arg(direct->connected() ? 1 : 0)
+		                          .arg(switchSent ? 1 : 0).arg(peerWants ? 1 : 0)
+		                          .arg(peerAgreed ? 1 : 0).arg(aborted ? 1 : 0)
+		                          .arg(enabled ? QStringLiteral("p2p") : QStringLiteral("tunnel")));
+	};
 	QByteArray discard;
 	while (!m_closed.load(std::memory_order_relaxed)) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -1213,15 +1319,28 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 		QJsonObject marker;
 		while (tunnel->takeControl(&kind, &marker)) {
 			if (kind == QStringLiteral("p")) {
+				QStringList peer = marker.value(QStringLiteral("a")).toString()
+				                       .split(QLatin1Char(','), Qt::SkipEmptyParts);
+				/* 每条 p 都落一行机器可读记录：历史现场是「[demux] w=p 有、
+				 * [direct] 对端候选 没有」——收到了信封但候选被 100 字符上限
+				 * 挤掉，只靠旧的人类可读行看不出这一侧到底收到几条。 */
+				GbCloud::debugLog(QStringLiteral("[MGBAX_P2P] me=%1 event=peer-candidates count=%2 list=%3")
+				                          .arg(m_wsNonce).arg(peer.size())
+				                          .arg(peer.join(QLatin1Char(','))));
 				if (!peerCandidates) {
-					QStringList peer = marker.value(QStringLiteral("a")).toString()
-					                       .split(QLatin1Char(','), Qt::SkipEmptyParts);
 					if (!peer.isEmpty()) {
 						GbCloud::debugLog(QStringLiteral("[direct] me=%1 对端候选 %2")
 						                          .arg(m_wsNonce, peer.join(QLatin1Char(','))));
 						direct->setPeerCandidates(peer);
 						direct->startPunching();
 						peerCandidates = true;
+						peerCandCount = peer.size();
+					} else {
+						/* 收到了 "w":"p" 却没有 "a"：说明对端信封被大厅 100 字符
+						 * 上限挤掉了候选列表（曾经完全静默，表现为
+						 * `peerCandidates=0` 却查不出原因）。 */
+						GbCloud::debugLog(QStringLiteral("[direct] me=%1 收到对端 p 但无候选地址（信封超长？）")
+						                          .arg(m_wsNonce));
 					}
 				}
 			} else if (kind == QStringLiteral("s")) {
@@ -1248,7 +1367,14 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 		// 正在做 STUN（几百毫秒不读 socket）而错过，只发一次就会双方僵住。
 		// 每轮把候选顺序轮换一位，一是内容不同避免被服务器当重复消息丢掉，
 		// 二是让不同网段优先级轮流试一遍（打洞对所有候选并发，顺序只影响取舍）。
-		if (now - started <= 4000 && now - lastAnnounce >= 600) {
+		// 【跨设备加固】原实现只在前 4 秒公告：即便 hello 大体同步了两端，
+		// STUN/信令重试仍可能把对端推迟数秒；那时我们早已停发，对端的
+		// peerCandidates 恒 0、永不打洞，形成「一侧 P2P、一侧隧道」的不对称
+		// 卡死。改成连通前持续按 600ms 重发（对端拿到候选后会忽略后续 p），
+		// 让晚到的那一端也有机会收到我们的候选。公告窗口对齐 6s 放弃门
+		// （仍是 600ms 一次），不无限发，避免触发大厅的聊天频率限制。
+		if (now - started <= 6000 && now - lastAnnounce >= 600) {
+			const bool firstAnnounce = (lastAnnounce == 0);
 			lastAnnounce = now;
 			QStringList kept = mine.mid(0, 3);
 			if (kept.size() > 1) {
@@ -1256,6 +1382,11 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 				for (int i = 0; i < rot; i++) {
 					kept.append(kept.takeFirst());
 				}
+			}
+			if (firstAnnounce) {
+				GbCloud::debugLog(QStringLiteral("[MGBAX_P2P] me=%1 event=announce count=%2 list=%3")
+				                          .arg(m_wsNonce).arg(kept.size())
+				                          .arg(kept.join(QLatin1Char(','))));
 			}
 			sendMarker(QStringLiteral("p"), kept.join(QLatin1Char(',')));
 		}
@@ -1285,6 +1416,9 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 		GbCloud::debugLog(QStringLiteral("[direct] me=%1 放弃直连：peerCandidates=%2 connected=%3 switchSent=%4 peerWants=%5 peerAgreed=%6 aborted=%7")
 		                          .arg(m_wsNonce).arg(peerCandidates).arg(direct->connected())
 		                          .arg(switchSent).arg(peerWants).arg(peerAgreed).arg(aborted));
+		logOutcome(!peerCandidates ? QStringLiteral("no-peer-candidates")
+		                           : (aborted ? QStringLiteral("peer-aborted")
+		                                      : QStringLiteral("no-agree")));
 		if (switchSent) {
 			sendMarker(QStringLiteral("s3"), QString());
 		}
@@ -1292,17 +1426,7 @@ ILink* CloudLink::tryDirectLink(GbCloud::Session* sig, const QString& token, Roo
 		delete direct;
 		return nullptr;
 	}
-	if (!approved) {
-		GbCloud::debugLog(QStringLiteral("[direct] me=%1 放弃直连：peerCandidates=%2 connected=%3 switchSent=%4 aborted=%5")
-		                          .arg(m_wsNonce).arg(peerCandidates).arg(direct->connected())
-		                          .arg(switchSent).arg(aborted));
-		if (asHost && switchSent) {
-			sendMarker(QStringLiteral("s3"), QString());
-		}
-		direct->close();
-		delete direct;
-		return nullptr;
-	}
+	logOutcome(QStringLiteral("ok"));
 	int rttMs = (direct->rttUs() + 500) / 1000;
 	status(QStringLiteral("直连加速已启用（P2P %1，RTT %2 ms）\n")
 	               .arg(direct->peerText())
@@ -1411,7 +1535,11 @@ ILink* CloudLink::tryBtLink(QString* error) {
 void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* room, bool asHost) {
 	const QString tag = room->roomId;
 	status(QStringLiteral("正在通过服务器隧道等待对方进入（跨网可联）…"));
-	WsLink* link = new WsLink(sig, token, m_advertiserUuid, tag, m_wsNonce);
+	WsLink* link = new WsLink(sig, token, m_advertiserUuid, tag, m_wsNonce,
+	                          resolveLinkMode(qMax(1, room->playerCount)),
+	                          [this](int mode) {
+		                          notePeerLinkMode(mode, QStringLiteral("WSS 隧道 hello/accept"));
+	                          });
 	m_tunnel = link;
 	m_tunnelUp = true;
 	m_tunnelPeerSeen = false;
@@ -1443,6 +1571,12 @@ void CloudLink::runTunnel(GbCloud::Session* sig, const QString& token, Room* roo
 		cleanupTunnel();
 		m_tunnelUp = false;
 		fail(detail);
+		return;
+	}
+	/* C0 / ADR-002：隧道分派前同样先绑定模式，禁止两套帧格式同流。 */
+	if (!negotiateLinkMode(room, QStringLiteral("WSS 隧道"))) {
+		cleanupTunnel();
+		m_tunnelUp = false;
 		return;
 	}
 	if (m_officialMode) {
@@ -1585,6 +1719,11 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 		return;
 	}
 	m_sioSock = local;
+	/* path A 的两种传输在这一点已经确定；把帧封装方式写清楚，便于核对
+	 * §7.3：WS 隧道 = 裸 20 字节字节管道，KCP 中继 = type-6 包一层。 */
+	logPathDiag(QStringLiteral("A"),
+	            dynamic_cast<DirectLink*>(link) ? QStringLiteral("p2p") : QStringLiteral("ws-tunnel"),
+	            QStringLiteral("raw-20B-netLink"));
 	status(QStringLiteral("SIO 链路已建立（分开控制）\n")
 	       + QStringLiteral("各自操作各自的画面，对方按键不再进入你的游戏\n")
 	       + QStringLiteral("游戏内联机（交换/对战）走联机线\n")
@@ -1621,6 +1760,9 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 			}
 			break;
 		}
+		/* 本轮两向都没活干时让出 CPU（见循环尾的 usleep）：不能用阻塞收包
+		 * 来让出，那会把等待平摊到每一轮 SIO 传输上。 */
+		bool didWork = false;
 		fd_set rset;
 		FD_ZERO(&rset);
 		FD_SET(static_cast<SOCKET>(local), &rset);
@@ -1644,9 +1786,18 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 				++txShort;
 			}
 			cur->send(payload);
+			didWork = true;
 		}
 		QByteArray pkt;
-		if (cur->recv(&pkt, 20)) {
+		/* 【不许在这里阻塞】cur->recv 的 timeoutMs 是「最多等多久」，不是
+		 * 「每轮固定等这么久」，但循环是单线程一问一答：给它 20ms，它就会
+		 * 在没有数据的那些轮里真的睡满 20ms，而这 20ms 会原封不动加到每一
+		 * 轮 SIO 传输上。实测 RTT 只有 6ms 却每轮 25ms（`[sio-rtt] n≈40/s`），
+		 * 9 轮/帧 ⇒ 4.6fps；握手阶段更糟，双端要几十分钟才 st=2→4（现象就是
+		 * 「卡在等待玩家准备」）。改成 0：立即返回一次 pump 的结果，没有数据
+		 * 就去下面的空闲微睡眠，让出 CPU 但不拖慢下一轮。 */
+		if (cur->recv(&pkt, 0)) {
+			didWork = true;
 			rxBytes += static_cast<quint64>(pkt.size());
 			if (pkt.size() % TUNNEL_CHUNK_BYTES != 0) {
 				++rxShort;
@@ -1694,6 +1845,11 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
 				m_tunnel->recv(&junk, 0);
 			}
 		}
+		if (!didWork) {
+			/* 两向都没数据：让出 CPU，但**不拖慢下一轮**。200µs 远小于一次
+			 * SIO 传输的周期（战斗阶段 ~11ms），对延迟可忽略。 */
+			QThread::usleep(200);
+		}
 	}
 	closeSio();
 	if (!m_closed.load(std::memory_order_relaxed)) {
@@ -1720,6 +1876,8 @@ void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
 	       + QStringLiteral("\n云端联机已连接，你是 ")
 	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	emit connected(asHost);
+	logPathDiag(QStringLiteral("A"), QStringLiteral("kcp-relay"),
+	            QStringLiteral("type6-wrapped-20B-netLink"));
 	maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, asHost);
 	qint64 lastDrain = 0;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed() && m_sioSock >= 0) {
@@ -1816,29 +1974,75 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		fail(QStringLiteral("模拟核心未就绪"));
 		return;
 	}
-	// 可见核当 1P 主机监听环回端口（finishFrame 每帧 pump 它），1 个镜像核
-	// 连进来凑满 2 人（1P + 镜像）。players 必须与镜像核的 linkJoin 一致，否则
-	// 两边包格式不同（星型总线 BusPacket vs 两人直连 Packet），TCP 连上也解不出字。
+	/* path B 的本机核数 = 房间人数：1 可见核 + (players-1) 镜像核。
+	 * room->playerCount 是权威来源（信令 player_joined 写入、默认 2），不再
+	 * 用编译期 MIRROR_COUNT+1=4 硬编码——否则 2P 房会悄悄跑 4 核，总线按
+	 * 4 人铺槽，2P 会话从起点就错位，且驱动断言 pathB_2p_bus_ok 恒 false。
+	 * 夹到 [2,4]：少于 2 人无联机意义，超过 4 人数组放不下。 */
+	const int players = qBound(2, room->playerCount, 4);
+	const int mirrorCount = players - 1;
+	m_mirrorCount = mirrorCount;
+	GbCloud::debugLog(QStringLiteral("[MGBAX_PATH] path=B players=%1 mirrors=%2")
+	                          .arg(players).arg(mirrorCount));
+	logPathDiag(QStringLiteral("B"), QStringLiteral("p2p-or-tunnel"),
+	            QStringLiteral("type6-savestate+12Hz-keys"));
+	// 可见核当 1P 主机（finishFrame 每帧 pump 它），3 个镜像核 join 同一
+	// 条总线凑满 4 人。players 必须与镜像核一致，否则总线槽位对不上。
+	//
+	// path B 四核全部在本进程，默认走进程内 LocalBus：主机是唯一时钟源，
+	// 从机永远跟随主机当前轮次，轮次天然对齐。TCP 星型（127.0.0.1）每个核
+	// 各算各的轮次号，Windows 的定时器粒度又把错位放大成 2ms 超时地板
+	// （PB15：主机 m1 恒 FFFF、镜像 mis≈5700 / to≈1800），因此只保留
+	// MGBAX_LOCAL_BUS=0 作对照实验。
+	const bool useLocalBus = qgetenv("MGBAX_LOCAL_BUS") != "0";
+	/* CoreController 锁步接入目前会在四核会合时崩溃（PB27/28 0xC0000005，
+	 * 跨线程 setPeripheral 腐蚀 coordinator），默认走已验证可达真实握手字的
+	 * LocalBus；只有显式 MGBAX_LOCKSTEP=1 才启用实验性的锁步路径。 */
+	m_mirrorLockstep = useLocalBus && qgetenv("MGBAX_LOCKSTEP") == "1";
 	quint16 port = 0;
-	for (int t = 0; t < 8; ++t) {
-		quint16 candidate = quint16(18781 + t);
-		if (m_controller->sioHostPlayers(candidate, MIRROR_COUNT + 1)) {
-			port = candidate;
-			break;
+	if (useLocalBus) {
+		m_mirrorLocalKey = int(QDateTime::currentMSecsSinceEpoch() & 0x7FFFFFFF);
+		if (m_mirrorLocalKey <= 0) {
+			m_mirrorLocalKey = 1;
 		}
+		/* 锁步房间必须等 cloudArmReload/reset() 之后再挂：GBAReset 会
+		 * mTimingClear + GBASIOReset 重置 SIO 驱动，先挂会被复位打坏（PB27
+		 * 两端在 nav_at 一写就 0xC0000005）。所以这里只记 key，真正 mount
+		 * 放在下面 arm 段之后、镜像核 start 之前。 */
+		bool hosted = m_mirrorLockstep
+		        || m_controller->sioHostPlayersLocal(m_mirrorLocalKey, players);
+		if (!hosted) {
+			m_mirrorLocalKey = 0;
+			m_mirrorLockstep = false;
+			fail(QStringLiteral("本机联机总线创建失败"));
+			return;
+		}
+		GbCloud::debugLog(QStringLiteral("[arm] local SIO %1 key=%2 players=%3")
+		                          .arg(m_mirrorLockstep ? QStringLiteral("lockstep")
+		                                                : QStringLiteral("bus"))
+		                          .arg(m_mirrorLocalKey)
+		                          .arg(players));
+	} else {
+		for (int t = 0; t < 8; ++t) {
+			quint16 candidate = quint16(18781 + t);
+			if (m_controller->sioHostPlayers(candidate, players)) {
+				port = candidate;
+				break;
+			}
+		}
+		if (!port) {
+			fail(QStringLiteral("本机联机线端口被占用"));
+			return;
+		}
+		m_mirrorSioPort = port;
 	}
-	if (!port) {
-		fail(QStringLiteral("本机联机线端口被占用"));
-		return;
-	}
-	m_mirrorSioPort = port;
 	GBoyLinkSession::Events events;
 	events.onReset = [this]() {
 		/* 官方 type 5（EmulatorActivity.BmvVmW:1333 → 接收侧 case 5）：
 		 * reset(false) 本机可见核，并遍历所有镜像核 reset(false)。
 		 * 镜像核的 reset 落在自己的帧边界（GBoyMirror::requestReset），
 		 * 可见核走 GUI 线程上的 CoreController::reset（remoteReset 的既有连接）。 */
-		for (int i = 0; i < MIRROR_COUNT; ++i) {
+		for (int i = 0; i < m_mirrorCount; ++i) {
 			if (m_mirrors[i]) {
 				m_mirrors[i]->requestReset();
 			}
@@ -1897,31 +2101,26 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 			        link->send(frame);
 		        }
 	        },
-	        /* 4 槽位：本机可见核占 slot 1，3 个镜像占 slot 2/3/4。会话只把
-	         * 真人按键跨网络送出去（对端按键进 slot 2），slot 3/4 恒 0 作为
-	         * NPC 陪位——大竞技场要求 4 人，2 核时游戏锁位不进对战；
-	         * keysForSlot() 的上限必须覆盖 4，否则镜像核取不到键。 */
-	        events, 1, 4);
-	/* 官方握手第二步是 type 2（32 字节名字 + 描述串），对端拿到后才知道
-	 * 「对面是谁」。我们以前整条消息没发过，对端只能当作未知类型丢掉。 */
-	/* 官方 WiFi 握手第一步：`ARc23Z((short)1, 4).putInt(6)`（B25kr6:122/128）。
-	 * 直连 / TCP / 蓝牙这条路以前一次 type 1 都没发过，而对端要收到 1/3/100
-	 * 才会把会话置 ready；少了它，`case TYPE_KEYS` 的握手期门控会把每一帧
-	 * type 0 都当「节奏信号」丢掉 —— 现象就是「对端按键全无响应」。
-	 * 两端都发，互为对方的 ready 来源。 */
-	m_gboySession->sendSocketHandshake();
-	/* 官方握手是严格顺序 1 → 2 →（3）→ 6（B25kr6:122-152 连续 getShort 校验），
-	 * 所以名字帧必须排在 type 1 之后：官方房主收到第一帧不是 1 会直接 return 2
-	 * 结束会话。自家客户端不校验顺序，但顺序照抄才能和官方互通。 */
-	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
-	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
-	/* 官方握手第三步：建好「对端核」后发 `ARc23Z((short)3, 4)`
-	 * （EmulatorActivity.B9tovu:1037）—— 10 字节，type 3 + int 0。
-	 * 官方房主 A4TApA:139 读完名字帧后严格等这一帧；缺了它，房主会把随后
-	 * 的 type 6 当成第三帧，`getShort() == 3` 不成立 → return 2 结束会话。
-	 * 注意与 6 字节的 `ARc23Z((short)3, 0)` 区分：后者是客户端「我灌完了」
-	 * 的 ack（AmA8tU:211），接收侧按 payload 长度区分两种形态。 */
-	link->send(GBoyFrames::frame(GBoyFrames::TYPE_READY, 0));
+	        /* players 槽位：本机可见核占 slot 1，其余镜像占 slot 2..players。
+	         * 会话只把真人按键跨网络送出去（对端按键进 slot 2）；3/4 人房里
+	         * 多余的槽位恒 0 作 NPC 陪位（大竞技场要求 4 人才放开走位）。
+	         * playerCount 必须跟随房间人数，否则 2P 房取不到对端键。 */
+	        events, 1, players);
+	/* 【握手挪到镜像核之后】官方握手三步（1 register / 2 name / 3 ready）
+	 * 现在在三个镜像核都就绪、nav_at 写完之后才发（见下方 startOfficialMatch
+	 * 尾部）。原因：type 1/register 是**对端判定「我们已就绪」的唯一来源**，
+	 * 对端一看到它就立刻发整份 savestate（type 6，约 46KB，DirectLink 拆成
+	 * 46 个分片）。我们这边创建 3 个镜像核要 5~10 秒，如果握手还在创建前
+	 * 发出，对端的 46KB 会全部堆在我们尚未开始 recv 的 UDP 缓冲里：
+	 *   - 缓冲被重传的旧分片挤爆，分片永远收不齐（PB12：两端都没有任何
+	 *     TYPE_STATE 日志）；
+	 *   - 发送端等不到 ACK，40 次重传后 DirectLink 自行判死，2.7 秒就
+	 *     「服务器隧道连接已断开」→ stopOfficialMatch() 删镜像核 + nav_at，
+	 *     可见核被留在柜台前，gLink 停在 HANDSHAKE / status=0（PB12 现场）。
+	 * 挪到镜像核就绪之后，register 同时成为「我方四核房间已可接收状态」的
+	 * 信号，type-6 的发送窗口才真正对齐。
+	 * 官方握手仍是严格顺序 1 → 2 →（3）→ 6（B25kr6:122-152）：名字帧必须
+	 * 排在 type 1 之后，房主收到第一帧不是 1 会直接 return 2。 */
 	emit connected(asHost);
 	QString savePath = m_config.savePath;
 	{
@@ -1963,21 +2162,108 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 		}
 	}
 	QString error;
-	for (int i = 0; i < MIRROR_COUNT; ++i) {
+	/* ---- PC cloud-arm：四核同帧 0 对齐 -------------------------------------
+	 * 缺口（本文件历史上一直没做的一步）：镜像核从电池存档冷启动，可见核
+	 * 保持现场（往往已经进了联机菜单几万帧）——四核起点不齐，SIO 总线永远
+	 * 凑不齐同一轮，实测 2P 云端所有 flow BATTLE=0。Android 在
+	 * EmulatorActivity:5467-5484（linkArmHold + suppressAutoState + reload）
+	 * 与 :2588-2615（reload 后重建房间）里做的正是这一步。
+	 *
+	 * 顺序照抄语义（不是照抄语言）：
+	 *   1. 快照：可见核 state（前端 provider，type-6 用那份）用来判定「有没有
+	 *      可比对的起点」；四核真正的统一起点是**电池存档字节**——
+	 *      provider 给的是 savestate，里面含 SIO/链路寄存器状态，把它灌进
+	 *      刚连上环回的镜像核会把链路状态一起覆盖（Android 的注释同此结论：
+	 *      四核只能从电池存档冷启动，不能从即时存档起）；
+	 *   2. 可见核按同一份电池存档字节 reload 到帧 0（cloudArmReload）；
+	 *   3. 锁住可见核帧循环（cloudArmHold = Android linkArmHold）；
+	 *   4. 按槽位建 3 个镜像核（每个 start() 内部等到 LINK_CONNECTED）；
+	 *   5. 四核都 CONNECTED 后放开帧循环。
+	 * MGBAX_OFFICIAL_ARM=0 回到旧行为（可见核保持现场），便于 A/B 与回退。 */
+	/* 【默认关】02:32 实测：开着 arm 时两端 reload 后 `px=0 py=0`（核心没读到
+	 * 电池存档，等于新开局），比赛因此永远到不了柜台。同帧对齐的收益还没验证到，
+	 * 但「读不到存档」是硬阻塞，所以默认回到旧行为；显式 =1 才能开。
+	 * 待修完 reload（让重载后的核心确实装载同一份 .sav 并能读档）再评估默认值。 */
+	const QByteArray armEnv = qgetenv("MGBAX_OFFICIAL_ARM");
+	const bool armEnabled = !armEnv.isEmpty() && armEnv.toInt() != 0;
+	const qint64 armT0 = QDateTime::currentMSecsSinceEpoch();
+	bool armHeld = false;
+	if (armEnabled) {
+		/* 1) 快照：先看前端有没有给出可见核 state（镜像核/对端要的是同一
+		 *    份字节）；没有就只靠电池存档。 */
+		QByteArray snapshot;
+		if (m_stateSnapshot) {
+			snapshot = m_stateSnapshot();
+		}
+		GbCloud::debugLog(QStringLiteral("[arm] t=%1 snapshot=%2B battery=%3B save=%4")
+		                          .arg(0)
+		                          .arg(snapshot.size())
+		                          .arg(saveSnapshot.size())
+		                          .arg(savePath.isEmpty() ? QStringLiteral("<none>") : savePath));
+		/* 2) 可见核 reload 到帧 0：让四核从同一份电池存档字节冷启动。
+		 *    必须在 hold 之前——mCoreThreadReset 要等核心线程真正跑到
+		 *    reset 请求，暂停中的线程不会接。 */
+		const bool reloaded = m_controller && m_controller->cloudArmReload(savePath);
+		GbCloud::debugLog(QStringLiteral("[arm] visible core reloaded=%1 (save %2B)")
+		                          .arg(reloaded ? 1 : 0)
+		                          .arg(saveSnapshot.size()));
+		/* 3) 锁住帧循环：镜像核的 ROM 加载 + 连接握手要几百 ms，不锁的话
+		 *    可见核会独自先跑几千帧，四核相位立刻错开。 */
+		if (m_controller) {
+			m_controller->cloudArmHold(true);
+			armHeld = true;
+		}
+		/* 对齐后的起点快照：复位到帧 0 之后再取一次，作为 type-6 的首包，
+		 * 对端镜像核因此也落在帧 0，而不是我们进菜单时的状态。 */
+		if (m_stateSnapshot) {
+			m_armSeedState = m_stateSnapshot();
+		}
+		GbCloud::debugLog(QStringLiteral("[arm] t=%1 held, seed=%2B")
+		                          .arg(QDateTime::currentMSecsSinceEpoch() - armT0)
+		                          .arg(m_armSeedState.size()));
+	}
+	if (m_mirrorLockstep) {
+		/* 复位之后再把可见核挂到锁步房间：GBAReset 已经清过 timing/SIO，
+		 * 此刻挂驱动才是干净起点。镜像核在下面的循环里 join 同一个 key。 */
+		if (!m_controller->sioLockstepHost(m_mirrorLocalKey, players, 0)) {
+			if (armHeld) {
+				m_controller->cloudArmHold(false);
+			}
+			m_mirrorLocalKey = 0;
+			m_mirrorLockstep = false;
+			stopOfficialMatch();
+			fail(QStringLiteral("本机锁步房间创建失败"));
+			return;
+		}
+		GbCloud::debugLog(QStringLiteral("[arm] lockstep room mounted key=%1")
+		                          .arg(m_mirrorLocalKey));
+	}
+	for (int i = 0; i < mirrorCount; ++i) {
 		QDir mirrorDir(QFileInfo(savePath).dir().filePath(
 		    QStringLiteral("mirror%1").arg(i + 1)));
+		/* 槽位不再硬编码 i + 2：走 GBoyLinkSession::mirrorSlotFor，本机可见核
+		 * 占 slot 1，镜像按房间人数铺开：2P→2、3P→2/3、4P→2/3/4。 */
+		const int slot = GBoyLinkSession::mirrorSlotFor(1, players, i);
 		GBoyMirror* mirror = new GBoyMirror(this);
 		if (!mirror->start(m_config.romPath, savePath, mirrorDir.path(), port,
-		                   m_gboySession, i + 2, MIRROR_COUNT + 1,
+		                   m_mirrorLocalKey, m_gboySession, slot, players,
+		                   m_mirrorLockstep,
 		                   navMenuAt > 0 ? i + 1 : -1, navMenuAt, navModeDowns,
 		                   saveSnapshot, scriptDir, &error)) {
+			if (armHeld && m_controller) {
+				m_controller->cloudArmHold(false);
+			}
 			mirror->stopMirror();
 			delete mirror;
 			stopOfficialMatch();
-			fail(QStringLiteral("镜像核 %1 启动失败：").arg(i + 2) + error);
+			fail(QStringLiteral("镜像核 %1 启动失败：").arg(slot) + error);
 			return;
 		}
 		m_mirrors[i] = mirror;
+		GbCloud::debugLog(QStringLiteral("[arm] t=%1 mirror[%2] slot=%3 LINK_CONNECTED")
+		                          .arg(QDateTime::currentMSecsSinceEpoch() - armT0)
+		                          .arg(i)
+		                          .arg(slot));
 	}
 	if (navMenuAt > 0) {
 		/* 镜像核已经在 start() 里武装好脚本；此刻才写 nav_at，让
@@ -1991,7 +2277,31 @@ void CloudLink::startOfficialMatch(ILink* link, Room* room) {
 			navAt.close();
 		}
 	}
-	status(QStringLiteral("SIO 链路已建立（4 核本机房间，环回 %1）\n").arg(port)
+	/* 5) 放开帧循环：此刻可见核在帧 0、三个镜像核都 LINK_CONNECTED，
+	 *    四核从同一节拍开始跑（正是 Android 的 linkArmHold = false）。 */
+	if (armHeld && m_controller) {
+		m_controller->cloudArmHold(false);
+		GbCloud::debugLog(QStringLiteral("[arm] t=%1 released: visible f0 + %2 mirrors CONNECTED")
+		                          .arg(QDateTime::currentMSecsSinceEpoch() - armT0)
+		                          .arg(mirrorCount));
+	}
+	/* 官方握手三步（1 register / 2 name / 3 ready）必须等本机四核房间
+	 * 真正建好后再发：register 是**对端判定「可以开始发 type-6 存档」的
+	 * 信号**，而 type-6 是 46KB 分片 UDP。提前发 ⇒ 对端在我们还没进
+	 * serveOfficial 的 recv 循环时就把分片全推过来，缓冲被重传挤爆、
+	 * 40 次重传后 DirectLink 判死（PB12：两端 2.7~5.7 秒断链、gLink 停在
+	 * HANDSHAKE）。放在这里，register 才真正等价于「本机镜像核已就绪」。
+	 * 顺序仍是官方 1 → 2 → 3（B25kr6:122-152 的连续 getShort 校验）。 */
+	m_gboySession->sendSocketHandshake();
+	link->send(GBoyFrames::nameFrame(gameName().toUtf8(),
+	                                 room->roomId.isEmpty() ? QByteArray() : room->roomId.toUtf8()));
+	link->send(GBoyFrames::frame(GBoyFrames::TYPE_READY, 0));
+	GbCloud::debugLog(QStringLiteral("[arm] handshake 1/2/3 sent after %1 mirrors CONNECTED")
+	                          .arg(mirrorCount));
+	status(QStringLiteral("SIO 链路已建立（%1 核本机房间，%2 %3）\n")
+	               .arg(players)
+	               .arg(m_mirrorLocalKey ? QStringLiteral("进程内总线 key=") : QStringLiteral("环回端口 "))
+	       .arg(m_mirrorLocalKey ? QString::number(m_mirrorLocalKey) : QString::number(port))
 	       + QStringLiteral("各自操作各自的画面，游戏内联机（交换/对战）走本机联机线\n")
 	       + QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	serveOfficial(link, room);
@@ -2015,6 +2325,16 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	 * 子状态（实测 pc 恒 0）。官方客户端用 case 6 周期纠偏，这里照做。 */
 	qint64 lastStateSync = 0;
 	qint64 lastStatePoll = 0;
+	/* type-6 有界补发（cloud-arm 的一步）：isReady 之后对端的镜像核可能才刚
+	 * 建好，开局那一包会打在「还没有核」的窗口上（对端日志里就是
+	 * `TYPE_STATE dropped (no mirror console)`）。所以 ready 之后再补两次，
+	 * 间隔 5s，**有界**——整份存档几百 KB，周期发送会把本循环拖到 0.6fps
+	 * （实测），补完就只保留按需触发（sync_state 文件 / 漂移判定）。 */
+	const int kArmResendMax = 2;
+	const qint64 kArmResendMs = 5000;
+	bool armSeedSeen = false;
+	int armResends = 0;
+	qint64 lastArmResend = 0;
 	/* 倍速联机的无 UI 验证入口：设置 MGBAX_SPEED_9 后，把
 	 * <MGBAX_SCRIPT_DIR>/speed 的内容（1 / -1 / 2 / 4）当作一次「本机切倍速」，
 	 * 广播 type 9 后删除文件。正常玩家路径不受影响。 */
@@ -2022,6 +2342,21 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
 		maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, m_hostRole);
+		/* 开局那一包发出去之后开始计补发窗口；只在会话 ready 后才补。 */
+		if (!armSeedSeen && m_initialStateSent.load(std::memory_order_relaxed)) {
+			armSeedSeen = true;
+			lastArmResend = now;
+		}
+		if (armSeedSeen && armResends < kArmResendMax && m_gboySession->isReady()
+		    && now - lastArmResend >= kArmResendMs) {
+			lastArmResend = now;
+			++armResends;
+			if (sendStateSync([link](const QByteArray& frame) { link->send(frame); })) {
+				GbCloud::debugLog(QStringLiteral("[arm] type-6 resend %1/%2 (ready)")
+				                          .arg(armResends)
+				                          .arg(kArmResendMax));
+			}
+		}
 		/* 状态补发走「按需触发」而不是定时：整份存档几百 KB，经大厅 WS 隧道
 		 * 传一次就会把本循环拖到 0.6fps（实测），周期发不可行。测试脚本在
 		 * MGBAX_SCRIPT_DIR 下放 sync_state 文件即触发一次，发完删掉。 */
@@ -2150,7 +2485,7 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 
 void CloudLink::applyMirrorSpeed(int wireValue) {
 	const float speed = float(GBoyLinkSession::effectiveSpeed(wireValue));
-	for (int i = 0; i < MIRROR_COUNT; ++i) {
+	for (int i = 0; i < m_mirrorCount; ++i) {
 		if (m_mirrors[i]) {
 			m_mirrors[i]->setNetSpeed(speed);
 		}
@@ -2161,6 +2496,8 @@ void CloudLink::stopOfficialMatch() {
 	/* 下一次连接必须重新走「镜像就绪 → 写文件 → 四核同时起跑」；残留的
 	 * nav_at 会让可见核在镜像核创建之前就独自开跑，四核相位错开。 */
 	m_mirrorStateError.store(0, std::memory_order_relaxed);
+	m_armSeedState.clear();
+	m_firstSeedState.clear();   /* P0：会话级缓存，防跨房间脏 seed 泄漏 */
 	/* 倍速复位：新会话的 type 9 是 0（未收到）→ 1x，避免上一局的 4x 带进来。 */
 	m_sendSpeed.store(0, std::memory_order_relaxed);
 	m_speedWire.store(0, std::memory_order_relaxed);
@@ -2170,6 +2507,9 @@ void CloudLink::stopOfficialMatch() {
 	if (!scriptDir.isEmpty()) {
 		QFile::remove(scriptDir + QStringLiteral("/nav_at"));
 	}
+	/* 清理按数组上限 MIRROR_COUNT 走，覆盖所有可能创建过的镜像（2P 只占
+	 * m_mirrors[0]，3/4P 占更多），空槽为 nullptr 自然跳过——比只按本局
+	 * m_mirrorCount 清理更防御，绝不残留上一局的核。 */
 	for (int i = 0; i < MIRROR_COUNT; ++i) {
 		if (m_mirrors[i]) {
 			m_mirrors[i]->stopMirror();
@@ -2181,8 +2521,10 @@ void CloudLink::stopOfficialMatch() {
 		delete m_gboySession;
 		m_gboySession = nullptr;
 	}
-	if (m_mirrorSioPort) {
+	if (m_mirrorSioPort || m_mirrorLocalKey) {
 		m_mirrorSioPort = 0;
+		m_mirrorLocalKey = 0;
+		m_mirrorLockstep = false;
 		if (m_controller) {
 			m_controller->sioClose();
 		}
@@ -2209,6 +2551,11 @@ void CloudLink::sendWsMarker(GbCloud::Session* sig, const QString& token, const 
 	}
 	marker.insert(QStringLiteral("from"), m_wsNonce);
 	marker.insert(QStringLiteral("c"), 1); // 新版能力协商（十六进制 + 短信封）
+	/* C0 / ADR-002：中继阶段的 hello/accept 也带 1 bit mode。 */
+	const int local = resolveLinkMode(qMax(1, m_currentRoom.playerCount));
+	if (local == GBoyFrames::LINK_MODE_A || local == GBoyFrames::LINK_MODE_B) {
+		marker.insert(QStringLiteral("m"), local);
+	}
 	sig->sendText(wsText(sendMessageJson(token, uuid, wsText(marker))));
 }
 
@@ -2250,6 +2597,10 @@ bool CloudLink::isTunnelMarkerText(const QString& text) {
 			from = marker.value(QStringLiteral("o")).toString();
 		}
 		if (from.isEmpty() || from != m_wsNonce) {
+			/* C0：这是来自对端的标记，顺带取能力位。 */
+			notePeerLinkMode(marker.value(QStringLiteral("m"))
+			                         .toInt(GBoyFrames::LINK_MODE_UNKNOWN),
+			                 QStringLiteral("WSS 信令标记"));
 			return true;
 		}
 	}
@@ -2258,7 +2609,12 @@ bool CloudLink::isTunnelMarkerText(const QString& text) {
 
 void CloudLink::sendRegister(ILink* link, Room* room) {
 	int players = qMax(1, room->playerCount);
-	link->send(GBoyFrames::registerFrame(players, room->baseStateCount));
+	/* C0：注册帧即握手帧，能力位必须在这里就带上，对端才有得可判。 */
+	const int local = resolveLinkMode(players);
+	m_linkMode.store(local, std::memory_order_relaxed);
+	link->send(GBoyFrames::registerFrame(players, room->baseStateCount, local));
+	GbCloud::debugLog(QStringLiteral("[C0] register mode=%1 players=%2")
+	                          .arg(modeName(local), QString::number(players)));
 }
 
 void CloudLink::handshake(ILink* link, Room* room, int waitMs) {
@@ -2352,6 +2708,12 @@ void CloudLink::serve(ILink* link) {
 
 void CloudLink::handle(const QByteArray& body) {
 	int type = GBoyFrames::typeOf(body);
+	if (type == GBoyFrames::TYPE_REGISTER) {
+		/* C0：对端 type-1 注册帧里带能力位。裸 6 字节 type-1 ack 的 body 只有
+		 * 2 字节，linkModeOf() 会返回 UNKNOWN，不会误判。 */
+		notePeerLinkMode(GBoyFrames::linkModeOf(body), QStringLiteral("type-1 注册帧"));
+		return;
+	}
 	if (type == GBoyFrames::TYPE_KEYS || type == GBoyFrames::TYPE_KEYS_LOCAL) {
 		int keys = GBoyFrames::intOf(body);
 		// See m_remoteKeysEnabled: keep receiving the frame (the relay uses it
@@ -2377,16 +2739,51 @@ void CloudLink::handle(const QByteArray& body) {
  * 的直接原因。因此这里不再按角色门控，两端各发一次。 */
 bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
 	(void) asHost; /* 两端都发：见上面的 GBoy type 6 双向说明 */
+	/* official case 6（u32 长度头 + 整份 savestate）只属于 path B：本机多核 +
+	 * 网络只传按键，对端把它灌进代表本机的镜像核。path A（SIO 字节管道）里
+	 * type 6 借壳承载的是裸 20 字节 netLink 包，startSioRelayBridge / serve 的
+	 * 接收侧把 payload 原样写回本地 socket；整份 savestate 混进去会破坏 SIO
+	 * 帧边界（两条路径同流还会耗死读线程，见本文件 608-610 的历史事故）。
+	 * 这里一次门控覆盖 path A 的全部调用点，避免以后新增调用点再漏。 */
+	if (!m_officialMode) {
+		/* 机器可读证据：path A 从不把整份 savestate 塞进 type 6（那会破坏
+		 * 20 字节 netLink 帧边界）。每个进程只写一次，避免每 tick 刷屏。 */
+		static std::atomic<bool> s_pathASkipLogged{false};
+		if (!s_pathASkipLogged.exchange(true, std::memory_order_relaxed)) {
+			GbCloud::debugLog(QStringLiteral("[MGBAX_PATH] me=%1 event=initial-state-skipped path=A reason=raw-20B-sio-pipe frameIntact=1")
+			                          .arg(m_wsNonce));
+		}
+		return false;
+	}
+	/* 对端必须已经把「本机镜像核已就绪」的 register（type 1）发过来，才
+	 * 说明它的 serve 循环马上开始 recv。否则 46KB 的 type-6 分片会推进一个
+	 * 还没人收的 UDP 缓冲：对端收不齐 → 我们 40 次重传后直连被判死
+	 * （PB12 现场：initial state 发出后 2.7 秒断链）。官方客户端也是先
+	 * 收到对端 1/2/3 才回灌 case 6，顺序一致。 */
+	if (!m_gboySession || !m_gboySession->isReady()) {
+		return false;
+	}
 	if (!m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
 		return false;
 	}
-	QByteArray state = m_stateSnapshot();
+	QByteArray state = m_armSeedState.isEmpty() ? m_stateSnapshot() : m_armSeedState;
 	if (state.isEmpty()) {
 		return false;   // core not ready yet; retry on the next tick
 	}
 	m_initialStateSent.store(true, std::memory_order_relaxed);
+	/* P0：门开且尚未缓存时，缓存首份发出的字节。仅拷贝成型 QByteArray，不生成
+	 * 新快照、不写游戏态；后续 arm 重发 / sync_state 复用它保持 seed 同源。 */
+	if ((MGBAX_SEED_CLEAN_RESEND != 0 || qgetenv("MGBAX_SEED_CLEAN_RESEND").toInt() != 0)
+	    && m_firstSeedState.isEmpty()) {
+		m_firstSeedState = state;
+	}
 	send(GBoyFrames::stateFrame(state));
-	GbCloud::debugLog(QStringLiteral("[gboy] initial state sent (%1 bytes)").arg(state.size()));
+	/* ISYNC-EV/A1-SEND: 真发送点只读记录本机种子 sha256（逻辑在 GBoyMirror.cpp，
+	 * 具名门 MGBAX_ISYNC_EVIDENCE + MGBAX_ISYNC_EVIDENCE_A1 默认关）。不造种子。 */
+	isyncEvidenceLogSeedSend(state, "initial");
+	GbCloud::debugLog(QStringLiteral("[arm] initial state sent (%1 bytes, seed=%2)")
+	                          .arg(state.size())
+	                          .arg(m_armSeedState.isEmpty() ? 0 : 1));
 	return true;
 }
 
@@ -2398,11 +2795,26 @@ bool CloudLink::sendStateSync(const std::function<void(const QByteArray&)>& send
 	if (!m_stateSnapshot) {
 		return false;
 	}
-	QByteArray state = m_stateSnapshot();
+	/* P0 / 脏 seed 干净重发：门开时按 m_armSeedState(真帧0) > m_firstSeedState
+	 * (缓存首份) > m_stateSnapshot() 选源；门关保持原即时快照行为（A/B 可逆）。
+	 * 只选字节、不生成新快照、不写游戏态，避免含 st4/8FFF/B9A0 的脏 seed 造成
+	 * 幻影 st4 乒乓。 */
+	const bool cleanResend = (MGBAX_SEED_CLEAN_RESEND != 0
+	                          || qgetenv("MGBAX_SEED_CLEAN_RESEND").toInt() != 0);
+	QByteArray state;
+	if (cleanResend && !m_armSeedState.isEmpty()) {
+		state = m_armSeedState;
+	} else if (cleanResend && !m_firstSeedState.isEmpty()) {
+		state = m_firstSeedState;
+	} else {
+		state = m_stateSnapshot();
+	}
 	if (state.isEmpty()) {
 		return false;
 	}
 	send(GBoyFrames::stateFrame(state));
+	/* ISYNC-EV/A1-SEND: 周期性 state sync 同样只读记录种子 sha256（门默认关）。 */
+	isyncEvidenceLogSeedSend(state, "sync");
 	return true;
 }
 
@@ -2514,6 +2926,12 @@ void CloudLink::waitForRoom(GbCloud::Session* sig, Room* room, const QString& ro
 					if (!object.value("self").toBool(false)
 					    && (from.isEmpty() || from != m_wsNonce)) {
 						m_tunnelPeerSeen = true;
+						/* C0：建房/等节点阶段的 hello 也可能带能力位，别漏。 */
+						if (ok) {
+							notePeerLinkMode(marker.value(QStringLiteral("m"))
+							                         .toInt(GBoyFrames::LINK_MODE_UNKNOWN),
+							                 QStringLiteral("WSS 信令 hello"));
+						}
 					}
 				}
 				if (message.contains(QStringLiteral("gboy_node"))) {
@@ -2666,6 +3084,11 @@ void CloudLink::runManual(const QString& nodeSpecIn, bool asHost) {
 			return;
 		}
 	}
+	/* C0 / ADR-002：手动中继（含 MGBAX_AUTOLINK 测试脚手架）同样要过协商门。 */
+	if (!negotiateLinkMode(&room, QStringLiteral("手动中继"))) {
+		cleanupChannel();
+		return;
+	}
 	status(QStringLiteral("云端联机已连接，你是 ") + (asHost ? QStringLiteral("1P") : QStringLiteral("2P"))
 	       + QStringLiteral("（手动中继）"));
 	serve(link);
@@ -2732,6 +3155,269 @@ void CloudLink::status(const QString& text) {
 	// Windows 上 stderr 抓不到，没有这一行实机联机就完全没法复盘。
 	GbCloud::debugLog(QStringLiteral("[status] ") + shown.replace(QLatin1Char('\n'), QLatin1Char(' ')));
 	emit statusMessage(shown);
+}
+
+void CloudLink::logPathDiag(const QString& path, const QString& transport, const QString& frameEnc) {
+	const int mode = m_linkMode.load(std::memory_order_relaxed);
+	const QString modeShort = mode == GBoyFrames::LINK_MODE_A ? QStringLiteral("A")
+	                        : mode == GBoyFrames::LINK_MODE_B ? QStringLiteral("B")
+	                                                          : QStringLiteral("UNKNOWN");
+	GbCloud::debugLog(QStringLiteral("[MGBAX_PATH] me=%1 path=%2 mode=%3 officialMode=%4 transport=%5 frameEnc=%6")
+	                          .arg(m_wsNonce).arg(path).arg(modeShort)
+	                          .arg(m_officialMode ? 1 : 0).arg(transport).arg(frameEnc));
+	/* 这些环境变量决定「握手能不能收尾」：MGBAX_LINK_REARM 每轮补
+	 * handshakeAsMaster，MGBAX_FAST_MIN_OK[_SLAVE] 控制快帧提前放行。
+	 * 真值在 mgba_sio.log 的 `[rearm] fired` / `[diag] lstate/pc/st` 里，
+	 * 这里把「门是否打开、该去哪里读、成功签名是什么」写成机器可读的行，
+	 * 避免把「门没开」误判成「门开了但没生效」。 */
+	auto env = [](const char* key) {
+		const QByteArray v = qgetenv(key);
+		return v.isEmpty() ? QStringLiteral("<unset>") : QString::fromLatin1(v);
+	};
+	GbCloud::debugLog(QStringLiteral("[MGBAX_GATE] me=%1 path=%2 envLinkMode=%3 envOfficialLink=%4 envRearm=%5 fastMinOk=%6 fastMinOkSlave=%7 sioFast=%8 sioLog=%9 linkDiag=%10 hsSignature=%11 hsLog=%12 envHsBypass=%13")
+	                          .arg(m_wsNonce)
+	                          .arg(path)
+	                          .arg(env("MGBAX_LINK_MODE"))
+	                          .arg(env("MGBAX_OFFICIAL_LINK"))
+	                          .arg(env("MGBAX_LINK_REARM"))
+	                          .arg(env("MGBAX_FAST_MIN_OK"))
+	                          .arg(env("MGBAX_FAST_MIN_OK_SLAVE"))
+	                          .arg(env("MGBAX_SIO_FAST"))
+	                          .arg(env("MGBAX_SIO_LOG"))
+	                          .arg(env("MGBAX_LINK_DIAG"))
+	                          .arg(QStringLiteral("lstate=4,pc=2,st&0x20"))
+	                          .arg(QStringLiteral("mgba_sio.log:[rearm] fired,[diag]"))
+	                          .arg(env("MGBAX_LINK_HSBYPASS")));
+}
+
+/* ---- C0 能力协商（ADR-002）------------------------------------------------
+ * 硬约束：path A 在 type 6 上跑裸 20 字节 netLink 包，path B 在 type 6 上跑
+ * 整份 savestate（u32 长度 + blob）。两者同流会破坏帧边界，CloudLink.cpp:608-610
+ * 记过 9470 个碎片包耗死读线程。所以绑定必须发生在任何游戏帧之前。
+ *
+ * negotiateLinkMode() 的实际判定顺序（注释以代码为准，F6）：
+ *   1. 已经 fail 过（m_modeRejected）        → 直接 return false，不再 fail 第二次；
+ *   2. 本端绑定（resolveLinkMode + m_officialMode + m_modeBound=true）；
+ *   3. 对端仍 UNKNOWN → 先有界等最多 2s 收 WSS hello/accept（F7），再重读；
+ *   4. 对端 INVALID                          → fail（畸形）；
+ *   5. 对端 == 本端                          → 通过；
+ *   6. 对端 UNKNOWN                          → 默认 fail；仅 MGBAX_LINK_ALLOW_LEGACY=1
+ *      显式许可才回落 B 并在状态栏写明「未经 2P 云端验收」；
+ *   7. 其余（两端都声明且不同）              → fail，绝不挑一个「能跑的」静默降级。
+ * 注意第 2 步先于第 3 步：本端模式在等待对端之前就已绑定，因此等待期间到达的
+ * 对端能力位（notePeerLinkMode）能立刻与本端比对，不一致会当场 fail。
+ */
+QString CloudLink::modeName(int mode) {
+	switch (mode) {
+	case GBoyFrames::LINK_MODE_A:
+		return QStringLiteral("A（每端 1 核 + SIO 包中继）");
+	case GBoyFrames::LINK_MODE_B:
+		return QStringLiteral("B（本机多核 + 网络只传按键）");
+	case GBoyFrames::LINK_MODE_INVALID:
+		return QStringLiteral("畸形能力位");
+	default:
+		return QStringLiteral("未声明 / AUTO");
+	}
+}
+
+int CloudLink::resolveLinkMode(int playerCount) const {
+	/* 判定本身在 GBoyFrames::resolveLinkMode()：那份实现同时被 test-gboylink
+	 * --c0 直接断言，避免测试与线上逻辑各写一份、慢慢分叉。对外行为不变。 */
+	return GBoyFrames::resolveLinkMode(playerCount, m_modeOverride);
+}
+
+void CloudLink::notePeerLinkMode(int mode, const QString& source) {
+	if (mode == GBoyFrames::LINK_MODE_UNKNOWN) {
+		return; // 官方 APK / 旧客户端：没有能力位
+	}
+	if (mode == GBoyFrames::LINK_MODE_INVALID) {
+		/* F8：把 INVALID 回写，让「对端畸形」这个事实留在状态里可被重读。
+		 *
+		 * 注意因果（2026-11 修正，别照旧注释理解）：回写**不是**挡住
+		 * 「畸形被 allow_legacy 放行」的那道锁。那道锁是紧接着的
+		 * `exchange(true)` 置 m_modeRejected —— negotiateLinkMode() 顶部的
+		 * `if (m_modeRejected) return false;` 会先短路，根本走不到
+		 * 「对端未声明 → 显式许可回落 B」那条分支。
+		 * 实测证据（变异反向验证）：临时去掉这行 store 重编，--gatetest 只红
+		 * 一条 —— 用例 4 的「INVALID is written back」；用例 7「畸形 +
+		 * allow_legacy=true 仍然拒绝」照旧绿。可见放行路径本来就不通。
+		 *
+		 * 回写的真实价值是**状态一致**：m_peerLinkMode 必须与实际发生的事一致，
+		 * 后续重读/诊断不会把「畸形」误报成「未声明」，negotiateLinkMode() 里
+		 * 那条 peer == INVALID 的分支也才自洽（它是第二道锁，不是第一道）。
+		 *
+		 * 与 Android 的差异（同一结构的两端口径）：Android
+		 * GBoyCloudLink.notePeerLinkMode() 对 INVALID 不写 peerLinkMode，
+		 * 它的安全同样来自 modeRejected 短路；两端结果等价，只是 PC 多留了
+		 * 一份可观测状态。
+		 *
+		 * 另注：negotiateLinkMode() 里 peer == INVALID 那条分支曾是无条件 fail()
+		 * （没有 exchange 保护），与其它分支不一致。它当前被顶部短路挡着走不到，
+		 * 所以不会重复报错；但一旦有人删掉顶部短路，用户就会收到两条「畸形」文案。
+		 * 现已统一为 exchange 保护，并由 --gatetest 用例 11 **强制**执行该分支来验证
+		 * （强制方式：把 rejected 清成 false + peer 设成 INVALID，这是它唯一的可达构造）。 */
+		m_peerLinkMode.store(mode, std::memory_order_relaxed);
+		if (!m_modeRejected.exchange(true, std::memory_order_relaxed)) {
+			/* F9：与其它几条协商失败文案对齐——本机=、对端=、来源、怎么改。 */
+			const QString localText = m_modeBound.load(std::memory_order_relaxed)
+				? modeName(m_linkMode.load(std::memory_order_relaxed))
+				: QStringLiteral("尚未绑定（AUTO）");
+			fail(QStringLiteral("【联机模式协商失败】本机=%1，对端能力位畸形（来源 %2）。"
+			                   "畸形 = 缺少能力位标记（0x40）或保留了非 0 位，"
+			                   "通常是对端版本不一致/能力位被写坏，无法确认两端帧格式一致，"
+			                   "已断开以避免两套帧格式同流。请两端使用相同版本，并确认两端"
+			                   "联机模式设置相同（大厅下拉框或 MGBAX_LINK_MODE=A|B）。")
+			             .arg(localText, source));
+		}
+		return;
+	}
+	m_peerLinkMode.store(mode, std::memory_order_relaxed);
+	GbCloud::debugLog(QStringLiteral("[C0] peer mode=%1 from %2")
+	                          .arg(modeName(mode), source));
+	if (!m_modeBound.load(std::memory_order_relaxed)) {
+		return; // 本地还没绑定，等 negotiateLinkMode() 统一判定
+	}
+	const int local = m_linkMode.load(std::memory_order_relaxed);
+	if (local != mode && !m_modeRejected.exchange(true, std::memory_order_relaxed)) {
+		fail(QStringLiteral("【联机模式协商失败】本机=%1，对端=%2（来源 %3）。"
+		                   "两套帧格式不能同流，已断开；请在两端设置相同的联机模式"
+		                   "（大厅下拉框或 MGBAX_LINK_MODE=A|B）。")
+		             .arg(modeName(local), modeName(mode), source));
+	}
+}
+
+bool CloudLink::negotiateLinkMode(Room* room, const QString& where) {
+	if (m_modeRejected.load(std::memory_order_relaxed)) {
+		return false;
+	}
+	const int local = resolveLinkMode(qMax(1, room->playerCount));
+	m_linkMode.store(local, std::memory_order_relaxed);
+	m_officialMode = (local == GBoyFrames::LINK_MODE_B);
+	m_modeBound.store(true, std::memory_order_relaxed);
+	/* §4.2(c)：把「这一轮到底跑了哪条路」和环境变量来源一起落盘。
+	 * MGBAX_OFFICIAL_LINK=1 残留曾把 2 人房悄悄拽成 B，读日志时无从分辨。 */
+	logPathDiag(local == GBoyFrames::LINK_MODE_B ? QStringLiteral("B") : QStringLiteral("A"),
+	            QStringLiteral("negotiating"), QStringLiteral("pending"));
+
+	int peer = m_peerLinkMode.load(std::memory_order_relaxed);
+	if (peer == GBoyFrames::LINK_MODE_UNKNOWN) {
+		/* WSS hello/accept 是主协商通道，但它与 KCP 握手是两条独立时钟：
+		 * 中继偶尔会先握手成功、对端 hello 稍后才到。给一个 2s 的**墙钟上界**，
+		 * 期间只排空信令（数据通道此时还没开始跑，不会吃掉游戏帧）。
+		 * 超过仍未知才按「未声明」处理，绝不无限等待。
+		 *
+		 * F7（2026-11 修正）：这里原本是 `for (i < 20) drainSignaling(session, 100)`，
+		 * 注释声称 2s、实测只有 ~1.2s。根因不在循环而在 drainSignaling()：它是
+		 * **排空**语义 —— 内部 `sig->recv(60)` 一返回空就 `return`，所以单次调用
+		 * 只花 ~60ms（recv 自己的超时），而不是参数里的 100ms，20 × 60ms ≈ 1200ms。
+		 * 只有 m_session 不可用的那条分支（waitAndProcess(100)）才真是 2s。
+		 * 现在改成按 deadline 循环，drain 之后把剩余时间用 waitAndProcess() 补齐，
+		 * 两条分支都真的受同一个 deadline 约束。
+		 *
+		 * 口径（不要误读）：这是**构造保证的 2000ms 上界**，不是实测值。
+		 * 实测覆盖情况分两条分支说，别混成一句「已实测 2s」：
+		 *   - `waitAndProcess()` 分支（m_session 为 nullptr）：已由 test-gboylink
+		 *     --gatetest 实测 2004~2014ms（真实 negotiateLinkMode() 量出来的）；
+		 *   - `drainSignaling()` 分支（信令可用，真机主路径）：**仍只有构造保证**，
+		 *     未做真实云端时序实测（需要活的账号 + 房间）。该分支的时序语义
+		 *     目前由 --gatetest 用例 8/9/10 通过 m_gatePump 注入模拟覆盖，
+		 *     注入的是「泵提前返回 / 晚到 / 中途 close」三种时序，不是真网络。 */
+		const qint64 kPeerModeWaitMs = 2000;
+		const qint64 deadline = QDateTime::currentMSecsSinceEpoch() + kPeerModeWaitMs;
+		while (!m_closed.load(std::memory_order_relaxed)
+		       && m_peerLinkMode.load(std::memory_order_relaxed) == GBoyFrames::LINK_MODE_UNKNOWN) {
+			qint64 left = deadline - QDateTime::currentMSecsSinceEpoch();
+			if (left <= 0) {
+				break;
+			}
+			const int slice = int(qMin<qint64>(left, 100));
+			const bool signalling = m_session && m_session->isOpen();
+			if (!signalling && !m_gatePump) {
+				waitAndProcess(slice);
+				continue;
+			}
+			if (m_gatePump) {
+				/* 仅测试注入（--gatetest 用例 8/9/10）：语义等价于「信令可用但
+				 * drainSignaling() 提前返回」。泵自己决定这一轮排空花多少、
+				 * 期间对端能力位是否到达、要不要 close。返回值丢弃 —— 控制流
+				 * 只认 deadline，否则注入方谎报耗时就能绕过上界。 */
+				m_gatePump(slice);
+			} else {
+				drainSignaling(m_session, slice);
+			}
+			/* drainSignaling 只排空此刻队列里已有的信令、不保证占满 slice
+			 * （见上），剩下的时间交给事件循环，等对端 hello 真正到达。
+			 * 这一句也是 F7 的修复本体：泵/drain 提前返回时，靠它把时间补齐。 */
+			left = deadline - QDateTime::currentMSecsSinceEpoch();
+			if (left > 0) {
+				waitAndProcess(int(qMin<qint64>(left, 100)));
+			}
+		}
+		peer = m_peerLinkMode.load(std::memory_order_relaxed);
+	}
+	if (peer == GBoyFrames::LINK_MODE_INVALID) {
+		/* 这条分支在生产路径上**不可达**：INVALID 只能经 notePeerLinkMode() 进来，
+		 * 而那里已经把 m_modeRejected 置位，顶部 `if (m_modeRejected) return false;`
+		 * 会先短路。它的定位是「短路被误删时的第二道锁」，由 test-gboylink
+		 * --gatetest 用例 11 强制覆盖（把 rejected 清成 false + peer 设成 INVALID）。
+		 *
+		 * 失败文案必须是**幂等**的：与兄弟分支一致用 exchange 保护。没有它时，
+		 * 一旦顶部短路被删掉，用户会收到两条「畸形」文案（一条来自
+		 * notePeerLinkMode、一条来自这里）—— 用例 11 的「只报一次」断言钉的就是它。 */
+		if (!m_modeRejected.exchange(true, std::memory_order_relaxed)) {
+			/* F9：补齐本机模式、对端状态、来源与改法，与其余文案同等完整度。 */
+			fail(QStringLiteral("【联机模式协商失败】本机=%1，对端能力位畸形（%2）。"
+			                   "畸形 = 缺少能力位标记（0x40）或保留了非 0 位，"
+			                   "无法确认两端帧格式一致，已断开以避免两套帧格式同流。"
+			                   "请两端使用相同版本，并确认两端联机模式设置相同"
+			                   "（大厅下拉框或 MGBAX_LINK_MODE=A|B）。")
+			             .arg(modeName(local), where));
+		}
+		return false;
+	}
+	if (peer == local) {
+		status(QStringLiteral("联机模式协商通过：%1（%2，%3 人房）")
+		               .arg(modeName(local), where, QString::number(qMax(1, room->playerCount))));
+		return true;
+	}
+	if (peer == GBoyFrames::LINK_MODE_UNKNOWN) {
+		if (m_allowLegacyPeer) {
+			/* 显式许可才允许回落：不是静默降级，状态栏会明确写出来。 */
+			m_officialMode = true;
+			m_linkMode.store(GBoyFrames::LINK_MODE_B, std::memory_order_relaxed);
+			status(QStringLiteral("警告：对端未声明联机模式（旧客户端/官方 APK），"
+			                     "按 MGBAX_LINK_ALLOW_LEGACY=1 显式许可回落为 %1（%2）。"
+			                     "此路径未经 2P 云端验收，不建议用于交付。")
+			               .arg(modeName(GBoyFrames::LINK_MODE_B), where));
+			return true;
+		}
+		/* 刻意**不加** exchange 幂等：本分支的重复 emit 是「顶部短路被误删」时的报警信号，
+		 * 用例 2/5/10 依赖 secondStatusCount == 1 才红。若要加幂等，必须同步把这三条断言
+		 * 改成靠别的可观测量（例如 linkMode 被重解析）来报警，否则短路失效将无人发现。
+		 * 与 INVALID 分支的区别：那条会被正常走到（用例 11 强制），防双发是正当需求；
+		 * 这两条在短路健康时永不重入，所以「不幂等」在这里是**承重的**，不是遗漏。 */
+		m_modeRejected.store(true, std::memory_order_relaxed);
+		/* F9：这条原本只写了「本机为 X」，没给来源、也没给「两端设置相同模式」
+		 * 这个最常用的改法；补齐到与其余文案同等完整度。 */
+		fail(QStringLiteral("【联机模式协商失败】本机=%1，对端未声明联机模式"
+		                   "（旧客户端 / 官方 APK，%2）。"
+		                   "无法确认两端帧格式一致，已断开以避免同流事故。"
+		                   "请两端使用相同版本的客户端，并确认两端联机模式设置相同"
+		                   "（大厅下拉框或 MGBAX_LINK_MODE=A|B）；确需与旧客户端互通时，"
+		                   "两端显式设置 MGBAX_LINK_ALLOW_LEGACY=1（PC）/ "
+		                   "ADB allow_legacy=true（Android）。")
+		             .arg(modeName(local), where));
+		return false;
+	}
+	/* 同样刻意**不加** exchange 幂等：理由同上一条分支 —— 这里的重复 emit 是
+	 * 「顶部短路被误删」的报警信号，用例 2（冲突）依赖 secondStatusCount == 1 才红。
+	 * 若将来为形式一致补幂等，必须同时改造用例 2/5/10 的报警依据。 */
+	m_modeRejected.store(true, std::memory_order_relaxed);
+	fail(QStringLiteral("【联机模式协商失败】本机=%1，对端=%2（%3）。"
+	                   "两套帧格式不能同流，已断开；请在两端设置相同的联机模式"
+	                   "（大厅下拉框或 MGBAX_LINK_MODE=A|B）。")
+	             .arg(modeName(local), modeName(peer), where));
+	return false;
 }
 
 }

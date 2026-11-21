@@ -69,6 +69,15 @@ void sioLinkPump(struct SioLink* sio, struct mCore* core);
  * 供自动化脚本用游戏内存判定入场；MGBAX_LINK_DIAG 未设置时开销为零。 */
 void sioLinkDiagCore(struct mCore* core);
 
+/** 快帧门的纯判据（见 sio_link.c 的注释）：供 `test-gboylink --fastgate` 断言。 */
+bool sioFastGateReady(bool disabled, uint32_t ok, unsigned gLinkState, unsigned gLinkPlayerCount);
+
+/** 可配置最小轮次的快帧门：minOk 是「会话建立后至少跑够多少轮才允许快帧」。
+ * 默认 256 与 sioFastGateReady 等价；path A 云端握手期链路会在 n≈34 因
+ * 每帧 SIO 中断不足被 LAG_MASTER 拆掉，远早于 256 —— A/B 时可用环境变量
+ * MGBAX_FAST_MIN_OK 把它降到握手后立即生效（如 8），验证能否救回链路。 */
+bool sioFastGateReadyEx(bool disabled, uint32_t ok, unsigned gLinkState, unsigned gLinkPlayerCount, uint32_t minOk);
+
 /** Diagnostics: smoothed RTT in µs (0 = unknown) and peer queue counters. */
 uint32_t sioLinkRttUs(const struct SioLink* sio);
 void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drops);

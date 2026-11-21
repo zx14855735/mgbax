@@ -61,6 +61,14 @@ public:
 	 *  统一 OR 上这个静态值，跟对象的归属无关。 */
 	static int globalMask();
 
+	/** 记录「本帧最终送进 core->setKeys() 的掩码」，供外部确认脚本掩码
+	 *  真的到了核心。
+	 *
+	 *  只在生效时（MGBAX_SCRIPT_DIR 指向的目录存在、且当前有非 0 掩码）
+	 *  写 <dir>/_keys_applied.txt，每 ~0.5s 一次；正常玩家路径上
+	 *  s_dir 恒为空，直接返回，不产生任何文件 IO。 */
+	static void noteKeysApplied(int activeKeys);
+
 private slots:
 	void poll();
 

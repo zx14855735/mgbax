@@ -13,6 +13,27 @@
 
 #include "GBoyFrames.h"
 
+/* P0 / 脏 seed 干净重发：默认关（=1 开启）。开时 arm 重发 / sync_state 复用缓存
+ * 的首份 seed 字节，不再生成含 st4/8FFF/B9A0 运行时态的即时快照。与三端同名
+ * 同值（iOS UserDefaults mgbax.link.seed_clean_resend / prop 由 driver 下发）。 */
+#ifndef MGBAX_SEED_CLEAN_RESEND
+#define MGBAX_SEED_CLEAN_RESEND 0
+#endif
+
+/**
+ * 测试专用探针（`test-gboylink --gatetest`，定义在 test/gboylink_test.cpp 里）。
+ *
+ * 存在的唯一理由：协商门（`negotiateLinkMode`）的失败分支只有在
+ * 「对端能力位已就位」时才会走到，而把能力位放进去的那两个入口
+ * （type-1 注册帧 / WSS hello 标记）都是 private，测试没有别的正当路径。
+ * 它不做任何绕过 —— 内部调用的就是生产代码的 `notePeerLinkMode()` 与
+ * `negotiateLinkMode()`，没有第二套判定逻辑。
+ *
+ * 用 friend 而不是公开方法：生产二进制里不该留下可调用的测试入口，
+ * friend 声明是编译期的东西，零运行时成本、零 API 暴露。
+ */
+struct CloudLinkGateProbe;
+
 namespace QGBA {
 
 class KcpChannel;
@@ -61,6 +82,23 @@ public:
 	void sendReset();
 	/** 官方 type 9：把本机倍速广播给对端（1 / -1 / 2 / 4，-1 = 0.5x）。 */
 	void sendSpeed(int speed);
+	/**
+	 * C0 / ADR-002：显式指定联机架构。mode 取 GBoyFrames::LINK_MODE_A /
+	 * LINK_MODE_B，或 GBoyFrames::LINK_MODE_UNKNOWN(-1) = AUTO（按房间人数：
+	 * 2P→A、3/4P→B）。必须在 startLink() 之前调用；默认值也可由环境变量
+	 * MGBAX_LINK_MODE=A|B|AUTO 设置（MGBAX_OFFICIAL_LINK=1 等价于 B，兼容旧脚手架）。
+	 * 两端必须一致，不一致直接 fail 并在大厅给出可见提示，绝不静默降级。
+	 */
+	void setLinkMode(int mode) { m_modeOverride = mode; }
+	/**
+	 * 显式许可「对端未声明能力位」（官方 APK / 旧客户端）时按 B 互通。
+	 * 默认关闭 —— 未知模式一律拒绝，避免两套帧格式同流。
+	 */
+	void setAllowLegacyPeer(bool allow) { m_allowLegacyPeer = allow; }
+	/** 当前已生效的模式（startLink 后可能随房间人数变化）。 */
+	int currentLinkMode() const { return m_linkMode.load(std::memory_order_relaxed); }
+	/** A / B / AUTO / UNKNOWN 的文案，用于大厅状态与失败提示。 */
+	static QString modeName(int mode);
 	void setLocalKeys(int keys) { m_localKeys.store(keys, std::memory_order_relaxed); }
 	/** 4 核/设备：把本机真人掩码同步灌进 NPC 槽位 3/4（不碰对端 slot2）。
 	 *  与 Android 的 GBoyLinkSession.injectKeysForSlot(3/4) 对称。 */
@@ -89,6 +127,10 @@ protected:
 	void run() override;
 
 private:
+	/** `test-gboylink --gatetest` 的探针（见文件头注释）。只驱动生产代码路径，
+	 *  不复制判定逻辑；生产构建里没有任何调用点。 */
+	friend struct ::CloudLinkGateProbe;
+
 	struct Room {
 		QString roomId;
 		QString nodeAddress;
@@ -170,9 +212,31 @@ private:
 	QString gameName() const;
 	void fail(const QString& text);
 	void status(const QString& text);
+	/**
+	 * 机器可读诊断：把「这一轮到底跑的是哪条路径 / 帧格式 / 快帧门配置」
+	 * 一次写进 %TEMP%/mgba_lobby_debug.log。历史事故里
+	 * `MGBAX_OFFICIAL_LINK=1` 残留把 2 人房悄悄拽成 path B，读日志时无法
+	 * 判定跑的是哪条路；这两行把路径、模式、环境变量来源全部落盘。
+	 */
+	void logPathDiag(const QString& path, const QString& transport, const QString& frameEnc);
 	/** Processes Qt events (socket callbacks) for ms while checking abort. */
 	bool waitAndProcess(int ms);
 	void cleanupChannel();
+	/** AUTO：2P→A（SIO 包中继），3/4P→B（本机多核 + 按键）；显式 override 优先。
+	 *  判定实现在 GBoyFrames::resolveLinkMode()，本函数只把自己的 override 传进去
+	 *  （同一份逻辑也被 test-gboylink --c0 直接断言）。 */
+	int resolveLinkMode(int playerCount) const;
+	/**
+	 * 在分派到具体数据路径之前绑定本端模式，并把对端能力位与本端比对。
+	 * 返回 false 时**本次或更早**已调用过 fail()（已 fail 过则直接返回、不重复
+	 * fail），调用方必须立即 return，不得继续发任何游戏帧。
+	 */
+	bool negotiateLinkMode(Room* room, const QString& where);
+	/**
+	 * 记录对端能力位（来源：type-1 注册帧 / WSS hello|accept 标记）。
+	 * 若本地模式已绑定且不一致，立刻 fail，阻止两套帧格式同流。
+	 */
+	void notePeerLinkMode(int mode, const QString& source);
 
 	Config m_config;
 	std::atomic<bool> m_closed{false};
@@ -184,10 +248,46 @@ private:
 	std::atomic<int> m_speedWire{0};
 	std::atomic<int> m_localKeys{0};
 	std::function<QByteArray()> m_stateSnapshot;
+	/** PC cloud-arm：可见核 reload 到帧 0 之后取的起点快照，作为 type-6 首包
+	 *  （对端镜像核因此也停在帧 0，而不是我们进菜单时的状态）。空 = 没开 arm。 */
+	QByteArray m_armSeedState;
+	/* P0：首发那一帧的字节缓存（帧 0 干净态不可用时的退化方案）。arm 重发 /
+	 * sync_state 在 MGBAX_SEED_CLEAN_RESEND 门开时复用它，避免推脏 seed 造成
+	 * 幻影 st4 乒乓。仅缓存字节、不生成新快照、不写游戏态。 */
+	QByteArray m_firstSeedState;
 	std::atomic<bool> m_initialStateSent{false};
 
-	/** Official GBoy layout (MGBAX_OFFICIAL_LINK=1): mirror console + keys. */
+	/** Official GBoy layout (MGBAX_OFFICIAL_LINK=1 / path B): mirror console + keys. */
 	bool m_officialMode = false;
+	/* ---- C0 能力协商位（ADR-002）----------------------------------------
+	 * m_linkMode      = 本端已绑定的模式（A/B）
+	 * m_modeOverride  = UI / 环境变量显式指定；LINK_MODE_UNKNOWN(-1) = AUTO
+	 * m_peerLinkMode  = 对端声明的模式（-1 = 尚未收到 / 未声明）
+	 * m_modeRejected  = 已 fail 过，禁止后续循环再偷偷放行
+	 * 两套帧格式（path A 裸 20 字节 netLink 包 / path B GBoy 帧）绝不能同流。 */
+	std::atomic<int> m_linkMode{GBoyFrames::LINK_MODE_A};
+	int m_modeOverride = GBoyFrames::LINK_MODE_UNKNOWN;
+	bool m_allowLegacyPeer = false;
+	std::atomic<int> m_peerLinkMode{GBoyFrames::LINK_MODE_UNKNOWN};
+	/** 本端模式是否已经绑定到某个具体房间（绑定前不拿默认值去误判对端）。 */
+	std::atomic<bool> m_modeBound{false};
+	std::atomic<bool> m_modeRejected{false};
+	/**
+	 * 协商门等待期的空闲泵 —— **仅测试注入**（`test-gboylink --gatetest`，
+	 * 见 CloudLink.h 文件头的探针说明）。生产路径永远是空的。
+	 *
+	 * 未设置时维持原分支逻辑，一字不变：
+	 *   信令可用 → `drainSignaling(session, slice)`；不可用 → `waitAndProcess(slice)`。
+	 *
+	 * 为什么需要它：真机上实际会走的「信令可用 → drainSignaling() 提前返回」
+	 * 那条分支，只有活的 WSS 会话才能触发，而 **B1**（对端 hello 稍后到）与
+	 * **F7**（2s 被静默缩成 1.2s）都只在那条分支上成立。泵让这条分支的
+	 * **时序**可被断言，而不必连真房间。
+	 *
+	 * 入参是本轮分配的切片毫秒；返回值是「本轮实际耗时」，**只用于诊断** ——
+	 * 控制流只认 deadline，注入方谎报耗时绕不过 2000ms 上界。
+	 */
+	std::function<int(int)> m_gatePump;
 	GBoyLinkSession* m_gboySession = nullptr;
 	/* 与 Android GBoyConsoleSet 对称：1 可见核 + 3 镜像核凑满 4 人多人对战。
 	 * 游戏要求 4 名玩家才放开球场走位并进入 battle_main.o，2 核会把角色
@@ -195,7 +295,16 @@ private:
 	 * 两端模拟线程同时 park）。网络仍然只传按键。 */
 	static constexpr int MIRROR_COUNT = 3;
 	GBoyMirror* m_mirrors[MIRROR_COUNT] = {nullptr};
+	/** 本局真正创建的镜像核数 = 房间人数 - 1（2P→1、3P→2、4P→3）。
+	 *  MIRROR_COUNT 只是数组上限；默认取上限以保持首局之前的行为不变。
+	 *  由 startOfficialMatch() 在起点按 room->playerCount 写入，同一线程读。 */
+	int m_mirrorCount = MIRROR_COUNT;
 	quint16 m_mirrorSioPort = 0;
+	/** path B 进程内总线 key（0 = 未启用/走 TCP）。每局重新生成，避免复用
+	 *  上一局残留的 LocalBus 状态。 */
+	int m_mirrorLocalKey = 0;
+	/** path B 用进程内锁步房间（已证明能 4 核进对战）；false = LocalBus。 */
+	bool m_mirrorLockstep = false;
 	long m_officialFrame = 0;
 	/** 上一次已上报给前端的倍速线上值，避免每 tick 重复 emit。 */
 	int m_lastSpeedWire = 0;

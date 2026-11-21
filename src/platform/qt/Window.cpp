@@ -1574,8 +1574,12 @@ void Window::toggleGifBall(bool enable) {
 	});
 	ball->show();
 	m_gifBall = ball;
+#else
+	Q_UNUSED(enable);
+#endif
 }
 
+#ifdef USE_FFMPEG
 void Window::startGifRecording() {
 	if (!m_controller || m_gifRecording) {
 		return;
@@ -1617,10 +1621,7 @@ void Window::stopGifRecording() {
 	}
 	m_gifRecording = false;
 }
-#else
-	Q_UNUSED(enable);
-#endif
-}
+#endif  // USE_FFMPEG (startGifRecording/stopGifRecording)
 
 void Window::translateScreen() {
 	if (!m_controller || !m_display || !m_controller->hasStarted()) {

@@ -55,6 +55,8 @@ enum WebDavSync {
         var uploaded = 0
         var downloaded = 0
         var errors: [String] = []
+        var libraryUpdated = false          // 本轮 manifest 下载标志（④-post 用）
+        var libraryUpdatedName: String?     // 命中文件名（K4 R-A，三端同构）
 
         var text: String {
             var parts = ["上传 \(uploaded) 个", "下载 \(downloaded) 个"]
@@ -79,8 +81,9 @@ enum WebDavSync {
         }
     }
 
-    /// Runs one bidirectional sync of the battery saves.
-    static func run(saves: URL, config: Config) throws -> Summary {
+    /// Runs one bidirectional sync of battery saves plus the mGBAx-library.json manifest.
+    static func run(saves: URL, config: Config,
+                    defaults: UserDefaults = .standard) throws -> Summary {
         guard config.isComplete else {
             throw Failure.notConfigured
         }
@@ -89,6 +92,11 @@ enum WebDavSync {
             base += "/"
         }
         let folderUrl = base + encoded(config.dir)
+
+        // ④-pre：物化镜像（首启 mtime=1 / 本地事件 now / 无变化不写）。
+        // 必须在 contentsOfDirectory 之前，使镜像进入 battery 通用 LWW 循环。
+        ManifestSync.prepareMirrors(defaults: defaults, saves: saves)
+
         var summary = Summary()
 
         // 远端没有这个目录就建一个（已经存在时忽略）
@@ -97,7 +105,7 @@ enum WebDavSync {
         let remote = list(folderUrl + "/", config)
         let names = (try? FileManager.default.contentsOfDirectory(at: saves,
                                                                  includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let battery = names.filter { isBatterySave($0.lastPathComponent) }
+        let battery = names.filter { isSyncedFile($0.lastPathComponent) }
 
         for file in battery {
             let name = file.lastPathComponent
@@ -122,6 +130,10 @@ enum WebDavSync {
             } else if remoteTime > local.addingTimeInterval(0.999) {
                 if get(folderUrl + "/" + encoded(name), file, config, remoteTime) {
                     summary.downloaded += 1
+                    if ManifestSync.isManifestName(name) {
+                        summary.libraryUpdated = true
+                        summary.libraryUpdatedName = name
+                    }
                 } else {
                     summary.errors.append(name)
                 }
@@ -129,15 +141,25 @@ enum WebDavSync {
         }
 
         // 远端有、本地还没有的存档下来（换设备的情况）
-        for entry in remote where isBatterySave(entry.name) {
+        for entry in remote where isSyncedFile(entry.name) {
             let exists = battery.contains { $0.lastPathComponent.caseInsensitiveCompare(entry.name) == .orderedSame }
             if !exists {
                 let destination = saves.appendingPathComponent(entry.name)
                 if get(folderUrl + "/" + encoded(entry.name), destination, config, entry.mtime) {
                     summary.downloaded += 1
+                    if ManifestSync.isManifestName(entry.name) {
+                        summary.libraryUpdated = true
+                        summary.libraryUpdatedName = destination.lastPathComponent
+                    }
                 }
             }
         }
+
+        // ④-post：仅本轮下载 manifest 才合并回灌；无论如何刷新快照防 ping-pong。
+        // 绝不重写镜像、绝不 bump 其 mtime（落地 mtime 已由 get() 设为远端值）。
+        ManifestSync.applyFromMirror(defaults: defaults, saves: saves,
+                                     libraryUpdated: summary.libraryUpdated,
+                                     libraryUpdatedName: summary.libraryUpdatedName)
         return summary
     }
 
@@ -265,6 +287,11 @@ enum WebDavSync {
         return lower.range(of: #"\.sa\d$"#, options: .regularExpression) != nil
     }
 
+    /// 需求③同步白名单唯一真源薄封装（委托 ManifestSync，禁复制裸文件名）。
+    private static func isSyncedFile(_ name: String) -> Bool {
+        return isBatterySave(name) || ManifestSync.isManifestName(name)
+    }
+
     private static func encoded(_ segment: String) -> String {
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/?#[]@!$&'()*+,;=")
@@ -274,6 +301,30 @@ enum WebDavSync {
     private static func modificationDate(_ url: URL) -> Date {
         let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
         return values?.contentModificationDate ?? Date.distantPast
+    }
+
+    /// WebDAV getlastmodified 多格式解析（C1 §1.9 / F17 iOS 独有更强项）。
+    /// RFC1123/GMT → RFC850 → asctime → ISO8601 → ISO8601DateFormatter 兜底。
+    private static func parseHttpDate(_ raw: String) -> Date {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return .distantPast }
+        let patterns = [
+            "EEE, dd MMM yyyy HH:mm:ss 'GMT'",
+            "EEE, dd-MMM-yy HH:mm:ss 'GMT'",
+            "EEE MMM d HH:mm:ss yyyy",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
+        ]
+        for p in patterns {
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(identifier: "GMT") ?? TimeZone.current
+            f.dateFormat = p
+            if let d = f.date(from: s) { return d }
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = .withInternetDateTime
+        return iso.date(from: s) ?? .distantPast
     }
 
     /// Reads the two properties we need out of a multistatus body. Namespace
@@ -338,12 +389,7 @@ enum WebDavSync {
             guard !name.isEmpty else {
                 return
             }
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(identifier: "GMT")
-            formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
-            let date = formatter.date(from: modified.trimmingCharacters(in: .whitespacesAndNewlines))
-                ?? Date.distantPast
+            let date = WebDavSync.parseHttpDate(modified)
             files.append(RemoteFile(name: name, mtime: date))
         }
     }

@@ -49,6 +49,27 @@ final class DebugViewers {
 
     private static final int MAX_HITS = 20000;
 
+    // GBA 硬件固定内存映射基址（不随 ROM 重建平移）。所有 bus 读取/写入
+    // 一律走这些具名常量，禁止在读取点写裸地址。
+    private static final int EWRAM_BASE = 0x02000000;
+    private static final int IWRAM_BASE = 0x03000000;
+    private static final int IO_BASE    = 0x04000000;
+    private static final int PAL_BASE   = 0x05000000;
+    private static final int VRAM_BASE  = 0x06000000;
+    private static final int OAM_BASE   = 0x07000000;
+    private static final int ROM_BASE   = 0x08000000;
+
+    // IO 寄存器 / 显存子区基址
+    private static final int IO_REG_BG0CNT  = IO_BASE + 0x08;
+    private static final int IO_REG_BG0HOFS = IO_BASE + 0x10;
+    private static final int IO_REG_BG0VOFS = IO_BASE + 0x12;
+    private static final int PAL_OBJ_BASE  = PAL_BASE + 0x400;
+    private static final int VRAM_OBJ_BASE = VRAM_BASE + 0x10000;
+
+    // frameDump 的历史遗留地址（字面量少两个 0）。保持原值，不改变行为。
+    private static final int LEGACY_DISPSTAT_ADDR = 0x040004;
+    private static final int LEGACY_VCOUNT_ADDR   = 0x040006;
+
     // == Region tables =====================================================
 
     private static final class Region {
@@ -64,13 +85,13 @@ final class DebugViewers {
     }
 
     private static final Region[] GBA_REGIONS = {
-            new Region("IWRAM", 0x03000000, 0x8000),
-            new Region("EWRAM", 0x02000000, 0x40000),
-            new Region("PAL", 0x05000000, 0x400),
-            new Region("VRAM", 0x06000000, 0x18000),
-            new Region("OAM", 0x07000000, 0x400),
-            new Region("IO", 0x04000000, 0x400),
-            new Region("ROM", 0x08000000, 0x2000000),
+            new Region("IWRAM", IWRAM_BASE, 0x8000),
+            new Region("EWRAM", EWRAM_BASE, 0x40000),
+            new Region("PAL", PAL_BASE, 0x400),
+            new Region("VRAM", VRAM_BASE, 0x18000),
+            new Region("OAM", OAM_BASE, 0x400),
+            new Region("IO", IO_BASE, 0x400),
+            new Region("ROM", ROM_BASE, 0x2000000),
     };
 
     private static final Region[] GB_REGIONS = {
@@ -504,7 +525,7 @@ final class DebugViewers {
     // == BG layer viewer ===================================================
 
     static void showBg(EmulatorActivity activity, MgbaCore core) {
-        int dispcnt = core.busRead(16, 0x04000000);
+        int dispcnt = core.busRead(16, IO_BASE);
         int mode = dispcnt & 7;
         LinearLayout box = column(activity);
         LinearLayout tabs = row(activity);
@@ -576,24 +597,24 @@ final class DebugViewers {
      * affine layers from the byte map, and the bitmap modes directly.
      */
     private static Bitmap renderBg(MgbaCore core, int bg, TextView info, EmulatorActivity activity) {
-        int dispcnt = core.busRead(16, 0x04000000);
+        int dispcnt = core.busRead(16, IO_BASE);
         int mode = dispcnt & 7;
-        int cnt = core.busRead(16, 0x04000008 + bg * 2);
+        int cnt = core.busRead(16, IO_REG_BG0CNT + bg * 2);
         Bitmap bitmap = null;
         try {
             if (mode == 3) {
-                bitmap = bitmapMode(core, 0x06000000, 240, 160, 16);
+                bitmap = bitmapMode(core, VRAM_BASE, 240, 160, 16);
                 info.setText(activity.getString(R.string.bg_info_mode3));
                 return bitmap;
             }
             if (mode == 4) {
                 int frame = (dispcnt & 0x10) != 0 ? 0xA000 : 0;
-                bitmap = bitmapMode(core, 0x06000000 + frame, 240, 160, 8);
+                bitmap = bitmapMode(core, VRAM_BASE + frame, 240, 160, 8);
                 info.setText(activity.getString(R.string.bg_info_mode4));
                 return bitmap;
             }
             if (mode == 5) {
-                bitmap = bitmapMode(core, 0x06000000, 160, 128, 16);
+                bitmap = bitmapMode(core, VRAM_BASE, 160, 128, 16);
                 info.setText(activity.getString(R.string.bg_info_mode5));
                 return bitmap;
             }
@@ -603,8 +624,8 @@ final class DebugViewers {
             boolean pal256 = !affine && (cnt & 0x80) != 0;
             int screenBase = ((cnt >> 8) & 31) * 0x800;
             int size = (cnt >> 14) & 3;
-            int mapBase = 0x06000000 + screenBase;
-            int tilesBase = 0x06000000 + charBase;
+            int mapBase = VRAM_BASE + screenBase;
+            int tilesBase = VRAM_BASE + charBase;
             int wTiles;
             int hTiles;
             if (affine) {
@@ -699,7 +720,7 @@ final class DebugViewers {
     }
 
     private static int paletteColor(MgbaCore core, int index) {
-        return bgr15(core.busRead(16, 0x05000000 + index * 2));
+        return bgr15(core.busRead(16, PAL_BASE + index * 2));
     }
 
     private static int bgr15(int value) {
@@ -716,7 +737,7 @@ final class DebugViewers {
         LinearLayout box = column(activity);
         LinearLayout grid = new LinearLayout(activity);
         grid.setOrientation(LinearLayout.VERTICAL);
-        byte[] oam = core.busReadBlock(0x07000000, 0x400);
+        byte[] oam = core.busReadBlock(OAM_BASE, 0x400);
         int shown = 0;
         LinearLayout rowLayout = null;
         for (int i = 0; i < 128; i++) {
@@ -803,10 +824,10 @@ final class DebugViewers {
                 }
                 int color;
                 if (pal256) {
-                    int b = core.busRead(8, 0x06010000 + tileIndex * 64 + (sy % 8) * 8 + sx % 8);
+                    int b = core.busRead(8, VRAM_OBJ_BASE + tileIndex * 64 + (sy % 8) * 8 + sx % 8);
                     color = b == 0 ? 0 : paletteColor(core, b);
                 } else {
-                    int addr = 0x06010000 + tileIndex * 32 + (sy % 8) * 4 + ((sx % 8) >> 1);
+                    int addr = VRAM_OBJ_BASE + tileIndex * 32 + (sy % 8) * 4 + ((sx % 8) >> 1);
                     int b = core.busRead(8, addr);
                     int nib = (sx & 1) != 0 ? (b >> 4) : (b & 0xF);
                     color = nib == 0 ? 0 : paletteColor(core, palette * 16 + nib);
@@ -835,7 +856,7 @@ final class DebugViewers {
 
     /** Contact sheet of all visible sprites for export. */
     private static Bitmap oamSheet(MgbaCore core) {
-        byte[] oam = core.busReadBlock(0x07000000, 0x400);
+        byte[] oam = core.busReadBlock(OAM_BASE, 0x400);
         int cell = 64;
         Bitmap sheet = Bitmap.createBitmap(cell * 8, cell * 16, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(sheet);
@@ -862,8 +883,8 @@ final class DebugViewers {
     static void showPalette(EmulatorActivity activity, MgbaCore core) {
         ScrollView scroll = new ScrollView(activity);
         LinearLayout box = column(activity);
-        LinearLayout grid = rowGrid(activity, core, 0x05000000, activity.getString(R.string.bg_palette));
-        LinearLayout grid2 = rowGrid(activity, core, 0x05000400, activity.getString(R.string.obj_palette));
+        LinearLayout grid = rowGrid(activity, core, PAL_BASE, activity.getString(R.string.bg_palette));
+        LinearLayout grid2 = rowGrid(activity, core, PAL_OBJ_BASE, activity.getString(R.string.obj_palette));
         Button export = smallButton(activity, R.string.export);
         export.setOnClickListener(v -> exportImage(activity, paletteSheet(core), "palette"));
         box.addView(label(activity, R.string.bg_palette));
@@ -920,7 +941,7 @@ final class DebugViewers {
         Canvas canvas = new Canvas(sheet);
         canvas.drawColor(0xFF202020);
         Paint paint = new Paint();
-        byte[] data = core.busReadBlock(0x05000000, 512);
+        byte[] data = core.busReadBlock(PAL_BASE, 512);
         for (int bank = 0; bank < 2; bank++) {
             for (int i = 0; i < 256; i++) {
                 int value = data[(bank * 256 + i) * 2] & 0xFF | (data[(bank * 256 + i) * 2 + 1] & 0xFF) << 8;
@@ -1137,8 +1158,8 @@ final class DebugViewers {
         int height = TILE_SHEET_ROWS * 8;
         Bitmap sheet = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         int[] pixels = new int[width * height];
-        byte[] vram = core.busReadBlock(0x06000000, 0x18000);
-        byte[] pal = core.busReadBlock(0x05000000, 512);
+        byte[] vram = core.busReadBlock(VRAM_BASE, 0x18000);
+        byte[] pal = core.busReadBlock(PAL_BASE, 512);
         int stride = bpp == 4 ? 32 : 64;
         for (int tile = 0; tile < TILE_SHEET_COUNT; tile++) {
             int tileAddr = tile * stride;
@@ -1246,7 +1267,7 @@ final class DebugViewers {
     }
 
     private static String ioDump(MgbaCore core) {
-        byte[] io = core.busReadBlock(0x04000000, 0x400);
+        byte[] io = core.busReadBlock(IO_BASE, 0x400);
         StringBuilder out = new StringBuilder();
         for (IoReg reg : GBA_IO) {
             if (reg.offset + reg.bits / 8 > io.length) {
@@ -1277,7 +1298,7 @@ final class DebugViewers {
      * layers have a tilemap; bitmap modes are reported instead of faked.
      */
     static void showMap(EmulatorActivity activity, MgbaCore core) {
-        int dispcnt = core.busRead(16, 0x04000000);
+        int dispcnt = core.busRead(16, IO_BASE);
         int mode = dispcnt & 7;
         LinearLayout box = column(activity);
         final TextView info = label(activity, 0);
@@ -1332,7 +1353,7 @@ final class DebugViewers {
 
     /** Renders one text layer's tilemap at 8x8 per tile with a 1px grid. */
     private static Bitmap mapBitmap(MgbaCore core, int bg, TextView info, EmulatorActivity activity) {
-        int cnt = core.busRead(16, 0x04000008 + bg * 2);
+        int cnt = core.busRead(16, IO_REG_BG0CNT + bg * 2);
         int priority = cnt & 3;
         int charBase = ((cnt >> 2) & 3) * 0x4000;
         boolean pal256 = (cnt & 0x80) != 0;
@@ -1344,9 +1365,9 @@ final class DebugViewers {
         int height = hTiles * 8;
         Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         int[] pixels = new int[width * height];
-        byte[] vram = core.busReadBlock(0x06000000, 0x18000);
-        byte[] pal = core.busReadBlock(0x05000000, 512);
-        byte[] map = core.busReadBlock(0x06000000 + screenBase, wTiles * hTiles * 2);
+        byte[] vram = core.busReadBlock(VRAM_BASE, 0x18000);
+        byte[] pal = core.busReadBlock(PAL_BASE, 512);
+        byte[] map = core.busReadBlock(VRAM_BASE + screenBase, wTiles * hTiles * 2);
         int bpp = pal256 ? 8 : 4;
         for (int ty = 0; ty < hTiles; ty++) {
             for (int tx = 0; tx < wTiles; tx++) {
@@ -1433,9 +1454,9 @@ final class DebugViewers {
     }
 
     private static String frameDump(MgbaCore core, EmulatorActivity activity) {
-        int dispcnt = core.busRead(16, 0x04000000);
-        int dispstat = core.busRead(16, 0x040004);
-        int vcount = core.busRead(16, 0x040006);
+        int dispcnt = core.busRead(16, IO_BASE);
+        int dispstat = core.busRead(16, LEGACY_DISPSTAT_ADDR);
+        int vcount = core.busRead(16, LEGACY_VCOUNT_ADDR);
         StringBuilder sb = new StringBuilder();
         sb.append(String.format(Locale.US, "DISPCNT %04X  mode=%d  blank=%s  obj1d=%s  forcedBlank=%s\n",
                 dispcnt, dispcnt & 7,
@@ -1468,9 +1489,9 @@ final class DebugViewers {
         }
         sb.append('\n');
         for (int bg = 0; bg < 4; bg++) {
-            int cnt = core.busRead(16, 0x04000008 + bg * 2);
-            int hofs = core.busRead(16, 0x04000010 + bg * 4) & 0x1FF;
-            int vofs = core.busRead(16, 0x04000012 + bg * 4) & 0x1FF;
+            int cnt = core.busRead(16, IO_REG_BG0CNT + bg * 2);
+            int hofs = core.busRead(16, IO_REG_BG0HOFS + bg * 4) & 0x1FF;
+            int vofs = core.busRead(16, IO_REG_BG0VOFS + bg * 4) & 0x1FF;
             int size = (cnt >> 14) & 3;
             int wTiles = (size & 1) != 0 ? 64 : 32;
             int hTiles = (size & 2) != 0 ? 64 : 32;
@@ -1485,7 +1506,7 @@ final class DebugViewers {
                     (cnt & 0x80) != 0 ? "256c" : "16c ",
                     hofs, vofs));
         }
-        byte[] oam = core.busReadBlock(0x07000000, 0x400);
+        byte[] oam = core.busReadBlock(OAM_BASE, 0x400);
         int visible = 0;
         int affine = 0;
         for (int i = 0; i < 128; i++) {

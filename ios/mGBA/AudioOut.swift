@@ -78,6 +78,11 @@ final class AudioOut {
     /// Low-latency mode: shortens the system's I/O buffer at the cost of
     /// headroom; takes effect on the next `start()`.
     var lowLatency = false
+    /// 用户偏好的输出采样率，0 = 跟随系统（默认）。与 Android `audio_rate` 同语义。
+    /// 只在 `start()` 里通过 `AVAudioSession.setPreferredSampleRate` 向系统提出；
+    /// 蓝牙 / HFP 等路由可能忽略这个偏好，实际速率仍以 `session.sampleRate` 为准，
+    /// 核心会重采样到实际速率，所以声音不会错，只是偏好未必被硬件采纳。
+    var preferredRate = 0
 
     init() {
         capacity = 8192
@@ -87,6 +92,8 @@ final class AudioOut {
 
     /// Starts the output device at its own sample rate. The core is told about
     /// the rate separately, through `mgbaMobileSetAudioOutput`.
+    /// 用户偏好速率用 setPreferredSampleRate 提出，但蓝牙/HFP 路由可能忽略它；
+    /// 无论采纳与否，音频图都按 session 实际回报的 sampleRate 建立。
     /// 音频输出路由：0 自动（跟随系统，耳机/蓝牙都行）/ 1 强制扬声器。
     /// iOS 不允许选「驱动」，能真正调的就是这个端口覆盖与缓冲时长。
     func setOutputRoute(_ route: Int) {
@@ -119,6 +126,9 @@ final class AudioOut {
         try? session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
         if lowLatency {
             try? session.setPreferredIOBufferDuration(0.005)
+        }
+        if preferredRate >= 8000 && preferredRate <= 192000 {
+            try? session.setPreferredSampleRate(Double(preferredRate))
         }
         try? session.setActive(true)
         var rate = Int(session.sampleRate.rounded())

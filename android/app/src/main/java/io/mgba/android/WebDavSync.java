@@ -44,6 +44,8 @@ final class WebDavSync {
         int uploaded;
         int downloaded;
         final List<String> errors = new ArrayList<>();
+        boolean libraryUpdated;      // manifest 本轮被远端下载（触发回灌合并，需求③）
+        String libraryUpdatedName;   // 实际命中并下载的文件名（规范名或 legacy 别名，K4 R-A）
 
         String summary() {
             return uploaded + "/" + downloaded;
@@ -75,6 +77,14 @@ final class WebDavSync {
      * than their remote twin go up, remote newer come down; files only on
      * one side are copied to the other.
      */
+    /**
+     * Runs one bidirectional sync of battery saves plus the mGBAx-library.json manifest.
+     * Local files newer than their remote twin go up, remote newer come down; files only
+     * on one side are copied to the other. Only isSyncedFile() files participate.
+     *
+     * <p>④-pre/④-post 为需求③挂载点：物化镜像（首启 mtime=1 / 仅签名变化导出）
+     * 与下载后合并回写；文件级 LWW（mtime +999ms slack）与 HTTP 层完全复用。</p>
+     */
     static Result run(Context context, SharedPreferences prefs) throws Exception {
         Result result = new Result();
         String base = prefs.getString("sync_url", DEFAULT_URL).trim();
@@ -89,11 +99,22 @@ final class WebDavSync {
         }
         String folderUrl = base + encoded(dir);
         File saves = savesDir(context);
+
+        // ④-pre：先物化本地 manifest 镜像，必须在 listFiles() 之前，使镜像进入通用 LWW 循环。
+        // 首启=1（远端必胜哨兵，非0）；本地签名变化=now（触发上传）；无变化=NO_WRITE（防 ping-pong）。
+        File mirror = new File(saves, ManifestSync.LIBRARY_MANIFEST);
+        long mirrorMtime = ManifestSync.mirrorMtimeFor(
+                mirror.exists(), ManifestSync.localChanged(context));
+        if (mirrorMtime != ManifestSync.MTIME_NO_WRITE
+                && ManifestSync.exportManifestTo(context, mirror)) {
+            mirror.setLastModified(mirrorMtime);
+        }
+
         File[] files = saves.listFiles();
         List<File> battery = new ArrayList<>();
         if (files != null) {
             for (File file : files) {
-                if (file.isFile() && isBatterySave(file.getName())) {
+                if (file.isFile() && isSyncedFile(file.getName())) {
                     battery.add(file);
                 }
             }
@@ -110,7 +131,6 @@ final class WebDavSync {
                 }
             }
             if (found == null) {
-                // Only up: a file we never uploaded is ours.
                 if (put(folderUrl + "/" + encoded(file.getName()), file, user, pass)) {
                     result.uploaded++;
                 } else {
@@ -127,6 +147,10 @@ final class WebDavSync {
             } else if (found.mtime > file.lastModified() + 999) {
                 if (get(folderUrl + "/" + encoded(file.getName()), file, user, pass, found.mtime)) {
                     result.downloaded++;
+                    if (ManifestSync.isManifestName(file.getName())) {
+                        result.libraryUpdated = true;
+                        result.libraryUpdatedName = file.getName(); // R-A：携带命中文件名
+                    }
                 } else {
                     result.errors.add(file.getName());
                 }
@@ -134,7 +158,7 @@ final class WebDavSync {
         }
         // Remote saves we do not have locally yet come down (new device case).
         for (RemoteFile entry : remote) {
-            if (!isBatterySave(entry.name)) {
+            if (!isSyncedFile(entry.name)) {
                 continue;
             }
             boolean have = false;
@@ -145,11 +169,26 @@ final class WebDavSync {
                 }
             }
             if (!have) {
-                if (get(folderUrl + "/" + encoded(entry.name), new File(saves, entry.name), user, pass, entry.mtime)) {
+                File landed = new File(saves, entry.name); // R-A：实际落地文件名
+                if (get(folderUrl + "/" + encoded(entry.name), landed, user, pass, entry.mtime)) {
                     result.downloaded++;
+                    if (ManifestSync.isManifestName(entry.name)) {
+                        result.libraryUpdated = true;
+                        result.libraryUpdatedName = landed.getName();
+                    }
                 }
             }
         }
+
+        // ④-post：manifest 下载后合并回写 prefs；无论是否下载都刷新快照。
+        // 绝不重写镜像、绝不 bump 其 mtime（落地 mtime 已由 get() 设为远端值），防 ping-pong。
+        if (result.libraryUpdated) {
+            File landed = result.libraryUpdatedName != null
+                    ? new File(saves, result.libraryUpdatedName) : mirror;
+            String remoteJson = ManifestSync.readMirror(landed);
+            if (remoteJson != null) ManifestSync.importManifest(context, remoteJson);
+        }
+        ManifestSync.refreshSnapshot(context); // 无条件刷新，防 ping-pong
         return result;
     }
 
@@ -167,6 +206,11 @@ final class WebDavSync {
             return true;
         }
         return lower.matches(".*\\.sa\\d");
+    }
+
+    /** 需求③同步白名单唯一真源 = 电池存档 || manifest（含兼容别名）；.ssN 不同步。 */
+    private static boolean isSyncedFile(String name) {
+        return isBatterySave(name) || ManifestSync.isManifestName(name);
     }
 
     private static String encoded(String segment) {

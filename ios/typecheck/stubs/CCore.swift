@@ -100,6 +100,31 @@ public func mgbaMobileBusGameStart(_ emu: OpaquePointer?, _ idx: Int32, _ menuAt
 public func mgbaMobileBusGameStop(_ emu: OpaquePointer?) {}
 public func mgbaMobileBusGameTick(_ emu: OpaquePointer?) -> UInt32 { 0 }
 public func mgbaMobileSioSetInject(_ inject: Bool) {}
+// ROOTHUNT2 零注入对照总闸：src/platform/mobile/mgba_mobile.h `void mgbaMobileSetRhOff(bool enabled)`
+// Clang importer 导入为 mgbaMobileSetRhOff(_ enabled: Bool)（Bool = C bool）。
+public func mgbaMobileSetRhOff(_ enabled: Bool) {}
+// ROOTHUNT2 B7 / 方案Y：三端对称控制面 stub
+public func mgbaMobileSetBattleRelay(_ enabled: Bool) {}
+public func mgbaMobileSetLinkBtcfg(_ enabled: Bool) {}
+// ROOTHUNT2 P0/M1：握手态保真 8FFF 旁路门 setter（mgba_mobile.h）
+public func mgbaMobileSetHsBypass(_ enabled: Bool) {}
+// ROOTHUNT2 路线A：从机握手保持门 setter（mgba_mobile.h）
+public func mgbaMobileSetHsHold(_ enabled: Bool) {}
+// ROOTHUNT2 路线A：0x2222 启动字 sticky 兜底门 setter（mgba_mobile.h）
+public func mgbaMobileSetBlock2222(_ enabled: Bool) {}
+// path B：LocalBus 握手字保真 / 2P 钳位门 setter（mgba_mobile.h）
+public func mgbaMobileSetBusHsPreserve(_ enabled: Bool) {}
+public func mgbaMobileSetLocalBus2p(_ enabled: Bool) {}
+// W92 / path B 原生 SIO 字路由门 setter（mgba_mobile.h；三端同名同值默认关）
+public func mgbaMobileSetPathBNativeSio(_ enabled: Bool) {}
+// M1 seed 崩溃修复：state-rearm 守卫门 setter（mgba_mobile.h）
+public func mgbaMobileSetStateRearmGuard(_ enabled: Bool) {}
+// P0：LAG 写时拦截禁用门 setter（mgba_mobile.h；true=开拦截吞 LAG）
+public func mgbaMobileSetNoLagClear(_ enabled: Bool) {}
+// 灰区全开（用户明示解禁）：mgba_mobile.h 声明的 gray_all/gray_lobby_open setter，
+// AppDelegate:50/54 调用；typecheck stub 必须补齐，否则全仓 typecheck 报未定义符号。
+public func mgbaMobileSetGrayAll(_ enabled: Bool) {}
+public func mgbaMobileSetGrayLobbyOpen(_ enabled: Bool) {}
 public func mgbaMobileCpuPc(_ emu: OpaquePointer?) -> UInt32 { 0 }
 public func mgbaMobileLinkClose(_ emu: OpaquePointer?) {}
 public func mgbaMobileLinkStatus(_ emu: OpaquePointer?, _ out: UnsafeMutablePointer<CChar>!, _ outLen: Int) {}

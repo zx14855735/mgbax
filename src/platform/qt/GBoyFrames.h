@@ -86,6 +86,29 @@ enum Type {
 	TYPE_RECONNECT = 100,
 };
 
+/**
+ * C0 / ADR-002：两套联机架构并存，必须在握手期绑定同一条路径，禁止静默降级。
+ *   A = 每端 1 核 + SIO 包中继（type 6 借壳承载裸 20 字节 netLink 包）
+ *   B = 本机多核（可见核 + 镜像核） + 网络只传按键（官方 case 6 整份 savestate）
+ * 事故背景：CloudLink.cpp:608-610 记过两套帧格式同流、9470 个碎片包耗死读线程。
+ */
+enum LinkMode {
+	LINK_MODE_UNKNOWN = -1,   // 旧客户端 / 官方 APK 未声明能力位
+	LINK_MODE_INVALID = -2,   // 能力位畸形（magic 不匹配或保留位非 0）
+	LINK_MODE_A = 0,          // SIO 包中继
+	LINK_MODE_B = 1,          // 本机多核 + 按键
+};
+
+/**
+ * 能力位编码在官方 16 字节 type-1 注册帧的**最后一个保留字节**（wire offset 15，
+ * 即 12 字节 body 的 index 11）。多人房官方恒把该 6 字节尾清零，写 0 与官方
+ * 逐字节一致；官方/旧客户端读到非零也只会当作保留字段忽略，不破坏互通。
+ *   bit6 (0x40) = 已声明能力；bit0 = mode（0=A / 1=B）；其余位保留且必须为 0。
+ * 只占 1 bit 表达 mode，magic 用于区分「显式 A(0x40)」与「未声明(0x00)」。
+ */
+constexpr quint8 LINK_CAP_MAGIC = 0x40;
+constexpr quint8 LINK_CAP_MODE_BIT = 0x01;
+
 /** Bare frame: length = 2, no payload. */
 QByteArray frame(int type);
 
@@ -121,12 +144,53 @@ QByteArray stateOf(const QByteArray& body);
 
 /**
  * The registration frame the official client sends the moment the KCP
- * handshake completes: type 1, body {@code int32 playerCount}; the official
- * {@code AmA8tU.A5SV6n:173-178} appends {@code short 0 + int32 baseStateCount}
- * only when {@code playerCount == 1}, so a multiplayer room frame is 10 bytes
- * on the wire and a one-player frame is 16 bytes.
+ * handshake completes: type 1, body {@code int32 playerCount} + 6 trailing
+ * bytes. The frame is **always 16 bytes on the wire** (length field 12 = 2 type
+ * bytes + 10 payload bytes): the official {@code B25kr6.ARc23Z(1, 10)} always
+ * allocates {@code len + 6 = 16} and the send thread
+ * {@code A5SV6n} does {@code outputStream.write(byteBuffer.array())}, i.e. it
+ * writes the whole backing array regardless of position/limit.
+ *
+ * {@code AmA8tU.A5SV6n:173-178} only decides whether the 6 trailing bytes are
+ * *filled*: {@code playerCount == 1} writes {@code short 0 + int32
+ * baseStateCount} there, otherwise they stay zero. The earlier "10 bytes for a
+ * multiplayer room" reading was a misreading of fill-vs-not-fill as
+ * length-vs-not-length, and being 6 bytes longer than the official client
+ * skewed the peer's frame parsing.
  */
 QByteArray registerFrame(int playerCount, int baseStateCount);
+/**
+ * 带 C0 能力位的注册帧。linkMode 取 LinkMode 枚举值；传 LINK_MODE_UNKNOWN
+ * 时退化为 2 参数版本（与官方逐字节一致，供旧客户端互通/测试脚手架使用）。
+ * 只在 playerCount != 1 时写能力位：单人房尾部是 baseStateCount，不能占用。
+ */
+QByteArray registerFrame(int playerCount, int baseStateCount, int linkMode);
+
+/**
+ * 从 type-1 注册帧体里读能力位。返回 LinkMode 枚举值：
+ * UNKNOWN(未声明/帧体不足/非 type 1/单人房)、INVALID(畸形)、A 或 B。
+ * 单人房（playerCount == 1）恒返回 UNKNOWN：那 6 字节尾部承载 baseStateCount，
+ * body[11] 是它的最低字节，不是能力位 —— 与 registerFrame()「只在
+ * playerCount != 1 时写」的规则严格镜像。
+ */
+int linkModeOf(const QByteArray& body);
+
+/**
+ * C0 / ADR-002 的 AUTO 映射：1/2 人房 → A（每端 1 核 + SIO 包中继），
+ * 3/4 人房 → B（本机多核 + 网络只传按键）。
+ *
+ * 抽成自由函数只为一件事：让没有 session、没有事件循环的测试能直接断言
+ * 「AUTO 到底选了哪条路」（test-gboylink --c0）。CloudLink::resolveLinkMode()
+ * 转调它，所以测试断言的就是线上跑的那份实现，不是它的副本；CloudLink 的
+ * 对外行为（含 m_modeOverride 优先级）不变。
+ */
+int autoLinkMode(int playerCount);
+
+/**
+ * 完整判定：显式 override（只认 A / B）优先，其余值（UNKNOWN / INVALID /
+ * 任何脏值）一律按 AUTO 处理。CloudLink::resolveLinkMode() 的实现就是这一句。
+ */
+int resolveLinkMode(int playerCount, int modeOverride);
 
 /** The message type of a frame body. */
 int typeOf(const QByteArray& body);

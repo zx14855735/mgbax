@@ -203,8 +203,18 @@ void GBoyLinkSession::onFrameBody(const QByteArray& body, int senderSlot) {
 		}
 		break;
 	case GBoyFrames::TYPE_STATE:
+		/* 官方 case 6 = 「u32 长度 + 整份 savestate」；path A 的 SIO 裸 20B
+		 * 桥包借壳 type 6（无长度头），stateOf() 会把它正确拒绝为空。
+		 * 空 blob 绝不能继续派发：path B 的 onState 会灌进镜像核，
+		 * applyRemoteState(empty) 返回错误码 1 并置 m_mirrorStateError，
+		 * 把一条正常的 SIO 桥包当成载入失败直接断链。
+		 * 与 Android GBoyLinkSession.java:318-321、iOS LobbyLink.swift:1137-1140
+		 * 以及 PC path A CloudLink.cpp:2727 的 `if (!state.isEmpty())` 门控对齐。 */
 		if (m_events.onState) {
-			m_events.onState(stateOf(body));
+			const QByteArray state = stateOf(body);
+			if (!state.isEmpty()) {
+				m_events.onState(state);
+			}
 		}
 		break;
 	case GBoyFrames::TYPE_COUNTER:

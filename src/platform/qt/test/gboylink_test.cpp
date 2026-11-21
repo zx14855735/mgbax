@@ -22,6 +22,11 @@
  *   test-gboylink busgame <rom> <sav> [3|4]
  *                                N real cores on the star bus running the
  *                                actual game's cable-club script (LINKUP proof)
+ *   test-gboylink --c0           C0 / ADR-002 capability-bit assertions (decode,
+ *                                byte-exact encode, AUTO mapping); no ROM needed
+ *   test-gboylink --gatetest     C0 negotiation gate end to end: drives the real
+ *                                CloudLink::negotiateLinkMode() over all five
+ *                                outcomes; no ROM / network / thread needed
  *
  * The wifi mode exercises the same frames GBoy/My Boy speak, the cloud modes
  * exercise the same signalling path the Android lobby uses.
@@ -46,12 +51,14 @@
 #include "../mobile/mgba_mobile.h"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstring>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 /* GBA 真锁步（验证 mGBA 自带 GBASIOLockstepCoordinator 能否解决 3/4 人
  * SerialCB 不同相位的问题）。走 mCoreThread + mLockstepThreadUser，
@@ -62,6 +69,7 @@
 #include <mgba/internal/gba/sio/lockstep.h>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
@@ -796,6 +804,255 @@ private:
 	std::vector<std::thread> m_threads;
 };
 
+/* ---- 动态 battle_main.o 判据窗口（T-03 补做 / ADR-002 R7）---------------
+ * 历史判据把 battle_main.o .text 写死为 0x08099848..0x080A30FD，它只对某个
+ * 特定 ROM 构建成立。/d/gen8 的 decomp 工程重编译后整段代码平移到
+ * 0x080B19E4..0x080BB297，cb2trace 30 项均匀 +0x16E64；明明进了
+ * BattleMainCB2（13:51 构建里是 0x080B3169）仍被判 BATTLE=NO。
+ * 详见 production/sprint-2p/T-03-busgame-root-cause.md。
+ *
+ * 现在改为按 ROM 身份动态解析：
+ *   1) 从 .map 读 `.text <start> <size> src/battle_main.o` 和 `BattleMainCB2`；
+ *      由此推导「符号在段内偏移」与「段长」——这两个是**相对几何量**，多次
+ *      重编译中恒定（0x1784 / 0x98B4），不再是绝对地址常量。
+ *   2) 没有相邻 .map 的旧 ROM 用工作区 syms.txt 的 `0809afcd BattleMainCB2`
+ *      配合同一套相对几何，算出该 ROM 自己的段区间。
+ *   3) 每个候选区间都用**当前 ROM 自身的字节**校验：battle_main.o 段首 12 字节
+ *      Thumb 序言在所有构建里相同（06 4B 1B 78 00 20 02 2B 06 D1 05 4A）。
+ *      校验通过才认定属于这个 ROM，彻底绑定 ROM 身份，不做任何猜测。
+ *   4) 找不到 .map / 符号，或全部候选都与 ROM 字节不符 → STALE_BATTLE_WINDOW
+ *      并明确报错退出；**绝不静默退回旧常量**。
+ * 覆盖入口：BUSGAME_BATTLE_MAP=<path> 显式指定（路径不存在即报错，用于构造
+ * 「.map 缺失」场景）；未设时自动找 ROM 同目录 *.map → D:/gen8/rom.map →
+ * D:/gen8/syms.txt。
+ */
+struct BattleWindow {
+	uint32_t lo = 0;
+	uint32_t hi = 0;   // exclusive
+	QString source;
+	QString romMd5;
+	QString romMtime;
+	bool valid = false;
+	QString error;
+};
+static BattleWindow g_battleWindow;
+
+static bool inBattleWindow(uint32_t cb2) {
+	return g_battleWindow.valid && cb2 >= g_battleWindow.lo && cb2 < g_battleWindow.hi;
+}
+
+static QString romIdentity(const QString& romPath, QString* mtimeOut) {
+	QFileInfo fi(romPath);
+	*mtimeOut = fi.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+	QFile f(romPath);
+	if (!f.open(QIODevice::ReadOnly)) {
+		return QString();
+	}
+	QCryptographicHash hash(QCryptographicHash::Md5);
+	char buf[65536];
+	qint64 n;
+	while ((n = f.read(buf, sizeof(buf))) > 0) {
+		hash.addData(buf, int(n));
+	}
+	return QString::fromLatin1(hash.result().toHex());
+}
+
+struct MapGeom {
+	bool haveSection = false;
+	uint32_t sectionStart = 0;
+	uint32_t sectionSize = 0;
+	bool haveSymbol = false;
+	uint32_t symbol = 0;
+};
+
+static QStringList splitTokens(const QByteArray& line) {
+	QStringList out;
+	int i = 0;
+	while (i < line.size()) {
+		while (i < line.size() && std::isspace(static_cast<unsigned char>(line[i]))) {
+			++i;
+		}
+		const int start = i;
+		while (i < line.size() && !std::isspace(static_cast<unsigned char>(line[i]))) {
+			++i;
+		}
+		if (i > start) {
+			out << QString::fromLatin1(line.constData() + start, i - start);
+		}
+	}
+	return out;
+}
+
+static uint32_t parseHexToken(const QString& token, bool* ok) {
+	QString t = token;
+	if (t.startsWith(QStringLiteral("0x"), Qt::CaseInsensitive)) {
+		t = t.mid(2);
+	}
+	return t.toUInt(ok, 16);
+}
+
+static MapGeom parseMapGeom(const QString& path) {
+	MapGeom g;
+	QFile f(path);
+	if (!f.open(QIODevice::ReadOnly)) {
+		return g;
+	}
+	const QByteArray data = f.read(16 * 1024 * 1024);
+	int off = 0;
+	while (off < data.size()) {
+		int eol = data.indexOf('\n', off);
+		if (eol < 0) {
+			eol = data.size();
+		}
+		const QByteArray line = QByteArray::fromRawData(data.constData() + off, eol - off).trimmed();
+		off = eol + 1;
+		if (line.isEmpty()) {
+			continue;
+		}
+		const QStringList t = splitTokens(line);
+		if (t.size() >= 4 && t[0] == QStringLiteral(".text")
+		    && t[3].contains(QStringLiteral("battle_main.o"))) {
+			bool ok1 = false, ok2 = false;
+			const uint32_t start = parseHexToken(t[1], &ok1);
+			const uint32_t size = parseHexToken(t[2], &ok2);
+			if (ok1 && ok2 && start >= 0x08000000u && size > 0) {
+				g.haveSection = true;
+				g.sectionStart = start;
+				g.sectionSize = size;
+			}
+		} else if (line.contains("BattleMainCB2")) {
+			for (const QString& tok : t) {
+				bool ok = false;
+				const uint32_t addr = parseHexToken(tok, &ok);
+				if (ok && addr >= 0x08000000u && addr < 0x09000000u) {
+					g.haveSymbol = true;
+					g.symbol = addr;
+					break;
+				}
+			}
+		}
+	}
+	return g;
+}
+
+/* battle_main.o 段首 AiPlayHandlesDialogue 的 12 字节序言；在旧零售布局
+ * (0x08099848) 与 13:51 重编译布局 (0x080B19E4) 逐字节相同，是布局无关的
+ * 内容指纹，用来把候选窗口绑定到当前 ROM。 */
+static const unsigned char kBattleMainPrologue[12] = {
+	0x06, 0x4B, 0x1B, 0x78, 0x00, 0x20, 0x02, 0x2B, 0x06, 0xD1, 0x05, 0x4A
+};
+
+static bool prologueAt(const QString& romPath, uint32_t addr) {
+	if (addr < 0x08000000u) {
+		return false;
+	}
+	QFile f(romPath);
+	if (!f.open(QIODevice::ReadOnly)) {
+		return false;
+	}
+	if (!f.seek(static_cast<qint64>(addr - 0x08000000u))) {
+		return false;
+	}
+	const QByteArray head = f.read(12);
+	return head.size() == 12
+	       && std::memcmp(head.constData(), kBattleMainPrologue, 12) == 0;
+}
+
+static BattleWindow resolveBattleWindow(const QString& romPath) {
+	BattleWindow w;
+	w.romMd5 = romIdentity(romPath, &w.romMtime);
+	if (w.romMd5.isEmpty()) {
+		w.error = QStringLiteral("无法读取 ROM 计算 md5: ") + romPath;
+		return w;
+	}
+
+	const QByteArray explicitMap = qgetenv("BUSGAME_BATTLE_MAP");
+	const bool explicitOnly = !explicitMap.isEmpty();
+	QStringList maps;
+	if (explicitOnly) {
+		maps << QString::fromLocal8Bit(explicitMap);
+	} else {
+		QDir dir(QFileInfo(romPath).absolutePath());
+		maps << dir.absoluteFilePath(QStringLiteral("rom.map"));
+		const QStringList extra = dir.entryList(QStringList() << QStringLiteral("*.map"),
+		                                        QDir::Files, QDir::Name);
+		for (const QString& name : extra) {
+			const QString p = dir.absoluteFilePath(name);
+			if (!maps.contains(p)) {
+				maps << p;
+			}
+		}
+		maps << QStringLiteral("D:/gen8/rom.map");
+		maps << QStringLiteral("D:/gen8/syms.txt");
+	}
+
+	struct MapEntry { QString path; MapGeom geom; };
+	QList<MapEntry> entries;
+	QString tried;
+	for (const QString& p : maps) {
+		if (!QFile::exists(p)) {
+			tried += p + QStringLiteral("(missing) ");
+			continue;
+		}
+		const MapGeom g = parseMapGeom(p);
+		entries.append(MapEntry{p, g});
+		tried += p + (g.haveSection ? QStringLiteral("(section) ") : QString())
+		         + (g.haveSymbol ? QStringLiteral("(symbol) ") : QString());
+	}
+	if (explicitOnly && entries.isEmpty()) {
+		w.error = QStringLiteral("显式 BUSGAME_BATTLE_MAP 不存在或不可解析: ")
+		          + QString::fromLocal8Bit(explicitMap);
+		return w;
+	}
+
+	/* 相对几何：符号在段内的偏移 + 段长。两者从同一个 .map 推导，不是常量。 */
+	uint32_t symOffset = 0, secSize = 0;
+	for (const MapEntry& e : entries) {
+		if (e.geom.haveSection && e.geom.haveSymbol && e.geom.sectionSize > 0
+		    && (e.geom.symbol & ~1u) > e.geom.sectionStart) {
+			symOffset = (e.geom.symbol & ~1u) - e.geom.sectionStart;
+			secSize = e.geom.sectionSize;
+			break;
+		}
+	}
+
+	struct WindowCand { uint32_t lo; uint32_t hi; QString src; };
+	std::vector<WindowCand> cands;
+	for (const MapEntry& e : entries) {
+		if (e.geom.haveSection && e.geom.sectionSize > 0) {
+			cands.push_back(WindowCand{e.geom.sectionStart,
+			                           e.geom.sectionStart + e.geom.sectionSize,
+			                           e.path + QStringLiteral(" (.text)")});
+		}
+		if (e.geom.haveSymbol && symOffset > 0 && secSize > 0) {
+			const uint32_t func = e.geom.symbol & ~1u;
+			if (func > symOffset) {
+				const uint32_t lo = func - symOffset;
+				cands.push_back(WindowCand{lo, lo + secSize,
+				                           e.path + QStringLiteral(" (BattleMainCB2-offset)")});
+			}
+		}
+	}
+	for (const WindowCand& c : cands) {
+		if (c.hi <= c.lo || c.lo < 0x08000000u) {
+			continue;
+		}
+		if (!prologueAt(romPath, c.lo)) {
+			continue;   // 这个候选属于别的 ROM 构建，不能用
+		}
+		w.lo = c.lo;
+		w.hi = c.hi;
+		w.source = c.src;
+		w.valid = true;
+		return w;
+	}
+	w.error = QStringLiteral("没有候选 battle_main.o 窗口与当前 ROM 字节匹配；已尝试: ")
+	          + tried
+	          + QStringLiteral("；相对几何 symOffset=%1 secSize=%2 候选数=%3")
+	                .arg(symOffset).arg(secSize).arg(int(cands.size()));
+	return w;
+}
+
 /**
  * The LAN SIO test under a tunnel-like RTT: both directions delayed by
  * delayMs, so the round trip is 2x. Everything else matches lanSioTest - real
@@ -812,6 +1069,20 @@ private:
  * 按键脚本用帧号切分，帧号可通过环境变量微调，不用重编。
  */
 static int dualTest(const QString& rom, const QString& sav) {
+	/* T-03 补做：判据窗口按当前 ROM 动态解析。dual 模式默认用合成 ROM
+	 * (test.gba)，没有 .map 时只打 STALE_BATTLE_WINDOW 警告并让 battleSeen
+	 * 保持 0 —— 不静默套用旧常量，也不让无关的基线用例硬失败。 */
+	g_battleWindow = resolveBattleWindow(rom);
+	if (!g_battleWindow.valid) {
+		fprintf(stderr, "STALE_BATTLE_WINDOW: %s (dualTest: battleSeen stays 0)\n",
+		        qPrintable(g_battleWindow.error));
+	} else {
+		fprintf(stderr, "BATTLE_WINDOW: [%08X,%08X) source=%s romMd5=%s romMtime=%s\n",
+		        g_battleWindow.lo, g_battleWindow.hi,
+		        qPrintable(g_battleWindow.source), qPrintable(g_battleWindow.romMd5),
+		        qPrintable(g_battleWindow.romMtime));
+	}
+	fflush(stderr);
 	struct mCore* cores[2] = { nullptr, nullptr };
 	struct SioLink* links[2] = { nullptr, nullptr };
 	static mColor video[2][240 * 160];
@@ -1028,10 +1299,10 @@ static int dualTest(const QString& rom, const QString& sav) {
 			uint16_t lidcnt = GBAView16(gba[0]->cpu, 0x03004A38u);
 			uint16_t ts = GBAView16(gba[0]->cpu, 0x03004A10u);
 			uint16_t brs = GBAView16(gba[0]->cpu, 0x03002A40u);
-			/* gMain.callback2 在 0x020290E8；0x03002AD4 是 gLinkCallback，
+			/* gMain.callback2 在 0x02029118；0x03002AD4 是 gLinkCallback，
 			 * 不是 callback2。旧判据 0x0809A241 也已作废（BattleMainCB2+1
 			 * = 0x0809AFCD，battle_main.o .text = 0x08099848..0x080A30FC）。 */
-			uint32_t cb2 = GBAView32(gba[0]->cpu, 0x020290E8u);
+			uint32_t cb2 = GBAView32(gba[0]->cpu, 0x02029118u);
 			uint32_t sb1 = GBAView32(gba[0]->cpu, 0x03004964u);
 			int px = 0, py = 0;
 			if (sb1 >= 0x02000000u && sb1 < 0x03000000u) {
@@ -1061,7 +1332,10 @@ static int dualTest(const QString& rom, const QString& sav) {
 			if (((lidcnt >> 8) & 0xFF) >= 2) {
 				cntSeen = 1;
 			}
-			if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
+			/* T-03 补做：窗口由当前 ROM 的 .map/符号 + ROM 字节校验动态解析，
+			 * 不再写死旧布局常量；解析失败时 inBattleWindow() 恒 false 并已在
+			 * 入口打印 STALE_BATTLE_WINDOW，不会静默退回旧常量。 */
+			if (inBattleWindow(cb2)) {
 				battleSeen = 1;
 			}
 		}
@@ -1077,8 +1351,8 @@ static int dualTest(const QString& rom, const QString& sav) {
 			cntSeen = 1;
 		}
 	}
-	uint32_t cb2 = GBAView32(gba[0]->cpu, 0x020290E8u);
-	if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
+	uint32_t cb2 = GBAView32(gba[0]->cpu, 0x02029118u);
+	if (inBattleWindow(cb2)) {
 		battleSeen = 1;
 	}
 	qInfo().noquote() << QString("DUAL TEST: cnt=%1 battle=%2 final cb2=%3")
@@ -1747,7 +2021,7 @@ static int busGameTest(const QString& rom, const QString& sav, int players) {
 					        GBAView8(g->cpu, 0x03002AF4u), GBAView8(g->cpu, 0x03002AF6u),
 					        GBAView8(g->cpu, 0x03002AF7u),
 					        GBAView8(g->cpu, 0x03002AF5u),
-					        GBAView16(g->cpu, 0x0202197Cu),
+					        GBAView16(g->cpu, 0x020219ACu),
 					        cnt, cb2, (unsigned) g->cpu->gprs[15]);
 				}
 				if (traceOn) {
@@ -1992,8 +2266,8 @@ static std::atomic<int> g_menuMaxSeen(0);
 static std::atomic<int> g_menuMaxPerCore[4];
 static std::atomic<int> g_walkDbg[4];   /* idx<<24 | px<<16 | py<<8 | keys */
 /* ChooseHalfPartyForBattle 队伍菜单诊断：
- * gPartyMenu @0x02032A88，menuType(低4bit) @+8 =0x02032A90（4=CHOOSE_HALF）；
- * gSelectedOrderFromParty @0x02032AD0，前两字节非 0 表示已选 2 只。 */
+ * gPartyMenu @0x02032A88，menuType(低4bit) @+8 =0x02032AC0（4=CHOOSE_HALF）；
+ * gSelectedOrderFromParty @0x02032B00，前两字节非 0 表示已选 2 只。 */
 static std::atomic<int> g_partyType[4];
 static std::atomic<int> g_selOrder[4];   /* (s0<<8)|s1 */
 static std::atomic<int> g_partySlot[4];  /* gPartyMenu.slotId */
@@ -2011,6 +2285,26 @@ static std::atomic<int> g_fieldPc(0);
 /* host(core0) 的 gMain.callback2 变化轨迹，诊断游戏到底走过哪些主回调。 */
 static uint32_t g_cb2Trace[64];
 static int g_cb2TraceN = 0;
+/** 打一条 cb2trace 相对序列辅助判据：与 ROM 绝对布局无关，换构建不该变。
+ *  T-03 补做：保留相对序列作为动态窗口之外的交叉校验（不参与退出码）。 */
+static QString cb2RelativeAux() {
+	uint32_t first = 0, last = 0;
+	for (int i = 0; i < g_cb2TraceN; ++i) {
+		if (g_cb2Trace[i] != 0) {
+			if (first == 0) {
+				first = g_cb2Trace[i];
+			}
+			last = g_cb2Trace[i];
+		}
+	}
+	const int64_t delta = int64_t(last) - int64_t(first);
+	return QStringLiteral("LS cb2rel: firstNonZero=%1 last=%2 delta=%3 relOK=%4\n")
+	        .arg(first, 8, 16, QChar('0'))
+	        .arg(last, 8, 16, QChar('0'))
+	        .arg(delta)
+	        .arg((delta < -0x90000 && delta > -0xC0000) ? QStringLiteral("YES")
+	                                                     : QStringLiteral("NO"));
+}
 /* 终态画面 dump：把 4 核的 video buffer 写成 PPM，转 PNG 后直接看游戏停在
  * 哪个界面，比继续猜内存快。（早先按帧号 dump 会因窗口内没跑到该帧而落空。） */
 static mColor (*g_lsVideo)[240 * 160] = nullptr;
@@ -2082,8 +2376,8 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 		/* 只有 4 核都确认了「多人模式」(var8004=5, gLinkType=0x2255) 之后才
 		 * 开始走位。菜单/握手阶段继续按 A；过早给方向键会在菜单未确认时移动
 		 * 光标，把 3 个核的选择打乱（实测 var8004=[0,5,0,0]）。 */
-		int v8 = GBAView16(g->cpu, 0x0202196Cu);
-		int lt = GBAView16(g->cpu, 0x02027B82u);
+		int v8 = GBAView16(g->cpu, 0x0202199Cu);
+		int lt = GBAView16(g->cpu, 0x02027BB2u);
 		/* gFieldLinkPlayerCount @0x03004A39：LINKUP 确认完成、玩家进房后
 		 * 才由游戏赋值（两人路径实测 2）。实测它恒为 0 且 trade 全 0，
 		 * 说明 TryBattleLinkup 的 waitstate 还没过 —— 玩家被锁在原地，
@@ -2095,8 +2389,8 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 			/* 文本框优先级最高：CableClub_EventScript_Tutorial 用
 			 * lockall + 两个 msgbox(MSGBOX_DEFAULT) 锁住移动，进房后必须先按 A
 			 * 关掉；Task_EnterCableClubSeat 的 "Please wait for link" 也是文本框。
-			 * sFieldMessageBoxMode @0x020219D0，0=FIELD_MESSAGE_BOX_HIDDEN。 */
-			int mb = GBAView8(g->cpu, 0x020219D0u);
+			 * sFieldMessageBoxMode @0x02021A00，0=FIELD_MESSAGE_BOX_HIDDEN。 */
+			int mb = GBAView8(g->cpu, 0x02021A00u);
 			if (mb != 0) {
 				keys = ((f % 20) < 8) ? A : 0u;   /* 脉冲产生 JOY_NEW */
 			} else {
@@ -2108,24 +2402,24 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 			 * → 回脚本 ColosseumPlayerSpotTriggered → 开战。
 			 * 用内存状态驱动，每 24 帧一个「按下 8 帧 / 松开 16 帧」脉冲产生
 			 * JOY_NEW，不盲按。 */
-			int ptype = GBAView8(g->cpu, 0x02032A90u) & 0x0Fu;
-			int s0 = GBAView8(g->cpu, 0x02032AD0u);
-			int s1 = GBAView8(g->cpu, 0x02032AD1u);
+			int ptype = GBAView8(g->cpu, 0x02032AC0u) & 0x0Fu;
+			int s0 = GBAView8(g->cpu, 0x02032B00u);
+			int s1 = GBAView8(g->cpu, 0x02032B01u);
 			g_partyType[idx].store(ptype);
 			g_selOrder[idx].store((s0 << 8) | s1);
 			if (ptype == 4) {
 				/* 选怪状态机。按 A 会先弹「Enter/No Entry」小窗口，需两次 A
 				 * 才写入一只；且在同一 slot 再按 A 会触发 CursorCb_NoEntry
 				 * 取消选择（实测 sel 在 0/1 只间震荡）。gPartyMenu.slotId
-				 * @0x02032A91。选满 2 只后游戏自动 MoveCursorToConfirm()，
+				 * @0x02032AC1。选满 2 只后游戏自动 MoveCursorToConfirm()，
 				 * 再按 A 即验证关闭菜单。每个动作只按 1 帧产生单次 JOY_NEW。 */
-			int slot = (int8_t) GBAView8(g->cpu, 0x02032A91u);
+			int slot = (int8_t) GBAView8(g->cpu, 0x02032AC1u);
 			g_partySlot[idx].store(slot);
 			{
 				static int _pd = 0;
 				if (idx == 0 && (_pd++ % 8) == 0) {
 					fprintf(stderr, "PARTY f=%d s0=%d s1=%d slot=%d keys=%02X mb=%d\n",
-					        f, s0, s1, slot, keys, (int) GBAView8(g->cpu, 0x020219D0u));
+					        f, s0, s1, slot, keys, (int) GBAView8(g->cpu, 0x02021A00u));
 				}
 			}
 			/* 内存旁路完成「选 2 只」这一 UI 步骤：写 gSelectedOrderFromParty
@@ -2137,9 +2431,9 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 			 * 会粘住校验、菜单永不关闭）。 */
 			if (s0 == 0 || s1 == 0 || slot != 6) {
 				int cc = 0;
-				if (s0 == 0) { GBAStore8(g->cpu, 0x02032AD0u, (int8_t) 1, &cc); }
-				if (s1 == 0) { GBAStore8(g->cpu, 0x02032AD1u, (int8_t) 2, &cc); }
-				if (slot != 6) { GBAStore8(g->cpu, 0x02032A91u, (int8_t) 6, &cc); }
+				if (s0 == 0) { GBAStore8(g->cpu, 0x02032B00u, (int8_t) 1, &cc); }
+				if (s1 == 0) { GBAStore8(g->cpu, 0x02032B01u, (int8_t) 2, &cc); }
+				if (slot != 6) { GBAStore8(g->cpu, 0x02032AC1u, (int8_t) 6, &cc); }
 			}
 			keys = ((f % 12) < 2) ? A : 0u;
 			} else {
@@ -2178,7 +2472,7 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 	 * 于是 4 个玩家按 2 人单打项目比对，f≈2393 掉线。
 	 * 关键区分：联机服务菜单 4 项（maxCursorPos=3），战斗模式菜单 5 项
 	 * （MultichoiceList_BattleMode，maxCursorPos=4）。只在 max==4 时把
-	 * sMenu.cursorPos @0x020296C2 钳到 2（第 2 项「多人/4P」）。第一版无此
+	 * sMenu.cursorPos @0x020296F2 钳到 2（第 2 项「多人/4P」）。第一版无此
 	 * 区分，把服务菜单也钳到 2，结果 4 核一致进了「记录角」(var8004=4,
 	 * linkType=0x3311)。VAR_RESULT=2 仍由游戏脚本自己转成
 	 * VAR_0x8004=USING_MULTI_BATTLE(5)，不绕过任何游戏逻辑。 */
@@ -2191,14 +2485,14 @@ uint32_t lsInjectKeys(struct mCore* core, int idx, int f, int menuAt, int modeDo
 	/* 不设上界：菜单实际弹出/确认比固定帧窗口晚，早退会让光标回落到 0，
 	 * 导致 4 核 var8004 不一致（实测 [0,5,0,0]）。 */
 	if (forceMulti && f >= menuAt) {
-		int mx = GBAView8(g->cpu, 0x020296C4u);
+		int mx = GBAView8(g->cpu, 0x020296F4u);
 		if (mx > g_menuMaxSeen.load()) { g_menuMaxSeen.store(mx); }
 		if (mx > g_menuMaxPerCore[idx].load()) { g_menuMaxPerCore[idx].store(mx); }
 		if (mx == 4) {
-			int cur = GBAView8(g->cpu, 0x020296C2u);
+			int cur = GBAView8(g->cpu, 0x020296F2u);
 			if (cur != 2) {
 				int cc = 0;
-				GBAStore8(g->cpu, 0x020296C2u, (int8_t) 2, &cc);
+				GBAStore8(g->cpu, 0x020296F2u, (int8_t) 2, &cc);
 				g_forceMultiWrites.fetch_add(1);
 			}
 		}
@@ -2275,13 +2569,47 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	if (players > 4) {
 		players = 4;
 	}
+	/* T-03 补做 / ADR-002 R7：判据窗口必须绑定当前 ROM，绝不写死旧布局常量。
+	 * 解析失败时明确报 STALE_BATTLE_WINDOW 并以退出码 2 结束（不启动 4 核、
+	 * 不烧 4 分钟、也不静默给 BATTLE=NO）。 */
+	g_battleWindow = resolveBattleWindow(rom);
+	if (!g_battleWindow.valid) {
+		const QString text = QStringLiteral("STALE_BATTLE_WINDOW: %1\n")
+		                             .arg(g_battleWindow.error);
+		const QByteArray err = text.toUtf8();
+		fputs(err.constData(), stderr);
+		fputs(err.constData(), stdout);
+		FILE* rf = fopen("ls_result.txt", "w");
+		if (rf) {
+			fprintf(rf, "LS: FAIL BATTLE=NO (STALE_BATTLE_WINDOW)\n");
+			fputs(err.constData(), rf);
+			fprintf(rf, "LS rom: md5=%s mtime=%s\n",
+			        qPrintable(g_battleWindow.romMd5),
+			        qPrintable(g_battleWindow.romMtime));
+			fclose(rf);
+		}
+		fflush(stderr);
+		fflush(stdout);
+		return 2;
+	}
+	fprintf(stderr, "BATTLE_WINDOW: [%08X,%08X) source=%s romMd5=%s romMtime=%s\n",
+	        g_battleWindow.lo, g_battleWindow.hi,
+	        qPrintable(g_battleWindow.source), qPrintable(g_battleWindow.romMd5),
+	        qPrintable(g_battleWindow.romMtime));
+	fflush(stderr);
 	auto envInt = [](const char* k, int dflt) {
 		bool ok = false;
 		int v = qEnvironmentVariableIntValue(k, &ok);
 		return ok ? v : dflt;
 	};
-	const int wallLimitMs = envInt("BUSGAME_TIMEOUT_MS", 45000);
-	const int maxFrames = envInt("BUSGAME_FRAMES", 3000);
+	/* 进战斗稳定发生在 f≈3073~3090（三条独立落盘日志：battleFrames=[3073,5340]、
+	 * [3090,5515]、[3077,4478]）。旧默认 3000 帧 / 45s 窗口必然跑不到那一帧，
+	 * 是确定性假阴性，故把默认窗口对齐历史上验证过的 9000 帧 / 260s。
+	 * 注意：窗口对齐只是必要条件，不是充分条件 —— 本用例还依赖存档起始状态
+	 * （直接传 D:/gen8/rom.sav 时运行会回写它）与机器负载，属 long/flaky 诊断套件。
+	 * 可重复入口见 tools/busgame-lockstep.sh；环境变量仍可覆盖默认值。 */
+	const int wallLimitMs = envInt("BUSGAME_TIMEOUT_MS", 260000);
+	const int maxFrames = envInt("BUSGAME_FRAMES", 9000);
 	const int menuAt = envInt("BUSGAME_MENU_AT", 1500);
 	const int modeDowns = envInt("BUSGAME_MODE_DOWNS", 2);
 	/* 挂锁步驱动的帧号，默认 10。曾试过推迟到 300 规避 BIOS 阶段 SIO 模式
@@ -2432,18 +2760,19 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	std::atomic<int> st4Samples(0);
 	std::atomic<int> firstSt4Frame(-1);
 	std::atomic<int> lastSt4Frame(-1);
-	/* 真正的终点判据：进入对战。gMain.callback2 在 0x020290E8
-	 * （gMain=0x020290E4，struct Main 偏移 +4）。BattleMainCB2=0x0809AFCC，
-	 * battle_main.o 的 .text 为 0x08099848..0x080A30FC，含 Thumb 位。
+	/* 真正的终点判据：进入对战。gMain.callback2 在 0x02029118
+	 * （gMain=0x02029114，struct Main 偏移 +4）。BattleMainCB2 与
+	 * battle_main.o 的 .text 窗口**由 rom.map 动态解析**（见 resolveBattleWindow），
+	 * 不用写死常数 —— ROM 一重新链接代码段就整体平移，写死必过期。
 	 * 注意 LST 里打印的 0x03002AD4 是 gLinkCallback，不是 callback2。 */
 	std::atomic<int> battleSamples(0);
 	std::atomic<int> firstBattleFrame(-1);
 	std::atomic<int> lastBattleFrame(-1);
 	std::atomic<uint32_t> lastCb2(0);
 	/* 菜单选择结果（gen8 实测地址）：
-	 * gSpecialVar_0x8004 @0x0202196C 须为 5 (USING_MULTI_BATTLE)；
-	 * gLinkType         @0x02027B82 须为 0x2255 (LINKTYPE_MULTI_BATTLE)；
-	 * gSpecialVar_Result@0x0202197C 1=SUCCESS 3=项目不一致。
+	 * gSpecialVar_0x8004 @0x0202199C 须为 5 (USING_MULTI_BATTLE)；
+	 * gLinkType         @0x02027BB2 须为 0x2255 (LINKTYPE_MULTI_BATTLE)；
+	 * gSpecialVar_Result@0x020219AC 1=SUCCESS 3=项目不一致。
 	 * 用内存判定「4 核是否都选中多人模式」，避免靠盲按帧号猜。 */
 	std::atomic<int> lastLinkType[4];
 	std::atomic<int> lastVar8004[4];
@@ -2689,14 +3018,16 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 			bool anyBattle = false;
 			for (int i = 0; i < players; ++i) {
 				struct GBA* gba = (struct GBA*) cores[i]->board;
-				uint32_t cb2 = GBAView32(gba->cpu, 0x020290E8u);
+				uint32_t cb2 = GBAView32(gba->cpu, 0x02029118u);
 				lastCb2.store(cb2);
-				if (cb2 >= 0x08099848u && cb2 <= 0x080A30FDu) {
+				/* T-03 补做：动态窗口（见 resolveBattleWindow 注释）。
+				 * 换 ROM 构建后地址整体平移也能正确判定，不再假阴性。 */
+				if (inBattleWindow(cb2)) {
 					anyBattle = true;
 				}
-				int lt = GBAView16(gba->cpu, 0x02027B82u);
-				int v8 = GBAView16(gba->cpu, 0x0202196Cu);
-				int rs = GBAView16(gba->cpu, 0x0202197Cu);
+				int lt = GBAView16(gba->cpu, 0x02027BB2u);
+				int v8 = GBAView16(gba->cpu, 0x0202199Cu);
+				int rs = GBAView16(gba->cpu, 0x020219ACu);
 				lastLinkType[i].store(lt);
 				lastVar8004[i].store(v8);
 				lastResult[i].store(rs);
@@ -2810,7 +3141,8 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	        "LS dbg: menuMax=[%d,%d,%d,%d] walk=[%08X,%08X,%08X,%08X]\n"
 	        "LS party: type=[%d,%d,%d,%d] sel=[%04X,%04X,%04X,%04X] "
 	        "slot=[%d,%d,%d,%d]\n"
-	        "LS room: tradeEver=[%08X,%08X,%08X,%08X] maxFieldPc=%d\n",
+	        "LS room: tradeEver=[%08X,%08X,%08X,%08X] maxFieldPc=%d\n"
+	        "LS rom: md5=%s mtime=%s battleWindow=[%08X,%08X) source=%s\n",
 	        linkedUp ? "LINKUP-ACHIEVED" : "FAIL",
 	        inBattle ? "YES" : "NO",
 	        serialDriver ? "serial" : "threaded", maxFrameSpread.load(),
@@ -2843,9 +3175,12 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 	        g_partySlot[2].load(), g_partySlot[3].load(),
 	        g_tradeStates[0].load(), g_tradeStates[1].load(),
 	        g_tradeStates[2].load(), g_tradeStates[3].load(),
-	        g_fieldPc.load());
+	        g_fieldPc.load(),
+	        qPrintable(g_battleWindow.romMd5), qPrintable(g_battleWindow.romMtime),
+	        g_battleWindow.lo, g_battleWindow.hi, qPrintable(g_battleWindow.source));
 	fputs(report, stdout);
 	fflush(stdout);
+	const QByteArray aux = cb2RelativeAux().toUtf8();
 	FILE* rf = fopen("ls_result.txt", "w");
 	if (rf) {
 		fputs(report, rf);
@@ -2854,8 +3189,12 @@ static int busGameLockstepTest(const QString& rom, const QString& sav, int playe
 			fprintf(rf, " %08X", g_cb2Trace[i]);
 		}
 		fputc('\n', rf);
+		/* 相对序列辅助判据：地址随 ROM 重编译整体平移时它保持不变，
+		 * 可用来交叉核对动态窗口是否用对了构建。 */
+		fputs(aux.constData(), rf);
 		fclose(rf);
 	}
+	fputs(aux.constData(), stdout);
 	fflush(stderr);
 
 	/* 核仍卡在锁步 wait 里，逐一 End/Join + deinit 会与协调器互相等待而
@@ -3003,6 +3342,822 @@ static int framesTest() {
 	return failures;
 }
 
+/**
+ * C0 / ADR-002 能力协商位的独立断言（`test-gboylink --c0`）。
+ *
+ * 背景：C0 的编码（`wire[15]` = 能力位，`0x40` 已声明 / bit0 = mode）此前
+ * **零自动化断言** —— grep 不到 `linkModeOf` / `LINK_CAP_MAGIC` /
+ * `negotiateLinkMode` 任何一个符号，2P 云端交付门因此判 FAIL。这里把协议
+ * 面钉成三组可执行断言：
+ *
+ *   1. 解码：`linkModeOf()` 对 6 类输入的返回值（A / B / UNKNOWN / INVALID ×
+ *      3 参数帧、2 参数官方帧、裸 20 字节 SIO 包）；
+ *   2. 编码：`registerFrame()` 2 参数与官方 16 字节**逐字节**一致（期望字节是
+ *      写死的常量数组，不是自己再算一遍）；3 参数只在 `playerCount != 1` 时写
+ *      `wire[15]`，单人房输出与 2 参数完全相同；
+ *   3. AUTO 映射：1/2 人 → A，3/4 人 → B，显式 override 优先。
+ *
+ * 第 3 组断言的是 `GBoyFrames::autoLinkMode()` / `GBoyFrames::resolveLinkMode()`，
+ * 也就是 `CloudLink::resolveLinkMode()` 转调的那份实现（测试里实例化
+ * `CloudLink` 需要 session + 事件循环，硬造只会测出假东西）。
+ *
+ * 输出格式与 `mobile_test --link/--bus` 一致：逐项 `ok`/`FAIL`，末尾汇总，
+ * 有 FAIL 则返回非零。
+ */
+static int c0Test() {
+	int checks = 0;
+	int failed = 0;
+	auto expect = [&checks, &failed](bool cond, const char* what) {
+		++checks;
+		if (cond) {
+			printf("ok c0: %s\n", what);
+		} else {
+			++failed;
+			printf("FAIL c0: %s\n", what);
+		}
+		fflush(stdout);
+	};
+
+	/* ---- 1. linkModeOf() 解码 ------------------------------------------- */
+
+	// 枚举值本身是协议面：A=0 / B=1 / UNKNOWN=-1 / INVALID=-2，Android 侧按同一
+	// 组数值判定，谁改了测试先红。
+	expect(int(GBoyFrames::LINK_MODE_A) == 0, "enum LINK_MODE_A == 0");
+	expect(int(GBoyFrames::LINK_MODE_B) == 1, "enum LINK_MODE_B == 1");
+	expect(int(GBoyFrames::LINK_MODE_UNKNOWN) == -1, "enum LINK_MODE_UNKNOWN == -1");
+	expect(int(GBoyFrames::LINK_MODE_INVALID) == -2, "enum LINK_MODE_INVALID == -2");
+	expect(GBoyFrames::LINK_CAP_MAGIC == 0x40, "LINK_CAP_MAGIC == 0x40");
+	expect(GBoyFrames::LINK_CAP_MODE_BIT == 0x01, "LINK_CAP_MODE_BIT == 0x01");
+
+	/* registerFrame() 返回的是**整帧**（4 字节长度头 + 12 字节 body），
+	 * linkModeOf() 吃的是 body（type + payload，无长度头），所以断言前先
+	 * 去掉 4 字节长度头 —— 这与线上路径完全一致：Reader 交出来的就是 body。 */
+	auto bodyOf = [](const QByteArray& wire) { return wire.mid(4); };
+	auto capByte = [](const QByteArray& wire) {
+		return quint8(uchar(wire.at(15)));   // wire[15] == body[11]
+	};
+
+	const QByteArray registerA = GBoyFrames::registerFrame(2, 0, GBoyFrames::LINK_MODE_A);
+	const QByteArray registerB = GBoyFrames::registerFrame(2, 0, GBoyFrames::LINK_MODE_B);
+	const QByteArray registerUnknown = GBoyFrames::registerFrame(2, 0, GBoyFrames::LINK_MODE_UNKNOWN);
+	const QByteArray registerOfficial = GBoyFrames::registerFrame(2, 0);
+
+	expect(registerA.size() == 16, "3-arg register frame stays 16 bytes (mode A)");
+	expect(bodyOf(registerA).size() == 12,
+	       "register body is 12 bytes (2 type + 4 playerCount + 6 tail), cap at body[11]");
+
+	expect(GBoyFrames::linkModeOf(bodyOf(registerA)) == GBoyFrames::LINK_MODE_A,
+	       "linkModeOf(3-arg cap 0x40) == A");
+	expect(GBoyFrames::linkModeOf(bodyOf(registerB)) == GBoyFrames::LINK_MODE_B,
+	       "linkModeOf(3-arg cap 0x41) == B");
+	expect(GBoyFrames::linkModeOf(bodyOf(registerUnknown)) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(3-arg LINK_MODE_UNKNOWN, cap 0x00) == UNKNOWN");
+
+	// 未声明：能力位恒为 0（旧客户端 / 官方 APK 的形态）。
+	QByteArray capZero = registerA;
+	capZero[15] = char(0x00);
+	expect(GBoyFrames::linkModeOf(bodyOf(capZero)) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(cap 0x00) == UNKNOWN");
+
+	// 畸形：magic 不匹配（0x42 = 只有 bit1）与保留位非 0（0xFF）都必须 INVALID，
+	// 不许「猜一个最像的」。
+	QByteArray capBad42 = registerA;
+	capBad42[15] = char(0x42);
+	expect(GBoyFrames::linkModeOf(bodyOf(capBad42)) == GBoyFrames::LINK_MODE_INVALID,
+	       "linkModeOf(cap 0x42, no magic) == INVALID");
+	QByteArray capBadFF = registerA;
+	capBadFF[15] = char(0xFF);
+	expect(GBoyFrames::linkModeOf(bodyOf(capBadFF)) == GBoyFrames::LINK_MODE_INVALID,
+	       "linkModeOf(cap 0xFF, reserved bits set) == INVALID");
+
+	// 2 参数（官方）注册帧：能力位 0，必须判成「未声明」而不是 A（A 也是 0）。
+	expect(capByte(registerOfficial) == 0x00, "2-arg register frame leaves wire[15] == 0x00");
+	expect(GBoyFrames::linkModeOf(bodyOf(registerOfficial)) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(2-arg official register frame) == UNKNOWN");
+
+	// 非 type-1：能力位那个字节就算长得像 0x40 也不能被当成注册帧。
+	QByteArray notRegister = bodyOf(registerA);
+	notRegister[0] = char(0x00);
+	notRegister[1] = char(GBoyFrames::TYPE_READY);   // type 3
+	expect(GBoyFrames::linkModeOf(notRegister) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(type 3 body with 0x40 at body[11]) == UNKNOWN");
+
+	// 截断帧（body < 12 字节）不能被越界读成能力位。
+	expect(GBoyFrames::linkModeOf(bodyOf(registerA).left(11)) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(11-byte truncated body) == UNKNOWN");
+
+	/* 裸 20 字节 SIO 包（path A 的 type-6 借壳）：第一个 int 是 netLink 的
+	 * magic 0x314C424D，远大于 payload.size()-4，所以 stateOf() 必须拒绝；
+	 * 类型号不是 1，linkModeOf() 必须 UNKNOWN —— 两类帧绝不能互相认错。 */
+	QByteArray sioPacket(20, '\0');
+	GBoyFrames::putInt(&sioPacket, 0, 0x314C424Du);   // link_net.c 的 kMagic
+	QByteArray sioBody = bodyOf(GBoyFrames::frame(GBoyFrames::TYPE_STATE, sioPacket));
+	expect(sioBody.size() == 22, "bare SIO packet wraps into a 22-byte type-6 body");
+	expect(GBoyFrames::typeOf(sioBody) == GBoyFrames::TYPE_STATE, "bare SIO packet stays type 6");
+	expect(GBoyFrames::linkModeOf(sioBody) == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(bare 20-byte SIO packet) == UNKNOWN");
+	expect(GBoyFrames::stateOf(sioBody).isEmpty(),
+	       "stateOf(bare 20-byte SIO packet) rejects it (length > payload.size()-4)");
+
+	/* ---- 2. registerFrame() 编码：与官方逐字节一致 ---------------------- */
+
+	/* 官方 16 字节注册帧，playerCount = 2 / baseStateCount = 0：
+	 *   00 00 00 0C   长度字段 = 2(type) + 10(payload) = 12
+	 *   00 01         type 1
+	 *   00 00 00 02   int32 playerCount
+	 *   00 00 00 00 00 00   6 字节尾部：多人房官方保持 0
+	 * （B25kr6.ARc23Z(1,10) 恒分配 16 字节 + A5SV6n 写整个 backing array） */
+	static const quint8 kOfficialPc2[16] = {
+		0x00, 0x00, 0x00, 0x0C,
+		0x00, 0x01,
+		0x00, 0x00, 0x00, 0x02,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	};
+	/* playerCount = 1 / baseStateCount = 3：尾部被填成 short 0 + int32 3。
+	 *   00 00 00 0C | 00 01 | 00 00 00 01 | 00 00 | 00 00 00 03 */
+	static const quint8 kOfficialPc1[16] = {
+		0x00, 0x00, 0x00, 0x0C,
+		0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x03,
+	};
+	/* playerCount = 4 / 能力位 B：多人房前 15 字节与官方一致，只有 wire[15] = 0x41。
+	 *   00 00 00 0C | 00 01 | 00 00 00 04 | 00 00 00 00 00 41 */
+	static const quint8 kOfficialPc4B[16] = {
+		0x00, 0x00, 0x00, 0x0C,
+		0x00, 0x01,
+		0x00, 0x00, 0x00, 0x04,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x41,
+	};
+	/* playerCount = 1 / baseStateCount = 0x40：尾部是 short 0 + int32 0x40，
+	 * 最低字节 0x40 长得像能力位 A —— 但它是计数，不是能力位。
+	 *   00 00 00 0C | 00 01 | 00 00 00 01 | 00 00 | 00 00 00 40 */
+	static const quint8 kOfficialPc1Count40[16] = {
+		0x00, 0x00, 0x00, 0x0C,
+		0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00, 0x00, 0x40,
+	};
+	const QByteArray officialPc2(reinterpret_cast<const char*>(kOfficialPc2), 16);
+	const QByteArray officialPc1(reinterpret_cast<const char*>(kOfficialPc1), 16);
+	const QByteArray officialPc4B(reinterpret_cast<const char*>(kOfficialPc4B), 16);
+	const QByteArray officialPc1Count40(reinterpret_cast<const char*>(kOfficialPc1Count40), 16);
+
+	expect(GBoyFrames::registerFrame(2, 0) == officialPc2,
+	       "registerFrame(2,0) is byte-identical to the official 16-byte frame");
+	expect(GBoyFrames::registerFrame(1, 3) == officialPc1,
+	       "registerFrame(1,3) is byte-identical to the official 16-byte frame");
+	expect(GBoyFrames::registerFrame(2, 0, GBoyFrames::LINK_MODE_UNKNOWN) == officialPc2,
+	       "registerFrame(2,0,UNKNOWN) falls back to the 2-arg official bytes");
+
+	// 3 参数在多人房只在 wire[15] 上多 1 个字节，其余 15 字节必须与官方相同。
+	auto onlyCapDiffers = [](const QByteArray& wire, const QByteArray& official, quint8 cap) {
+		if (wire.size() != 16 || official.size() != 16) {
+			return false;
+		}
+		for (int i = 0; i < 15; ++i) {
+			if (wire.at(i) != official.at(i)) {
+				return false;
+			}
+		}
+		return quint8(uchar(wire.at(15))) == cap;
+	};
+	expect(onlyCapDiffers(registerA, officialPc2, 0x40),
+	       "registerFrame(2,0,A) == official bytes except wire[15] = 0x40");
+	expect(onlyCapDiffers(registerB, officialPc2, 0x41),
+	       "registerFrame(2,0,B) == official bytes except wire[15] = 0x41");
+	/* 绝对比对，不是「和另一个产物比」：4 人房的期望字节是写死的常量，
+	 * 这样即便 2 参数版本同时写错也不会一起「对」上。 */
+	expect(GBoyFrames::registerFrame(4, 0, GBoyFrames::LINK_MODE_B) == officialPc4B,
+	       "registerFrame(4,0,B) matches the absolute 16-byte frame (wire[15] = 0x41)");
+
+	// 单人房：尾部承载 baseStateCount，绝不能写能力位 —— 3 参数输出必须与
+	// 2 参数**完全相同**（连传 B 也一样）。
+	expect(GBoyFrames::registerFrame(1, 3, GBoyFrames::LINK_MODE_B) == officialPc1,
+	       "registerFrame(1,3,B) is identical to the 2-arg frame (no cap bit in a 1-player room)");
+	expect(GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(1, 3, GBoyFrames::LINK_MODE_B)))
+	           == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(1-player frame) == UNKNOWN (cap bit is not written there)");
+
+	/* 这条是断言首跑抓到的**真缺陷**：单人房 body[11] 是 baseStateCount 的最低
+	 * 字节，baseStateCount=1 时它等于 0x01。读侧原先只看 magic，于是把 0x01 判成
+	 * INVALID（能力位畸形）→ 对端 fail。读侧必须镜像写侧「playerCount != 1 才写
+	 * 能力位」的规则。 */
+	expect(GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(1, 1)))
+	           == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(1-player frame, baseStateCount=1 -> body[11]==0x01) == UNKNOWN, not INVALID");
+
+	/* F12 的第二个失败模式（Android C0LinkModeTest 同款断言，两端对称）：
+	 * 单人房尾部计数若恰好长得像能力位（0x40 = 已声明 A、0x41 = 已声明 B），
+	 * 读侧也不得认成「对端声明了 A/B」——人数门必须挡在**读 cap 之前**。
+	 * 少了这道门，1 人房 + baseStateCount=0x40 会被读成 A，两端变成「都声明且一致」
+	 * 直接放行，比误判 INVALID 更危险（静默走错路径）。 */
+	expect(GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(1, 0x40)))
+	           == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(1-player frame, baseStateCount=0x40 -> body[11]==0x40) == UNKNOWN, not A");
+	expect(GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(1, 0x41)))
+	           == GBoyFrames::LINK_MODE_UNKNOWN,
+	       "linkModeOf(1-player frame, baseStateCount=0x41 -> body[11]==0x41) == UNKNOWN, not B");
+	// 写侧对称：单人房那几个字节归 baseStateCount，传 B 也不会动它。
+	expect(GBoyFrames::registerFrame(1, 0x40, GBoyFrames::LINK_MODE_B) == officialPc1Count40,
+	       "registerFrame(1,0x40,B) matches the absolute frame: tail keeps the count, no cap bit");
+
+	// 无论几人，线上长度恒为 16（写整个 backing array，不按 fill 缩短）。
+	{
+		bool allSixteen = true;
+		for (int players = 1; players <= 4; ++players) {
+			allSixteen = allSixteen
+			          && GBoyFrames::registerFrame(players, 0).size() == 16
+			          && GBoyFrames::registerFrame(players, 0, GBoyFrames::LINK_MODE_A).size() == 16
+			          && GBoyFrames::registerFrame(players, 0, GBoyFrames::LINK_MODE_B).size() == 16;
+		}
+		expect(allSixteen, "register frame is 16 bytes for 1..4 players, with and without a mode");
+	}
+
+	// 编码→解码闭环：两端各自编码，交叉读回来必须认得出对面。
+	expect(GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(4, 0, GBoyFrames::LINK_MODE_A)))
+	           == GBoyFrames::LINK_MODE_A
+	       && GBoyFrames::linkModeOf(bodyOf(GBoyFrames::registerFrame(3, 0, GBoyFrames::LINK_MODE_B)))
+	           == GBoyFrames::LINK_MODE_B,
+	       "encode/decode round trip for 3- and 4-player rooms");
+
+	/* ---- 3. AUTO 映射与 override --------------------------------------- */
+	expect(GBoyFrames::autoLinkMode(1) == GBoyFrames::LINK_MODE_A, "AUTO: 1 player -> A");
+	expect(GBoyFrames::autoLinkMode(2) == GBoyFrames::LINK_MODE_A, "AUTO: 2 players -> A");
+	expect(GBoyFrames::autoLinkMode(3) == GBoyFrames::LINK_MODE_B, "AUTO: 3 players -> B");
+	expect(GBoyFrames::autoLinkMode(4) == GBoyFrames::LINK_MODE_B, "AUTO: 4 players -> B");
+
+	// resolveLinkMode() = override 优先，其余按 AUTO；这与
+	// CloudLink::resolveLinkMode() 是同一份实现（后者只传自己的 m_modeOverride）。
+	expect(GBoyFrames::resolveLinkMode(2, GBoyFrames::LINK_MODE_UNKNOWN) == GBoyFrames::LINK_MODE_A,
+	       "resolve(2P, AUTO) -> A");
+	expect(GBoyFrames::resolveLinkMode(3, GBoyFrames::LINK_MODE_UNKNOWN) == GBoyFrames::LINK_MODE_B,
+	       "resolve(3P, AUTO) -> B");
+	expect(GBoyFrames::resolveLinkMode(3, GBoyFrames::LINK_MODE_A) == GBoyFrames::LINK_MODE_A,
+	       "override A beats the AUTO mapping (3P forced to A)");
+	expect(GBoyFrames::resolveLinkMode(2, GBoyFrames::LINK_MODE_B) == GBoyFrames::LINK_MODE_B,
+	       "override B beats the AUTO mapping (2P forced to B)");
+	expect(GBoyFrames::resolveLinkMode(2, GBoyFrames::LINK_MODE_INVALID) == GBoyFrames::LINK_MODE_A,
+	       "a malformed override falls back to AUTO instead of being used");
+
+	if (failed == 0) {
+		printf("c0 tests passed (%d ok / 0 FAIL)\n", checks);
+		return 0;
+	}
+	printf("c0 tests failed (%d ok / %d FAIL)\n", checks - failed, failed);
+	return 1;
+}
+
+#ifdef BUILD_QT_CLOUD
+/**
+ * `--gatetest` 的探针：真正驱动 CloudLink 的协商门本体。
+ *
+ * 为什么需要它 —— `--c0` 的断言全落在 GBoyFrames 纯函数层，`negotiateLinkMode()`
+ * 的五条分支（一致通过 / 冲突拒绝 / 未声明+allow_legacy 回落 / 畸形拒绝 /
+ * 单人房不误判）一条都没有被跑过。而它的两个输入入口（type-1 注册帧、
+ * WSS hello 标记）都是 private，测试没有别的正当路径，所以这里用 friend
+ * 探针（CloudLink.h 文件头有说明）。
+ *
+ * **它不复制任何判定逻辑**：对端能力位走真实的
+ * `linkModeOf()` → `notePeerLinkMode()`（与 CloudLink.cpp 的
+ * `case TYPE_REGISTER` 同两步、同来源串），判定走真实的
+ * `negotiateLinkMode()`，断言读的是它真实写下的 `m_closed` /
+ * `m_officialMode` / `m_linkMode` / `m_peerLinkMode` / `m_modeRejected`
+ * 和真实 emit 出来的 `statusMessage` 文案。
+ *
+ * 诚实边界（不要把这当成全绿）：用例 1~7 下 `m_session == nullptr`，所以
+ * `negotiateLinkMode()` 里「信令可用 → drainSignaling() 排空」那条分支是空的；
+ * 它由用例 8/9/10 通过注入 `m_gatePump`（`CloudLink::m_gatePump`，生产恒为空）
+ * 复刻时序来覆盖 —— **注入的是排空的时序语义，不是真网络**。真机主路径仍
+ * 未做真实云端时序实测（需要活账号 + 房间）。
+ */
+struct CloudLinkGateProbe {
+	struct Result {
+		bool accepted = false;                                       // negotiateLinkMode() 返回值
+		bool officialMode = false;                                   // 结果是否为 path B
+		bool closed = false;                                         // fail() 是否置了 m_closed
+		bool rejected = false;                                       // m_modeRejected
+		int linkMode = GBoyFrames::LINK_MODE_UNKNOWN;                // 本端绑定结果
+		int peerMode = GBoyFrames::LINK_MODE_UNKNOWN;                // 回写后的对端值
+		qint64 elapsedMs = 0;                                        // 协商门耗时（有界等待证据）
+		/** 第二次调用协商门的结果。secondCallDone=false 表示探针**没调**（见 run() 的条件），
+		 *  断言助手必须把它当失败处理，否则 accepted 场景下默认值恰好成立 → 假阴性。 */
+		bool secondCallDone = false;
+		bool secondAccepted = false;
+		qint64 secondElapsedMs = 0;
+		int secondStatusCount = 0;       // 第二次调用新 emit 的文案条数
+		/** 第二次调用新 emit 的**失败**文案条数（接受路径会重发一次「协商通过」状态，
+		 *  那是允许的；但任何失败文案都不允许重复）。 */
+		int secondFailCount = 0;
+		QStringList statuses;
+
+		/** 协商期间 emit 了多少条「联机模式协商失败」文案（重复报错检测）。 */
+		int failCount() const {
+			int n = 0;
+			const QString want = QStringLiteral("联机模式协商失败");
+			for (const QString& line : statuses) {
+				if (line.contains(want)) {
+					++n;
+				}
+			}
+			return n;
+		}
+
+		/** 协商期间是否出现过含 needle 的状态/失败文案。 */
+		bool said(const char* needle) const {
+			const QString want = QString::fromUtf8(needle);
+			for (const QString& line : statuses) {
+				if (line.contains(want)) {
+					return true;
+				}
+			}
+			return false;
+		}
+	};
+
+	/**
+	 * @param playerCount      房间人数（决定 AUTO 映射）
+	 * @param localOverride    本端显式模式；LINK_MODE_UNKNOWN = AUTO
+	 * @param peerRegisterWire 对端发来的**完整**线上注册帧（含 4 字节长度头）；
+	 *                         空 = 对端没发过注册帧（= 对端能力位仍为 UNKNOWN）
+	 * @param allowLegacy      MGBAX_LINK_ALLOW_LEGACY 的等价开关
+	 * @param pumpFactory      可选：注入 `m_gatePump`，用来模拟「信令可用但
+	 *                         drainSignaling() 提前返回」的那条分支（用例 8/9/10）。
+	 *                         不注入时走生产逻辑（m_session == nullptr → waitAndProcess）。
+	 * @param forceInvalidBranch  用例 11 专用：跳过 notePeerLinkMode()（它遇 INVALID 会
+	 *                         早退并置 m_modeRejected），直接把 m_peerLinkMode 设成
+	 *                         INVALID、rejected 保持 false —— 这是 negotiateLinkMode() 里
+	 *                         `peer == INVALID` 那条分支**唯一**能被走到的构造方式。
+	 */
+	using PumpFactory = std::function<std::function<int(int)>(QGBA::CloudLink&)>;
+	/** presetLocalMode 哨兵：不改写本端已绑定模式（默认行为）。 */
+	static constexpr int kNoPreset = 0x7FFFFFFF;
+	static Result run(int playerCount, int localOverride, const QByteArray& peerRegisterWire,
+	                  bool allowLegacy, const PumpFactory& pumpFactory = PumpFactory(),
+	                  bool forceInvalidBranch = false, int presetLocalMode = kNoPreset);
+
+	/** 泵/用例里往 CloudLink 写状态用（探针是 friend，测试代码本身不是）。 */
+	static void pokePeerMode(QGBA::CloudLink& link, int mode);
+	static void pokeClosed(QGBA::CloudLink& link);
+};
+
+void CloudLinkGateProbe::pokePeerMode(QGBA::CloudLink& link, int mode) {
+	link.m_peerLinkMode.store(mode, std::memory_order_relaxed);
+}
+
+void CloudLinkGateProbe::pokeClosed(QGBA::CloudLink& link) {
+	link.m_closed.store(true, std::memory_order_relaxed);
+}
+
+CloudLinkGateProbe::Result CloudLinkGateProbe::run(int playerCount, int localOverride,
+                                                   const QByteArray& peerRegisterWire,
+                                                   bool allowLegacy,
+                                                   const PumpFactory& pumpFactory,
+                                                   bool forceInvalidBranch,
+                                                   int presetLocalMode) {
+	Result result;
+	/* 不 startLink()：本测试只驱动协商门，不起线程、不连网。 */
+	QGBA::CloudLink link;
+	QGBA::CloudLink::Room room;
+	room.playerCount = playerCount;
+	room.baseStateCount = 0;
+
+	link.m_modeOverride = localOverride;
+	link.m_allowLegacyPeer = allowLegacy;
+	/* 与 startLink() 的「每次连接重新协商」语义对齐：上次的绑定/拒绝不得泄漏。 */
+	link.m_peerLinkMode.store(GBoyFrames::LINK_MODE_UNKNOWN, std::memory_order_relaxed);
+	link.m_modeBound.store(false, std::memory_order_relaxed);
+	link.m_modeRejected.store(false, std::memory_order_relaxed);
+	link.m_closed.store(false, std::memory_order_relaxed);
+	if (pumpFactory) {
+		/* 仅测试：注入等待期空闲泵（生产路径 m_gatePump 恒为空）。 */
+		link.m_gatePump = pumpFactory(link);
+	}
+
+	/* statusMessage 在同一线程 emit，DirectConnection 即可同步收进 result。 */
+	QObject::connect(&link, &QGBA::CloudLink::statusMessage, &link,
+	                 [&result](const QString& text) { result.statuses.append(text); },
+	                 Qt::DirectConnection);
+
+	if (presetLocalMode != kNoPreset) {
+		/* 用例 12 专用：先手工绑定本端模式（模拟「上一次协商已把本端定成 B」），
+		 * 再看协商门是否**原样保留**它 —— 用来钉「顶部短路先于重新绑定」这条顺序。 */
+		link.m_linkMode.store(presetLocalMode, std::memory_order_relaxed);
+		link.m_modeBound.store(true, std::memory_order_relaxed);
+	}
+	if (forceInvalidBranch) {
+		/* 用例 11：绕过 notePeerLinkMode()，直接把对端值放到 INVALID 且 rejected 仍为
+		 * false，让 negotiateLinkMode() 里的 `peer == INVALID` 分支真的被执行一次。
+		 * 生产里这条路被顶部短路挡着（INVALID 只能经 notePeerLinkMode 进来，而那里
+		 * 已经把 rejected 置位），所以本用例测的是「第二道锁本身能不能锁住」。 */
+		pokePeerMode(link, GBoyFrames::LINK_MODE_INVALID);
+	} else if (!peerRegisterWire.isEmpty()) {
+		/* CloudLink.cpp 的 case TYPE_REGISTER 就是这两步，来源串也一样。 */
+		link.notePeerLinkMode(GBoyFrames::linkModeOf(peerRegisterWire.mid(4)),
+		                      QStringLiteral("type-1 注册帧"));
+	}
+
+	QElapsedTimer timer;
+	timer.start();
+	result.accepted = link.negotiateLinkMode(&room, QStringLiteral("gatetest"));
+	result.elapsedMs = timer.elapsed();
+
+	result.officialMode = link.m_officialMode;
+	result.linkMode = link.m_linkMode.load(std::memory_order_relaxed);
+	result.peerMode = link.m_peerLinkMode.load(std::memory_order_relaxed);
+	result.closed = link.m_closed.load(std::memory_order_relaxed);
+	result.rejected = link.m_modeRejected.load(std::memory_order_relaxed);
+	/* 何时再调一次：
+	 *  - 第一次**拒绝了**（任何原因）→ 再调，验证 m_modeRejected 短路；
+	 *  - 第一次**很快接受**了（< 500ms，说明对端能力位已知、没走有界等待）→ 再调，
+	 *    验证幂等接受（不重等、不重复报错）。
+	 *  - 第一次**等满窗口才接受**（allowLegacy 回落，用例 3/5b）→ **不调**：那会再等
+	 *    2s、并再 emit 一次「警告…回落」，那是生产只调一次时不可达的行为，不该被
+	 *    冻成契约。这类用例显式断言 secondCallDone == false，把「故意不覆盖」写出来。
+	 */
+	if (!result.accepted || result.elapsedMs < 500) {
+		/* 第二次调用：畸形 / 冲突 / 未声明拒绝之后，协商门必须靠
+		 * `if (m_modeRejected) return false;` 立刻短路 —— 不重新等 2s、不重复
+		 * emit 失败文案。这才是失败类用例**真正的安全层**；
+		 * `peer == INVALID` 那条分支是第二道锁（INVALID 送到
+		 * notePeerLinkMode() 时 rejected 已被置位，走不到那里）。 */
+		const int before = result.statuses.size();
+		const int beforeFails = result.failCount();
+		QElapsedTimer second;
+		second.start();
+		result.secondAccepted = link.negotiateLinkMode(&room, QStringLiteral("gatetest(2)"));
+		result.secondElapsedMs = second.elapsed();
+		result.secondStatusCount = result.statuses.size() - before;
+		result.secondFailCount = result.failCount() - beforeFails;
+		result.secondCallDone = true;
+	}
+	return result;
+}
+
+/**
+ * 协商门端到端断言（`test-gboylink --gatetest`）。
+ *
+ * 覆盖的五类结果与 Android `GBoyCloudLink.decideLinkMode()` 的返回码一一对应：
+ *   0 一致接受        → 用例 1 / 6
+ *   1 未声明+回落 B    → 用例 3
+ *   2 未声明拒绝      → 用例 5（F12 回归：单人房不得被当成畸形）
+ *   3 冲突拒绝        → 用例 2
+ *   4 畸形拒绝        → 用例 4 / 7（**这两条走的是早退**：INVALID 送到
+ *                        notePeerLinkMode() 时已 fail() 并置 m_modeRejected，
+ *                        negotiateLinkMode() 顶部短路直接返回。它们证明的是
+ *                        「早退在，所以轮不到判定」，**不是**「4 号码不放行」。）
+ *                      → 用例 11（**强制**把 rejected 清成 false、peer 设成 INVALID，
+ *                        让 negotiateLinkMode() 自己的 `peer == INVALID` 分支真的
+ *                        执行一次：返回 false / m_closed / 文案含「能力位畸形」且
+ *                        **不含「来源」**（区分它不来自 notePeerLinkMode）/ 只报一次）
+ *
+ * 失败类用例（2/4/5/7/8/10）还会把协商门**再调一次**，断言它被
+ * `if (m_modeRejected) return false;` 立刻短路：不重新等 2s、不重复 emit 失败文案。
+ * 这条短路才是失败路径真正的安全层，单看「第一次返回 false」证明不了它。
+ *
+ * 用例 8/9/10 补的是**时序**（B1 与 F7 只在这条分支上成立）：通过注入
+ * `m_gatePump` 复刻「信令可用但 drainSignaling() 提前返回」的语义 ——
+ *   8 泵立即返回且永不设对端 → 等待必须仍是 ≈2s（旧代码这里是 20×60ms≈1.2s）
+ *   9 第 3 轮对端能力位到达   → 必须等到它并接受，而不是等满窗口才判未声明
+ *  10 第 2 轮 close          → 必须立刻退出，不硬等
+ * 外加一条不变量：任何用例的等待总时长都不得 > 2400ms（有界性的上界证明）。
+ *
+ * **PC / Android 判定顺序差异（已核对等价，不要"修"回去）**：
+ * Android `decideLinkMode()` 是「peer==local → INVALID → UNKNOWN」，
+ * PC `negotiateLinkMode()` 是「INVALID → peer==local → UNKNOWN」。
+ * 因为本端（local）只可能是 A(0) / B(1)，当 peer == INVALID(-2) 时
+ * `peer == local` 恒假，所以两条顺序对全部五类输入的结果集合完全相同。
+ * 用例 4 / 7 就是这条等价的实测证据（畸形在两种顺序下都必须被拒绝）。
+ */
+static int gateTest() {
+	int checks = 0;
+	int failed = 0;
+	auto expect = [&checks, &failed](bool cond, const char* what) {
+		++checks;
+		if (cond) {
+			printf("ok gatetest: %s\n", what);
+		} else {
+			++failed;
+			printf("FAIL gatetest: %s\n", what);
+		}
+		fflush(stdout);
+	};
+	/* 有界等待的实测上界：2000ms 目标 + 单轮 100ms 粒度 + 事件循环抖动。 */
+	const qint64 kWaitFloorMs = 1800;
+	const qint64 kWaitCeilMs = 2400;
+	/* 每例的真实耗时都收进来，末尾用来证明「任何用例都没突破上界」。 */
+	std::vector<qint64> elapsedAll;
+	/* 把每例的真实耗时打出来：这是 F7「有界等待」唯一能落地成数字的证据。 */
+	auto note = [&elapsedAll](const char* what, const CloudLinkGateProbe::Result& r) {
+		printf("     gatetest timing: %s = %lld ms\n", what, static_cast<long long>(r.elapsedMs));
+		fflush(stdout);
+		elapsedAll.push_back(r.elapsedMs);
+	};
+
+	/* 第二次调用的断言助手（**(b) 参数化 + 非空转**）：
+	 *  - expectShortCircuit=true ：第一次拒绝后再调，必须立刻短路（不重等、不重复报错）；
+	 *  - expectShortCircuit=false：第一次快速接受后再调，必须**幂等接受**（同样不重等、
+	 *    不重复报错）。
+	 * 两种情况都要求 `r.secondCallDone`：探针若没真的调过，一律算失败。
+	 * 旧版是「无条件断言 !secondAccepted && <50ms && count==0」——在 accepted 场景下
+	 * 这三个字段还是默认值（false/0/0），于是必然绿，属于**假阴性断言**
+	 * （删除顶部短路时它也不会红）。参数化后两类场景都有效力。 */
+	auto expectSecondCall = [&expect](const char* what, const CloudLinkGateProbe::Result& r,
+	                                bool expectShortCircuit) {
+		/* 两种场景都必须：真调过（secondCallDone）、不重新等（<50ms）、不重复报**失败**。
+		 * 差别在结果与「新增文案」的判据：
+		 *  - 短路场景：必须仍拒绝，且**一条新文案都不许有**（连成功文案也不该出现在拒绝路径）；
+		 *  - 幂等接受场景：必须仍接受，允许重发一次「协商通过」状态（那是状态不是错误），
+		 *    但 secondFailCount 必须为 0。 */
+		const bool base = r.secondCallDone && r.secondElapsedMs < 50 && r.secondFailCount == 0;
+		if (expectShortCircuit) {
+			expect(base && !r.secondAccepted && r.secondStatusCount == 0, what);
+		} else {
+			expect(base && r.secondAccepted, what);
+		}
+	};
+
+	/* 对端注册帧：完整线上帧（16 字节，含长度头）。 */
+	auto peerWire = [](int players, int capacity) {
+		QByteArray wire = GBoyFrames::registerFrame(players, 0,
+		                                           players == 1 ? GBoyFrames::LINK_MODE_UNKNOWN : capacity);
+		return wire;
+	};
+
+	{	/* 用例 1：两端都是 A → 通过，且不得切到 path B。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(2, GBoyFrames::LINK_MODE_A,
+			                        peerWire(2, GBoyFrames::LINK_MODE_A), false);
+		expect(r.accepted, "1) A vs A: negotiateLinkMode() accepts");
+		expect(r.officialMode == false, "1) A vs A: officialMode stays false (path A)");
+		expect(r.linkMode == GBoyFrames::LINK_MODE_A, "1) A vs A: local mode bound to A");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_A, "1) A vs A: peer mode recorded as A");
+		expect(!r.closed && !r.rejected, "1) A vs A: nothing was failed or rejected");
+		expect(r.said("联机模式协商通过"), "1) A vs A: status says 联机模式协商通过");
+		/* 对端能力位已就位时不该走有界等待。 */
+		expect(r.elapsedMs < 500, "1) A vs A: no bounded wait when the peer bit is already known");
+		/* 接受之后**再调一次**必须幂等接受：不重等、不重复报错。这里是参数化助手在「接受」场景的效力（旧版在此场景是空转绿）。 */
+		expectSecondCall("1) A vs A: second call is idempotent (accepts again, no extra wait/text)", r, false);
+		note("1) A vs A", r);
+	}
+
+	{	/* 用例 2：一端 A 一端 B → 拒绝，文案必须含本机/对端/改法。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(2, GBoyFrames::LINK_MODE_A,
+			                        peerWire(2, GBoyFrames::LINK_MODE_B), false);
+		expect(!r.accepted, "2) A vs B: negotiateLinkMode() refuses");
+		expect(r.closed, "2) A vs B: fail() closed the link (m_closed)");
+		expect(r.rejected, "2) A vs B: m_modeRejected set, no later re-entry");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_B, "2) A vs B: peer mode recorded as B");
+		expect(r.said("本机="), "2) A vs B: message names the local mode (本机=)");
+		expect(r.said("对端="), "2) A vs B: message names the peer mode (对端=)");
+		expect(r.said("MGBAX_LINK_MODE=A|B"), "2) A vs B: message tells how to fix it");
+		note("2) A vs B", r);
+		expectSecondCall("2) A vs B: second call short-circuits on m_modeRejected (no re-wait, no duplicate fail)", r, true);
+	}
+
+	{	/* 用例 3：对端发 2 参数官方帧（无能力位）+ allow_legacy → 回落 B。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(2, GBoyFrames::LINK_MODE_A,
+			                        GBoyFrames::registerFrame(2, 0), true);
+		expect(r.accepted, "3) undeclared + allow_legacy: fallback accepted");
+		expect(r.officialMode == true, "3) undeclared + allow_legacy: officialMode = true (path B)");
+		expect(r.linkMode == GBoyFrames::LINK_MODE_B, "3) undeclared + allow_legacy: mode rebound to B");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_UNKNOWN, "3) undeclared: peer mode stays UNKNOWN");
+		expect(r.said("警告") && r.said("回落"), "3) undeclared + allow_legacy: warning says 回落");
+		expect(!r.said("畸形"), "3) undeclared: never reported as 畸形");
+		/* F7 的实测证据：这条分支（m_session == nullptr）真的等满有界窗口。 */
+		expect(r.elapsedMs >= kWaitFloorMs, "3) undeclared: bounded wait actually ran (>= 1800ms)");
+		expect(r.elapsedMs <= kWaitCeilMs, "3) undeclared: bounded wait stays bounded (<= 2400ms)");
+		/* 回落路径下**不**再调一次：会重新等一轮 2s 并再 emit 一次「警告…回落」，而生产里每个房间只协商一次，那种行为不该被冻成契约。这条断言把「故意不覆盖」写出来，避免以后有人误以为这里已验证幂等。 */
+		expect(!r.secondCallDone, "3) undeclared + allow_legacy: second call intentionally NOT exercised (fallback would re-wait)");
+		note("3) undeclared + allow_legacy", r);
+	}
+
+	{	/* 用例 4：对端能力位 0x42（magic 不匹配）→ 畸形拒绝。 */
+		QByteArray bad = peerWire(2, GBoyFrames::LINK_MODE_A);
+		bad[15] = char(0x42);
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(2, GBoyFrames::LINK_MODE_A, bad, false);
+		expect(!r.accepted, "4) cap 0x42: negotiateLinkMode() refuses");
+		expect(r.closed, "4) cap 0x42: link closed");
+		expect(r.said("畸形"), "4) cap 0x42: message says 畸形");
+		expect(r.said("本机="), "4) cap 0x42: message names the local mode (F9)");
+		/* F8：畸形值必须回写 m_peerLinkMode，重读不能还是 UNKNOWN。 */
+		expect(r.peerMode == GBoyFrames::LINK_MODE_INVALID,
+		       "4) cap 0x42: INVALID is written back to m_peerLinkMode (F8)");
+		note("4) cap 0x42", r);		/* 注意本用例验证的是什么（别读成「4 号码被覆盖」）：INVALID 送到
+		 * notePeerLinkMode() 时就已被 fail() 置位 m_modeRejected，所以这里是
+		 * **早退路径**在拒绝；4 号码由用例 11 强制覆盖。 */
+		expect(r.rejected, "4) cap 0x42: m_modeRejected set by the early exit (case 11 covers the 4th branch)");
+		expect(r.failCount() == 1, "4) cap 0x42: exactly one failure message (no double report)");
+		expectSecondCall("4) cap 0x42: second call short-circuits on m_modeRejected", r, true);
+	}
+
+	{	/* 用例 5：1 人房 + baseStateCount=1（F12 回归）→ UNKNOWN 未声明，不得误判畸形。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(1, GBoyFrames::LINK_MODE_A,
+			                        GBoyFrames::registerFrame(1, 1), false);
+		expect(!r.accepted, "5) 1-player frame: refused as undeclared (default policy)");
+		expect(!r.said("畸形"), "5) 1-player frame (body[11]==0x01): NOT reported as 畸形 (F12)");
+		expect(r.said("未声明"), "5) 1-player frame: reported as 未声明 instead");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_UNKNOWN, "5) 1-player frame: peer mode stays UNKNOWN");
+		expect(r.elapsedMs >= kWaitFloorMs, "5) 1-player frame: bounded wait ran (>= 1800ms)");
+		note("5) 1-player frame (baseStateCount=1)", r);
+		expectSecondCall("5) 1-player frame: second call short-circuits on m_modeRejected", r, true);
+	}
+
+	{	/* 用例 5b：同上但 allow_legacy → 应回落 B（证明吃到的是 UNKNOWN 分支）。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(1, GBoyFrames::LINK_MODE_A,
+			                        GBoyFrames::registerFrame(1, 1), true);
+		expect(r.accepted && r.officialMode && r.linkMode == GBoyFrames::LINK_MODE_B,
+		       "5b) 1-player frame + allow_legacy: falls back to B (UNKNOWN branch, not 畸形)");
+		expect(!r.secondCallDone, "5b) 1-player frame + allow_legacy: second call intentionally NOT exercised");
+		note("5b) 1-player frame + allow_legacy", r);
+	}
+
+	{	/* 用例 6：3 人房 + AUTO → 本端解析为 B，对端也是 B → 通过。 */
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(3, GBoyFrames::LINK_MODE_UNKNOWN,
+			                        peerWire(3, GBoyFrames::LINK_MODE_B), false);
+		expect(r.accepted, "6) 3P AUTO vs B: accepts");
+		expect(r.linkMode == GBoyFrames::LINK_MODE_B, "6) 3P AUTO resolves to B inside the gate");
+		expect(r.officialMode == true, "6) 3P AUTO: officialMode = true");
+		expectSecondCall("6) 3P AUTO vs B: second call is idempotent (accepts again)", r, false);
+		note("6) 3P AUTO vs B", r);
+	}
+
+	{	/* 用例 7：畸形 + allow_legacy=true —— 畸形绝不能被 allow_legacy 放行。
+		 * 这一条正是 F8 的价值：不回写 INVALID 时，peer 仍是 UNKNOWN，
+		 * 会走进「显式许可回落 B」并 return true，把畸形能力位放行成能跑的路。 */
+		QByteArray bad = peerWire(2, GBoyFrames::LINK_MODE_A);
+		bad[15] = char(0xFF);
+		const CloudLinkGateProbe::Result r =
+			CloudLinkGateProbe::run(2, GBoyFrames::LINK_MODE_A, bad, true);
+		expect(!r.accepted, "7) cap 0xFF + allow_legacy: still refused (allow_legacy cannot rescue 畸形)");
+		expect(r.closed, "7) cap 0xFF + allow_legacy: link closed");
+		expect(r.said("畸形"), "7) cap 0xFF + allow_legacy: message says 畸形");
+		expect(!r.said("回落"), "7) cap 0xFF + allow_legacy: no 回落 wording");
+		note("7) cap 0xFF + allow_legacy", r);		expect(r.rejected, "7) cap 0xFF: m_modeRejected set by the early exit");
+		expect(r.failCount() == 1, "7) cap 0xFF: exactly one failure message");
+		/* 用例 7 的真正机制（2026-11 修正，原注释归因错了）：畸形没有被 allow_legacy
+		 * 救回，靠的是 notePeerLinkMode() 里 exchange(true) 置 m_modeRejected →
+		 * negotiateLinkMode() 顶部短路，而**不是** F8 的回写、也不是
+		 * peer == INVALID 那条分支（后者走不到：INVALID 到达时 rejected 已置位）。
+		 * 变异证据：去掉 F8 的 store 后重跑，本用例三条仍然全绿，只有用例 4 的
+		 * 「INVALID is written back」变红。 */
+		expect(r.secondCallDone && !r.secondAccepted, "7) cap 0xFF: second call still refused");
+		expect(r.secondCallDone && r.secondElapsedMs < 50, "7) cap 0xFF: second call short-circuits, no second 2s window");
+		expect(r.secondCallDone && r.secondFailCount == 0 && r.secondStatusCount == 0, "7) cap 0xFF: second call emits no duplicate fail text");
+	}
+
+	/* ---- 用例 8/9/10：注入 m_gatePump，覆盖「信令可用 → drainSignaling()
+	 * 提前返回」那条分支的**时序**。这条分支是真机主路径，也是 B1 与 F7 唯一
+	 * 成立的地方：不注入就只能靠活的 WSS 会话，无法在 CI 里断言。
+	 * 注入的泵就是「排空」语义本身 —— 它想返回多快就返回多快，跟旧
+	 * drainSignaling() 打到一个空队列时的行为一样。 ---- */
+
+	{	/* 用例 8：泵立即返回 0ms、永不设对端能力位。
+		 * 旧代码在这里只会等 20 × 60ms ≈ 1.2s（F7 的根因）；现在必须仍是 ≈2s。
+		 * 这一条**直接钉死 F7**：泵提前返回不再把 2s 缩水。 */
+		int pumpRounds = 0;
+		const CloudLinkGateProbe::Result r = CloudLinkGateProbe::run(
+			2, GBoyFrames::LINK_MODE_A, QByteArray(), false,
+			[&pumpRounds](QGBA::CloudLink&) {
+				return std::function<int(int)>([&pumpRounds](int) {
+					++pumpRounds;
+					return 0;   // 排空立刻就「没数据」，一毫秒也不花
+				});
+			});
+		expect(r.elapsedMs >= 1900, "8) instant pump: bounded wait still ~2s (F7, >= 1900ms)");
+		expect(r.elapsedMs <= 2400, "8) instant pump: bounded wait stays bounded (<= 2400ms)");
+		expect(pumpRounds >= 15, "8) instant pump: re-entered every slice (no early exit)");
+		expect(!r.accepted, "8) instant pump: undeclared peer is refused");
+		expect(r.said("未声明"), "8) instant pump: refused as 未声明");
+		expect(!r.said("畸形"), "8) instant pump: never 畸形");
+		note("8) instant pump, peer stays UNKNOWN", r);
+		expectSecondCall("8) instant pump: second call short-circuits (no second 2s window)", r, true);
+	}
+
+	{	/* 用例 9：第 3 轮才把对端能力位设成 A —— 复刻 B1「对端 hello 稍后到」。
+		 * 必须**等到它**并且接受，而不是等到窗口结束才判未声明。 */
+		int pumpRounds = 0;
+		const CloudLinkGateProbe::Result r = CloudLinkGateProbe::run(
+			2, GBoyFrames::LINK_MODE_A, QByteArray(), false,
+			[&pumpRounds](QGBA::CloudLink& link) {
+				return std::function<int(int)>([&pumpRounds, &link](int) {
+					++pumpRounds;
+					if (pumpRounds == 3) {
+						CloudLinkGateProbe::pokePeerMode(link, GBoyFrames::LINK_MODE_A);
+					}
+					return 0;
+				});
+			});
+		expect(r.accepted, "9) late peer bit: negotiation accepts (B1)");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_A, "9) late peer bit: peer mode recorded as A");
+		expect(r.linkMode == GBoyFrames::LINK_MODE_A, "9) late peer bit: local mode is A");
+		expect(!r.closed, "9) late peer bit: link not failed");
+		expect(r.elapsedMs < 800, "9) late peer bit: exits early, no full-window wait (B1)");
+		expect(pumpRounds == 3, "9) late peer bit: loop stopped on the round it arrived");
+		note("9) peer bit arrives on round 3", r);
+	}
+
+	{	/* 用例 10：第 2 轮 close —— 必须立刻退出，不硬等满 2s。 */
+		int pumpRounds = 0;
+		const CloudLinkGateProbe::Result r = CloudLinkGateProbe::run(
+			2, GBoyFrames::LINK_MODE_A, QByteArray(), false,
+			[&pumpRounds](QGBA::CloudLink& link) {
+				return std::function<int(int)>([&pumpRounds, &link](int) {
+					++pumpRounds;
+					if (pumpRounds == 2) {
+						CloudLinkGateProbe::pokeClosed(link);
+					}
+					return 0;
+				});
+			});
+		expect(!r.accepted, "10) closed mid-wait: negotiateLinkMode() returns false");
+		expect(r.elapsedMs < 500, "10) closed mid-wait: exits immediately, no 2s stall");
+		expect(r.closed, "10) closed mid-wait: m_closed stays set");
+		note("10) link closed on round 2", r);
+		expectSecondCall("10) closed mid-wait: second call short-circuits", r, true);
+	}
+
+	{	/* 用例 11：**强制**走到 negotiateLinkMode() 自己的 `peer == INVALID` 分支。
+		 *
+		 * 为什么必须单独做：生产里 INVALID 只能经 notePeerLinkMode() 进来，而那里
+		 * 已经把 m_modeRejected 置位，所以 negotiateLinkMode() 顶部的
+		 * `if (m_modeRejected) return false;` 会先短路 —— 用例 4/7 因此走的是早退，
+		 * 这条分支在生产路径上**永远不会执行**。它的定位是「短路被误删时的第二道锁」，
+		 * 所以必须有一条断言证明它真的锁得住，而且只报一次错。
+		 *
+		 * 区分文案来源的唯一可靠特征：notePeerLinkMode() 那条带「来源 <source>」，
+		 * negotiateLinkMode() 这条不带来源串。所以断言「含能力位畸形」且「不含 来源」。 */
+		const CloudLinkGateProbe::Result r = CloudLinkGateProbe::run(
+			2, GBoyFrames::LINK_MODE_A, QByteArray(), false,
+			CloudLinkGateProbe::PumpFactory(), true);
+		expect(!r.accepted, "11) forced INVALID: negotiateLinkMode() refuses (4th branch really ran)");
+		expect(r.closed, "11) forced INVALID: fail() closed the link");
+		expect(r.rejected, "11) forced INVALID: m_modeRejected set by the branch itself");
+		expect(r.said("能力位畸形"), "11) forced INVALID: message says 能力位畸形");
+		expect(!r.said("来源"), "11) forced INVALID: message has no 来源 (came from negotiateLinkMode, not notePeerLinkMode)");
+		expect(r.failCount() == 1, "11) forced INVALID: exactly one failure message");
+		expect(r.peerMode == GBoyFrames::LINK_MODE_INVALID, "11) forced INVALID: peer value stays INVALID");
+		expectSecondCall("11) forced INVALID: second call short-circuits, no duplicate text", r, true);
+		note("11) forced INVALID branch", r);
+	}
+
+	{	/* 用例 12（与 Android C0GateTest 的「顺序断言 a」对称）：**顶部短路先于重新绑定本端模式**。
+		 *
+		 * 构造：本端 AUTO（2 人房本来是 A），但先用探针把已绑定模式手工置成 **B**
+		 * （模拟「上一次协商已把本端定成 B」）；然后喂一个畸形能力位 —— notePeerLinkMode()
+		 * 会 fail 并置 m_modeRejected；再调协商门。
+		 * 断言：门必须**原样保留** B，不能被重新解析成 A。
+		 *
+		 * 钉的是什么：如果有人把 `if (m_modeRejected) return false;` 挪到
+		 * `m_linkMode.store(resolveLinkMode(...))` **之后**，本端模式就会被静默改写
+		 * （B→A）——两端从此跑在不同架构上，而其它用例全都还是绿的。
+		 * 变异验证：把绑定代码挪到短路之前，只有本用例变红。 */
+		QByteArray bad = peerWire(2, GBoyFrames::LINK_MODE_A);
+		bad[15] = char(0x42);
+		const CloudLinkGateProbe::Result r = CloudLinkGateProbe::run(
+			2, GBoyFrames::LINK_MODE_UNKNOWN, bad, false,
+			CloudLinkGateProbe::PumpFactory(), false, GBoyFrames::LINK_MODE_B);
+		expect(!r.accepted, "12) early exit before rebinding: negotiateLinkMode() refuses");
+		expect(r.rejected, "12) early exit before rebinding: m_modeRejected was already set");
+		expect(r.linkMode == GBoyFrames::LINK_MODE_B,
+		       "12) early exit before rebinding: local mode stays B (not silently re-resolved to A)");
+		expect(r.failCount() == 1, "12) early exit before rebinding: no extra failure text from the gate");
+		/* PC 与 Android 的**有意差异**：PC 在 notePeerLinkMode() 里会回写 INVALID（F8），
+		 * Android 不回写。两者最终都拒绝，只是 PC 多留一份可观测状态。 */
+		expect(r.peerMode == GBoyFrames::LINK_MODE_INVALID,
+		       "12) early exit before rebinding: peer value is INVALID on PC (F8 write-back; Android differs)");
+		note("12) early exit before rebinding", r);
+	}
+
+	{	/* 不变量：**任何**用例的等待总时长都不得突破 2400ms。
+		 * 这是「有界」这二字的证明 —— 单看某一例通过，证明不了没有别的路径会超时。 */
+		qint64 worst = 0;
+		for (size_t i = 0; i < elapsedAll.size(); ++i) {
+			worst = qMax(worst, elapsedAll[i]);
+		}
+		printf("     gatetest timing: worst-case bounded wait over %d cases = %lld ms\n",
+		       int(elapsedAll.size()), static_cast<long long>(worst));
+		fflush(stdout);
+		expect(!elapsedAll.empty() && worst <= 2400,
+		       "invariant: no case ever exceeded the 2400ms bound");
+	}
+
+	if (failed == 0) {
+		printf("gatetest passed (%d ok / 0 FAIL)\n", checks);
+		return 0;
+	}
+	printf("gatetest failed (%d ok / %d FAIL)\n", checks - failed, failed);
+	return 1;
+}
+#endif  // BUILD_QT_CLOUD
 
 /**
  * KcpChannel 的 TCP 传输有自己一套帧循环（streamLoop），和 GBoyFrames 是两处
@@ -3997,6 +5152,53 @@ static int audioFfTest() {
  * 直连通道自测：两个 DirectLink 在同一进程里互相打洞（用 127.0.0.1 当候选，
  * 绕开路由器回环限制），验证可达性判定、可靠层和时延。
  */
+/**
+ * 接收侧候选排序回归（11-16 P2P 死锁钉死用例）。
+ * 两端枚举/转发候选的顺序可能不同（B 发 192.168 在前，A 收到却是 172 在前）。
+ * 打洞「第一个 RESP 锁定」，顺序不一致会让两端锁到不同网卡、互相忽略包。
+ * 这里给一个故意乱序的候选表，断言 setPeerCandidates 按网段重排为
+ * 192.168 → 10 → 其它公网 → 172.16，保证两端锁定同一地址。
+ */
+static int directCandidateOrderTest() {
+	int failures = 0;
+	DirectLink link;
+	link.setPeerCandidates({
+		QStringLiteral("172.18.0.1:6000"),   // 虚拟网卡，最末
+		QStringLiteral("36.251.93.252:26394"), // 公网/STUN，中间
+		QStringLiteral("10.0.0.5:6000"),     // 10/8
+		QStringLiteral("192.168.1.5:6000"),  // 192.168/16，最前
+	});
+	const QStringList got = link.sendTargetsText();
+	const QStringList want = {
+		QStringLiteral("192.168.1.5:6000"),
+		QStringLiteral("10.0.0.5:6000"),
+		QStringLiteral("36.251.93.252:26394"),
+		QStringLiteral("172.18.0.1:6000"),
+	};
+	auto check = [&](bool ok, const QString& what) {
+		fprintf(stderr, "DIRECT-ORDER: %s %s\n", ok ? "ok" : "FAIL", qPrintable(what));
+		if (!ok) {
+			++failures;
+		}
+	};
+	check(got == want,
+	      QStringLiteral("乱序候选重排为 192.168→10→公网→172；got=%1").arg(got.join(QLatin1Char(','))));
+
+	// 同一组地址以另一种乱序进入，结果必须完全一致（两端对称性）。
+	link.setPeerCandidates({
+		QStringLiteral("192.168.1.5:6000"),
+		QStringLiteral("172.18.0.1:6000"),
+		QStringLiteral("36.251.93.252:26394"),
+		QStringLiteral("10.0.0.5:6000"),
+	});
+	check(link.sendTargetsText() == want,
+	      QStringLiteral("另一乱序得到相同结果（两端锁同一地址）；got=%1")
+	          .arg(link.sendTargetsText().join(QLatin1Char(','))));
+
+	fprintf(stderr, "DIRECT-ORDER: %s\n", failures ? "FAIL" : "PASS");
+	return failures;
+}
+
 static int directLinkTest() {
 	fprintf(stderr, "DIRECT: binding two peers\n");
 	DirectLink a;
@@ -4242,6 +5444,259 @@ static int productLockstepTest(const QString& rom) {
 	return ok ? 0 : 1;
 }
 
+/**
+ * 快帧门判据的真值表（`test-gboylink --fastgate`）。
+ *
+ * 为什么必须把这道门钉死：今晚的核心修复是「RTT 高时用快帧托住帧率」，
+ * 而快帧一旦在**握手期**放行，复用的旧字会把 gBlockReceivedStatus 打回 0、
+ * 停在「等待连接」——表现为「两端都 LINKUP 了却一直不动」，极难从日志区分。
+ * 门的判据只有三输入（ok 计数、gLink.state、gLink.playerCount）加一个开关，
+ * 所以直接穷举真值表，比靠实跑观察可靠。
+ */
+/* ===== path A 纯逻辑契约（Agent 1/2 产品实现须与此对齐） =====
+ *
+ * 这一组 helper 全部无 IO、无全局状态，只用来钉死 path A 快帧修复的
+ * 「判据契约」。它们不是真实会话测试（不能证明跨设备 E2E），而是给
+ * Agent 1（Qt sio_link.c 从机 idx 跟随）与 Agent 2（移动端 mgba_mobile.c）
+ * 一个可执行的、C/Qt 两份一致的规格：
+ *   - PATH_A_FAST_MIN_OK = 8  —— MGBAX_FAST_MIN_OK=8（ADR-003 §4.2 h.6）；
+ *   - MASTER 位 = 0x20       —— gLinkStatus 里的 LINK_MASTER；
+ *   - idx 用 int16 新旧比较   —— 与 netLinkTakePeerWordAny 一致；
+ *   - 「mis」不是故障判据     —— 从机 mis≈成功轮数是健康读数（ADR §4.2 h.3），
+ *     所以陈旧字守卫只看 idx 对齐，不看 mis 是否为 0。
+ *
+ * 若产品实现的函数名/取值不同，请同步改这里并让 orchestrator 知晓，
+ * 不要静默让测试与产品分叉。 */
+static const uint32_t kPathAFastMinOk = 8u;
+static const uint32_t kPathAMasterBit = 0x20u;
+
+/* 从机应消费的 idx：主机（peer）领先时跟随其最新 idx，而不是抱着冻结的
+ * localIdx 去 netLinkTakePeerWordAny 永远 miss（FASTEARLY1：slave idx=50、
+ * host 已推 576 ⇒ 复用旧字 ⇒ badChecksum）。 */
+static uint16_t pathAFastIdxSelect(uint16_t localIdx, uint16_t peerIdx) {
+	const int delta = (int16_t) (peerIdx - localIdx);
+	return delta > 0 ? peerIdx : localIdx;
+}
+
+/* 两端 idx 是否已对齐。与产品 sioFastSlaveIdxAligned /
+ * mobileFastSlaveIdxAligned 逐条对齐：wrap-safe 的 min(ahead,behind) <= window，
+ * 任一侧为 0（还没拿到可靠轮次基准）一律视为未对齐。 */
+static bool pathAFastIdxAligned(uint16_t localIdx, uint16_t peerIdx, uint16_t tol) {
+	if (localIdx == 0 || peerIdx == 0) {
+		return false;
+	}
+	const uint16_t ahead = (uint16_t) (peerIdx - localIdx);
+	const uint16_t behind = (uint16_t) (localIdx - peerIdx);
+	const uint16_t gap = ahead < behind ? ahead : behind;
+	return gap <= tol;
+}
+
+/* 快帧字是否可安全喂给游戏。Agent 1/2 有两种可选修法，这里都建模：
+ *   followLatest=1 —— 从机跟随主机最新 idx，领先时取新字（不是冻结的 localIdx）；
+ *   followLatest=0 —— 不跟随，门必须等 idx 对齐（容差 tol 内）才放行。
+ * 两者都不满足 ⇒ 门保持关闭，绝不用冻结的 localIdx 取字。 */
+static bool pathAFastWordSafe(uint16_t localIdx, uint16_t peerIdx, uint16_t tol, bool followLatest) {
+	if (localIdx == 0 || peerIdx == 0) {
+		return false;   /* 无可靠基准：哪条修法都不许放行 */
+	}
+	if (pathAFastIdxAligned(localIdx, peerIdx, tol)) {
+		return true;
+	}
+	return followLatest && pathAFastIdxSelect(localIdx, peerIdx) == peerIdx;
+}
+
+/* LINKUP 真判据（ADR-003 §4.2 h.5）：lstate==4 && pc==2 && st 含 MASTER(0x20)。
+ * `linkup=1` 是菜单 A 残留值，绝不能当成功 —— 那种地形 state/pc/st 都不成立，
+ * 本函数对它返回 false。 */
+static bool pathALinkupStable(unsigned state, unsigned pc, uint32_t st) {
+	return state == 4u && pc == 2u && (st & kPathAMasterBit) != 0u;
+}
+
+static int fastGateTest() {
+	int failures = 0;
+	auto check = [&](const char* what, bool got, bool want) {
+		if (got == want) {
+			printf("ok fastgate: %s\n", what);
+		} else {
+			++failures;
+			printf("FAIL fastgate: %s (got %d want %d)\n", what, got ? 1 : 0, want ? 1 : 0);
+		}
+	};
+
+	/* 1. 开关关闭：任何状态都不放行。 */
+	check("disabled+state4+pc2+ok1000 → 不放行", sioFastGateReady(true, 1000, 4, 2), false);
+	/* 2. 轮次不足：即使会话已建立也不放行（开局首字不能被复用）。 */
+	check("ok=255 state4 pc2 → 不放行", sioFastGateReady(false, 255, 4, 2), false);
+	check("ok=256 state4 pc2 → 放行", sioFastGateReady(false, 256, 4, 2), true);
+	/* 3. 握手期（state 1/2/3）与「未建立」（pc=0）必须挡住 —— 这三条是
+	 *    02:03 / 11-15 两次实跑踩出来的假阳性地形，其中 state=2 那条
+	 *    （`fastframe latch without fieldCount lstate=2 pc=2`）正是后来把门
+	 *    从 >=2 收紧到 >=4 的直接原因：state=2 只是 HANDSHAKE 开始，块交换
+	 *    还没做完，此时复用旧字会把 gBlockReceivedStatus 打回 0。 */
+	check("ok1000 state1 pc0 → 不放行", sioFastGateReady(false, 1000, 1, 0), false);
+	check("ok1000 state1 pc2 → 不放行", sioFastGateReady(false, 1000, 1, 2), false);
+	check("ok1000 state2 pc2 → 不放行", sioFastGateReady(false, 1000, 2, 2), false);
+	check("ok1000 state3 pc2 → 不放行", sioFastGateReady(false, 1000, 3, 2), false);
+	check("ok1000 state4 pc0 → 不放行", sioFastGateReady(false, 1000, 4, 0), false);
+	check("ok1000 state4 pc2 → 放行", sioFastGateReady(false, 1000, 4, 2), true);
+
+	/* 4. 单调性：ok 越大越不该被挡（避免有人把阈值改成 <= 之类写反）。 */
+	bool monotone = true;
+	for (uint32_t ok = 0; ok < 600; ++ok) {
+		const bool a = sioFastGateReady(false, ok, 4, 2);
+		const bool b = sioFastGateReady(false, ok + 1, 4, 2);
+		if (a && !b) {
+			monotone = false;
+			break;
+		}
+	}
+	check("ok 单调不倒退", monotone, true);
+
+	/* 5. 可配置门限 Ex：minOk 就是新的轮次门槛，其余判据（state>=4/pc>=2）
+	 *    不变。path A 云端 A/B 用 MGBAX_FAST_MIN_OK=8 让握手后立即进快帧。 */
+	check("Ex minOk=8 ok=7 state4 pc2 → 不放行", sioFastGateReadyEx(false, 7, 4, 2, 8), false);
+	check("Ex minOk=8 ok=8 state4 pc2 → 放行", sioFastGateReadyEx(false, 8, 4, 2, 8), true);
+	check("Ex minOk=8 ok=34(LINKUP) state4 pc2 → 放行", sioFastGateReadyEx(false, 34, 4, 2, 8), true);
+	check("Ex minOk=8 ok=34 state2 pc2 → 不放行(握手期仍挡)", sioFastGateReadyEx(false, 34, 2, 2, 8), false);
+	check("Ex minOk=8 ok=34 state4 pc0 → 不放行(未建立仍挡)", sioFastGateReadyEx(false, 34, 4, 0, 8), false);
+	check("Ex disabled ok=100 state4 pc2 → 不放行", sioFastGateReadyEx(true, 100, 4, 2, 8), false);
+	check("Ex minOk=256 与原始函数等价", sioFastGateReadyEx(false, 255, 4, 2, 256) == sioFastGateReady(false, 255, 4, 2), true);
+
+	/* 6. 角色不对称（FASTEARLY1 修复的语义基础）：同一时刻两端都刚 LINKUP
+	 *    (ok=38 state4 pc2)，主机门 minOk=8 放行快帧救 LAG_MASTER，从机门
+	 *    固定 256 不放行——块交换期从机必须阻塞取真字，复用旧字会把
+	 *    sioFastLast 当主机真字喂进逐块校验 ⇒ badChecksum 掉链。 */
+	check("角色不对称 ok=38 主机(minOk=8)放行", sioFastGateReadyEx(false, 38, 4, 2, 8), true);
+	check("角色不对称 ok=38 从机(minOk=256)不放行", sioFastGateReadyEx(false, 38, 4, 2, 256), false);
+
+	/* 7. minOk 边界/单调性补钉：门槛是可配置的，边界必须随 minOk 平移，
+	 *    不能有人把 8 写死进函数体。minOk=0 时 ok=0 立即放行（无预热）。 */
+	check("Ex minOk=7 ok=6 state4 pc2 → 不放行", sioFastGateReadyEx(false, 6, 4, 2, 7), false);
+	check("Ex minOk=7 ok=7 state4 pc2 → 放行", sioFastGateReadyEx(false, 7, 4, 2, 7), true);
+	check("Ex minOk=0 ok=0 state4 pc2 → 放行", sioFastGateReadyEx(false, 0, 4, 2, 0), true);
+	check("Ex minOk=0 disabled → 仍不放行", sioFastGateReadyEx(true, 100, 4, 2, 0), false);
+	check("Ex minOk=8 ok=255 state4 pc2 → 仍放行", sioFastGateReadyEx(false, 255, 4, 2, 8), true);
+	check("Ex minOk=8 ok=8 state4 pc1 → 不放行", sioFastGateReadyEx(false, 8, 4, 1, 8), false);
+	{
+		bool exMonotone = true;
+		for (uint32_t ok = 0; ok < 600; ++ok) {
+			const bool a = sioFastGateReadyEx(false, ok, 4, 2, kPathAFastMinOk);
+			const bool b = sioFastGateReadyEx(false, ok + 1, 4, 2, kPathAFastMinOk);
+			if (a && !b) {
+				exMonotone = false;
+				break;
+			}
+		}
+		check("Ex ok 单调不倒退(minOk=8)", exMonotone, true);
+	}
+
+	/* 8. 从机快帧 idx 对齐规则（Agent 1 修复的纯逻辑契约）：
+	 *    主机已推到 576、从机冻结在 50 —— 正确行为是跟随主机最新 idx
+	 *    （或门保持关闭直到对齐），绝不是拿 50 去取字永远 miss。 */
+	check("idx 主机领先时跟随最新(50→576)", pathAFastIdxSelect(50, 576), (uint16_t) 576);
+	check("idx 相等时保持", pathAFastIdxSelect(50, 50), (uint16_t) 50);
+	check("idx 主机落后时不回退", pathAFastIdxSelect(576, 50), (uint16_t) 576);
+	check("idx 16位回绕(+32)仍判主机领先", pathAFastIdxSelect(0xFFF0u, 0x0010u), (uint16_t) 0x0010u);
+	check("idx 对齐容差0 相等→对齐", pathAFastIdxAligned(50, 50, 0), true);
+	check("idx 对齐容差0 差1→未对齐", pathAFastIdxAligned(50, 51, 0), false);
+	check("idx 对齐容差8 差1→对齐", pathAFastIdxAligned(50, 51, 8), true);
+	check("idx 对齐容差8 差526→未对齐", pathAFastIdxAligned(50, 576, 8), false);
+	check("idx wrap-safe min-gap(+32)≤64→对齐", pathAFastIdxAligned(0xFFF0u, 0x0010u, 64), true);
+	check("idx 任一侧0→未对齐(无可靠基准)", pathAFastIdxAligned(0, 576, 8), false);
+	check("idx 任一侧0→未对齐(slave侧)", pathAFastIdxAligned(50, 0, 8), false);
+	/* 与产品 sioFastSlaveIdxAligned(hostIdx, slaveIdx, window) 同参同值
+	 * （Agent 1 / 0b6a96f71）：gap=26>4 挡、gap=1 放、16 位回绕 gap=2 放。 */
+	check("align(576,50,4)→未对齐", pathAFastIdxAligned(576, 50, 4), false);
+	check("align(100,99,4)→对齐", pathAFastIdxAligned(100, 99, 4), true);
+	check("align 回绕(0xFFFF,1,4)→对齐", pathAFastIdxAligned(0xFFFFu, 1, 4), true);
+
+	/* 9. 陈旧字/mis 守卫（只看 idx，不看 mis —— mis≈ok 是健康读数）：
+	 *    领先超容差时，要么已跟随最新 idx（安全放行），否则门必须关。 */
+	check("stale 主机领先526 跟随最新→安全", pathAFastWordSafe(50, 576, 8, true), true);
+	check("stale 主机领先526 不跟随→关门", pathAFastWordSafe(50, 576, 8, false), false);
+	check("stale 主机落后526 超容差→关门", pathAFastWordSafe(576, 50, 8, true), false);
+	check("stale 两端相等→安全", pathAFastWordSafe(50, 50, 0, false), true);
+	check("stale 严格容差差1 不跟随→关门", pathAFastWordSafe(50, 51, 0, false), false);
+	check("stale 严格容差差1 跟随最新→安全", pathAFastWordSafe(50, 51, 0, true), true);
+	check("stale 回绕+32 跟随最新→安全", pathAFastWordSafe(0xFFF0u, 0x0010u, 64, true), true);
+	check("stale 任一侧0→即使跟随也不放行", pathAFastWordSafe(0, 576, 8, true), false);
+
+	/* 10. LINKUP 真判据 + `linkup=1` 菜单残留陷阱（ADR §4.2 h.5）。 */
+	check("judge st=0x228 state4 pc2 → 真成功", pathALinkupStable(4, 2, 0x228u), true);
+	check("judge st=0x368 state4 pc2 → 真成功", pathALinkupStable(4, 2, 0x368u), true);
+	check("judge state2 握手期 → 非成功", pathALinkupStable(2, 2, 0x228u), false);
+	check("judge pc0 → 非成功", pathALinkupStable(4, 0, 0x228u), false);
+	check("judge st 无 MASTER 位 → 非成功", pathALinkupStable(4, 2, 0x208u), false);
+	check("judge linkup=1 菜单残留(state1 pc0 st0) → 非成功", pathALinkupStable(1, 0, 0u), false);
+	check("judge 从机 st=0x209 无MASTER → 非成功", pathALinkupStable(4, 2, 0x209u), false);
+
+	printf("FASTGATE TEST: %s (%d FAIL)\n", failures ? "FAIL" : "PASS", failures);
+	return failures;
+}
+
+/* 延迟线判据 sioDelayIndex 的真值表（`test-gboylink --delayline`）。
+ *
+ * 为什么值得单独钉死：这条判据决定「本轮该消费对端第几轮的字」。它错一位，
+ * 两端消费的字序列就不再一致 —— 8 轮一块的校验和整体错位，gen8 侧立刻
+ * badChecksum(0x2000) 拆链（/d/gen8/src/link.c:2322-2355）。它本身没有
+ * 任何 IO，所以直接穷举边界比实跑可靠：cur<n 必须夹到 0（不能回绕成
+ * 一个巨大的轮次号，那会把整条队列判成「过期」全部丢掉）。 */
+extern "C" uint32_t sioDelayIndex(uint32_t cur, uint32_t n);
+
+static int delayLineTest() {
+	int failures = 0;
+	auto check = [&](const char* what, uint32_t got, uint32_t want) {
+		if (got == want) {
+			printf("ok delayline: %s (=%u)\n", what, (unsigned) got);
+		} else {
+			++failures;
+			printf("FAIL delayline: %s (got %u want %u)\n", what, (unsigned) got, (unsigned) want);
+		}
+	};
+
+	/* 1. N==0：恒等（关闭延迟线 = 旧 1:1 行为）。 */
+	check("N=0 cur=0 → 0", sioDelayIndex(0, 0), 0);
+	check("N=0 cur=1 → 1", sioDelayIndex(1, 0), 1);
+	check("N=0 cur=32 → 32", sioDelayIndex(32, 0), 32);
+	check("N=0 cur=0xFFFFFFFF → 0xFFFFFFFF", sioDelayIndex(0xFFFFFFFFu, 0), 0xFFFFFFFFu);
+
+	/* 2. N=32：正常递减，且整段保持 8 的偏移（命令块边界不变）。 */
+	check("N=32 cur=32 → 0", sioDelayIndex(32, 32), 0);
+	check("N=32 cur=33 → 1", sioDelayIndex(33, 32), 1);
+	check("N=32 cur=64 → 32", sioDelayIndex(64, 32), 32);
+	check("N=32 cur=1000 → 968", sioDelayIndex(1000, 32), 968);
+	for (uint32_t cur = 32; cur < 40; ++cur) {
+		char buf[64];
+		snprintf(buf, sizeof(buf), "N=32 步长-1 cur=%u", (unsigned) cur);
+		check(buf, sioDelayIndex(cur, 32), cur - 32);
+	}
+
+	/* 3. cur<N：夹到 0（不能回绕）。 */
+	check("N=32 cur=0 → 0", sioDelayIndex(0, 32), 0);
+	check("N=32 cur=1 → 0", sioDelayIndex(1, 32), 0);
+	check("N=32 cur=31 → 0", sioDelayIndex(31, 32), 0);
+
+	/* 4. u32 边界：回绕只能在 cur>n 时相减，且减法本身不能溢出。 */
+	check("N=1 cur=0xFFFFFFFF → 0xFFFFFFFE",
+	      sioDelayIndex(0xFFFFFFFFu, 1), 0xFFFFFFFEu);
+	check("N=8 cur=0x80000000 → 0x7FFFFFF8",
+	      sioDelayIndex(0x80000000u, 8), 0x7FFFFFF8u);
+	check("N=0xFFFFFFFF cur=0 → 0", sioDelayIndex(0, 0xFFFFFFFFu), 0);
+	check("N=0xFFFFFFFF cur=0xFFFFFFFF → 0", sioDelayIndex(0xFFFFFFFFu, 0xFFFFFFFFu), 0);
+	check("N=0xFFFFFFFF cur<0xFFFFFFFF → 0", sioDelayIndex(0xFFFFFFFEu, 0xFFFFFFFFu), 0);
+
+	/* 5. 8 的整数倍：偏移前后落在同一个块相位（这是 N 取 8k 的依据）。 */
+	for (uint32_t n = 8; n <= 56; n += 8) {
+		uint32_t cur = 200;
+		char buf[64];
+		snprintf(buf, sizeof(buf), "N=%u 保持块相位 cur=%u", (unsigned) n, (unsigned) cur);
+		check(buf, sioDelayIndex(cur, n) % 8, cur % 8);
+	}
+
+	printf("DELAYLINE TEST: %s (%d FAIL)\n", failures ? "FAIL" : "PASS", failures);
+	return failures;
+}
+
 int main(int argc, char** argv) {
 	QCoreApplication app(argc, argv);
 	setvbuf(stdout, NULL, _IONBF, 0);
@@ -4255,7 +5710,7 @@ int main(int argc, char** argv) {
 	if (args.size() < 2) {
 		qInfo() << "usage: test-gboylink wifi [rom] | cloud <user> <pass> [room] [rom]"
 		        << "| cloud2 <user> <pass> <roomFile> <host|join> [rom]"
-		        << "| product-lockstep [rom] | webdav | glsl <in.glsl>";
+		        << "| product-lockstep [rom] | webdav | glsl <in.glsl> | --c0";
 		return 2;
 	}
 	QString mode = args[1];
@@ -4273,6 +5728,9 @@ int main(int argc, char** argv) {
 	if (mode == QStringLiteral("direct2")) {
 		return directLinkTest();
 	}
+	if (mode == QStringLiteral("direct-order")) {
+		return directCandidateOrderTest();
+	}
 	if (mode == QStringLiteral("hold")) {
 		return holdTest();
 	}
@@ -4285,6 +5743,19 @@ int main(int argc, char** argv) {
 		failures += reconnectFrameTest();
 		failures += tcpDirectLinkTest();
 		return failures;
+	}
+	if (mode == QStringLiteral("--fastgate")) {
+		return fastGateTest();
+	}
+	/* 对称定长延迟线判据的真值表（纯函数，不需要 ROM / 网络）。 */
+	if (mode == QStringLiteral("--delayline") || mode == QStringLiteral("delayline")) {
+		return delayLineTest();
+	}
+	/* C0 能力协商位（ADR-002）的独立断言。纯字节级，不需要 ROM / 网络 / 事件
+	 * 循环，也不依赖 BUILD_QT_CLOUD（断言的是 GBoyFrames 的编解码与 AUTO 映射，
+	 * 也就是 CloudLink 转调的那份实现）。`c0` 作为别名一并接受。 */
+	if (mode == QStringLiteral("--c0") || mode == QStringLiteral("c0")) {
+		return c0Test();
 	}
 	if (mode == QStringLiteral("bus")) {
 		QString rom = args.size() > 2 ? args[2] : QStringLiteral("test.gba");
@@ -4338,6 +5809,11 @@ int main(int argc, char** argv) {
 		return glslTest(args[2]);
 	}
 #ifdef BUILD_QT_CLOUD
+	/* 协商门端到端：真的跑 CloudLink::negotiateLinkMode() 本体（五类分支），
+	 * 不连网、不起线程。`gatetest` 作为别名一并接受。 */
+	if (mode == QStringLiteral("--gatetest") || mode == QStringLiteral("gatetest")) {
+		return gateTest();
+	}
 	// Mock-lobby support: MGBAX_CLOUD_WS=host:port and MGBAX_CLOUD_API=url
 	// redirect the signalling endpoints for tests; unset for the real gboy.top.
 	QString ws = qEnvironmentVariable("MGBAX_CLOUD_WS");

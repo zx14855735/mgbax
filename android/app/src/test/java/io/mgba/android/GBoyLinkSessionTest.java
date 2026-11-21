@@ -53,8 +53,9 @@ public final class GBoyLinkSessionTest {
     public static void main(String[] args) {
         fiveFrameKeyCadence();
         keyFrameLayout();
-        remoteKeysSampledEveryFifthFrame();
+        remoteKeysApplyImmediately();
         missingKeyFramesHoldLastMask();
+        preReadyKeysAreDropped();
         slotTypedFrames();
         multiPlayerSendsSlotTypedFrames();
         multiPlayerRoutesKeysToOwnSlots();
@@ -62,9 +63,14 @@ public final class GBoyLinkSessionTest {
         mirrorSlotMapping();
         readyHandshake();
         resetAndStateRoundTrip();
+        /* T-04 / V2：type 6 三语义互斥 + 11-15 协议号防漂移。 */
+        typeSixStateFrameRoundTrip();
+        typeSixRejectsRawSioBridgePacket();
+        typeSixRejectsTruncatedAndIllegalLengths();
+        protocolNumbersGuardAgainstReadyDrift();
         readerAcceptsLargeStateFrames();
         counterAndSpeed();
-        backPressureDropsOldest();
+        latestMaskWinsWithoutQueueing();
         registrationAndSocketHandshake();
         speedPaceTable();
         rejectsBadConfiguration();
@@ -75,6 +81,17 @@ public final class GBoyLinkSessionTest {
         sink = new Sink();
         events = new Recorder();
         session = new GBoyLinkSession(sink, events, 1, 2);
+    }
+
+    /**
+     * 对端发一条 TYPE_READY 把会话推进到 ready。
+     *
+     * <p>11-16 起 {@link GBoyLinkSession} 与 PC {@code GBoyLinkSession.cpp:117}
+     * 一样带 pre-ready 门：握手完成之前的按键帧整条丢弃。凡是「收到对端按键」
+     * 的用例都必须先建 ready，否则测的是真实环境里不存在的状态。</p>
+     */
+    private static void peerReady(GBoyLinkSession target) {
+        target.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_READY), 2);
     }
 
     private static void fiveFrameKeyCadence() {
@@ -98,27 +115,27 @@ public final class GBoyLinkSessionTest {
         check(session.lastLocalKeys() == 0x1234, "local keys recorded");
     }
 
-    private static void remoteKeysSampledEveryFifthFrame() {
+    /** 11-13 起接收侧改为「最新即生效、不排队」，不再等 5 帧采样点。 */
+    private static void remoteKeysApplyImmediately() {
         fresh();
         session.onLocalFrame(0, 0);
+        peerReady(session); /* 键位帧只在握手后生效（PC :117 的 pre-ready 门） */
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0xAA), 2);
+        check(session.keysForSlot(2) == 0xAA,
+                "received keys apply immediately, no 5-frame sample point");
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0xBB), 2);
-        check(session.keysForSlot(2) == 0, "received keys wait for the sample point");
-        for (int f = 1; f <= 5; ++f) {
+        check(session.keysForSlot(2) == 0xBB, "newest mask wins, nothing is queued");
+        check(session.backlog(2) == 0, "latest-wins mode keeps no pending queue");
+        for (int f = 1; f <= 10; ++f) {
             session.onLocalFrame(f, 0);
         }
-        check(session.keysForSlot(2) == 0xAA, "first queued mask applied on frame 5");
-        for (int f = 6; f < 10; ++f) {
-            session.onLocalFrame(f, 0);
-        }
-        check(session.keysForSlot(2) == 0xAA, "mask held between sample points");
-        session.onLocalFrame(10, 0);
-        check(session.keysForSlot(2) == 0xBB, "second queued mask applied on frame 10");
+        check(session.keysForSlot(2) == 0xBB, "mask is held until the next wire frame");
     }
 
     private static void missingKeyFramesHoldLastMask() {
         fresh();
         session.onLocalFrame(0, 0);
+        peerReady(session);
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0x40), 2);
         for (int f = 1; f <= 5; ++f) {
             session.onLocalFrame(f, 0);
@@ -130,26 +147,53 @@ public final class GBoyLinkSessionTest {
         check(session.keysForSlot(2) == 0x40, "no new frame keeps the held mask");
     }
 
+    /**
+     * KL-6 缺口 B · 与 PC {@code GBoyLinkSession.cpp:117} 对齐的 pre-ready 门。
+     *
+     * <p>握手完成之前的按键帧必须**整条丢弃**并留下可见诊断，不能当真实按键
+     * 推入 —— 官方 type 0 在握手期那条是「初始节奏 / 速度信号」而不是按键，
+     * 没有这道门时对端开局那条 0 会凭空按下 1/2/4 号键，两边在菜单里各多走
+     * 一步。同一帧在握手之后必须照常生效：门挡的是「还没就绪」，不是永久丢弃。</p>
+     */
+    private static void preReadyKeysAreDropped() {
+        fresh();
+        check(!session.isReady(), "no handshake has happened yet");
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0xFF), 2);
+        check(session.keysForSlot(2) == 0,
+                "a pre-ready TYPE_KEYS frame is dropped instead of being pushed as real keys");
+        check(events.status.contains("pre-ready key frame ignored"),
+                "the drop is reported with the PC-identical status text");
+
+        peerReady(session);
+        check(session.isReady(), "TYPE_READY completes the handshake");
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0xFF), 2);
+        check(session.keysForSlot(2) == 0xFF,
+                "the very same key frame applies once the session is ready");
+    }
+
     private static void slotTypedFrames() {
         Sink s = new Sink();
         Recorder e = new Recorder();
         GBoyLinkSession four = new GBoyLinkSession(s, e, 1, 4);
         four.onLocalFrame(0, 0);
+        peerReady(four); /* 槽位键也走同一道 pre-ready 门（PC :117） */
         four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_INPUT_2, 0x21), 2);
-        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_READY, 0x31), 3);
+        /* 11-15 协议复核：type 3 是「就绪 + RTT」，slot 3 的按键改用
+         * 自家扩展 TYPE_INPUT_3，避免把按键误当成握手帧。 */
+        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_INPUT_3, 0x31), 3);
         four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_INPUT_4, 0x41), 4);
         for (int f = 1; f <= 5; ++f) {
             four.onLocalFrame(f, 0);
         }
-        check(four.keysForSlot(2) == 0x21, "type 2 targets slot 2");
-        check(four.keysForSlot(3) == 0x31, "type 3 targets slot 3 while running");
-        check(four.keysForSlot(4) == 0x41, "type 4 targets slot 4");
+        check(four.keysForSlot(2) == 0x21, "INPUT_2 targets slot 2");
+        check(four.keysForSlot(3) == 0x31, "INPUT_3 targets slot 3, not the READY handshake");
+        check(four.keysForSlot(4) == 0x41, "INPUT_4 targets slot 4");
     }
 
     /** 3/4 人时每台设备必须发自带槽位的键位帧，否则对端无法区分来源。 */
     private static void multiPlayerSendsSlotTypedFrames() {
         int[] expected = {GBoyFrames.TYPE_KEYS, GBoyFrames.TYPE_INPUT_2,
-                GBoyFrames.TYPE_READY, GBoyFrames.TYPE_INPUT_4};
+                GBoyFrames.TYPE_INPUT_3, GBoyFrames.TYPE_INPUT_4};
         for (int slot = 1; slot <= 4; ++slot) {
             Sink s = new Sink();
             GBoyLinkSession dev = new GBoyLinkSession(s, new Recorder(), slot, 4);
@@ -162,7 +206,7 @@ public final class GBoyLinkSessionTest {
             if (slot == 3) {
                 byte[] body = Arrays.copyOfRange(wire, 4, wire.length);
                 check(GBoyFrames.payloadOf(body).length == 4,
-                        "slot 3 READY carries an int so it is not a handshake");
+                        "slot 3 INPUT_3 carries an int key mask");
             }
         }
     }
@@ -177,6 +221,9 @@ public final class GBoyLinkSessionTest {
             sinks[i] = new Sink();
             recorders[i] = new Recorder();
             devices[i] = new GBoyLinkSession(sinks[i], recorders[i], i + 1, 4);
+            /* 每台设备各自建 ready：pre-ready 门是按会话（设备）生效的，
+             * 只给其中一台建门不会让其余三台收键。 */
+            peerReady(devices[i]);
             devices[i].onLocalFrame(0, keys[i]);
         }
         for (int receiver = 0; receiver < 4; ++receiver) {
@@ -198,8 +245,8 @@ public final class GBoyLinkSessionTest {
                             "device " + (receiver + 1) + " routes slot " + slot + " keys");
                 }
             }
-            check(recorders[receiver].readies == 0,
-                    "slot 3 key frames never fire the READY handshake");
+            check(recorders[receiver].readies == 1,
+                    "slot-typed key frames never fire onReady (only the explicit READY did)");
         }
     }
 
@@ -212,6 +259,7 @@ public final class GBoyLinkSessionTest {
                 "two-player device on slot 2 still sends TYPE_KEYS");
         Sink t = new Sink();
         GBoyLinkSession peer = new GBoyLinkSession(t, new Recorder(), 1, 2);
+        peerReady(peer);
         peer.onWireFrame(wire);
         for (int f = 1; f <= 5; ++f) {
             peer.onLocalFrame(f, 0);
@@ -251,13 +299,23 @@ public final class GBoyLinkSessionTest {
     }
 
     private static void readyHandshake() {
+        /* first 判断的反面：什么都没 ready 时，注册帧必须由自己触发一次 onReady
+         * （PC GBoyLinkSession.cpp:167-172 的 first = !m_ready 为 true）。 */
         fresh();
         check(!session.isReady(), "not ready before handshake");
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_REGISTER), 2);
+        check(session.isReady(), "TYPE_REGISTER completes the handshake on its own");
+        check(events.readies == 1, "the first registration fires onReady exactly once");
+
+        /* first 判断的正面：已经 ready 之后对端重发注册帧，不得再触发 onReady。 */
+        fresh();
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_READY), 2);
         check(session.isReady(), "TYPE_READY completes the handshake");
         check(events.readies == 1, "ready callback fired once");
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_REGISTER), 2);
-        check(events.readies == 2, "registration also completes the handshake");
+        check(session.isReady(), "a repeated registration keeps the session ready");
+        check(events.readies == 1,
+                "REGISTER does not re-fire onReady once ready (first guard, PC :167-172)");
     }
 
     private static void resetAndStateRoundTrip() {
@@ -278,6 +336,187 @@ public final class GBoyLinkSessionTest {
                 "truncated state is rejected");
     }
 
+    /**
+     * T-04 / V2 · type 6 语义①：{@code stateFrame -> stateOf} 往返。
+     *
+     * <p>帧构造与 C++ {@code GBoyFrames::stateFrame}
+     * ({@code src/platform/qt/GBoyFrames.cpp:56-63}) 字节一致：
+     * {@code u32 length = 2 + (4 + blob.length)}，body = {@code u16 6 +
+     * u32 blob.length + blob}。经 {@link GBoyFrames.Reader} 拆帧后，
+     * {@code stateOf(body)} 必须把 blob 原样还原；会话派发也不得顺带复位
+     * （AC3 的协议层一半：复位只能由 type 5 触发）。</p>
+     */
+    private static void typeSixStateFrameRoundTrip() {
+        byte[] blob = new byte[137];
+        for (int i = 0; i < blob.length; ++i) {
+            blob[i] = (byte) (i * 31 + 7);
+        }
+        byte[] payload = new byte[4 + blob.length];
+        GBoyFrames.putInt(payload, 0, blob.length);
+        System.arraycopy(blob, 0, payload, 4, blob.length);
+        byte[] wire = GBoyFrames.frame(GBoyFrames.TYPE_STATE, payload);
+
+        GBoyFrames.Reader reader = new GBoyFrames.Reader();
+        reader.append(wire, wire.length);
+        byte[] body = reader.next();
+        check(body != null, "stateFrame is one complete frame");
+        check(GBoyFrames.typeOf(body) == GBoyFrames.TYPE_STATE,
+                "stateFrame keeps the TYPE_STATE (6) tag");
+        byte[] decoded = GBoyLinkSession.stateOf(body);
+        check(decoded.length == blob.length && Arrays.equals(decoded, blob),
+                "stateFrame -> stateOf round trips the save blob byte for byte");
+
+        fresh();
+        session.onWireFrame(wire, 2);
+        check(Arrays.equals(events.state, blob),
+                "TYPE_STATE wire frame reaches the front end unchanged");
+        check(events.resets == 0,
+                "loading a type 6 state never resets a console (AC3 protocol half)");
+        check(events.readies == 0,
+                "a type 6 state frame is not a handshake frame");
+    }
+
+    /**
+     * T-04 / V2 · type 6 语义②：path A 的 SIO 中继桥「借壳」type 6，
+     * body 是 20 字节裸 netLink 包，没有 u32 长度头。前 4 字节是 netLink
+     * magic（远大于剩余字节数），{@code stateOf()} 必须返回空，绝不能把
+     * SIO 字节当成 savestate 灌进镜像核。判据对齐
+     * {@code src/platform/qt/GBoyFrames.cpp:72-84} 的
+     * {@code length > payload.size() - 4}。
+     */
+    private static void typeSixRejectsRawSioBridgePacket() {
+        byte[] raw = new byte[20];
+        Arrays.fill(raw, (byte) 0x01);
+        byte[] wire = GBoyFrames.frame(GBoyFrames.TYPE_STATE, raw);
+        byte[] body = Arrays.copyOfRange(wire, 4, wire.length);
+        check(GBoyFrames.typeOf(body) == GBoyFrames.TYPE_STATE,
+                "the borrowed bridge packet is tagged 6 but is not a state frame");
+        byte[] rejected = GBoyLinkSession.stateOf(body);
+        check(rejected != null && rejected.length == 0,
+                "a bare 20-byte netLink packet is rejected by stateOf()");
+
+        /* 换成真实感更强的 magic 头，尾部任意字节也必须一律拒绝。 */
+        byte[] magic = new byte[20];
+        GBoyFrames.putInt(magic, 0, 0x4D424C31); /* "MBL1" */
+        for (int i = 4; i < magic.length; ++i) {
+            magic[i] = (byte) i;
+        }
+        byte[] magicWire = GBoyFrames.frame(GBoyFrames.TYPE_STATE, magic);
+        check(GBoyLinkSession.stateOf(
+                Arrays.copyOfRange(magicWire, 4, magicWire.length)).length == 0,
+                "a netLink magic header is rejected regardless of the trailing bytes");
+
+        /* 无载荷的 type 6 空体、null body 同样不是 savestate。 */
+        check(GBoyLinkSession.stateOf(
+                new byte[]{0, (byte) GBoyFrames.TYPE_STATE}).length == 0,
+                "a bare TYPE_STATE frame with no payload is rejected");
+        check(GBoyLinkSession.stateOf(null).length == 0,
+                "a null body is rejected without throwing");
+    }
+
+    /**
+     * T-04 / V2 · type 6 语义②续：长度头越界 / 负数 / 截断都必须拒绝，
+     * 而不是按声明长度去切 payload，更不能把半截存档灌进核心。
+     */
+    private static void typeSixRejectsTruncatedAndIllegalLengths() {
+        byte[] over = new byte[2 + 4 + 2];
+        GBoyFrames.putShort(over, 0, GBoyFrames.TYPE_STATE);
+        GBoyFrames.putInt(over, 2, 9999);
+        over[6] = 0x11;
+        over[7] = 0x22;
+        check(GBoyLinkSession.stateOf(over).length == 0,
+                "an over-long length header is rejected, not used to slice the payload");
+
+        byte[] negative = new byte[2 + 4];
+        GBoyFrames.putShort(negative, 0, GBoyFrames.TYPE_STATE);
+        GBoyFrames.putInt(negative, 2, -1);
+        check(GBoyLinkSession.stateOf(negative).length == 0,
+                "a negative (0xFFFFFFFF) length header is rejected");
+
+        byte[] shortHeader = new byte[]{0, (byte) GBoyFrames.TYPE_STATE, 0, 0, 1};
+        check(GBoyLinkSession.stateOf(shortHeader).length == 0,
+                "a truncated 3-byte length header is rejected");
+
+        byte[] truncated = new byte[2 + 4 + 3];
+        GBoyFrames.putShort(truncated, 0, GBoyFrames.TYPE_STATE);
+        GBoyFrames.putInt(truncated, 2, 8);
+        check(GBoyLinkSession.stateOf(truncated).length == 0,
+                "a state body truncated behind a valid header is rejected");
+
+        byte[] zero = new byte[2 + 4];
+        GBoyFrames.putShort(zero, 0, GBoyFrames.TYPE_STATE);
+        GBoyFrames.putInt(zero, 2, 0);
+        check(GBoyLinkSession.stateOf(zero).length == 0,
+                "a declared zero-length state decodes to an empty blob without throwing");
+    }
+
+    /**
+     * T-04 · 11-15 协议号防漂移。type 3 在握手期是「就绪 + RTT」，
+     * slot 3 的按键帧是自家扩展 {@code TYPE_INPUT_3}；两者一旦同号，
+     * 3/4 人房间里 slot 3 的按键会被当成握手帧（或握手被当成按键），
+     * 症状是「第三个玩家永远不动 / 就绪回调乱触发」。
+     * 官方号 3 / 5 / 6 锁死；自家扩展号锁当前三端快照，改号须三端同步。
+     */
+    private static void protocolNumbersGuardAgainstReadyDrift() {
+        check(GBoyFrames.TYPE_KEYS == 0 && GBoyFrames.TYPE_REGISTER == 1
+                        && GBoyFrames.TYPE_NAME == 2 && GBoyFrames.TYPE_READY == 3,
+                "official numbers 0/1/2/3 stay stable");
+        check(GBoyFrames.TYPE_RESET == 5 && GBoyFrames.TYPE_STATE == 6
+                        && GBoyFrames.TYPE_SPEED == 9,
+                "official numbers 5/6/9 stay stable (only 5 resets, 6 carries state)");
+        check(GBoyFrames.TYPE_READY == 3,
+                "TYPE_READY stays the official handshake value 3");
+        check(GBoyFrames.TYPE_INPUT_2 == 11 && GBoyFrames.TYPE_INPUT_4 == 12
+                        && GBoyFrames.TYPE_RESET_LEGACY == 13
+                        && GBoyFrames.TYPE_KEYS_LOCAL == 14
+                        && GBoyFrames.TYPE_COUNTER == 15
+                        && GBoyFrames.TYPE_EVENT == 16
+                        && GBoyFrames.TYPE_INPUT_3 == 17
+                        && GBoyFrames.TYPE_RECONNECT == 100,
+                "private extension numbers 11/12/13/14/15/16/17/100 stay stable");
+        check(GBoyFrames.TYPE_INPUT_3 >= 11
+                        && GBoyFrames.TYPE_INPUT_3 != GBoyFrames.TYPE_READY
+                        && GBoyFrames.TYPE_INPUT_3 != GBoyFrames.TYPE_INPUT_2
+                        && GBoyFrames.TYPE_INPUT_3 != GBoyFrames.TYPE_INPUT_4,
+                "slot-3 keys never collide with the READY handshake or slots 2/4");
+
+        /* 行为断言：INPUT_3 落 slot 3 且不触发握手；READY 触发握手且不落键。
+         * 注意 pre-ready 门（PC :117）在握手之前会先挡掉这条键位帧，所以先断言
+         * 「未握手时它既不落键、也不被当成握手帧」，建好 ready 再断言路由。 */
+        Sink s = new Sink();
+        Recorder e = new Recorder();
+        GBoyLinkSession four = new GBoyLinkSession(s, e, 1, 4);
+        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_INPUT_3, 0x3C), 3);
+        check(!four.isReady() && e.readies == 0,
+                "a slot-3 key frame never completes the READY handshake");
+        check(four.keysForSlot(3) == 0,
+                "a pre-ready slot-3 key frame is dropped (same pre-ready gate as type 0)");
+        check(keysAreZero(four, 2, 4), "a dropped pre-ready slot-3 frame touches no slot");
+
+        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_READY, 123), 2);
+        check(four.isReady() && e.readies == 1,
+                "TYPE_READY is the handshake frame (completes it exactly once)");
+
+        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_INPUT_3, 0x3C), 3);
+        check(four.keysForSlot(3) == 0x3C,
+                "TYPE_INPUT_3 is the slot-3 key frame (routes the mask to slot 3)");
+        check(keysAreZero(four, 2, 4), "TYPE_INPUT_3 touches no other slot");
+
+        four.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_READY, 123), 2);
+        check(e.readies == 1, "a repeated TYPE_READY never re-fires onReady");
+        check(four.keysForSlot(3) == 0x3C,
+                "the READY frame leaves the held slot-3 key mask untouched");
+    }
+
+    private static boolean keysAreZero(GBoyLinkSession target, int... slots) {
+        for (int slot : slots) {
+            if (target.keysForSlot(slot) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static void counterAndSpeed() {
         fresh();
         session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_COUNTER, 77), 2);
@@ -289,20 +528,25 @@ public final class GBoyLinkSessionTest {
         check(GBoyFrames.getShort(wire, 4) == GBoyFrames.TYPE_SPEED, "speed frame type 9");
     }
 
-    private static void backPressureDropsOldest() {
+    /** 旧用例断言 5 帧队列 + 丢最老；新语义下 10 帧连发只留最后一帧。 */
+    private static void latestMaskWinsWithoutQueueing() {
         fresh();
         session.onLocalFrame(0, 0);
+        peerReady(session);
         for (int i = 1; i <= 10; ++i) {
             session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, i), 2);
         }
-        check(session.backlog(2) == GBoyLinkSession.BACKLOG_LIMIT,
-                "queue capped at the back-pressure limit");
-        check(session.droppedFrames() == 10 - GBoyLinkSession.BACKLOG_LIMIT,
-                "oldest frames dropped");
-        for (int f = 1; f <= 5; ++f) {
-            session.onLocalFrame(f, 0);
-        }
-        check(session.keysForSlot(2) == 9, "newest surviving mask applied first");
+        check(session.keysForSlot(2) == 10, "newest mask overwrites all older masks");
+        check(session.backlog(2) == 0, "no pending queue in latest-wins mode");
+        check(session.droppedFrames() == 0, "nothing is dropped when there is no queue");
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0x77), 2);
+        check(session.keysForSlot(2) == 0x77, "a later frame replaces the held mask");
+        /* 11-13 修的真实缺陷：2 帧短按会被 12Hz 采样整块吞掉。按下与松开
+         * 各来一帧，最新即生效保证两帧都不丢。 */
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0x01), 2);
+        check(session.keysForSlot(2) == 0x01, "a 1-frame press applies immediately");
+        session.onWireFrame(GBoyFrames.frame(GBoyFrames.TYPE_KEYS, 0), 2);
+        check(session.keysForSlot(2) == 0, "the matching release applies immediately too");
     }
 
     /** 官方 type 9：{@code 1e9/(speed*60)}，-1 = 0.5x；非法值返回 0（回落原节拍）。 */
