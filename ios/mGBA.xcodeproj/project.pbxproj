@@ -39,6 +39,9 @@
 		B10000000000000000000020 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000020 /* Assets.xcassets */; };
 		B10000000000000000000021 /* GBoyConsoleSet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000021 /* GBoyConsoleSet.swift */; };
 		B10000000000000000000022 /* GBoyBLELink.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000022 /* GBoyBLELink.swift */; };
+		B10000000000000000000023 /* ManifestSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000023 /* ManifestSync.swift */; };
+		B10000000000000000000024 /* RomCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000024 /* RomCache.swift */; };
+		B10000000000000000000025 /* RecentRoms.swift in Sources */ = {isa = PBXBuildFile; fileRef = E10000000000000000000025 /* RecentRoms.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -74,6 +77,9 @@
 		E10000000000000000000020 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E10000000000000000000021 /* GBoyConsoleSet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyConsoleSet.swift; sourceTree = "<group>"; };
 		E10000000000000000000022 /* GBoyBLELink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GBoyBLELink.swift; sourceTree = "<group>"; };
+		E10000000000000000000023 /* ManifestSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManifestSync.swift; sourceTree = "<group>"; };
+		E10000000000000000000024 /* RomCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RomCache.swift; sourceTree = "<group>"; };
+		E10000000000000000000025 /* RecentRoms.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentRoms.swift; sourceTree = "<group>"; };
 		E10000000000000000000007 /* mGBA-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "mGBA-Bridging-Header.h"; sourceTree = "<group>"; };
 		E10000000000000000000008 /* mGBA.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = mGBA.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -132,6 +138,9 @@
 				E10000000000000000000020 /* Assets.xcassets */,
 				E10000000000000000000021 /* GBoyConsoleSet.swift */,
 				E10000000000000000000022 /* GBoyBLELink.swift */,
+				E10000000000000000000023 /* ManifestSync.swift */,
+				E10000000000000000000024 /* RomCache.swift */,
+				E10000000000000000000025 /* RecentRoms.swift */,
 				E10000000000000000000007 /* mGBA-Bridging-Header.h */,
 			);
 			path = mGBA;
@@ -270,6 +279,9 @@
 				B1000000000000000000001F /* ExternalShader.swift in Sources */,
 				B10000000000000000000021 /* GBoyConsoleSet.swift in Sources */,
 				B10000000000000000000022 /* GBoyBLELink.swift in Sources */,
+				B10000000000000000000023 /* ManifestSync.swift in Sources */,
+				B10000000000000000000024 /* RomCache.swift in Sources */,
+				B10000000000000000000025 /* RecentRoms.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
