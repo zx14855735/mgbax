@@ -56,6 +56,21 @@ enum GBAMemoryBase {
 	GBA_BASE_SRAM_MIRROR = 0x0F000000
 };
 
+/* === G1 EX-1 b-lite：RNG reseed 拦截（具名宏唯一真源，三端共享 C 自动对称） ===
+ * 绑定 r10 冻结 ROM md5 6E0058EE… 的 gRngValue @ IWRAM+0x4EF8（gRng2Value @ +0x4EFC）；
+ * 换 ROM 必须重解析 .bss 符号（旧代 0x4B70/0x4A9C 不适用），禁裸 hex 扩散。
+ * 默认门关：只有 g1det harness 显式调用 GBADetRngForceEnable() 才生效。 */
+#define MGBAX_DET_IWRAM_BASE      ((uint32_t) GBA_BASE_IWRAM)                  /* 0x03000000 */
+#define MGBAX_DET_RNG_OFF         ((uint32_t) 0x4EF8u)                         /* gRngValue 在 IWRAM 的字节偏移 */
+#define MGBAX_DET_RNG2_OFF        ((uint32_t) 0x4EFCu)                         /* gRng2Value 在 IWRAM 的字节偏移 */
+#define MGBAX_DET_RNG_ADDR        (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG_OFF)   /* 0x03004EF8 */
+#define MGBAX_DET_RNG_LCG_MUL     ((uint32_t) 1103515245u)                     /* gen8 Random(): gRngValue = MUL * gRngValue */
+#define MGBAX_DET_RNG_RESEED_MAX  ((uint32_t) 0x0000FFFFu)                     /* SeedRng(u16) 零扩展 ⇒ reseed 形写 ≤ 0xFFFF */
+#ifndef MGBAX_DET_RNG_FORCE_SEED
+#define MGBAX_DET_RNG_FORCE_SEED  ((uint32_t) 0x1A2B3C4Du)                     /* 与 EX-1 请求 seed 同值；可被 setter 覆盖 */
+#endif
+#define MGBAX_DET_RNG_HOOK_AUDIT  (16)                                         /* 强制写审计行上限，防日志爆 */
+
 enum {
 	GBA_SIZE_BIOS = 0x00004000,
 	/* Expanded to 512 KiB so ROM hacks linked against a 512 KiB EWRAM window
@@ -193,6 +208,16 @@ void GBAPatch8(struct ARMCore* cpu, uint32_t address, int8_t value, int8_t* old)
  * 任何轮询/事件都来不及插进去（实测 lgc=0，一次都没清到）。链路是否真的还活着
  * 由传输层判断（对端 1s 内推过字才置位），真断链仍然让游戏自己报错。 */
 extern bool gbaLinkDropClockLag;
+
+/* G1 b-lite 钩子注册/注销与审计（per-core；默认全 0，只有 g1det 调用者置位）。 */
+void GBADetRngForceEnable(struct GBA* gba, uint32_t seed); /* 注册：置门+清计数+设强制 seed */
+void GBADetRngForceDisable(struct GBA* gba);               /* 注销：门清回 false，正常联机恢复 */
+bool GBADetRngForceEnabled(const struct GBA* gba);
+uint32_t GBADetRngForceSeed(const struct GBA* gba);
+uint32_t GBADetRngForceHits(const struct GBA* gba);        /* 命中次数＝被替换的 reseed 形写数 */
+uint32_t GBADetRngForceLcgPass(const struct GBA* gba);     /* LCG 递推放行次数（证明确有 Random() 演化） */
+uint32_t GBADetRngForceUnknown(const struct GBA* gba);     /* 非 LCG 非 reseed 形写次数（fail-closed 信号） */
+uint32_t GBADetRngForceWidthSkip(const struct GBA* gba);   /* 16/8 位 store 绕开次数（可选护栏） */
 
 uint32_t GBALoadMultiple(struct ARMCore*, uint32_t baseAddress, int mask, enum LSMDirection direction,
                          int* cycleCounter);

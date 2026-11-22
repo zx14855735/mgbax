@@ -35,7 +35,10 @@ check_cols = DETERMINISM_COLS if det_only else cols
 det_diff = sum(1 for x, y in zip(a, b) for c in check_cols if x[c] != y[c])
 seed_diff = {c: sum(1 for x, y in zip(a, b) if x[c] != y[c]) for c in SEED_COLS if c in a[0]}
 distinct = {c: len(set(r[c] for r in a)) for c in check_cols}
-dead = [c for c, d in distinct.items() if d < 2]
+# converge 模式：rng2 是次要观测列（钩子只拦 gRngValue 不碰 gRng2Value），允许恒定，
+# 从死值自检中排除；主 rng 列的区分力在 converge 分支单独校验。
+dead_cols = [c for c in check_cols if not (converge and c == "rng2")]
+dead = [c for c in dead_cols if distinct[c] < 2]
 
 print("rows={}/{} checked_cols={} det_diff={} seed_diff={} distinct={}".format(
     len(a), len(b), ",".join(check_cols), det_diff, seed_diff, distinct))
@@ -45,17 +48,20 @@ if dead:
     sys.exit(3)
 
 if converge:
-    # EX-1：写相同 seed 后，确定性字段 + rng/rng2 全部须 0 差异
-    all_diff = sum(1 for x, y in zip(a, b) for c in cols if x[c] != y[c])
+    # EX-1：写相同 seed 后，确定性字段 + 主 RNG 列(rng)须 0 差异；rng2 是次要观测列，
+    # 钩子只拦 gRngValue(0x4EF8)不碰 gRng2Value(0x4EFC)，rng2 恒定属预期，不作死值判据。
+    core_cols = [c for c in cols if c != "rng2"]
+    all_diff = sum(1 for x, y in zip(a, b) for c in core_cols if x[c] != y[c])
     rng_distinct = len(set(r["rng"] for r in a))
     if all_diff != 0:
-        print("VERDICT=G1-EX1-FAIL (after same-seed writeback, columns still differ: {})".format(all_diff))
+        print("VERDICT=G1-EX1-FAIL (after same-seed writeback, core columns still differ: {})".format(all_diff))
         sys.exit(1)
     if rng_distinct < 2:
-        print("EXPERIMENT-INVALID (rng constant after writeback ->SeedRng overwrite or writeback failed; not a clean convergence)")
+        print("EXPERIMENT-INVALID (main rng column constant after writeback -> writeback failed / reseed not intercepted; not a clean convergence)")
         sys.exit(3)
-    print("VERDICT=G1-EX1-CONVERGED (same seed -> RNG state converges; determinism holds; "
-          "seed source causality necessary-not-sufficient; R3 NETGATE reanchor not yet judged)")
+    print("VERDICT=G1-EX1-CONVERGED (same seed -> main RNG state converges with LCG progression; "
+          "determinism holds; CONTROLLED writeback by-construction, NOT natural convergence, "
+          "NOT opponent-reality evidence; TM1CNT_L unproven; R3 NETGATE reanchor not yet judged)")
     sys.exit(0)
 
 if det_diff:

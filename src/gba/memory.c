@@ -89,6 +89,87 @@ static bool _dropLagStore(uint32_t address, uint32_t value, unsigned width) {
 	unsigned shift = (0x03002B07u - address) * 8u;
 	return ((value >> shift) & 0xFFu) != 0;
 }
+
+/* === G1 EX-1 b-lite：只拦 gRngValue 的 reseed 形写，放行 LCG 自然递推 ===
+ * 设计要点（与 EX1-WRITEBACK-TIMING §2.2 的 b-lite 对齐）：
+ *   1) LCG 优先：gen8 Random() 每次做 gRngValue = 1103515245 * gRngValue（mod 2^32）。
+ *      用「本条 store 到来前的 gRngValue(old)」精确算出期望值；若 value == old*MUL ⇒ 必是 LCG
+ *      递推，原值透传（这样 rng 列仍从强制 seed 确定演化，distinct≥2，不触发 judge 死列自检）。
+ *   2) reseed 形写：SeedRng(u16)/SeedRngAndSetTrainerId() 写的是 u16 零扩展值 ⇒ value ≤ 0xFFFF；
+ *      非 LCG 且满足此形 ⇒ 替换为 gba->detRngForceSeed，并审计。
+ *   3) 其它非 LCG 非 reseed 形的写（如 memcpy 自 contest link）⇒ 原值透传 + unknown 计数，
+ *      供 judge fail-closed（unknown≠0 即 EXPERIMENT-INVALID），避免误伤/误判归因。
+ * 只写 gRngValue；不写 gRng2Value / sRandCount / party / 信任位 / 状态位 / CROSSED（红线不碰）。
+ *
+ * 【偏移口径修正】iwram 声明为 uint32_t*，但 mGBA 的 LOAD_32/STORE_32 用「字节偏移」
+ * （*(uint32_t*)((uintptr_t)基址 + 偏移)）索引它，STORE_IWRAM(memory.c:895) 即以
+ * address & (GBA_SIZE_IWRAM-4) = 0x4EF8 为字节偏移写槽；因此这里取 old 必须同样转字节地址，
+ * 不能写 iwram + OFF（uint32_t 步进会落到 0x13BE0，既非同槽且越界）。地址比较与取 old 同用
+ * MGBAX_DET_RNG_OFF 字节偏移，二者口径一致；强制值仍由 GBAStore32 正常写回该槽。 */
+static uint32_t _detRngForceStore(struct ARMCore* cpu, uint32_t address, uint32_t value, unsigned width) {
+	struct GBA* gba = (struct GBA*) cpu->master;
+	if (!gba || !gba->detRngForce) {
+		return value;                                   /* 默认关：零干预 */
+	}
+	if (width != 32) {
+		++gba->detRngForceWidthSkip;                    /* 护栏：16/8 位 store 不走本钩子 */
+		return value;
+	}
+	if ((address >> BASE_OFFSET) != GBA_REGION_IWRAM) {
+		return value;
+	}
+	if ((address & (GBA_SIZE_IWRAM - 4u)) != MGBAX_DET_RNG_OFF) {
+		return value;                                   /* 按字节偏移匹配，兼容 IWRAM 镜像 */
+	}
+
+	uint32_t* slot = (uint32_t*) ((uintptr_t) gba->memory.iwram + (size_t) MGBAX_DET_RNG_OFF);
+	uint32_t old = *slot;                               /* 本条 store 之前的值＝LCG 递推输入 */
+
+	/* ① LCG 精确递推 ⇒ 放行（保持 RNG 有区分力） */
+	if (value == old * MGBAX_DET_RNG_LCG_MUL) {
+		++gba->detRngForceLcgPass;
+		return value;
+	}
+	/* ② reseed 形写（u16 零扩展）⇒ 强制 seed + 审计 */
+	if (value <= MGBAX_DET_RNG_RESEED_MAX) {
+		uint32_t forced = gba->detRngForceSeed;
+		if (gba->detRngForceHits < MGBAX_DET_RNG_HOOK_AUDIT) {
+			fprintf(stderr, "DETRNG f%03d force addr=%08X val=%08X old=%08X pc=%08X lr=%08X -> %08X\n",
+			        mgbaProbeFrame, address, value, old, cpu->gprs[15], cpu->gprs[14], forced);
+		}
+		++gba->detRngForceHits;
+		return forced;                                  /* 由 GBAStore32 正常写回 IWRAM（保留 wait/stall 时序） */
+	}
+	/* ③ 未知来源（非 LCG、非 u16 reseed 形）⇒ 透传 + 计数，judge 据此 fail-closed */
+	++gba->detRngForceUnknown;
+	return value;
+}
+
+void GBADetRngForceEnable(struct GBA* gba, uint32_t seed) {
+	if (!gba) {
+		return;
+	}
+	gba->detRngForceSeed = seed;
+	gba->detRngForceHits = 0;
+	gba->detRngForceLcgPass = 0;
+	gba->detRngForceUnknown = 0;
+	gba->detRngForceWidthSkip = 0;
+	gba->detRngForce = true;
+}
+
+void GBADetRngForceDisable(struct GBA* gba) {
+	if (gba) {
+		gba->detRngForce = false;
+	}
+}
+
+bool GBADetRngForceEnabled(const struct GBA* gba) { return gba && gba->detRngForce; }
+uint32_t GBADetRngForceSeed(const struct GBA* gba) { return gba ? gba->detRngForceSeed : 0; }
+uint32_t GBADetRngForceHits(const struct GBA* gba) { return gba ? gba->detRngForceHits : 0; }
+uint32_t GBADetRngForceLcgPass(const struct GBA* gba) { return gba ? gba->detRngForceLcgPass : 0; }
+uint32_t GBADetRngForceUnknown(const struct GBA* gba) { return gba ? gba->detRngForceUnknown : 0; }
+uint32_t GBADetRngForceWidthSkip(const struct GBA* gba) { return gba ? gba->detRngForceWidthSkip : 0; }
+
 static uint32_t _rom64Ws1Reads;
 static uint32_t _rom64Ws1Upper;
 static uint32_t _rom64Ws1Last;
@@ -960,6 +1041,8 @@ void GBAStore32(struct ARMCore* cpu, uint32_t address, int32_t value, int* cycle
 	int32_t oldValue;
 	char* waitstatesRegion = memory->waitstatesNonseq32;
 	_probeStore(cpu, address, (uint32_t) value, 32);
+	/* G1 b-lite：门关时原值返回、零开销；命中时返回强制 seed，后续 switch 照常写 IWRAM */
+	value = (int32_t) _detRngForceStore(cpu, address, (uint32_t) value, 32);
 	if (_dropLagStore(address, (uint32_t) value, 32)) {
 		return;
 	}

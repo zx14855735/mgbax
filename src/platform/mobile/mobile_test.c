@@ -4496,15 +4496,12 @@ static void testCoreSurface(const char* dir) {
  * 让游戏真正进入运行，而非 frame0 按一次 A 就静止。
  * 地址来自当轮 rom.map 具名符号（gRngValue=0x03004EF8 / gRng2Value=0x03004EFC），
  * 运行时以 IWRAM 基址 0x03000000 取偏移，改 ROM 须重解析，禁硬编码扩散。 */
-/* G1 EX-1 具名常量：地址只在此定义一次，其余处只引用宏（禁裸 hex 扩散）。
- * MGBAX_DET_RNG_ADDR 绑定 r10 冻结 ROM md5 6E0058EE…（二进制扫描 12 处引用铁证）；
- * 换 ROM 必须重解析符号，禁沿用。 */
-#define MGBAX_DET_IWRAM_BASE   ((uint32_t) GBA_BASE_IWRAM)
-#define MGBAX_DET_RNG_OFF      ((uint32_t) 0x4EF8u)
-#define MGBAX_DET_RNG2_OFF     ((uint32_t) 0x4EFCu)
-#define MGBAX_DET_RNG_ADDR     (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG_OFF)
+/* G1 EX-1 具名常量：地址真源在 mgba/internal/gba/memory.h（MGBAX_DET_IWRAM_BASE /
+ * MGBAX_DET_RNG_OFF / MGBAX_DET_RNG2_OFF / MGBAX_DET_RNG_ADDR），此处不再重复定义，
+ * 避免重定义警告并保证三端同名同值。绑定 r10 冻结 ROM md5 6E0058EE…（二进制扫描 12 处
+ * 引用铁证）；换 ROM 必须重解析符号，禁沿用。仅保留 harness 专用常量。 */
 #define MGBAX_DET_RNG2_ADDR    (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG2_OFF)
-#define MGBAX_DET_SEED         ((uint32_t) 0x1A2B3C4Du)
+#define MGBAX_DET_SEED         ((uint32_t) 0x1A2B3C4Du)  /* 与 MGBAX_DET_RNG_FORCE_SEED 同值 */
 #define MGBAX_DET_SEED_FRAME   (14)
 
 static void testG1Det(const char* rompath, const char* outpath, int frames,
@@ -4530,6 +4527,14 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 	core->setVideoBuffer(core, buf, 240);
 	core->reset(core);
 	struct GBA* g = (struct GBA*) core->board;
+	extern int mgbaProbeFrame;   /* 审计行帧号（memory.c:24） */
+	if (hasSeed) {
+		/* b-lite 注册：只在 EX-1 g1det 模式启用；正常 --g1det(EX-0)/正式联机不调用 */
+		GBADetRngForceEnable(g, seed); /* 用 CLI 传入 seed，默认 MGBAX_DET_RNG_FORCE_SEED */
+		fprintf(stderr, "g1det: det_rng_force=1 seed=%08X hits=%u lcg=%u unknown=%u\n",
+		        GBADetRngForceSeed(g), GBADetRngForceHits(g),
+		        GBADetRngForceLcgPass(g), GBADetRngForceUnknown(g));
+	}
 	FILE* fp = fopen(outpath, "w");
 	if (!fp) {
 		fprintf(stderr, "g1det: cannot open out: %s\n", outpath);
@@ -4541,6 +4546,7 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 	/* 真实开局输入带：f<800 空闲(标题)；800-801 START；802-861 菜单；
 	 * 862-863 A(新游戏)；之后空闲让过场推进。两实例完全一致。 */
 	for (int f = 0; f < frames; ++f) {
+		mgbaProbeFrame = f;   /* 让 DETRNG 审计行带帧号 */
 		uint32_t keys = 0;
 		if (f >= 800 && f < 802) keys = 1u << 3;       /* START 进菜单 */
 		else if (f >= 862 && f < 864) keys = 1u << 0;   /* A 选新游戏 */
@@ -4549,19 +4555,22 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 		/* EX-1：帧==seedFrame 时写同一具名 seed 到两端 live gRngValue，写后回读审计。
 		 * 必须在 runFrame 之前写（f13 游戏 SeedRng 会覆盖早写值，故 f>=14）。 */
 		if (hasSeed && f == seedFrame) {
-			uint32_t* rngPtr = (uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+			/* 与 mGBA 的 LOAD_32/STORE_32 同口径：iwram 虽是 uint32_t*，但索引用字节偏移
+			 * （STORE_IWRAM 写 gRngValue 即 iwram 字节偏移 0x4EF8）；写成 iwram + OFF 会按
+			 * uint32_t 步进落到 0x13BE0（错槽且越界），故统一转字节地址。 */
+			uint32_t* rngPtr = (uint32_t*) ((uintptr_t) g->memory.iwram + (size_t) MGBAX_DET_RNG_OFF);
 			uint32_t before = *rngPtr;
-			/* 直接写 IWRAM（与读取同地址空间）——GBAPatch32 经 CPU bus 会把 0x03004EF8
-			 * 映射到不同物理位置(old 与 before 不一致的铁证)，故弃用 bus 路径。 */
+			/* 一次性初始锚点：经 CPU bus 的 GBAPatch32 弃用，直接写与回读同槽同址；
+			 * 其后所有 reseed 由 b-lite 钩子拦截，二者不冲突。 */
 			*rngPtr = seed;
 			uint32_t rb1 = *rngPtr;
-			uint32_t rb2 = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+			uint32_t rb2 = *(const uint32_t*) ((uintptr_t) g->memory.iwram + (size_t) MGBAX_DET_RNG_OFF);
 			fprintf(stderr, "g1det: seed_patch frame=%d requested=%08X before=%08X after=%08X rb1=%08X rb2=%08X\n",
 			        f, seed, before, (uint32_t) seed, rb1, rb2);
 		}
 		core->runFrame(core);
-		uint32_t rng = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
-		uint32_t rng2 = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG2_OFF);
+		uint32_t rng = *(const uint32_t*) ((uintptr_t) g->memory.iwram + (size_t) MGBAX_DET_RNG_OFF);
+		uint32_t rng2 = *(const uint32_t*) ((uintptr_t) g->memory.iwram + (size_t) MGBAX_DET_RNG2_OFF);
 		/* 帧缓冲 FNV：240*160*4 字节真实渲染输出，有逐帧区分力。 */
 		uint64_t h = 1469598103934665603ULL;
 		const uint8_t* fb = (const uint8_t*) buf;
@@ -4574,6 +4583,12 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 	}
 	fclose(fp);
 	free(buf);
+	if (hasSeed) {
+		fprintf(stderr, "g1det: det_rng_force_summary hits=%u lcg_pass=%u unknown=%u width_skip=%u\n",
+		        GBADetRngForceHits(g), GBADetRngForceLcgPass(g),
+		        GBADetRngForceUnknown(g), GBADetRngForceWidthSkip(g));
+		GBADetRngForceDisable(g);   /* 注销：核销毁前清门 */
+	}
 	core->deinit(core);
 	fprintf(stderr, "g1det: wrote %d frames -> %s (rom=%s)\n", frames, outpath, rompath);
 }

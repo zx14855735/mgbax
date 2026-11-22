@@ -125,6 +125,14 @@ struct GBA {
 	bool debug;
 	char debugString[0x100];
 	GBADebugFlags debugFlags;
+
+	/* === G1 EX-1 b-lite：RNG reseed store 钩子（默认全 0，正常联机不受影响） === */
+	bool detRngForce;              /* 门：true=拦截 reseed 形写并替换为强制 seed */
+	uint32_t detRngForceSeed;      /* 强制 seed（具名宏默认值，可运行时覆盖） */
+	uint32_t detRngForceHits;      /* 审计：强制写命中数 */
+	uint32_t detRngForceLcgPass;   /* 审计：LCG 自然递推放行数 */
+	uint32_t detRngForceUnknown;   /* 审计：既非 LCG 亦非 u16 reseed 形的写数（fail-closed） */
+	uint32_t detRngForceWidthSkip; /* 审计：16/8 位 store 绕开数（可选护栏） */
 };
 
 struct GBACartridge {
