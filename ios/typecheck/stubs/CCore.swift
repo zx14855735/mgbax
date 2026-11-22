@@ -130,6 +130,8 @@ public func mgbaMobileSetNoLagClear(_ enabled: Bool) {}
 // AppDelegate:50/54 调用；typecheck stub 必须补齐，否则全仓 typecheck 报未定义符号。
 public func mgbaMobileSetGrayAll(_ enabled: Bool) {}
 public func mgbaMobileSetGrayLobbyOpen(_ enabled: Bool) {}
+// NETGATE 拼行门（大写 G，逐字 must-match mgba_mobile.h / jni_bridge.cpp）
+public func mgbaMobileNetGateLogSet(_ enabled: Bool) {}
 public func mgbaMobileCpuPc(_ emu: OpaquePointer?) -> UInt32 { 0 }
 public func mgbaMobileLinkClose(_ emu: OpaquePointer?) {}
 public func mgbaMobileLinkStatus(_ emu: OpaquePointer?, _ out: UnsafeMutablePointer<CChar>!, _ outLen: Int) {}

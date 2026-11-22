@@ -174,6 +174,24 @@ bool sioNetPartyMailboxOn(void) {
     return (MGBAX_NET_PARTY_MAILBOX != 0) || (e && atoi(e) == 1);
 }
 
+/* ===== NETGATE 拼行门（R10/R26）：三端同名同值，默认 0（零回归） =====
+ * 仅日志开销；门关时不读 diag、不产任何 [NETGATE]/[NGPEEK] 行、链路零改动。 */
+#ifndef MGBAX_NETGATE_LOG
+#define MGBAX_NETGATE_LOG 0
+#endif
+#if MGBAX_NETGATE_LOG != 0 && MGBAX_NETGATE_LOG != 1
+#error "MGBAX_NETGATE_LOG must be 0 or 1"
+#endif
+#define MGBAX_NETGATE_LOG_ENV "MGBAX_NETGATE_LOG"
+static bool sioNetGateLogOn(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv(MGBAX_NETGATE_LOG_ENV);
+        v = ((MGBAX_NETGATE_LOG != 0) || (e && atoi(e) == 1)) ? 1 : 0;
+    }
+    return v != 0;
+}
+
 /* ===== X10-OBSCHAIN：PC 侧只读观测链总门（方案乙，三端同名同值，默认关） =====
  * 只新增标签 [OBSCHAIN]，不改任何现有 TAG 字段序列 ⇒ diff_party_check TAG_RE 不认。
  * 门关（默认）时：不写任何游戏状态、不产生任何 [OBSCHAIN] 行、链路逻辑零改动；
@@ -670,6 +688,58 @@ static void sioLogFile(const char* fmt, ...) {
 }
 
 #define SIO_LOG(...) do { mLOG(GBA_SIO, INFO, __VA_ARGS__); sioLogFile(__VA_ARGS__); } while (0)
+
+/* ===== NETGATE 拼行钩子（PC 对偶，R10/R26）：只读 EWRAM diag，仅 CLOSED 产规范行 =====
+ * 与移动端 mobileNetGatePeek 对称；tag_ok 逐字读真值禁写 1；role=PC/sender=APP；
+ * rom_md5 由 driver 实测 ROM 字节渲染（非样例）；缺字段/越界 fail-closed。 */
+static uint32_t s_ngLastSeq = 0;
+static unsigned s_ngLines = 0;
+static uint32_t s_ngPeekSig = 0xFFFFFFFFu;
+static unsigned s_ngPeekLines = 0;
+
+static void sioNetGatePeek(struct GBA* gba, const uint8_t* rom, size_t romSize) {
+    uint8_t diag[GNP_NG_DIAG_SIZE];
+    char line[512];
+    char romMd5[33];
+    uint32_t addr = (uint32_t) GNP_DIAG_EW;
+    uint32_t sig, seq;
+    unsigned i;
+
+    if (!sioNetGateLogOn()) { return; }
+    if (!gba || !gba->cpu || !rom || !romSize) { return; }
+    if (!gnpAbsEwOk(addr, GNP_NG_DIAG_SIZE)) { return; }
+    for (i = 0u; i < GNP_NG_DIAG_SIZE; ++i) {
+        diag[i] = (uint8_t) GBAView8(gba->cpu, addr + i);
+    }
+    seq = gnpNgRead32(diag + GNP_OFF_NG_SEQ);
+
+    sig = ((uint32_t) diag[GNP_OFF_NG_STATE] << 24) |
+          ((uint32_t) diag[GNP_OFF_NG_TAG_OK] << 16) |
+          ((uint32_t) diag[GNP_OFF_NG_MSG_TYPE] << 8) |
+          (uint32_t) diag[GNP_OFF_NG_COUNT];
+    if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED &&
+        sig != s_ngPeekSig && s_ngPeekLines < GNP_NG_MAX_LINES) {
+        s_ngPeekSig = sig;
+        ++s_ngPeekLines;
+        SIO_LOG("[NGPEEK] st=%u tag_ok=%u msg=%u cnt=%u seq=%u",
+                (unsigned) diag[GNP_OFF_NG_STATE],
+                (unsigned) diag[GNP_OFF_NG_TAG_OK],
+                (unsigned) diag[GNP_OFF_NG_MSG_TYPE],
+                (unsigned) diag[GNP_OFF_NG_COUNT], (unsigned) seq);
+    }
+
+    if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED) { return; }
+    if (diag[GNP_OFF_NG_MSG_TYPE] != GNP_NG_MSG_PARTY) { return; }
+    if (!gnpNgSrcTagValid((const char*) (diag + GNP_OFF_NG_SRC_TAG), GNP_NG_SRC_TAG_MAX)) { return; }
+    if (seq == 0u || seq <= s_ngLastSeq) { return; }
+    if (s_ngLines >= GNP_NG_MAX_LINES) { return; }
+    s_ngLastSeq = seq;
+    ++s_ngLines;
+
+    gnpNgRomMd5Hex(rom, romSize, romMd5);
+    gnpNgRender(line, sizeof(line), diag, "PC", "APP", romMd5);
+    SIO_LOG("%s", line);
+}
 
 /* ROOTHUNT 诊断日志门（定义见下方；纯日志开关，无行为影响）。 */
 static bool rhVerbose(void);
@@ -4385,6 +4455,13 @@ static void serviceLink(struct SioLink* sio) {
 	netLinkPublish(sio->link, localMode, local);
 	netLinkPingTick(sio->link);
 	if (sio->core && sio->core->platform(sio->core) == mPLATFORM_GBA) {
+		/* NETGATE 拼行钩子：逐帧只读 64B diag（门关 helper 立即返回，零副作用）。 */
+		{
+			size_t ngRomSize = 0;
+			struct GBA* ngGba = (struct GBA*) sio->core->board;
+			const uint8_t* ngRom = sioLoadedRomBytes(sio, &ngRomSize);
+			sioNetGatePeek(ngGba, ngRom, ngRomSize);
+		}
 		int player = netLinkPlayer(sio->link);
 		/* The slave never starts a transfer itself: the 1P clock drives the
 		 * round, the slave finishes when the host's word arrives. The finish

@@ -541,3 +541,17 @@ Java_io_mgba_android_MgbaCore_nativeSetGnpNetParty(
 	(void) env; (void) handle;
 	mgbaMobileGnpSetNetParty(enabled ? true : false);
 }
+
+/* NETGATE 拼行门显式注入（R10/R26）：Android 侧 JNI 对偶，与 nativeSetGnpNetParty 同构。
+ * 门默认 0；Java 驱动可运行时打开 [NETGATE] 拼行（tag_ok 真值、role=APP/sender=PC
+ * 由 mgba_mobile.c 的 driver 真值填入；本桥不写任何游戏态/信任位/party 数据）。
+ * 声明放此 TU 内，避免改 mgba_mobile.h（ROOTHUNT2 仅改本轮列出的 4 个 C/C++ 文件）。
+ * C 定义是 C linkage，此处必须 extern "C"，否则 C++ mangling 链接失败。 */
+extern "C" void mgbaMobileNetGateLogSet(bool enabled);
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetNetGateLog(
+        JNIEnv* env, jobject, jlong handle, jboolean enabled) {
+	(void) env; (void) handle;
+	mgbaMobileNetGateLogSet(enabled ? true : false);
+}

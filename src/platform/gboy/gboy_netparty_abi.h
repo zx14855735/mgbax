@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <mgba-util/md5.h>
 
@@ -75,6 +76,52 @@ typedef struct {
 #define GNP_OFF_PEEK_APPLIED   offsetof(GnpMvpPeekHost, applied)
 #define GNP_OFF_PEEK_COUNT     offsetof(GnpMvpPeekHost, count)
 
+/* ===== NETGATE 64B 只读诊断镜 host 镜像（三端同名同值，R10/R26 规格）=====
+ * 逐字段复刻 gen8 include/netcode.h:178-193 的 struct GnpNetGateDiag（EWRAM，真址
+ * 由 gnp_manifest.h 的 GNP_DIAG_EW 给出）。host 逐字段只读 PEEK，零写游戏态；
+ * tag_ok 是 ROM 真 HMAC 比较结果，host 逐字读真值、禁无条件置 1（红线）。 */
+#define GNP_NG_DIAG_SIZE         64u
+#define GNP_NG_SRC_TAG_MAX       32u
+#define GNP_NG_STATE_CLOSED      3u                    /* GNP_RX_CLOSED，与 gen8 netcode.h 同值 */
+#define GNP_NG_MSG_PARTY         GNP_MSG_PARTY         /* =1，复用既有具名宏 */
+#define GNP_NG_STATE_STR         "CLOSED"              /* 仅 state==GNP_NG_STATE_CLOSED 时打印 */
+#define GNP_NG_MSG_TYPE_STR      "PARTY"               /* 仅 msg_type==GNP_NG_MSG_PARTY 时打印 */
+#define GNP_NG_HEX_BYTES         4u                    /* 4B 指纹 → 8 hex（≥4，无 0x 前缀） */
+#define GNP_NG_SP_BYTES          2u                    /* u16 → 4 hex */
+#define GNP_NG_MAX_LINES         64u
+
+typedef struct {
+    volatile uint8_t  state;                         /*  0 GNP_RX_* 四态，仅 ROM 写 */
+    volatile uint8_t  tag_ok;                        /*  1 真 HmacSha256 相等才为 1，host 逐字读 */
+    volatile uint8_t  msg_type;                      /*  2 GNP_MSG_PARTY */
+    volatile uint8_t  partyCount;                    /*  3 gEnemyPartyCount，>0 */
+    volatile uint32_t seq;                           /*  4 真 mailbox.seq（单调） */
+    volatile uint16_t sp0;                           /*  8 收到 blob 首只 species */
+    volatile uint16_t tx_sp0;                        /* 10 本端 gPlayerParty 首只 species */
+    volatile uint8_t  nonce[GNP_NG_HEX_BYTES];       /* 12 seq 派生，非熵源（4B） */
+    volatile uint8_t  blob_fp[GNP_NG_HEX_BYTES];     /* 16 收到 blob 真字节 CRC16 指纹（4B） */
+    volatile uint8_t  tag[GNP_NG_HEX_BYTES];         /* 20 CRC16 完整性标签，非 HMAC（4B） */
+    volatile uint8_t  rx_digest[GNP_NG_HEX_BYTES];   /* 24 收包 blob 真字节 CRC16（4B） */
+    volatile uint8_t  tx_digest[GNP_NG_HEX_BYTES];   /* 28 本端 gPlayerParty 真字节 CRC16（4B） */
+    volatile char     src_tag[GNP_NG_SRC_TAG_MAX];   /* 32 ROM 内嵌真 file:line，NUL 结尾（32B） */
+} GnpNetGateDiagHost;                                /* sizeof = 64 */
+
+/* 14 个 GNP_OFF_NG_* 具名宏（13 字段 offset + 结构尺寸；三端同名同值，禁裸 hex） */
+#define GNP_OFF_NG_STATE     offsetof(GnpNetGateDiagHost, state)       /*  0 */
+#define GNP_OFF_NG_TAG_OK    offsetof(GnpNetGateDiagHost, tag_ok)      /*  1 */
+#define GNP_OFF_NG_MSG_TYPE  offsetof(GnpNetGateDiagHost, msg_type)    /*  2 */
+#define GNP_OFF_NG_COUNT     offsetof(GnpNetGateDiagHost, partyCount)  /*  3 */
+#define GNP_OFF_NG_SEQ       offsetof(GnpNetGateDiagHost, seq)         /*  4 */
+#define GNP_OFF_NG_SP0       offsetof(GnpNetGateDiagHost, sp0)         /*  8 */
+#define GNP_OFF_NG_TX_SP0    offsetof(GnpNetGateDiagHost, tx_sp0)      /* 10 */
+#define GNP_OFF_NG_NONCE     offsetof(GnpNetGateDiagHost, nonce)       /* 12 */
+#define GNP_OFF_NG_BLOB_FP   offsetof(GnpNetGateDiagHost, blob_fp)     /* 16 */
+#define GNP_OFF_NG_TAG       offsetof(GnpNetGateDiagHost, tag)         /* 20 */
+#define GNP_OFF_NG_RX_DIGEST offsetof(GnpNetGateDiagHost, rx_digest)   /* 24 */
+#define GNP_OFF_NG_TX_DIGEST offsetof(GnpNetGateDiagHost, tx_digest)   /* 28 */
+#define GNP_OFF_NG_SRC_TAG   offsetof(GnpNetGateDiagHost, src_tag)     /* 32 */
+#define GNP_OFF_NG_SIZE      sizeof(GnpNetGateDiagHost)               /* 64 */
+
 /* 编译期尺寸锁（不符即编译失败，fail-closed）——用 __LINE__ 生成唯一 typedef 名，
  * 避免对字符串字面量做 ## 拼接（C99 回退分支合法）。 */
 #define GNP_SA_CAT2(a, b) a##b
@@ -105,6 +152,23 @@ GNP_STATIC_ASSERT(sizeof(GnpMvpMailboxHost) == GNP_FRAME_SIZE, "GNP struct/frame
 GNP_STATIC_ASSERT(GNP_CRC_SPAN == 496,  "GNP crc span");
 GNP_STATIC_ASSERT(GNP_BLOB_SIZE == 480, "GNP blob size");
 
+/* NETGATE 64B diag 镜像 offset/尺寸锁（与 gen8 netcode.h:178-193 逐字段对齐） */
+GNP_STATIC_ASSERT(GNP_OFF_NG_STATE == 0,     "NG state offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_TAG_OK == 1,    "NG tag_ok offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_MSG_TYPE == 2,  "NG msg_type offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_COUNT == 3,     "NG count offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_SEQ == 4,       "NG seq offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_SP0 == 8,       "NG sp0 offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_TX_SP0 == 10,   "NG tx_sp0 offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_NONCE == 12,    "NG nonce offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_BLOB_FP == 16,  "NG blob_fp offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_TAG == 20,      "NG tag offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_RX_DIGEST == 24,"NG rx_digest offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_TX_DIGEST == 28,"NG tx_digest offset");
+GNP_STATIC_ASSERT(GNP_OFF_NG_SRC_TAG == 32,  "NG src_tag offset");
+GNP_STATIC_ASSERT(GNP_NG_DIAG_SIZE == 64,    "NG diag size");
+GNP_STATIC_ASSERT(GNP_OFF_NG_SIZE == 64,     "NG struct/frame size");
+
 /* ===== manifest（方案 A：新 ROM 绝对地址）=====
  * 具名宏 GNP_MB_IW/GNP_PEEK_IW/GNP_APPLIED_IW/GNP_ROM_MD5_HEX 由
  * "platform/gboy/gnp_manifest.h" 提供（唯一允许裸 hex 的生成文件），由各 .c include。
@@ -114,6 +178,15 @@ GNP_STATIC_ASSERT(GNP_BLOB_SIZE == 480, "GNP blob size");
 static int gnpAbsIwOk(uint32_t addr, uint32_t span) {
     return (addr >= GNP_IWRAM_LO) && (addr < GNP_IWRAM_HI) &&
            ((uint64_t) addr + (uint64_t) span <= (uint64_t) GNP_IWRAM_HI);
+}
+
+/* NETGATE diag 实址 GNP_DIAG_EW=0x020298E8 在 EWRAM，不在 IWRAM；gnpAbsIwOk 对它
+ * 恒 false。此守卫专用于 64B diag 只读 PEEK（范围含边界检查，防越界读）。 */
+#define GNP_EWRAM_LO  0x02000000u
+#define GNP_EWRAM_HI  0x02040000u
+static int gnpAbsEwOk(uint32_t addr, uint32_t span) {
+    return (addr >= GNP_EWRAM_LO) && (addr < GNP_EWRAM_HI) &&
+           ((uint64_t) addr + (uint64_t) span <= (uint64_t) GNP_EWRAM_HI);
 }
 
 /* 整 ROM md5 身份绑定（替代 gLastWrittenSector —— 其值随存档变化，禁作身份判据）。 */
@@ -136,6 +209,105 @@ static int gnpRomMd5Matches(const uint8_t* rom, size_t romSize, const char* hex3
         if (digest[i] != (uint8_t) ((hi << 4) | lo)) { return 0; }
     }
     return 1;
+}
+
+/* ===== NETGATE 拼行共享纯逻辑（C/C++ 兼容，三端同名同值）=====
+ * 只做「读 diag 字节 → 格式化成 P14 规范行」，不含任何日志 sink/游戏态写。
+ * role/sender/rom_md5 由 driver 身份真值经参数传入（ROM 恒 UNKNOWN 不可自证）。 */
+static void gnpNgHexBytes(char* dst, const uint8_t* p, unsigned n) {
+    static const char kHex[] = "0123456789ABCDEF";
+    unsigned i;
+    for (i = 0u; i < n; ++i) {
+        dst[i * 2u]      = kHex[(p[i] >> 4) & 0xFu];
+        dst[i * 2u + 1u] = kHex[p[i] & 0xFu];
+    }
+    dst[n * 2u] = '\0';
+}
+
+static void gnpNgHex16(char* dst, uint16_t v) {
+    uint8_t b[2];
+    b[0] = (uint8_t) (v >> 8);
+    b[1] = (uint8_t) v;
+    gnpNgHexBytes(dst, b, GNP_NG_SP_BYTES);
+}
+
+static unsigned gnpNgDec(char* dst, uint32_t v) {
+    char tmp[16];
+    unsigned n = 0u, i;
+    if (v == 0u) { dst[0] = '0'; dst[1] = '\0'; return 1u; }
+    while (v != 0u) { tmp[n++] = (char) ('0' + (v % 10u)); v /= 10u; }
+    for (i = 0u; i < n; ++i) { dst[i] = tmp[n - 1u - i]; }
+    dst[n] = '\0';
+    return n;
+}
+
+/* src_tag provenance 合法性：NUL 结尾且值内无空格/']'（否则 KV_RE 截断 → fail-closed）。 */
+static int gnpNgSrcTagValid(const char* s, unsigned cap) {
+    unsigned i;
+    int nul = 0;
+    if (!s) { return 0; }
+    for (i = 0u; i < cap; ++i) {
+        if (s[i] == '\0') { nul = 1; break; }
+        if (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' || s[i] == ']') { return 0; }
+    }
+    if (!nul) { return 0; }
+    for (i = 0u; s[i] != '\0'; ++i) {
+        if (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' || s[i] == ']') { return 0; }
+    }
+    return 1;
+}
+
+/* 由 driver 持有的 ROM 字节实测 md5 渲染成 32 位大写 hex（真值，非 manifest 常量样例）。
+ * 与 gnpRomMd5Matches 同源 md5Buffer；两端加载同一 ROM 时自然一致，ROM 不同则天然不等。 */
+static void gnpNgRomMd5Hex(const uint8_t* rom, size_t romSize, char out[33]) {
+    static const char kB[] = "0123456789ABCDEF";
+    uint8_t d[16];
+    unsigned i;
+    if (!rom || !romSize) { out[0] = '\0'; return; }
+    md5Buffer(rom, romSize, d);
+    for (i = 0u; i < 16u; ++i) {
+        out[i * 2u]      = kB[(d[i] >> 4) & 0xFu];
+        out[i * 2u + 1u] = kB[d[i] & 0xFu];
+    }
+    out[32] = '\0';
+}
+
+/* diag 内 u32/u16 按 GBA 小端解读（host 大小端无关，逐字节拼值）。 */
+static uint32_t gnpNgRead32(const uint8_t* p) {
+    return (uint32_t) p[0] | ((uint32_t) p[1] << 8) |
+           ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+}
+
+/* P14 规范行：16 字段顺序/字面严格对齐 diff_party_check.py:1955。
+ * 前置条件由调用方保证：diag state==CLOSED、msg_type==PARTY、src_tag 合法、seq 单调去重。
+ * tag_ok 逐字读真值（禁写 1）；state/msg_type 打印字面常量（仅前置条件成立时 truthful）。 */
+static void gnpNgRender(char* buf, size_t cap, const uint8_t* diag,
+                        const char* role, const char* sender, const char* romMd5Hex) {
+    char sSeq[16], sCnt[16], sTagOk[16], sSp0[8], sTxSp0[8];
+    char sNonce[16], sBlob[16], sTag[16], sRx[16], sTx[16];
+    uint16_t sp0, tx_sp0;
+
+    gnpNgDec(sSeq, gnpNgRead32(diag + GNP_OFF_NG_SEQ));
+    gnpNgDec(sCnt, (uint32_t) diag[GNP_OFF_NG_COUNT]);
+    gnpNgDec(sTagOk, (uint32_t) diag[GNP_OFF_NG_TAG_OK]);
+    sp0 = (uint16_t) ((uint16_t) diag[GNP_OFF_NG_SP0] |
+                      ((uint16_t) diag[GNP_OFF_NG_SP0 + 1u] << 8));
+    tx_sp0 = (uint16_t) ((uint16_t) diag[GNP_OFF_NG_TX_SP0] |
+                         ((uint16_t) diag[GNP_OFF_NG_TX_SP0 + 1u] << 8));
+    gnpNgHex16(sSp0, sp0);
+    gnpNgHex16(sTxSp0, tx_sp0);
+    gnpNgHexBytes(sNonce, diag + GNP_OFF_NG_NONCE, GNP_NG_HEX_BYTES);
+    gnpNgHexBytes(sBlob,  diag + GNP_OFF_NG_BLOB_FP, GNP_NG_HEX_BYTES);
+    gnpNgHexBytes(sTag,   diag + GNP_OFF_NG_TAG, GNP_NG_HEX_BYTES);
+    gnpNgHexBytes(sRx,    diag + GNP_OFF_NG_RX_DIGEST, GNP_NG_HEX_BYTES);
+    gnpNgHexBytes(sTx,    diag + GNP_OFF_NG_TX_DIGEST, GNP_NG_HEX_BYTES);
+    snprintf(buf, cap,
+        "[NETGATE] role=%s state=%s seq=%s sender=%s rom_md5=%s blob=%s nonce=%s "
+        "tag=%s rx_digest=%s tx_digest=%s msg_type=%s src_tag=%s cnt=%s sp0=%s "
+        "tx_sp0=%s tag_ok=%s",
+        role, GNP_NG_STATE_STR, sSeq, sender, romMd5Hex, sBlob, sNonce,
+        sTag, sRx, sTx, GNP_NG_MSG_TYPE_STR, (const char*) (diag + GNP_OFF_NG_SRC_TAG),
+        sCnt, sSp0, sTxSp0, sTagOk);
 }
 
 /* ===== host CRC16 镜像：逐位复刻 gen8 src/util.c:240 CalcCRC16WithTable =====

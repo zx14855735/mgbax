@@ -206,6 +206,11 @@ void mgbaMobileResetAudioPace(struct MgbaMobile* emu);
 /* S2 TYPE_PARTY：宿端门注入 + 唯一写口（只写 IWRAM 邮槽字节，游戏态零写；writer=ROM）。 */
 void mgbaMobileGnpSetNetParty(bool enabled);
 int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu, const uint8_t* mb, size_t len);
+
+/* NETGATE 拼行门（R10/R26）：开则共享 C 逐帧从 diag 只读 PEEK 拼 [NETGATE] 行
+ * （tag_ok 真值、role/sender/rom_md5 由 driver 真值填，唯一生产者=共享 C）。
+ * 协议级门控，默认关；iOS/Android/PC 三端同名同值。 */
+void mgbaMobileNetGateLogSet(bool enabled);
 /*
  * Whether the resampler's input rate can be trusted at the speed being read:
  * a locked estimate or a remembered device throughput to seed from. Front

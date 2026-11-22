@@ -7943,6 +7943,9 @@ static void mobilePollMemoryWatch(struct MgbaMobile* emu) {
 	}
 }
 
+/* NETGATE 拼行钩子前向声明（定义见本文件 GNP 写口区，逐帧只读 diag）。 */
+static void mobileNetGatePeek(struct GBA* g);
+
 static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	if (!emu || !emu->core) {
 		return false;
@@ -7995,6 +7998,8 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 			            (int)((stNow >> 16) & 1), (int)((stNow >> 18) & 1),
 			            g->sio.siocnt, emu->sioWaiting, netLinkPlayer(emu->link));
 		}
+		/* NETGATE 拼行钩子：逐帧只读 64B diag，门关/未 CLOSED/缺字段均零行零副作用。 */
+		mobileNetGatePeek(g);
 		/* 握手卡住时扫一次内存，定位游戏真实的 link 数据区（只做一次）。 */
 		if (!emu->memScan && emu->sioOk > 150 && g->sio.mode == GBA_SIO_MULTI) {
 			emu->memScan = 1;
@@ -9638,4 +9643,102 @@ int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
 	    (unsigned) GBAView8 (g->cpu, peekBase + GNP_OFF_PEEK_APPLIED));
 	(void) appliedBase;
 	return 1;
+}
+
+/* ===== NETGATE 拼行钩子（R10/R26）：host 只读 64B diag，仅 state==CLOSED 产规范行 =====
+ * 门 MGBAX_NETGATE_LOG 三端同名同值、默认 0（零回归）；运行时 prop/env/JNI 可开。
+ * 旁路 [NGPEEK] 仅原始诊断、不进判据通道（checker 只认 [NETGATE]）。
+ * 红线：tag_ok 逐字读真值禁写 1；role/sender/rom_md5 为 driver 身份真值（ROM 恒 UNKNOWN
+ * 不可自证）；缺字段/地址越界/ROM md5 不符 fail-closed 不产行；禁造 party/信任位/CROSSED。 */
+#ifndef MGBAX_NETGATE_LOG
+#define MGBAX_NETGATE_LOG 0
+#endif
+#if MGBAX_NETGATE_LOG != 0 && MGBAX_NETGATE_LOG != 1
+#error "MGBAX_NETGATE_LOG must be 0 or 1"
+#endif
+#define MGBAX_NETGATE_LOG_ENV  "MGBAX_NETGATE_LOG"
+#define MGBAX_NETGATE_LOG_PROP "debug.mgbax.link.netgate_log"
+static int s_ngLog = -1;
+static bool mobileNetGateLogOn(void) {
+	if (s_ngLog < 0) {
+#if MGBAX_NETGATE_LOG != 0
+		s_ngLog = 1;
+#else
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp(MGBAX_NETGATE_LOG_PROP, p);
+		s_ngLog = (p[0] == '1') ? 1 : 0;
+#else
+		const char* e = getenv(MGBAX_NETGATE_LOG_ENV);
+		s_ngLog = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+#endif
+	}
+	return s_ngLog != 0;
+}
+void mgbaMobileNetGateLogSet(bool enabled) { s_ngLog = enabled ? 1 : 0; }
+
+/* seq 严格单调去重 + 规范行 64 条上限；[NGPEEK] 旁路独立节流。 */
+static uint32_t s_ngLastSeq = 0;
+static unsigned s_ngLines = 0;
+static uint32_t s_ngPeekSig = 0xFFFFFFFFu;
+static unsigned s_ngPeekLines = 0;
+
+static void mobileNetGatePeek(struct GBA* g) {
+	uint8_t diag[GNP_NG_DIAG_SIZE];
+	char line[512];
+	char romMd5[33];
+	uint32_t addr = (uint32_t) GNP_DIAG_EW;
+	uint32_t sig, seq;
+	unsigned i;
+	const uint8_t* rom;
+	size_t romSize;
+
+	if (!mobileNetGateLogOn()) { return; }
+	if (!g || !g->cpu) { return; }
+	/* 整 ROM md5 身份绑定 + EWRAM 范围守卫：不符/越界 fail-closed（不产任何行）。 */
+	if (!mobileGnpRomIdentityOk(g)) { return; }
+	if (!gnpAbsEwOk(addr, GNP_NG_DIAG_SIZE)) { return; }
+	rom = (const uint8_t*) g->memory.rom;
+	romSize = (size_t) g->memory.romSize;
+	if (!rom || !romSize) { return; }
+
+	/* 逐字节只读 PEEK（GBAView8 不写游戏态、不动链路字）。 */
+	for (i = 0u; i < GNP_NG_DIAG_SIZE; ++i) {
+		diag[i] = (uint8_t) GBAView8(g->cpu, addr + i);
+	}
+	seq = gnpNgRead32(diag + GNP_OFF_NG_SEQ);
+
+	/* 旁路 [NGPEEK]：非 CLOSED 期按 (state/tag_ok/msg/cnt) 签名去重，仅原始观测。 */
+	sig = ((uint32_t) diag[GNP_OFF_NG_STATE] << 24) |
+	      ((uint32_t) diag[GNP_OFF_NG_TAG_OK] << 16) |
+	      ((uint32_t) diag[GNP_OFF_NG_MSG_TYPE] << 8) |
+	      (uint32_t) diag[GNP_OFF_NG_COUNT];
+	if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED &&
+	    sig != s_ngPeekSig && s_ngPeekLines < GNP_NG_MAX_LINES) {
+		s_ngPeekSig = sig;
+		++s_ngPeekLines;
+		MOBILE_LOGI("[NGPEEK] st=%u tag_ok=%u msg=%u cnt=%u seq=%u",
+		            (unsigned) diag[GNP_OFF_NG_STATE],
+		            (unsigned) diag[GNP_OFF_NG_TAG_OK],
+		            (unsigned) diag[GNP_OFF_NG_MSG_TYPE],
+		            (unsigned) diag[GNP_OFF_NG_COUNT], (unsigned) seq);
+	}
+
+	/* 仅 state==CLOSED 且 msg_type==PARTY 才产规范行；其余 fail-closed 不产行。 */
+	if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED) { return; }
+	if (diag[GNP_OFF_NG_MSG_TYPE] != GNP_NG_MSG_PARTY) { return; }
+	/* src_tag provenance 合法性（NUL 结尾、值内无空格/']'）缺即 fail-closed。 */
+	if (!gnpNgSrcTagValid((const char*) (diag + GNP_OFF_NG_SRC_TAG), GNP_NG_SRC_TAG_MAX)) { return; }
+	/* seq 严格单调去重（seq==0 或 <= 上次即拒），64 行上限。 */
+	if (seq == 0u || seq <= s_ngLastSeq) { return; }
+	if (s_ngLines >= GNP_NG_MAX_LINES) { return; }
+	s_ngLastSeq = seq;
+	++s_ngLines;
+
+	/* role/sender/rom_md5 = driver 身份真值：APP 端本端 APP、对端 PC；
+	 * rom_md5 由 driver 实测 ROM 字节渲染（非 manifest 常量样例，且上面已验身份）。 */
+	gnpNgRomMd5Hex(rom, romSize, romMd5);
+	gnpNgRender(line, sizeof(line), diag, "APP", "PC", romMd5);
+	MOBILE_LOGI("%s", line);
 }

@@ -481,9 +481,20 @@ public final class MgbaCore {
         if (handle != 0) { nativeSetGnpNetParty(handle, enabled); }
     }
 
+    /** NETGATE 拼行门（R10/R26）：开则共享 C 逐帧从 diag 拼 [NETGATE] 行。默认关。 */
+    public void setNetGateLog(boolean enabled) {
+        if (handle != 0) { nativeSetNetGateLog(handle, enabled); }
+    }
+
     private static native boolean nativeWriteGnpPartyMailbox(long handle, byte[] mb);
 
     private static native void nativeSetGnpNetParty(long handle, boolean enabled);
+
+    /* NETGATE 拼行门（R10/R26，must-match jni_bridge.cpp 的
+     * Java_io_mgba_android_MgbaCore_nativeSetNetGateLog 签名）。
+     * 门默认 0；[NETGATE] 行由共享 C 唯一生产（role/sender/rom_md5 由 driver 真值填），
+     * 本 Java 侧只透传开关、不产行、不拼行、不回打（否则 seq 单调失败 -> UNOBS）。 */
+    private static native void nativeSetNetGateLog(long handle, boolean enabled);
 
     private static native long nativeCreate(String saveDir, String stateDir);
 
