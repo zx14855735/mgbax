@@ -4488,8 +4488,12 @@ static void testCoreSurface(const char* dir) {
 }
 
 /* G1 确定性前置实验 harness（EX-0 基线：同核双进程逐帧全等）。
- * 只输出可证伪的运行时打点：每帧 (pc, gRngValue, gRng2Value, IWRAM FNV-1a)。
+ * 打点：(pc, gRngValue, gRng2Value, 帧缓冲 FNV, 非黑像素数, 输入 mask)。
+ * 帧缓冲来自 setVideoBuffer，是游戏真实渲染输出——比 IWRAM 前 256B 有区分力，
+ * 能证伪"pc 停 BIOS 但画面在变"的退化平凡全等。
  * 不写任何游戏内存、不构造 party/state；seed 由真实游戏自身派生。
+ * 输入带：复刻 testRom64Render 的真实开局序列（标题->START->菜单->A->新游戏），
+ * 让游戏真正进入运行，而非 frame0 按一次 A 就静止。
  * 地址来自当轮 rom.map 具名符号（gRngValue=0x03004EF8 / gRng2Value=0x03004EFC），
  * 运行时以 IWRAM 基址 0x03000000 取偏移，改 ROM 须重解析，禁硬编码扩散。 */
 static void testG1Det(const char* rompath, const char* outpath, int frames) {
@@ -4521,22 +4525,27 @@ static void testG1Det(const char* rompath, const char* outpath, int frames) {
 		core->deinit(core);
 		return;
 	}
-	fprintf(fp, "frame,pc,rng,rng2,iwram_fnv\n");
+	fprintf(fp, "frame,pc,rng,rng2,fb_fnv,nonblack,keys\n");
+	/* 真实开局输入带：f<800 空闲(标题)；800-801 START；802-861 菜单；
+	 * 862-863 A(新游戏)；之后空闲让过场推进。两实例完全一致。 */
 	for (int f = 0; f < frames; ++f) {
-		/* 固定输入带：第 0 帧按 A 启动，其余松开；两实例完全一致。 */
-		core->setKeys(core, f == 0 ? (1u << 0) : 0);
+		uint32_t keys = 0;
+		if (f >= 800 && f < 802) keys = 1u << 3;       /* START 进菜单 */
+		else if (f >= 862 && f < 864) keys = 1u << 0;   /* A 选新游戏 */
+		else if (f >= 900 && f % 120 < 2) keys = 1u << 0; /* 每 2s 敲 A 推进对白 */
+		core->setKeys(core, keys);
 		core->runFrame(core);
 		uint32_t rng = *(const uint32_t*) (g->memory.iwram + 0x4EF8u);
 		uint32_t rng2 = *(const uint32_t*) (g->memory.iwram + 0x4EFCu);
-		/* 只 hash IWRAM 前 256B（安全区：含 IRQ 向量/启动关键区）。基线只需
-		 * 确定性摘要，两实例逐帧比对该摘要即可证伪不等，无需扫全 RAM。 */
+		/* 帧缓冲 FNV：240*160*4 字节真实渲染输出，有逐帧区分力。 */
 		uint64_t h = 1469598103934665603ULL;
-		for (size_t i = 0; i < 256; ++i) {
-			h ^= g->memory.iwram[i];
+		const uint8_t* fb = (const uint8_t*) buf;
+		for (size_t i = 0; i < (size_t) 240 * 160 * sizeof(mColor); ++i) {
+			h ^= fb[i];
 			h *= 1099511628211ULL;
 		}
-		fprintf(fp, "%d,%08X,%08X,%08X,%016llX\n", f, g->cpu->gprs[15], rng, rng2,
-		        (unsigned long long) h);
+		fprintf(fp, "%d,%08X,%08X,%08X,%016llX,%d,%u\n", f, g->cpu->gprs[15], rng, rng2,
+		        (unsigned long long) h, _rom64NonBlack(buf), keys);
 	}
 	fclose(fp);
 	free(buf);

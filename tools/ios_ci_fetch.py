@@ -8,6 +8,8 @@
   3. 轮询等 run 完成（默认 ≤20 分钟，可 --timeout 调）；CI 红/超时如实报告。
   4. 下载 `mgbax-unsigned-ipa` artifact（zip），解出 .ipa 到 ios_ci_artifacts/，
      文件名带 sha8，打印 md5 供磁盘实测核对。
+  5. 只保留最新版：成功后删除目录内除本次外的所有 mGBAx-*.ipa / artifact-*.zip，
+     避免旧版 IPA 堆积导致"装错版本/判错来源"。
 
 用法：
   python tools/ios_ci_fetch.py                # 拉主仓 HEAD 对应 run
@@ -152,8 +154,28 @@ def main():
     if not ipas:
         print("zip 内无 .ipa；条目:", [n for n in zipfile.ZipFile(dest_zip).namelist()][:10])
         return 9
+
+    # 只保留最新版：删掉目录内除本次外的所有 mGBAx-*.ipa 与 artifact-*.zip。
+    # 本次产物路径集合（保留）：刚解出的 IPA + 刚下载的 zip。
+    keep = set(os.path.abspath(p[0]) for p in ipas)
+    keep.add(os.path.abspath(dest_zip))
+    removed = []
+    for name in os.listdir(OUT_DIR):
+        if not (name.startswith("mGBAx-") and name.endswith(".ipa")) and \
+           not (name.startswith("artifact-") and name.endswith(".zip")):
+            continue
+        full = os.path.abspath(os.path.join(OUT_DIR, name))
+        if full not in keep:
+            try:
+                os.remove(full)
+                removed.append(name)
+            except OSError as e:
+                print("清理失败 %s: %s" % (name, e))
+    if removed:
+        print("已清理旧版(%d): %s" % (len(removed), ", ".join(removed)))
+
     for out, size, md5 in ipas:
-        print("IPA: %s  size=%d  md5=%s" % (out, size, md5))
+        print("IPA(最新): %s  size=%d  md5=%s" % (out, size, md5))
     return 0
 
 
