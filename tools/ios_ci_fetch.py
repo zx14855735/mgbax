@@ -98,13 +98,24 @@ def find_artifact(run_id, name):
 
 
 def download_artifact(artifact_id, dest_zip):
+    """下载 artifact，带 8x10s 重试环（网络瞬断 / GitHub 302 大文件下载偶发失败）。"""
     url = "https://api.github.com/repos/%s/actions/artifacts/%d/zip" % (REPO, artifact_id)
-    p = subprocess.run(["curl.exe", "-s", "-L", "-o", dest_zip] + HDR + [url],
-                       capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if p.returncode != 0 or not os.path.exists(dest_zip) or os.path.getsize(dest_zip) < 1000:
-        print("artifact 下载失败:", p.stderr[:200])
-        return False
-    return True
+    for i in range(1, 9):
+        if os.path.exists(dest_zip):
+            try:
+                os.remove(dest_zip)
+            except OSError:
+                pass
+        p = subprocess.run(["curl.exe", "-s", "-L", "--max-time", "120", "-o", dest_zip] + HDR + [url],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        size = os.path.getsize(dest_zip) if os.path.exists(dest_zip) else 0
+        if p.returncode == 0 and size >= 1000:
+            print("artifact 下载成功（第 %d 次，%d B）" % (i, size))
+            return True
+        print("artifact 下载第 %d 次失败 (rc=%s size=%d): %s；10s 后重试" %
+              (i, p.returncode, size, p.stderr[:120]))
+        time.sleep(10)
+    return False
 
 
 def main():
