@@ -4252,7 +4252,7 @@ public class EmulatorActivity extends AppCompatActivity {
                     + " coreNull=" + (core == null));
         }
         if (core != null) {
-            double rate = prefs.getFloat("audio_rate", 1.0f);
+            double rate = prefs.getFloat("fast_audio_rate", 1.0f);
             if (Math.abs(rate - appliedAudioRate) > 0.001) {
                 core.setAudioRate(rate);
                 appliedAudioRate = rate;
@@ -6863,7 +6863,7 @@ public class EmulatorActivity extends AppCompatActivity {
 
         // 音乐速度 rate（PC HOLD_RATES = 1/1.5/2/3，Q7）：点击循环，与 PC 第4自由度对齐。
         final float[] audioRates = { 1.0f, 1.5f, 2.0f, 3.0f };
-        final float savedRate = prefs.getFloat("audio_rate", 1.0f);
+        final float savedRate = prefs.getFloat("fast_audio_rate", 1.0f);
         final int[] audioRateIdx = { 0 };
         for (int i = 0; i < audioRates.length; ++i) {
             if (Math.abs(audioRates[i] - savedRate) < 0.01f) { audioRateIdx[0] = i; break; }
@@ -6886,7 +6886,7 @@ public class EmulatorActivity extends AppCompatActivity {
         audioRateBtn.setOnClickListener(v -> {
             audioRateIdx[0] = (audioRateIdx[0] + 1) % audioRates.length;
             float r = audioRates[audioRateIdx[0]];
-            prefs.edit().putFloat("audio_rate", r).apply();
+            prefs.edit().putFloat("fast_audio_rate", r).apply();
             audioRateBtn.setText(String.format("音乐速度: %.1f×", r));
             if (core != null) { core.setAudioRate(r); }
         });
