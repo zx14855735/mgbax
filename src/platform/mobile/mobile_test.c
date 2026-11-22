@@ -4549,11 +4549,15 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 		/* EX-1：帧==seedFrame 时写同一具名 seed 到两端 live gRngValue，写后回读审计。
 		 * 必须在 runFrame 之前写（f13 游戏 SeedRng 会覆盖早写值，故 f>=14）。 */
 		if (hasSeed && f == seedFrame) {
-			int32_t old = 0;
-			GBAPatch32(g->cpu, MGBAX_DET_RNG_ADDR, (int32_t) seed, &old);
-			uint32_t readback = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
-			fprintf(stderr, "g1det: seed_patch frame=%d requested=%08X old=%08X readback=%08X\n",
-			        f, seed, (uint32_t) old, readback);
+			uint32_t* rngPtr = (uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+			uint32_t before = *rngPtr;
+			/* 直接写 IWRAM（与读取同地址空间）——GBAPatch32 经 CPU bus 会把 0x03004EF8
+			 * 映射到不同物理位置(old 与 before 不一致的铁证)，故弃用 bus 路径。 */
+			*rngPtr = seed;
+			uint32_t rb1 = *rngPtr;
+			uint32_t rb2 = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+			fprintf(stderr, "g1det: seed_patch frame=%d requested=%08X before=%08X after=%08X rb1=%08X rb2=%08X\n",
+			        f, seed, before, (uint32_t) seed, rb1, rb2);
 		}
 		core->runFrame(core);
 		uint32_t rng = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
