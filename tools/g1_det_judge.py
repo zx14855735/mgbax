@@ -48,9 +48,9 @@ if det_diff:
     print("VERDICT=G1-EX0-FAIL (determinism fields differ -> nondeterministic)")
     sys.exit(1)
 if det_only and any(seed_diff.values()):
-    # rng/rng2 地址语义有争议（见 r10/verdict-v2.md）：可能是真 RNG 也可能是错址读数，
-    # 只报告为"RNG 列分歧观测"，不解读为 seed/TM1CNT_L 命题实证。
-    print("VERDICT=G1-EX0-DETERMINISM-OK + RNG-COLUMN-DIVERGENCE-OBSERVED "
-          "(execution/frame identical; rng columns differ; seed semantics UNRESOLVED, non-sufficient)")
+    # rng 地址已由 RNG-ADDR-RESOLVE.md 二进制扫描证实正确（0x4EF8 有 12 处引用），
+    # 分歧是真实运行时现象；但来源是否 TM1CNT_L 未直接证明，只报观测、不解读为 seed 实证。
+    print("VERDICT=G1-EX0-DETERMINISM-OK + RNG-DIVERGENCE-OBSERVED "
+          "(execution/frame identical; RNG differs at runtime; source/TM1CNT_L UNPROVEN, non-sufficient)")
     sys.exit(0)
 print("VERDICT=G1-EX0-EQUAL (all checked fields equal; determinism baseline observed)")
