@@ -64,7 +64,8 @@ enum GBAMemoryBase {
 #define MGBAX_DET_RNG_OFF         ((uint32_t) 0x4EF8u)                         /* gRngValue 在 IWRAM 的字节偏移 */
 #define MGBAX_DET_RNG2_OFF        ((uint32_t) 0x4EFCu)                         /* gRng2Value 在 IWRAM 的字节偏移 */
 #define MGBAX_DET_RNG_ADDR        (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG_OFF)   /* 0x03004EF8 */
-#define MGBAX_DET_RNG_LCG_MUL     ((uint32_t) 1103515245u)                     /* gen8 Random(): gRngValue = MUL * gRngValue */
+#define MGBAX_DET_RNG_LCG_MUL     ((uint32_t) 1103515245u)                     /* gen8 Random(): gRngValue = MUL * gRngValue + ADD (mod 2^32) */
+#define MGBAX_DET_RNG_LCG_ADD     ((uint32_t) 0x6073u)                         /* LCG 加数：x = MUL*x + 0x6073；漏此项会把每次真实 LCG 写误判为 reseed/unknown */
 #define MGBAX_DET_RNG_RESEED_MAX  ((uint32_t) 0x0000FFFFu)                     /* SeedRng(u16) 零扩展 ⇒ reseed 形写 ≤ 0xFFFF */
 #ifndef MGBAX_DET_RNG_FORCE_SEED
 #define MGBAX_DET_RNG_FORCE_SEED  ((uint32_t) 0x1A2B3C4Du)                     /* 与 EX-1 请求 seed 同值；可被 setter 覆盖 */

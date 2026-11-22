@@ -4587,6 +4587,25 @@ static void testG1Det(const char* rompath, const char* outpath, int frames,
 		fprintf(stderr, "g1det: det_rng_force_summary hits=%u lcg_pass=%u unknown=%u width_skip=%u\n",
 		        GBADetRngForceHits(g), GBADetRngForceLcgPass(g),
 		        GBADetRngForceUnknown(g), GBADetRngForceWidthSkip(g));
+		/* 审计计数落盘供 judge 读取（EX1-BLITE-AUDIT §3.4：judge 只读 CSV，从不解析 summary 行）。
+		 * 写 <outpath>.audit 单行 `hits=N lcg_pass=N unknown=N width_skip=N`，父会话 judge --expect
+		 * converge 据此做 J5(lcg_pass>=1)/J6(unknown==0) 硬前置；写失败仅告警，不影响模拟。 */
+		{
+			char auditPath[768];
+			FILE* af = NULL;
+			int n = snprintf(auditPath, sizeof(auditPath), "%s.audit", outpath);
+			if (n > 0 && (size_t) n < sizeof(auditPath)) {
+				af = fopen(auditPath, "w");
+			}
+			if (af) {
+				fprintf(af, "hits=%u lcg_pass=%u unknown=%u width_skip=%u\n",
+				        GBADetRngForceHits(g), GBADetRngForceLcgPass(g),
+				        GBADetRngForceUnknown(g), GBADetRngForceWidthSkip(g));
+				fclose(af);
+			} else {
+				fprintf(stderr, "g1det: cannot open audit: %s.audit\n", outpath);
+			}
+		}
 		GBADetRngForceDisable(g);   /* 注销：核销毁前清门 */
 	}
 	core->deinit(core);

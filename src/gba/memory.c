@@ -92,9 +92,11 @@ static bool _dropLagStore(uint32_t address, uint32_t value, unsigned width) {
 
 /* === G1 EX-1 b-lite：只拦 gRngValue 的 reseed 形写，放行 LCG 自然递推 ===
  * 设计要点（与 EX1-WRITEBACK-TIMING §2.2 的 b-lite 对齐）：
- *   1) LCG 优先：gen8 Random() 每次做 gRngValue = 1103515245 * gRngValue（mod 2^32）。
- *      用「本条 store 到来前的 gRngValue(old)」精确算出期望值；若 value == old*MUL ⇒ 必是 LCG
+ *   1) LCG 优先：gen8 Random() 每次做 gRngValue = 1103515245 * gRngValue + 0x6073（mod 2^32）。
+ *      用「本条 store 到来前的 gRngValue(old)」精确算出期望值；若 value == old*MUL + ADD ⇒ 必是 LCG
  *      递推，原值透传（这样 rng 列仍从强制 seed 确定演化，distinct≥2，不触发 judge 死列自检）。
+ *      【2026-11-22 EX1-BLITE-AUDIT 修正】此前漏 ADD：首步 0*MUL+0x6073=0x6073 落入 reseed 形(≤0xFFFF)
+ *      被误强制，其余 1198 次真实 LCG 写全落 unknown；实证 1A2B3C4D*MUL+0x6073=8156833C=f4。
  *   2) reseed 形写：SeedRng(u16)/SeedRngAndSetTrainerId() 写的是 u16 零扩展值 ⇒ value ≤ 0xFFFF；
  *      非 LCG 且满足此形 ⇒ 替换为 gba->detRngForceSeed，并审计。
  *   3) 其它非 LCG 非 reseed 形的写（如 memcpy 自 contest link）⇒ 原值透传 + unknown 计数，
@@ -125,8 +127,8 @@ static uint32_t _detRngForceStore(struct ARMCore* cpu, uint32_t address, uint32_
 	uint32_t* slot = (uint32_t*) ((uintptr_t) gba->memory.iwram + (size_t) MGBAX_DET_RNG_OFF);
 	uint32_t old = *slot;                               /* 本条 store 之前的值＝LCG 递推输入 */
 
-	/* ① LCG 精确递推 ⇒ 放行（保持 RNG 有区分力） */
-	if (value == old * MGBAX_DET_RNG_LCG_MUL) {
+	/* ① LCG 精确递推（含加数 ADD）⇒ 放行（保持 RNG 有区分力） */
+	if (value == (uint32_t)(old * MGBAX_DET_RNG_LCG_MUL + MGBAX_DET_RNG_LCG_ADD)) {
 		++gba->detRngForceLcgPass;
 		return value;
 	}

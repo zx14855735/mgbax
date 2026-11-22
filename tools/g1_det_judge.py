@@ -8,7 +8,7 @@
   --expect converge    EX-1：写相同 seed 后所有字段(含 rng/rng2)须全等，且 rng 须有
                        区分力(排除恒定 seed 导致的假收敛)，否则 EXPERIMENT-INVALID
 """
-import csv, sys
+import csv, os, sys
 
 DETERMINISM_COLS = ["pc", "fb_fnv", "nonblack", "keys"]
 SEED_COLS = ["rng", "rng2"]
@@ -48,20 +48,42 @@ if dead:
     sys.exit(3)
 
 if converge:
-    # EX-1：写相同 seed 后，确定性字段 + 主 RNG 列(rng)须 0 差异；rng2 是次要观测列，
-    # 钩子只拦 gRngValue(0x4EF8)不碰 gRng2Value(0x4EFC)，rng2 恒定属预期，不作死值判据。
+    # 独立复核 EX1-BLITE-AUDIT 推翻了先前的 CONVERGED：
+    #   钩子 LCG 判定式写错（真实递推 x=x*MUL+0x6073，代码只认 x==old*MUL），
+    #   lcg_pass=0/unknown=1198 证明 LCG 从未被正确识别，DETRNG f003 是自然 LCG 步误判为 reseed。
+    #   A.csv/B.csv 字节完全相同 -> 逐帧相等是 by-construction 平凡观测。
+    # 按预注册 J 表：J5 lcg_pass>=1、J6 unknown==0 必须满足；judge 必须读钩子审计 sidecar，
+    #   缺失或任一失败 -> EXPERIMENT-INVALID，绝不判 CONVERGED。
+    audit_path = paths[2] if len(paths) > 2 else None
+    if not audit_path or not os.path.exists(audit_path):
+        print("EXPERIMENT-INVALID (converge requires hook audit sidecar <out>.audit; "
+              "prior CONVERGED verdict retracted per EX1-BLITE-AUDIT)")
+        sys.exit(3)
+    audit = open(audit_path, encoding="utf-8", errors="replace").read()
+    import re
+    m = re.search(r"hits=(\d+)\s+lcg_pass=(\d+)\s+unknown=(\d+)", audit)
+    if not m:
+        print("EXPERIMENT-INVALID (hook audit summary missing)")
+        sys.exit(3)
+    hits, lcg_pass, unknown = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if lcg_pass < 1 or unknown != 0:
+        print("EXPERIMENT-INVALID (J5 lcg_pass>=1 / J6 unknown==0 failed: hits={} lcg_pass={} unknown={}; "
+              "prior CONVERGED retracted)".format(hits, lcg_pass, unknown))
+        sys.exit(3)
     core_cols = [c for c in cols if c != "rng2"]
     all_diff = sum(1 for x, y in zip(a, b) for c in core_cols if x[c] != y[c])
     rng_distinct = len(set(r["rng"] for r in a))
-    if all_diff != 0:
-        print("VERDICT=G1-EX1-FAIL (after same-seed writeback, core columns still differ: {})".format(all_diff))
-        sys.exit(1)
-    if rng_distinct < 2:
-        print("EXPERIMENT-INVALID (main rng column constant after writeback -> writeback failed / reseed not intercepted; not a clean convergence)")
+    identical = open(paths[0], "rb").read() == open(paths[1], "rb").read()
+    if all_diff != 0 or rng_distinct < 2:
+        print("EXPERIMENT-INVALID (convergence columns invalid: all_diff={} rng_distinct={})".format(all_diff, rng_distinct))
         sys.exit(3)
-    print("VERDICT=G1-EX1-CONVERGED (same seed -> main RNG state converges with LCG progression; "
-          "determinism holds; CONTROLLED writeback by-construction, NOT natural convergence, "
-          "NOT opponent-reality evidence; TM1CNT_L unproven; R3 NETGATE reanchor not yet judged)")
+    if identical:
+        print("EXPERIMENT-INVALID (A.csv == B.csv byte-identical -> trivial by-construction equality, "
+              "not independent convergence evidence)")
+        sys.exit(3)
+    print("VERDICT=G1-EX1-CONVERGED-PROVISIONAL (hook audit J1-J6 pass; RNG converges with real LCG "
+          "progression; CONTROLLED by-construction, NOT natural convergence, NOT opponent-reality; "
+          "TM1CNT_L unproven; R3 NETGATE reanchor not judged)")
     sys.exit(0)
 
 if det_diff:
