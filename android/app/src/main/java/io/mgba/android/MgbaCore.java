@@ -464,6 +464,20 @@ public final class MgbaCore {
 
     private static native byte[] nativeBusReadBlock(long handle, int address, int size);
 
+    /** S2 TYPE_PARTY：把 500B GNP 邮槽镜像交给宿端写口（只搬字节，零写游戏态）。 */
+    public boolean writeGnpPartyMailbox(byte[] mb) {
+        return handle != 0 && mb != null && mb.length == 500 && nativeWriteGnpPartyMailbox(handle, mb);
+    }
+
+    /** S2 TYPE_PARTY：显式开/关宿端门（测试/驱动下发用）。 */
+    public void setGnpNetParty(boolean enabled) {
+        if (handle != 0) { nativeSetGnpNetParty(handle, enabled); }
+    }
+
+    private static native boolean nativeWriteGnpPartyMailbox(long handle, byte[] mb);
+
+    private static native void nativeSetGnpNetParty(long handle, boolean enabled);
+
     private static native long nativeCreate(String saveDir, String stateDir);
 
     private static native void nativeDestroy(long handle);

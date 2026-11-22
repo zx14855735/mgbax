@@ -3398,6 +3398,10 @@ void Window::startAutoCloudLink() {
 		m_controller->saveState(&buffer);
 		return buffer.data();
 	});
+	// S2 TYPE_PARTY：只读 provider；门默认关时不调用、不写任何游戏态。
+	link->setPartyMailboxProvider([this]() -> QByteArray {
+		return m_controller ? m_controller->readNetPartyMailbox() : QByteArray();
+	});
 	connect(link, &CloudLink::remoteState, this, [this](const QByteArray& state) {
 		if (!m_controller || state.isEmpty()) {
 			return;

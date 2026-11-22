@@ -6335,6 +6335,18 @@ public class EmulatorActivity extends AppCompatActivity {
                 }
 
                 @Override
+                public void onRemotePartyMailbox(final byte[] mb) {
+                    /* S2：party 哑传输帧 -> host 写口（只把字节写进 IWRAM 邮槽，writer=ROM）。
+                     * native 侧强制 CRC16/字段/整 ROM md5 校验，游戏态零写。 */
+                    runOnUiThread(() -> {
+                        MgbaCore c = core;
+                        if (c == null || !c.isLoaded()) { return; }
+                        boolean ok = c.writeGnpPartyMailbox(mb);
+                        Log.i(TAG, "[GNP] APP mailbox write ok=" + ok + " bytes=" + (mb == null ? -1 : mb.length));
+                    });
+                }
+
+                @Override
                 public void onRemoteReset() {
                     /* 官方 type 5 = 重置：可见核 + 所有镜像核（p2.txt:379e76-379ec8）。
                      * 镜像核不能让 UI 线程直接 reset（mgbaMobileReset 不取核心锁），

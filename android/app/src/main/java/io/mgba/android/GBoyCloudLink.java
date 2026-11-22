@@ -108,6 +108,9 @@ public final class GBoyCloudLink {
         /** TYPE_STATE blob from the peer, to be applied to the mirror console. */
         void onRemoteState(byte[] state);
 
+        /** S2: TYPE_PARTY 500B mailbox image from the peer (byte-only write, writer=ROM). */
+        default void onRemotePartyMailbox(byte[] mb) { }
+
         void onRemoteReset();
     }
 
@@ -265,6 +268,12 @@ public final class GBoyCloudLink {
         public void onState(byte[] state) {
             Log.i(TAG, "rx TYPE_STATE " + state.length + " bytes");
             hooks.onRemoteState(state);
+        }
+
+        @Override
+        public void onPartyMailbox(byte[] mb) {
+            Log.i(TAG, "[GNP] rx TYPE_PARTY " + mb.length + " bytes");
+            hooks.onRemotePartyMailbox(mb);
         }
 
         @Override

@@ -512,3 +512,26 @@ Java_io_mgba_android_MgbaCore_nativeBusReadBlock(JNIEnv* env, jobject, jlong han
 	free(buffer);
 	return result;
 }
+
+/* S2 TYPE_PARTY：Java -> 宿主写口（只把 500B 邮槽镜像交给 mgba_mobile.c 写 IWRAM，游戏态零写）。 */
+extern "C" JNIEXPORT jboolean JNICALL
+Java_io_mgba_android_MgbaCore_nativeWriteGnpPartyMailbox(
+        JNIEnv* env, jobject, jlong handle, jbyteArray mb) {
+	if (!mb || !handle) { return JNI_FALSE; }
+	jsize len = env->GetArrayLength(mb);
+	if (len != 500) { return JNI_FALSE; }               /* GNP_MB_SIZE */
+	jbyte* bytes = env->GetByteArrayElements(mb, NULL);
+	if (!bytes) { return JNI_FALSE; }
+	int ok = mgbaMobileGnpNetPartyMailboxWrite(
+	        (struct MgbaMobile*) handle, (const uint8_t*) bytes, (size_t) len);
+	env->ReleaseByteArrayElements(mb, bytes, JNI_ABORT);
+	return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+/* S2 TYPE_PARTY：门显式注入（测试/驱动下发，避免读 prop 静态缓存）。 */
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetGnpNetParty(
+        JNIEnv* env, jobject, jlong handle, jboolean enabled) {
+	(void) env; (void) handle;
+	mgbaMobileGnpSetNetParty(enabled ? true : false);
+}

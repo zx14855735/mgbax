@@ -237,6 +237,11 @@ static inline uint32_t mobileCodeDelta(void) {
 #include <mgba-util/audio-resampler.h>
 #include <mgba-util/vfs.h>
 
+/* S2 Android 宿端写口：GNP 500B/CRC16 ABI 镜像 + manifest 绝对地址具名宏。
+ * include 根为 src/，故带 platform/gboy/ 前缀；共享头全 static/宏，无新链接符号。 */
+#include "platform/gboy/gboy_netparty_abi.h"
+#include "platform/gboy/gnp_manifest.h"
+
 #include "link_net.h"
 #include "link_lockstep.h"
 #include <mgba/internal/gba/sio/lockstep.h>
@@ -9294,4 +9299,114 @@ void mgbaMobileBiosFileName(const char* name, long size, char* out, size_t outLe
 		picked = "sgb_bios.bin";
 	}
 	snprintf(out, outLen, "%s", picked);
+}
+
+/* ===== S2 Android 宿端：TYPE_PARTY 收帧 -> CRC16/字段校验 -> 只写 IWRAM 邮槽 =====
+ * 门三端同名同值默认关；地址用 manifest 新 ROM 绝对地址（禁 NAV_IW 二次平移），
+ * 整 ROM md5 身份绑定；hook 只写邮槽字节，游戏态零写（writer=ROM）。 */
+/* 三端同名同值门宏（PC 侧在 sio_link.c/CloudLink.h，此处独立 TU 须自带）。 */
+#ifndef MGBAX_NET_PARTY_MAILBOX
+#define MGBAX_NET_PARTY_MAILBOX 0
+#endif
+#define MGBAX_NET_PARTY_MAILBOX_ENV  "MGBAX_NET_PARTY_MAILBOX"
+#define MGBAX_NET_PARTY_MAILBOX_PROP "debug.mgbax.link.net_party_mailbox"
+static int s_gnpNetParty = -1;
+static bool mobileGnpNetPartyOn(void) {
+	if (s_gnpNetParty < 0) {
+#if MGBAX_NET_PARTY_MAILBOX != 0
+		s_gnpNetParty = 1;
+#else
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp(MGBAX_NET_PARTY_MAILBOX_PROP, p);
+		s_gnpNetParty = (p[0] == '1') ? 1 : 0;
+#else
+		const char* e = getenv(MGBAX_NET_PARTY_MAILBOX_ENV);
+		s_gnpNetParty = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+#endif
+	}
+	return s_gnpNetParty != 0;
+}
+void mgbaMobileGnpSetNetParty(bool enabled) { s_gnpNetParty = enabled ? 1 : 0; }
+
+/* 整 ROM md5 身份绑定：manifest 不符 -> STALE_NET_MAILBOX 停线（不用 gLastWrittenSector）。 */
+static bool mobileGnpRomIdentityOk(struct GBA* g) {
+	if (!g || !g->memory.rom || !g->memory.romSize) { return false; }
+	return gnpRomMd5Matches((const uint8_t*) g->memory.rom,
+	                        (size_t) g->memory.romSize, GNP_ROM_MD5_HEX) != 0;
+}
+
+/* 唯一写口：把收到的 500B GNP 邮槽镜像写进 IWRAM 邮槽（绝对地址直写，范围守卫，
+ * doorbell 最后写 release；peek 只读回读）。返回 1 成功 / 0 fail-closed。 */
+int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
+                                      const uint8_t* mb, size_t len) {
+	struct GBA* g;
+	GnpMvpMailboxHost chk;
+	uint32_t base, peekBase, appliedBase, off;
+	if (!mobileGnpNetPartyOn() || !emu || !emu->core || !mb || len != GNP_MB_SIZE) { return 0; }
+	g = (struct GBA*) emu->core->board;
+	if (!g || !g->cpu) { return 0; }
+
+	/* 1) 字段合法性（与 gen8 PollRx 同序，fail-closed） */
+	memcpy(&chk, mb, GNP_MB_SIZE);
+	if (chk.magic != GNP_MAGIC || chk.version != GNP_PROTO_VER ||
+	    chk.msgType != GNP_MSG_PARTY || chk.length != GNP_BLOB_SIZE ||
+	    chk.partyCount < 1u || chk.partyCount > GNP_MONS_MAX) {
+		MOBILE_LOGE("[GNP] RX header fail-closed");
+		return 0;
+	}
+	/* 2) host CRC16 镜像校验（覆盖 [0,496)，不含 crc/doorbell） */
+	if (gnpCrc16(mb, GNP_CRC_SPAN) != (uint16_t) chk.crc) {
+		MOBILE_LOGE("[GNP] RX CRC16 mismatch fail-closed");
+		return 0;
+	}
+	/* 3) 整 ROM md5 身份绑定 fail-closed */
+	if (!mobileGnpRomIdentityOk(g)) {
+		MOBILE_LOGE("[GNP] STALE_NET_MAILBOX: ROM md5 != manifest");
+		return 0;
+	}
+	/* 3b) 绝对 IW 地址范围守卫（不加 delta） */
+	base       = (uint32_t) GNP_MB_IW;
+	peekBase   = (uint32_t) GNP_PEEK_IW;
+	appliedBase= (uint32_t) GNP_APPLIED_IW;
+	if (!gnpAbsIwOk(base, GNP_MB_SIZE) ||
+	    !gnpAbsIwOk(peekBase, sizeof(GnpMvpPeekHost)) ||
+	    !gnpAbsIwOk(appliedBase, 1u)) {
+		MOBILE_LOGE("[GNP] IW absolute addr out of range");
+		return 0;
+	}
+	/* 4) 逐字段只写邮槽字节；pad 写 0；doorbell 留到最后 */
+	GBAPatch32(g->cpu, base + GNP_OFF_MAGIC,    (int32_t) GNP_MAGIC,      NULL);
+	GBAPatch16(g->cpu, base + GNP_OFF_VERSION,  (int16_t) GNP_PROTO_VER,  NULL);
+	GBAPatch16(g->cpu, base + GNP_OFF_PAD0,     0, NULL);
+	GBAPatch32(g->cpu, base + GNP_OFF_SEQ,      (int32_t) chk.seq,        NULL);
+	GBAPatch8 (g->cpu, base + GNP_OFF_MSG_TYPE, (int8_t)  GNP_MSG_PARTY,  NULL);
+	GBAPatch8 (g->cpu, base + GNP_OFF_COUNT,    (int8_t)  chk.partyCount, NULL);
+	GBAPatch16(g->cpu, base + GNP_OFF_LENGTH,   (int16_t) GNP_BLOB_SIZE,  NULL);
+	for (off = 0u; off < GNP_BLOB_SIZE; off += 4u) {
+		uint32_t w = 0u;
+		size_t n = (GNP_BLOB_SIZE - off) < 4u ? (GNP_BLOB_SIZE - off) : 4u;
+		memcpy(&w, mb + GNP_OFF_BLOB + off, n);
+		GBAPatch32(g->cpu, base + GNP_OFF_BLOB + off, (int32_t) w, NULL);
+	}
+	GBAPatch16(g->cpu, base + GNP_OFF_CRC,  (int16_t) chk.crc, NULL);
+	GBAPatch8 (g->cpu, base + GNP_OFF_PAD1, 0, NULL);
+	/* 5) release：doorbell 最后写（ROM 轮询此字节） */
+	__sync_synchronize();
+	GBAPatch8(g->cpu, base + GNP_OFF_DOORBELL, (int8_t) GNP_DOORBELL_NEW, NULL);
+	/* 6) 写后回读 magic 不符即 fail-closed；peek 只读诊断 */
+	if ((uint32_t) GBAView32(g->cpu, base + GNP_OFF_MAGIC) != GNP_MAGIC) {
+		MOBILE_LOGE("[GNP] IWRAM mailbox magic readback FAILED -> fail-closed");
+		return 0;
+	}
+	MOBILE_LOGI("[GNP] RX OK seq=%u cnt=%u | peek cb2=%u ok=%u fail=%u sp0=%u applied=%u",
+	    (unsigned) chk.seq, (unsigned) chk.partyCount,
+	    (unsigned) GBAView32(g->cpu, peekBase + GNP_OFF_PEEK_CB2TICKS),
+	    (unsigned) GBAView32(g->cpu, peekBase + GNP_OFF_PEEK_POLLOK),
+	    (unsigned) GBAView32(g->cpu, peekBase + GNP_OFF_PEEK_POLLFAIL),
+	    (unsigned) GBAView16(g->cpu, peekBase + GNP_OFF_PEEK_SPECIES0),
+	    (unsigned) GBAView8 (g->cpu, peekBase + GNP_OFF_PEEK_APPLIED));
+	(void) appliedBase;
+	return 1;
 }

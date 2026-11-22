@@ -314,6 +314,10 @@ void LobbyView::startRoom(bool asHost) {
 		m_controller->saveState(&buffer);
 		return buffer.data();
 	});
+	/* S2 TYPE_PARTY：只读 provider；门默认关时 sendPartyMailboxSync 不会调用它。 */
+	m_link->setPartyMailboxProvider([this]() -> QByteArray {
+		return m_controller ? m_controller->readNetPartyMailbox() : QByteArray();
+	});
 	connect(m_link, &CloudLink::statusMessage, this, &LobbyView::status);
 	connect(m_link, &CloudLink::linkEnded, this, &LobbyView::ended);
 	connect(m_link, &CloudLink::remoteKeys, m_controller.get(), &CoreController::setRemoteKeys);

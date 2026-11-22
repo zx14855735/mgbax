@@ -82,6 +82,8 @@ final class GBoyFrames {
     static final int TYPE_EVENT = 16;
     /** 槽位 3 的按键掩码（官方稳态用 3，但 3 在握手期是 RTT，这里保留 17）。 */
     static final int TYPE_INPUT_3 = 17;
+    /** S2：party 哑传输，载荷 = 整份 500B GNP 邮槽镜像（三端帧号静态对齐 18）。 */
+    static final int TYPE_PARTY = 18;
 
     // ---- C0 能力协商位（ADR-002；与 PC GBoyFrames.h 逐位一致） ----
     /** A = 每端 1 核 + SIO 包中继；B = 本机多核 + 网络只传按键。 */
@@ -237,6 +239,16 @@ final class GBoyFrames {
             return new byte[0];
         }
         return Arrays.copyOfRange(body, 2, body.length);
+    }
+
+    /** S2 TYPE_PARTY：原样提取 500B GNP 邮槽镜像；字段/CRC 由 native 写口强制校验。
+     *  这里只做长度守门 + 去类型头，零写游戏态。 */
+    static byte[] partyOf(byte[] body) {
+        if (body == null || typeOf(body) != TYPE_PARTY) {
+            return new byte[0];
+        }
+        byte[] mb = payloadOf(body);
+        return mb.length == 500 ? mb : new byte[0];
     }
 
     static void putInt(byte[] out, int offset, int value) {

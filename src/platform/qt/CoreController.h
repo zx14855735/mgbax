@@ -185,6 +185,9 @@ public slots:
 	void saveState(int slot = 0);
 	void saveState(const QString& path, int flags = -1);
 	void saveState(QIODevice* iodev, int flags = -1);
+	/** S2 TYPE_PARTY：只读 builder —— 读可见核 gPlayerParty 并组装 500B GNP 邮槽镜像。
+	 *  零写游戏态；门默认关时无调用点。 */
+	QByteArray readNetPartyMailbox();
 	void loadBackupState();
 	void saveBackupState();
 

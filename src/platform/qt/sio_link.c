@@ -157,6 +157,26 @@ static uint32_t sioBattleCb2 = SIO_BATTLE_CB2_DFLT;
 #define SIO_ENEMY_PARTY           0x0202A7CCu   /* gEnemyParty[6] */
 #define SIO_ENEMY_PARTY_COUNT     0x0202A5EAu   /* gEnemyPartyCount */
 #define SIO_PLAYER_PARTY          0x0202A5ECu   /* gPlayerParty[6] */
+
+/* ===== S2 / MGBAX_NET_PARTY_MAILBOX：三端同名同值，默认关（零回归） ===== */
+#ifndef MGBAX_NET_PARTY_MAILBOX
+#define MGBAX_NET_PARTY_MAILBOX 0
+#endif
+#if MGBAX_NET_PARTY_MAILBOX != 0 && MGBAX_NET_PARTY_MAILBOX != 1
+#error "MGBAX_NET_PARTY_MAILBOX must be 0 or 1"
+#endif
+#define MGBAX_NET_PARTY_MAILBOX_ENV  "MGBAX_NET_PARTY_MAILBOX"
+#define MGBAX_NET_PARTY_MAILBOX_PROP "debug.mgbax.link.net_party_mailbox"
+/* 非 static：由 sio_link.h 导出，供 CoreController::readNetPartyMailbox() 做第二道门。
+ * 与 CloudLink.cpp 的 netPartyMailboxEnabled() 同值（编译期宏 != 0 || env==1）。 */
+bool sioNetPartyMailboxOn(void) {
+    const char* e = getenv(MGBAX_NET_PARTY_MAILBOX_ENV);
+    return (MGBAX_NET_PARTY_MAILBOX != 0) || (e && atoi(e) == 1);
+}
+
+/* gPlayerPartyCount 1B（gPlayerParty[6] 紧邻的 u8），与移动端同名同值；只读。 */
+#define SIO_PLAYER_PARTY_COUNT  0x0202A5E9u
+
 #define SIO_BATTLER_PARTY_INDEXES 0x0201CCACu   /* gBattlerPartyIndexes[4] */
 #define SIO_BATTLE_TYPE_FLAGS     0x0201CC30u   /* gBattleTypeFlags */
 #define SIO_BLOCK_RECV_BUFFER     0x020275B0u   /* gBlockRecvBuffer[4] */
@@ -568,6 +588,12 @@ static void sioResolveCodeDelta(struct SioLink* sio) {
 /* RACE_STRESS 压测门：PC no-op reader 从 mgba_mobile.h 取 MGBAX_RACE_STRESS_ENV，
  * 保证三端门名同值；真造窗在 mgba_mobile.c，PC 无此竞态且不注入延时。 */
 #include "platform/mobile/mgba_mobile.h"
+
+/* S2 PC 写口：GNP 500B/CRC16 ABI 镜像 + manifest 绝对地址具名宏。
+ * 两头已在 src/platform/gboy/ 落盘；include 根为 src/，故带 platform/gboy/ 前缀。
+ * 均为宏/typedef/static 助手，无新增链接符号；门默认关时相关 static 函数不被调用。 */
+#include "platform/gboy/gboy_netparty_abi.h"
+#include "platform/gboy/gnp_manifest.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -7549,4 +7575,37 @@ void sioLinkDiagCore(struct mCore* core) {
 	}
 	diagMs = now;
 	logLinkDiag((struct GBA*) core->board);
+}
+
+/* ===== S2 PC 源端：只读导出本机真 gPlayerParty → 填整份 500B GNP 邮槽镜像 =====
+ * 仅 GBAView8/GBAView32 读 EWRAM（SIO_EW），对任何地址零写；pad 写 0，
+ * doorbell 留 0（由 APP/ROM 最后写 NEW）。writer=ROM：本函数只搬字节，
+ * 不写 gEnemyParty/gEnemyPartyCount/gBattleMons/brs/rem/nr/st/CLOSED/MULTIUSE_STATE。 */
+static uint32_t s_gnpTxSeq = GNP_SEQ_INIT;   /* seq 从 1 起（0 被 ROM 拒收） */
+
+size_t sioBuildNetPartyMailbox(struct GBA* gba, uint8_t* out, size_t cap) {
+    GnpMvpMailboxHost mb;
+    uint32_t partyBase;
+    uint32_t off;
+    uint8_t cnt;
+    if (!gba || !gba->cpu || !out || cap < GNP_MB_SIZE) { return 0u; }
+    partyBase = SIO_EW(SIO_PLAYER_PARTY);                       /* 只读 gPlayerParty[6] */
+    cnt = (uint8_t) GBAView8(gba->cpu, SIO_EW(SIO_PLAYER_PARTY_COUNT));
+    if (cnt < 1u || cnt > GNP_MONS_MAX) { return 0u; }
+
+    memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0 */
+    mb.magic      = GNP_MAGIC;
+    mb.version    = GNP_PROTO_VER;
+    mb.seq        = ++s_gnpTxSeq;                               /* 单调，> GNP_SEQ_INIT */
+    mb.msgType    = GNP_MSG_PARTY;
+    mb.partyCount = cnt;
+    mb.length     = GNP_BLOB_SIZE;
+    for (off = 0u; off < GNP_BLOB_SIZE; off += 4u) {
+        uint32_t w = (uint32_t) GBAView32(gba->cpu, partyBase + off);  /* 小端原样字节 */
+        memcpy(mb.blob + off, &w, sizeof(w));
+    }
+    mb.crc      = gnpCrc16((const uint8_t*) (const void*) &mb, GNP_CRC_SPAN);
+    mb.doorbell = 0u;                                          /* host 不置 NEW */
+    memcpy(out, (const void*) &mb, GNP_MB_SIZE);
+    return (size_t) GNP_MB_SIZE;
 }

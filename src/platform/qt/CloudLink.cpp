@@ -75,6 +75,11 @@ constexpr int TUNNEL_CHUNK_BYTES = 20;
 /** How long to wait for the peer's first key state before starting anyway. */
 constexpr int PEER_KEY_WAIT_MS = 4000;
 
+/* S2 门：编译期宏默认关；运行期仅 env==1 开启（与 sio_link.c 的 sioNetPartyMailboxOn 同值）。 */
+static bool netPartyMailboxEnabled() {
+	return (MGBAX_NET_PARTY_MAILBOX != 0) || (qgetenv(MGBAX_NET_PARTY_MAILBOX_ENV).toInt() == 1);
+}
+
 quint32 randomConv() {
 	return QRandomGenerator::global()->generate() & 0x7FFFFFFF;
 }
@@ -2371,6 +2376,13 @@ void CloudLink::serveOfficial(ILink* link, Room* room) {
 						GbCloud::debugLog(QStringLiteral("[gboy] state sync sent"));
 					}
 				}
+				/* S2 TYPE_PARTY：同样按需触发（脚本放 party_mailbox 文件），门默认关恒 false。
+				 * 只经 provider 只读导出本机 gPlayerParty，零写游戏态。 */
+				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
+				if (partyTrigger.exists()) {
+					partyTrigger.remove();
+					sendPartyMailboxSync([link](const QByteArray& frame) { link->send(frame); });
+				}
 				if (speedHook) {
 					QFile speedFile(dir + QStringLiteral("/speed"));
 					if (speedFile.exists() && speedFile.open(QIODevice::ReadOnly)) {
@@ -2729,6 +2741,14 @@ void CloudLink::handle(const QByteArray& body) {
 		if (!state.isEmpty()) {
 			emit remoteState(state);
 		}
+	} else if (type == GBoyFrames::TYPE_PARTY) {
+		/* S2：party 哑传输帧。PC 侧只做机械校验 + 记日志；不写任何游戏态，
+		 * 不触发 remoteState/applyRemoteState；真实性只由零注入 CROSSED 裁决。 */
+		QByteArray mb = GBoyFrames::partyOf(body);
+		if (!mb.isEmpty()) {
+			emit remotePartyMailbox(mb);
+			GbCloud::debugLog(QStringLiteral("[GNP] RX TYPE_PARTY bytes=%1 (log-only)").arg(mb.size()));
+		}
 	}
 }
 
@@ -2815,6 +2835,20 @@ bool CloudLink::sendStateSync(const std::function<void(const QByteArray&)>& send
 	send(GBoyFrames::stateFrame(state));
 	/* ISYNC-EV/A1-SEND: 周期性 state sync 同样只读记录种子 sha256（门默认关）。 */
 	isyncEvidenceLogSeedSend(state, "sync");
+	return true;
+}
+
+/* S2：TYPE_PARTY 发送。门默认关 / provider 空 / 帧非法都直接 false ⇒ 零回归。
+ * 字节来自 provider（CoreController::readNetPartyMailbox 的只读 builder）；
+ * 本函数不写游戏态、不造 party、不碰 brs/rem/nr/st。 */
+bool CloudLink::sendPartyMailboxSync(const std::function<void(const QByteArray&)>& send) {
+	if (!netPartyMailboxEnabled() || !m_partyMailbox) { return false; }
+	QByteArray mb = m_partyMailbox();
+	if (mb.isEmpty()) { return false; }
+	QByteArray frame = GBoyFrames::partyFrame(mb);
+	if (frame.isEmpty()) { return false; }
+	send(frame);                                    // 复用现有 relay，不新开 socket
+	GbCloud::debugLog(QStringLiteral("[GNP] TX TYPE_PARTY bytes=%1 (mailbox-only)").arg(mb.size()));
 	return true;
 }
 

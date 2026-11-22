@@ -39,6 +39,7 @@
 
 #ifdef M_CORE_GBA
 #include "sio_link.h"
+#include "platform/gboy/gboy_netparty_abi.h"   // GNP_MB_SIZE 具名宏（避免裸 500）
 #endif
 
 /* 临时诊断（MGBAX_ARM_TEST 需要）：把 [arm] 结论写进 mgba_lobby_debug.log。 */
@@ -443,6 +444,23 @@ void CoreController::clearMultiplayerController() {
 	}
 	m_multiplayer->detachGame(this);
 	m_multiplayer = nullptr;
+}
+
+QByteArray CoreController::readNetPartyMailbox() {
+	if (!sioNetPartyMailboxOn()) { return QByteArray(); }   // 第二道门（与 CloudLink 同值）
+	Interrupter interrupter(this);                          // 跨线程读：暂停核心线程，避免读到撕裂字节
+	if (!m_threadContext.core ||
+	    m_threadContext.core->platform(m_threadContext.core) != mPLATFORM_GBA) {
+		return QByteArray();
+	}
+	struct GBA* gba = static_cast<struct GBA*>(m_threadContext.core->board);
+	if (!gba || !gba->cpu) { return QByteArray(); }
+	QByteArray out(int(GNP_MB_SIZE), '\0');
+	if (sioBuildNetPartyMailbox(gba,
+	        reinterpret_cast<uint8_t*>(out.data()), size_t(out.size())) == 0) {
+		return QByteArray();
+	}
+	return out;                                             // 纯读 + 本地组装，零写游戏态
 }
 
 mCacheSet* CoreController::graphicCaches() {

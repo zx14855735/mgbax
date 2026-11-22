@@ -20,6 +20,16 @@
 #define MGBAX_SEED_CLEAN_RESEND 0
 #endif
 
+/* S2 / MGBAX_NET_PARTY_MAILBOX：三端同名同值，默认关（PC 侧只用 env）。
+ * 与 sio_link.c 同名同值、各自 #ifndef 卫哨（不同 TU，无重定义冲突）。 */
+#ifndef MGBAX_NET_PARTY_MAILBOX
+#define MGBAX_NET_PARTY_MAILBOX 0
+#endif
+#if MGBAX_NET_PARTY_MAILBOX != 0 && MGBAX_NET_PARTY_MAILBOX != 1
+#error "MGBAX_NET_PARTY_MAILBOX must be 0 or 1"
+#endif
+#define MGBAX_NET_PARTY_MAILBOX_ENV "MGBAX_NET_PARTY_MAILBOX"
+
 /**
  * 测试专用探针（`test-gboylink --gatetest`，定义在 test/gboylink_test.cpp 里）。
  *
@@ -111,6 +121,8 @@ public:
 	 * state is available yet - the sender will retry on the next tick.
 	 */
 	void setStateSnapshotProvider(std::function<QByteArray()> provider) { m_stateSnapshot = provider; }
+	/** S2：提供本机 500B GNP 邮槽镜像（只读 builder 的产物）；门默认关时不被调用。 */
+	void setPartyMailboxProvider(std::function<QByteArray()> provider) { m_partyMailbox = provider; }
 
 signals:
 	void statusMessage(const QString& message);
@@ -120,6 +132,8 @@ signals:
 	void remoteSpeedChanged(int wireValue);
 	/** Peer sent a save-state blob; the UI loads it into the local core. */
 	void remoteState(const QByteArray& state);
+	/** 对端发来 500B GNP 邮槽镜像；PC 侧仅记日志，不触发 remoteState/不写游戏态。 */
+	void remotePartyMailbox(const QByteArray& mb);
 	void linkEnded(const QString& message);
 	void connected(bool asHost);
 
@@ -195,6 +209,8 @@ private:
 	bool maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost);
 	/** 官方 case 6 的周期性状态补发：把本机可见核快照推给对端镜像核。 */
 	bool sendStateSync(const std::function<void(const QByteArray&)>& send);
+	/** S2：经现有 relay 发一帧 TYPE_PARTY（500B 邮槽镜像）；门默认关/provider 空即 false。 */
+	bool sendPartyMailboxSync(const std::function<void(const QByteArray&)>& send);
 	void pollSignaling(GbCloud::Session* sig, const QString& token, const QString& uuid, Room* room);
 
 	// websocket tunnel helpers
@@ -248,6 +264,7 @@ private:
 	std::atomic<int> m_speedWire{0};
 	std::atomic<int> m_localKeys{0};
 	std::function<QByteArray()> m_stateSnapshot;
+	std::function<QByteArray()> m_partyMailbox;   // S2 TYPE_PARTY provider（默认空）
 	/** PC cloud-arm：可见核 reload 到帧 0 之后取的起点快照，作为 type-6 首包
 	 *  （对端镜像核因此也停在帧 0，而不是我们进菜单时的状态）。空 = 没开 arm。 */
 	QByteArray m_armSeedState;

@@ -48,6 +48,8 @@ public final class GBoyLinkSession {
         void onReset();
         /** A TYPE_STATE arrived with the save-state blob. */
         void onState(byte[] state);
+        /** S2: a TYPE_PARTY arrived with a 500B GNP mailbox image (byte-only; no game-state writes). */
+        default void onPartyMailbox(byte[] mb) { }
         /** The peer finished the handshake. */
         void onReady();
         /** Diagnostic text. */
@@ -318,6 +320,15 @@ public final class GBoyLinkSession {
                 byte[] state = stateOf(body);
                 if (state != null && state.length > 0) {
                     events.onState(state);
+                }
+                break;
+            }
+            case GBoyFrames.TYPE_PARTY: {
+                /* S2：party 哑传输帧。只做长度守门派发给前端写口（native 侧强制
+                 * CRC16/字段/ROM md5 校验并零写游戏态），真实性只由零注入 CROSSED 裁决。 */
+                byte[] mb = GBoyFrames.partyOf(body);
+                if (mb != null && mb.length > 0) {
+                    events.onPartyMailbox(mb);
                 }
                 break;
             }

@@ -11,6 +11,7 @@
 #include <stdbool.h>
 
 struct mCore;
+struct GBA;
 
 /**
  * LAN SIO link cable for the Qt port, a faithful port of the Android/iOS
@@ -85,6 +86,10 @@ void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drop
 int sioLinkPeerPending(const struct SioLink* sio);
 /** The underlying NetLink pointer, for cross-checking diagnostics. */
 const void* sioLinkHandle(const struct SioLink* sio);
+
+/* S2：PC 源端只读导出本机 gPlayerParty -> 500B GNP 邮槽镜像（writer=ROM，host 零写游戏态）。 */
+bool sioNetPartyMailboxOn(void);
+size_t sioBuildNetPartyMailbox(struct GBA* gba, uint8_t* out, size_t cap);
 
 #ifdef __cplusplus
 }

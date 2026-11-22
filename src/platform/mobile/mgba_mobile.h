@@ -180,6 +180,10 @@ size_t mgbaMobileNativeHoldCuts(const struct MgbaMobile* emu);
  */
 void mgbaMobileSetAudioPaceFps(struct MgbaMobile* emu, double fps);
 void mgbaMobileResetAudioPace(struct MgbaMobile* emu);
+
+/* S2 TYPE_PARTY：宿端门注入 + 唯一写口（只写 IWRAM 邮槽字节，游戏态零写；writer=ROM）。 */
+void mgbaMobileGnpSetNetParty(bool enabled);
+int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu, const uint8_t* mb, size_t len);
 /*
  * Whether the resampler's input rate can be trusted at the speed being read:
  * a locked estimate or a remembered device throughput to seed from. Front

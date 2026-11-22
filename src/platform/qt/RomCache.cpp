@@ -490,4 +490,6 @@ void RomCache::ensureCachedByPathAsync(QObject* context, const QString& sourcePa
 
 // RomCacheResultRelay 带 Q_OBJECT 且定义在 .cpp：AUTOMOC 生成本文件，须手动包含
 // （与 src/platform/qt/CoreManager.cpp:26 的既有范式一致）。
-#include "moc_RomCache.cpp"
+/* S2 编译前置修复：AUTOMOC 对「Q_OBJECT 类定义在 .cpp 内」期望 <basename>.moc 格式。
+ * 原 moc_RomCache.cpp 是头文件类范式（如 CoreManager.cpp），对本文件不适用。 */
+#include "RomCache.moc"

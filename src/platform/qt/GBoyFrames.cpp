@@ -6,6 +6,7 @@
 #include "GBoyFrames.h"
 
 #include <cstring>
+#include "platform/gboy/gboy_netparty_abi.h"   // GNP_OFF_* / GNP_MB_SIZE / GNP_CRC_SPAN / gnpCrc16
 
 namespace QGBA {
 namespace GBoyFrames {
@@ -81,6 +82,35 @@ QByteArray stateOf(const QByteArray& body) {
 		return QByteArray();
 	}
 	return payload.mid(4, int(length));
+}
+
+/** S2：TYPE_PARTY 帧 = u32 长度 + u16 类型 + 500B GNP 邮槽镜像（字节原样）。 */
+QByteArray partyFrame(const QByteArray& mailbox500) {
+	if (mailbox500.size() != int(GNP_MB_SIZE)) { return QByteArray(); }
+	return frame(TYPE_PARTY, mailbox500);          // 复用 frame() 的 u32 长度 + u16 类型信封
+}
+
+/** 机械校验 + 原样返回 500B 邮槽镜像；字段非法或 CRC16 不符即空。
+ *  非 HMAC、不证来源真实；真实性只由零注入 CROSSED 裁决。 */
+QByteArray partyOf(const QByteArray& body) {
+	QByteArray mb = payloadOf(body);
+	if (mb.size() != int(GNP_MB_SIZE)) { return QByteArray(); }
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(mb.constData());
+	uint32_t magic = 0;
+	uint16_t version = 0, length = 0, crc = 0;
+	uint8_t msgType = 0, count = 0;
+	memcpy(&magic,   p + GNP_OFF_MAGIC,    sizeof(magic));
+	memcpy(&version, p + GNP_OFF_VERSION,  sizeof(version));
+	memcpy(&msgType, p + GNP_OFF_MSG_TYPE, sizeof(msgType));
+	memcpy(&count,   p + GNP_OFF_COUNT,    sizeof(count));
+	memcpy(&length,  p + GNP_OFF_LENGTH,   sizeof(length));
+	memcpy(&crc,     p + GNP_OFF_CRC,      sizeof(crc));
+	if (magic != GNP_MAGIC || version != GNP_PROTO_VER || msgType != GNP_MSG_PARTY ||
+	    length != GNP_BLOB_SIZE || count < 1u || count > GNP_MONS_MAX) {
+		return QByteArray();
+	}
+	if (gnpCrc16(p, GNP_CRC_SPAN) != crc) { return QByteArray(); }
+	return mb;
 }
 
 /* 官方注册体（KpHwm4.AmA8tU.A5SV6n:173-178）：

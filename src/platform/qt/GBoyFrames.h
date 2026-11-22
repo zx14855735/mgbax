@@ -76,6 +76,10 @@ enum Type {
 	 *  的形态夹带，与官方的「3 = RTT」互斥。 */
 	TYPE_INPUT_3 = 17,
 
+	/** S2 TYPE_PARTY=18：party 哑传输，载荷 = 整份 500B GNP 邮槽镜像（非 savestate）。
+	 *  三端帧号静态对齐（Android GBoyFrames.java / iOS Swift 同号）。 */
+	TYPE_PARTY = 18,
+
 	/**
 	 * 官方「断线重连握手包」（KpHwm4.AmA8tU.java:263-272，ARc23Z(Socket)）：
 	 * 重连成功后先发一个裸 10 字节 {@code int32 6 + int16 100 + int32 rtt}，
@@ -141,6 +145,12 @@ QByteArray reconnectFrame(int rtt);
  *  netLink packet with no length prefix, so those frames must not be mistaken
  *  for save states. */
 QByteArray stateOf(const QByteArray& body);
+
+/** TYPE_PARTY 载荷 = 500B GNP 邮槽镜像（GnpMvpMailboxHost 字节布局）。
+ *  partyFrame 只做长度守门 + 信封封装；partyOf 校验 magic/version/msgType/
+ *  length/count 与 host CRC16 镜像（机械校验，非 HMAC），失败返回空 QByteArray。 */
+QByteArray partyFrame(const QByteArray& mailbox500);
+QByteArray partyOf(const QByteArray& body);
 
 /**
  * The registration frame the official client sends the moment the KCP
