@@ -5,6 +5,7 @@
 #include <android/bitmap.h>
 
 #include "mgba_mobile.h"
+#include "platform/gboy/gboy_netparty_abi.h"   /* GNP_FRAME_SIZE 具名宏（禁裸 500） */
 
 #include <stdlib.h>
 #include <string.h>
@@ -518,13 +519,13 @@ Java_io_mgba_android_MgbaCore_nativeBusReadBlock(JNIEnv* env, jobject, jlong han
 	return result;
 }
 
-/* S2 TYPE_PARTY：Java -> 宿主写口（只把 500B 邮槽镜像交给 mgba_mobile.c 写 IWRAM，游戏态零写）。 */
+/* S2 TYPE_PARTY：Java -> 宿主写口（只把 532B 邮槽镜像交给 mgba_mobile.c 写 IWRAM，游戏态零写）。 */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_io_mgba_android_MgbaCore_nativeWriteGnpPartyMailbox(
         JNIEnv* env, jobject, jlong handle, jbyteArray mb) {
 	if (!mb || !handle) { return JNI_FALSE; }
 	jsize len = env->GetArrayLength(mb);
-	if (len != 500) { return JNI_FALSE; }               /* GNP_MB_SIZE */
+	if (len != (jsize) GNP_FRAME_SIZE) { return JNI_FALSE; }   /* 532，三端同值；禁裸 500 */
 	jbyte* bytes = env->GetByteArrayElements(mb, NULL);
 	if (!bytes) { return JNI_FALSE; }
 	int ok = mgbaMobileGnpNetPartyMailboxWrite(

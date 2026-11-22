@@ -1,28 +1,33 @@
-/* gnp_manifest.h — S2 邮槽地址清单（唯一允许出现裸 hex 的文件）
+/* gnp_manifest.h — S2/NGLOG 邮槽地址清单（唯一允许出现裸 hex 的文件）
  *
- * 由构建脚本从当轮 gen8 重编产物（D:\gen8\rom.elf / rom.map）自动生成：
- *   - 绝对路径来自 arm-none-eabi-nm 的 gGnpMvpMailbox / gGnpMvpPeek / gGnpMvpApplied 实测值
- *   - GNP_ROM_MD5_HEX = 当轮 D:\gen8\rom.gba 整文件 SHA/MD5（磁盘实测）
- * 本文件由父会话独占串行生成；源码其余位置只用这些具名宏，禁裸 hex（AGENTS §5）。
+ * 由 .zcode-tmp/reanchor.py 从当轮 gen8 重编产物自动生成（父会话独占串行）：
+ *   来源 = arm-none-eabi-nm rom.elf + rom.map 的具名符号实测值（符号名是稳定接口）
+ *   轮次 tag = NGLOG-04（worktree 隔离编译，冻结产物判读）
+ *   rom.gba 整文件 md5    = DD468E1CFBCB183E0CA47823BC76F646
+ *   rom.gba 整文件 sha256 = FCD768DBCE97D8794A2BFAF632E1C4FFE560D32129A7348AD4297CACCFC748F1
+ *   title/gameCode        = POKEMON EMER / BPEE
+ *   GNP_FRAME_SIZE=532；重叠硬检 MB+532<=PEEK / 预算 557<=576 见 JSON 报告
  *
- * 当轮基线（2026-11-22 03:27 gen8 重编）：
- *   rom.gba md5 = C963ED1872BAF4BD4561660EB6A8467A
- *   gGnpMvpMailbox  = 0x03004c50 (500B)
- *   gGnpMvpPeek     = 0x03004e44 (24B)
- *   gGnpMvpApplied  = 0x03004e5c (1B)
- *   gLastWrittenSector = 0x03004f68  <- 仅参考，禁作身份锚（随存档变化）
- *   end = 0x030060b0 (< sp_sys 0x03007e40)
- *   实际 IW delta = 0x244（源码默认 0xD4 已陈旧）—— 故邮槽用绝对地址直写，
- *   不经 SIO_IW()/NAV_IW()（后者会对绝对地址二次平移）。
- *
- * 换 ROM 必须重生成此文件（md5 不符 -> host fail-closed STALE_NET_MAILBOX）。
+ * 换 ROM 必须重生成；md5 不符 -> host fail-closed STALE_NET_MAILBOX。
+ * 禁对下列绝对地址再套 SIO_IW()/NAV_IW()（delta 0x244，二次平移）。
  */
 #ifndef GUARD_GNP_MANIFEST_H
 #define GUARD_GNP_MANIFEST_H
 
-#define GNP_MB_IW        0x03004C50u   /* gGnpMvpMailbox 绝对地址（当轮 nm） */
-#define GNP_PEEK_IW      0x03004E44u   /* gGnpMvpPeek */
-#define GNP_APPLIED_IW   0x03004E5Cu   /* gGnpMvpApplied */
-#define GNP_ROM_MD5_HEX  "C963ED1872BAF4BD4561660EB6A8467A"
+#define GNP_MB_IW       0x03004C50u   /* gGnpMvpMailbox，本轮 nm 实测（532B） */
+#define GNP_PEEK_IW     0x03004E64u   /* gGnpMvpPeek（MB+532 顺移） */
+#define GNP_APPLIED_IW  0x03004E7Cu   /* gGnpMvpApplied（PEEK+24 顺移） */
+#define GNP_DIAG_EW     0x020298E8u   /* gNetGateDiag（EWRAM，NETGATE 64B 诊断镜） */
+#define NET_TX_PORT_ABS 0x02029928u   /* gGnpTxPort（EWRAM，条件落地） */
+#define GNP_ROM_MD5_HEX  "DD468E1CFBCB183E0CA47823BC76F646"
+
+/* 参考锚（解析自同一 nm/map；禁作身份锚/信任根/游戏态写目标）：
+ *   gGnpTxPort         = 0x02029928
+ *   gRngValue          = 0x03005020
+ *   gPlayerParty       = 0x0202A7C0
+ *   gEnemyParty        = 0x0202A9A0
+ *   gEnemyPartyCount   = 0x0202A7BE
+ *   gLinkOpen          = 0x02027BB0
+ */
 
 #endif  /* GUARD_GNP_MANIFEST_H */

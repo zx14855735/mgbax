@@ -19,8 +19,10 @@
 #define GNP_CRC_INIT              UINT16_C(0x1121)       /* 与 gen8 util.c:243 同值 */
 #define GNP_CRC_POLY_REFLECTED    UINT16_C(0x8408)       /* 反射 poly（sCrc16Table[0x80]） */
 #define GNP_BLOB_SIZE             UINT16_C(480)          /* 6 * sizeof(struct Pokemon)=6*80 */
-#define GNP_MB_SIZE               UINT16_C(500)
-#define GNP_CRC_SPAN              UINT16_C(496)          /* = GNP_OFF_BLOB + GNP_BLOB_SIZE */
+#define GNP_MB_SIZE               UINT16_C(532)          /* = GNP_FRAME_SIZE；原 500 退役 */
+#define GNP_FRAME_SIZE            UINT16_C(532)          /* 三端同值：ROM netcode.h / netparty_tx.h 同为 532 */
+#define GNP_HMAC_TAG_SIZE         UINT16_C(32)           /* 与 ROM GNP_HMAC_TAG_SIZE 同值；host 零解释 */
+#define GNP_CRC_SPAN              UINT16_C(496)          /* = GNP_OFF_BLOB + GNP_BLOB_SIZE，保持不变 */
 #define GNP_MONS_MAX              UINT8_C(6)
 
 typedef struct {
@@ -35,7 +37,8 @@ typedef struct {
     volatile uint16_t crc;           /* 496 覆盖 [0,GNP_CRC_SPAN) */
     volatile uint8_t  doorbell;      /* 498 host 最后写 GNP_DOORBELL_NEW */
     uint8_t  _pad1;                  /* 499 host 写 0，对齐 4 */
-} GnpMvpMailboxHost;
+    uint8_t  tag[GNP_HMAC_TAG_SIZE]; /* 500..531 对端 HMAC-SHA256 标签；host 逐字节镜像，不解释、不重算、不持密钥 */
+} GnpMvpMailboxHost;                 /* sizeof = 532 = GNP_FRAME_SIZE（静态锁在下） */
 
 /* 字节偏移具名宏（三端同名同值；禁裸 hex 出现在写口逻辑） */
 #define GNP_OFF_MAGIC     offsetof(GnpMvpMailboxHost, magic)
@@ -49,6 +52,7 @@ typedef struct {
 #define GNP_OFF_CRC       offsetof(GnpMvpMailboxHost, crc)
 #define GNP_OFF_DOORBELL  offsetof(GnpMvpMailboxHost, doorbell)
 #define GNP_OFF_PAD1      offsetof(GnpMvpMailboxHost, _pad1)
+#define GNP_OFF_TAG       offsetof(GnpMvpMailboxHost, tag)      /* 500，三端同名同值 */
 
 /* peek 结构（gen8 netcode.h 镜像；驱动 IW 只读回读诊断，非 NETGATE/非 CROSSED） */
 typedef struct {
@@ -93,7 +97,11 @@ GNP_STATIC_ASSERT(GNP_OFF_LENGTH == 14, "GNP length offset");
 GNP_STATIC_ASSERT(GNP_OFF_BLOB == 16,   "GNP blob offset");
 GNP_STATIC_ASSERT(GNP_OFF_CRC == 496,   "GNP crc offset");
 GNP_STATIC_ASSERT(GNP_OFF_DOORBELL == 498, "GNP doorbell offset");
-GNP_STATIC_ASSERT(GNP_MB_SIZE == 500,   "GNP mailbox size");
+GNP_STATIC_ASSERT(GNP_OFF_TAG == 500,    "GNP tag offset");
+GNP_STATIC_ASSERT(GNP_MB_SIZE == 532,    "GNP mailbox size");
+GNP_STATIC_ASSERT(GNP_FRAME_SIZE == 532, "GNP frame size");
+GNP_STATIC_ASSERT(GNP_HMAC_TAG_SIZE == 32, "GNP tag size");
+GNP_STATIC_ASSERT(sizeof(GnpMvpMailboxHost) == GNP_FRAME_SIZE, "GNP struct/frame size");
 GNP_STATIC_ASSERT(GNP_CRC_SPAN == 496,  "GNP crc span");
 GNP_STATIC_ASSERT(GNP_BLOB_SIZE == 480, "GNP blob size");
 
@@ -132,7 +140,7 @@ static int gnpRomMd5Matches(const uint8_t* rom, size_t romSize, const char* hex3
 
 /* ===== host CRC16 镜像：逐位复刻 gen8 src/util.c:240 CalcCRC16WithTable =====
  * init=0x1121 / 反射 poly=0x8408 表 / 末 ~crc；表由 poly 运行时生成。
- * 覆盖 [GNP_OFF_MAGIC, GNP_CRC_SPAN) = 496B，不含 crc@496 / doorbell@498。
+ * 覆盖 [GNP_OFF_MAGIC, GNP_CRC_SPAN) = 496B，不含 crc@496 / doorbell@498 / tag@500..531。
  * 纯机械校验，非 HMAC、不证来源真实。 */
 static uint16_t s_gnpCrc16Table[256];
 static int      s_gnpCrc16TableReady = 0;

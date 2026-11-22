@@ -7726,7 +7726,7 @@ void sioLinkDiagCore(struct mCore* core) {
 	obsChainGateOnce();   /* X10-OBSCHAIN：门快照每进程只打一行（链路未配对时也可见） */
 }
 
-/* ===== S2 PC 源端：只读导出本机真 gPlayerParty → 填整份 500B GNP 邮槽镜像 =====
+/* ===== S2 PC 源端：只读导出本机真 gPlayerParty → 填整份 532B GNP 邮槽镜像 =====
  * 仅 GBAView8/GBAView32 读 EWRAM（SIO_EW），对任何地址零写；pad 写 0，
  * doorbell 留 0（由 APP/ROM 最后写 NEW）。writer=ROM：本函数只搬字节，
  * 不写 gEnemyParty/gEnemyPartyCount/gBattleMons/brs/rem/nr/st/CLOSED/MULTIUSE_STATE。 */
@@ -7742,7 +7742,10 @@ size_t sioBuildNetPartyMailbox(struct GBA* gba, uint8_t* out, size_t cap) {
     cnt = (uint8_t) GBAView8(gba->cpu, SIO_EW(SIO_PLAYER_PARTY_COUNT));
     if (cnt < 1u || cnt > GNP_MONS_MAX) { return 0u; }
 
-    memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0 */
+    memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0；tag[500..531] 也归零：
+                                                                 * host 禁算 HMAC/禁持密钥，真 tag 只能来自
+                                                                 * ROM TX 邮槽 gGnpTxPort（待 ROM 侧接线）；
+                                                                 * 当前为零 ⇒ 对端 tag_ok fail-closed=0，诚实态 */
     mb.magic      = GNP_MAGIC;
     mb.version    = GNP_PROTO_VER;
     mb.seq        = ++s_gnpTxSeq;                               /* 单调，> GNP_SEQ_INIT */

@@ -9584,8 +9584,10 @@ static bool mobileGnpRomIdentityOk(struct GBA* g) {
 	                        (size_t) g->memory.romSize, GNP_ROM_MD5_HEX) != 0;
 }
 
-/* 唯一写口：把收到的 500B GNP 邮槽镜像写进 IWRAM 邮槽（绝对地址直写，范围守卫，
- * doorbell 最后写 release；peek 只读回读）。返回 1 成功 / 0 fail-closed。 */
+/* 唯一写口：把收到的 532B GNP 邮槽镜像写进 IWRAM 邮槽（绝对地址直写，范围守卫，
+ * doorbell 最后写 release；peek 只读回读）。host 哑 transport：整帧逐字节镜像、零字段解释、
+ * 不重算 CRC、不造任何字段——crc/tag 由对端 ROM TX 算好随字节流到达，host 只搬运。
+ * 返回 1 成功 / 0 fail-closed。 */
 int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
                                       const uint8_t* mb, size_t len) {
 	struct GBA* g;
@@ -9595,25 +9597,15 @@ int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
 	g = (struct GBA*) emu->core->board;
 	if (!g || !g->cpu) { return 0; }
 
-	/* 1) 字段合法性（与 gen8 PollRx 同序，fail-closed） */
+	/* 1) memcpy 仅供 peek 日志；host 不按字段内容做接受/拒绝决定（语义判定归 ROM PollRx），
+	 *    不重算 CRC、不造字段——crc/tag 由对端 ROM TX 算好随帧到达，host 逐字节搬运。 */
 	memcpy(&chk, mb, GNP_MB_SIZE);
-	if (chk.magic != GNP_MAGIC || chk.version != GNP_PROTO_VER ||
-	    chk.msgType != GNP_MSG_PARTY || chk.length != GNP_BLOB_SIZE ||
-	    chk.partyCount < 1u || chk.partyCount > GNP_MONS_MAX) {
-		MOBILE_LOGE("[GNP] RX header fail-closed");
-		return 0;
-	}
-	/* 2) host CRC16 镜像校验（覆盖 [0,496)，不含 crc/doorbell） */
-	if (gnpCrc16(mb, GNP_CRC_SPAN) != (uint16_t) chk.crc) {
-		MOBILE_LOGE("[GNP] RX CRC16 mismatch fail-closed");
-		return 0;
-	}
-	/* 3) 整 ROM md5 身份绑定 fail-closed */
+	/* 2) 整 ROM md5 身份绑定 fail-closed */
 	if (!mobileGnpRomIdentityOk(g)) {
 		MOBILE_LOGE("[GNP] STALE_NET_MAILBOX: ROM md5 != manifest");
 		return 0;
 	}
-	/* 3b) 绝对 IW 地址范围守卫（不加 delta） */
+	/* 2b) 绝对 IW 地址范围守卫（不加 delta） */
 	base       = (uint32_t) GNP_MB_IW;
 	peekBase   = (uint32_t) GNP_PEEK_IW;
 	appliedBase= (uint32_t) GNP_APPLIED_IW;
@@ -9623,26 +9615,16 @@ int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
 		MOBILE_LOGE("[GNP] IW absolute addr out of range");
 		return 0;
 	}
-	/* 4) 逐字段只写邮槽字节；pad 写 0；doorbell 留到最后 */
-	GBAPatch32(g->cpu, base + GNP_OFF_MAGIC,    (int32_t) GNP_MAGIC,      NULL);
-	GBAPatch16(g->cpu, base + GNP_OFF_VERSION,  (int16_t) GNP_PROTO_VER,  NULL);
-	GBAPatch16(g->cpu, base + GNP_OFF_PAD0,     0, NULL);
-	GBAPatch32(g->cpu, base + GNP_OFF_SEQ,      (int32_t) chk.seq,        NULL);
-	GBAPatch8 (g->cpu, base + GNP_OFF_MSG_TYPE, (int8_t)  GNP_MSG_PARTY,  NULL);
-	GBAPatch8 (g->cpu, base + GNP_OFF_COUNT,    (int8_t)  chk.partyCount, NULL);
-	GBAPatch16(g->cpu, base + GNP_OFF_LENGTH,   (int16_t) GNP_BLOB_SIZE,  NULL);
-	for (off = 0u; off < GNP_BLOB_SIZE; off += 4u) {
-		uint32_t w = 0u;
-		size_t n = (GNP_BLOB_SIZE - off) < 4u ? (GNP_BLOB_SIZE - off) : 4u;
-		memcpy(&w, mb + GNP_OFF_BLOB + off, n);
-		GBAPatch32(g->cpu, base + GNP_OFF_BLOB + off, (int32_t) w, NULL);
+	/* 3) 哑 transport：整帧逐字节原样镜像（含 crc@496 / pad / tag@500..531）。
+	 * 值全部来自 mb[off]；host 零解释、不重算 CRC、不造字段；@498 doorbell 跳过，单独最后写。 */
+	for (off = 0u; off < (uint32_t) GNP_MB_SIZE; ++off) {
+		if (off == (uint32_t) GNP_OFF_DOORBELL) { continue; }
+		GBAPatch8(g->cpu, base + off, (int8_t) mb[off], NULL);
 	}
-	GBAPatch16(g->cpu, base + GNP_OFF_CRC,  (int16_t) chk.crc, NULL);
-	GBAPatch8 (g->cpu, base + GNP_OFF_PAD1, 0, NULL);
-	/* 5) release：doorbell 最后写（ROM 轮询此字节） */
+	/* 4) release：doorbell 最后写（ROM 轮询此字节）；host 单写者，永不写 CONSUMED */
 	__sync_synchronize();
 	GBAPatch8(g->cpu, base + GNP_OFF_DOORBELL, (int8_t) GNP_DOORBELL_NEW, NULL);
-	/* 6) 写后回读 magic 不符即 fail-closed；peek 只读诊断 */
+	/* 5) 写后回读 magic 不符即 fail-closed；peek 只读诊断 */
 	if ((uint32_t) GBAView32(g->cpu, base + GNP_OFF_MAGIC) != GNP_MAGIC) {
 		MOBILE_LOGE("[GNP] IWRAM mailbox magic readback FAILED -> fail-closed");
 		return 0;
