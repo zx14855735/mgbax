@@ -92,6 +92,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             (getenv("MGBAX_ISYNC_SEED_FRAME_BOUNDARY").flatMap { String(cString: $0) } == "1")
             || UserDefaults.standard.bool(forKey: "mgbax.link.isync_seed_frame_boundary")
         ISyncGate.seedFrameBoundary = isyncSeedFrameBoundary
+        // NETGATE 拼行门（R10/R26，三端同名同值、默认关）：env MGBAX_NETGATE_LOG=1
+        // 或 UserDefaults "mgbax.link.netgate_log" 开启。共享 C 唯一生产 [NETGATE] 行，
+        // 本处只透传开关；iOS 运行时恒 UNOBS（无设备验证），不写 PASS。
+        let netgateLog =
+            (getenv("MGBAX_NETGATE_LOG").flatMap { String(cString: $0) } == "1")
+            || UserDefaults.standard.bool(forKey: "mgbax.link.netgate_log")
+        mgbaMobileNetGateLogSet(netgateLog)
         return true
     }
 

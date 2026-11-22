@@ -160,6 +160,19 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
     private var holdEngaged = false
     /** Stretch the hold was published with; republished when the multiplier changes. */
     private var lastHoldStretch: Double = 0
+    /** Hold mode (0 变调 / 1 WSOLA / 2 native) last published to the core. */
+    private var lastHoldMode: Int = -1
+    /** Music rate (PC 第4自由度) last published to the core; -1 forces re-publish. */
+    private var lastAudioRate: Double = -1
+    /** Fast-forward music mode, aligned with PC 0 变调 / 1 不变调·连续 / 2 真正 1×. */
+    private var fastAudioMode: Int {
+        if let m = defaults.object(forKey: "fast_audio_mode") as? Int { return m }
+        // Legacy migration: old 音乐原速 boolean off -> 0 变调, on -> 2 真正 1×.
+        let legacy = defaults.object(forKey: "fast_audio_native") == nil ? true : defaults.bool(forKey: "fast_audio_native")
+        return legacy ? 2 : 0
+    }
+    /** Music rate values matching PC HOLD_RATES (1/1.5/2/3). */
+    private let audioRates: [Double] = [1.0, 1.5, 2.0, 3.0]
     /** Slice rate the device last sustained while fast-forwarding (slices per
      * second; eased toward the measured capability once per feedback window)
      * and the slice schedule derived from it; re-measured per speed. 0 =
@@ -704,30 +717,49 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
         soundLabel.text = "倍速声音"
         soundLabel.textColor = .white
         soundLabel.font = .systemFont(ofSize: 13)
-        let nativeToggle = UISwitch()
-        nativeToggle.isOn = defaults.object(forKey: "fast_audio_native") == nil ? true : defaults.bool(forKey: "fast_audio_native")
-        nativeToggle.isEnabled = soundToggle.isOn
-        nativeToggle.alpha = soundToggle.isOn ? 1.0 : 0.45
-        nativeToggle.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            self.defaults.set(nativeToggle.isOn, forKey: "fast_audio_native")
+        // PC 三模式对齐：变调 / 不变调·连续 / 真正 1×（写 fast_audio_mode）。
+        let modeControl = UISegmentedControl(items: ["变调", "不变调·连续", "真正 1×"])
+        modeControl.selectedSegmentIndex = fastAudioMode
+        modeControl.isEnabled = soundToggle.isOn
+        modeControl.alpha = soundToggle.isOn ? 1.0 : 0.45
+        modeControl.addAction(UIAction { _ in
+            self.defaults.set(modeControl.selectedSegmentIndex, forKey: "fast_audio_mode")
         }, for: .valueChanged)
-        let nativeLabel = UILabel()
-        nativeLabel.text = "音乐原速"
-        nativeLabel.textColor = .white
-        nativeLabel.font = .systemFont(ofSize: 13)
+        let modeLabel = UILabel()
+        modeLabel.text = "音乐"
+        modeLabel.textColor = .white
+        modeLabel.font = .systemFont(ofSize: 13)
+        // 音乐速度 rate（PC HOLD_RATES = 1/1.5/2/3，第4自由度）。
+        let rateControl = UISegmentedControl(items: ["1×", "1.5×", "2×", "3×"])
+        let savedRate = defaults.object(forKey: "fast_audio_rate") as? Double ?? 1.0
+        rateControl.selectedSegmentIndex = audioRates.firstIndex(where: { abs($0 - savedRate) < 0.01 }) ?? 0
+        rateControl.isEnabled = soundToggle.isOn
+        rateControl.alpha = soundToggle.isOn ? 1.0 : 0.45
+        rateControl.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let r = self.audioRates[rateControl.selectedSegmentIndex]
+            self.defaults.set(r, forKey: "fast_audio_rate")
+        }, for: .valueChanged)
+        let rateLabel = UILabel()
+        rateLabel.text = "音乐速度"
+        rateLabel.textColor = .white
+        rateLabel.font = .systemFont(ofSize: 13)
         // 不变速 only makes sense when sound is on during fast-forward.
         soundToggle.addAction(UIAction { [weak self] _ in
             guard let self else { return }
             self.defaults.set(soundToggle.isOn, forKey: "fast_audio")
             self.audio.setSoundEnabled(soundToggle.isOn)
-            nativeToggle.isEnabled = soundToggle.isOn
-            nativeToggle.alpha = soundToggle.isOn ? 1.0 : 0.45
+            modeControl.isEnabled = soundToggle.isOn
+            modeControl.alpha = soundToggle.isOn ? 1.0 : 0.45
+            rateControl.isEnabled = soundToggle.isOn
+            rateControl.alpha = soundToggle.isOn ? 1.0 : 0.45
         }, for: .valueChanged)
         speedStack.addArrangedSubview(soundLabel)
         speedStack.addArrangedSubview(soundToggle)
-        speedStack.addArrangedSubview(nativeLabel)
-        speedStack.addArrangedSubview(nativeToggle)
+        speedStack.addArrangedSubview(modeLabel)
+        speedStack.addArrangedSubview(modeControl)
+        speedStack.addArrangedSubview(rateLabel)
+        speedStack.addArrangedSubview(rateControl)
         refreshSpeedButtons()
         savePathView.textColor = UIColor(red: 183 / 255, green: 227 / 255, blue: 183 / 255, alpha: 1)
         savePathView.font = .systemFont(ofSize: 12)
@@ -1217,21 +1249,27 @@ final class EmulatorViewController: UIViewController, UIDocumentPickerDelegate {
             }
             let wantSound = defaults.object(forKey: "fast_audio") == nil ? true : defaults.bool(forKey: "fast_audio")
             audio.setSoundEnabled(wantSound)
-            // 音乐原速: at fast-forward the score keeps its own tempo and pitch
-            // while the surplus is cut in whole sections on gaps between notes
-            // (native hold). The published stretch follows the multiplier even
-            // though audioSpeed stays at 1.
-            let musicNative = defaults.object(forKey: "fast_audio_native") == nil ? true : defaults.bool(forKey: "fast_audio_native")
-            let holdOn = wantSound && musicNative && mult > 1.01
-            if holdOn != holdEngaged || (holdOn && mult != lastHoldStretch) {
+            // PC 三模式对齐（Q4/Q7）：mode 0 变调 / 1 不变调·连续(WSOLA) / 2 真正 1×(native hold)。
+            // C 常量 MOBILE_AUDIO_HOLD_PITCH=0 / NATIVE=1，与 UI mode 非 identity，显式映射。
+            let mode = fastAudioMode
+            let holdOn = wantSound && mode != 0 && mult > 1.01
+            let holdMode: Int32 = mode == 1 ? Int32(MOBILE_AUDIO_HOLD_PITCH) : Int32(MOBILE_AUDIO_HOLD_NATIVE)
+            if holdOn != holdEngaged || (holdOn && (mult != lastHoldStretch || mode != lastHoldMode)) {
                 if holdOn {
                     mgbaMobileSetAudioConstantPitch(core, true, mult)
-                    mgbaMobileSetAudioHoldMode(core, Int32(MOBILE_AUDIO_HOLD_NATIVE))
+                    mgbaMobileSetAudioHoldMode(core, holdMode)
                 } else {
                     mgbaMobileSetAudioConstantPitch(core, false, 1.0)
                 }
                 holdEngaged = holdOn
                 lastHoldStretch = mult
+                lastHoldMode = mode
+            }
+            // 音乐速度 rate（PC 第4自由度，Q7）：变化时才下发，钳位在共享 C 内完成。
+            let rate = defaults.object(forKey: "fast_audio_rate") as? Double ?? 1.0
+            if abs(rate - lastAudioRate) > 0.001 {
+                mgbaMobileSetAudioRate(core, rate)
+                lastAudioRate = rate
             }
             // Fast-forward keeps its sound unless it was switched off; with the
             // hold engaged the resampler plays the 1x stream, so a change only
