@@ -1948,8 +1948,9 @@ def main():
         return got
 
     android_props = {
-        "mgbax.link.rearm": "1",    # 与 PC env MGBAX_LINK_REARM=1 对齐（ENV-REGISTRY D1）
-        "mgbax.link.forcehs": "1",  # 默认开，显式下发便于 A/B 对照
+        # 【Y1 修复5】forcehs/rearm 改 env 驱动：默认 "1" 保持兼容，--env 可设 0 做真零注入。
+        "mgbax.link.rearm": "1" if env.get("MGBAX_LINK_REARM", "1") != "0" else "0",
+        "mgbax.link.forcehs": "1" if env.get("MGBAX_LINK_FORCEHS", "1") != "0" else "0",
     }
     if fast_min is not None:
         android_props["mgbax.sio.fast.min_ok"] = str(fast_min)

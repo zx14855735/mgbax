@@ -166,6 +166,13 @@ public final class MgbaCore {
         }
     }
 
+    /** 音乐速度 rate（PC 第4自由度）：钳位 [0.5,4]，默认 1.0（不变调）。 */
+    public void setAudioRate(double rate) {
+        if (handle != 0) {
+            nativeSetAudioRate(handle, (float) rate);
+        }
+    }
+
     /**
      * Drops the pace estimate so the resampler re-locks from the console's own
      * frame rate after a speed change, instead of carrying a stale reading that
@@ -507,6 +514,7 @@ public final class MgbaCore {
     private static native void nativeSetAudioPaceFps(long handle, float fps);
     private static native void nativeSetAudioConstantPitch(long handle, boolean on, float stretch);
     private static native void nativeSetAudioHoldMode(long handle, int mode);
+    private static native void nativeSetAudioRate(long handle, float rate);
     private static native void nativeResetAudioPace(long handle);
     private static native boolean nativeIsAudioPaceSeeded(long handle);
 

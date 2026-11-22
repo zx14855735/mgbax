@@ -1606,6 +1606,20 @@ def main():
                 (args.app_sav, APP_REMOTE_SAV, r_sav.returncode))
         else:
             log("APP-NAV: WARN 预置存档不存在 %s（沿用设备上的 rom.sav）" % args.app_sav)
+    # 【Y1 修复2】OBS 门必须在 am start/首帧之前写入：mgba_mobile.c 的 s_obsChain
+    # 惰性缓存首次 OBS-A 即固化，原晚写 ~41s ⇒ 整轮 0 行。此处 env/setprop() 尚未
+    # 定义，直接解析 args.env（最后一次出现生效），用 shell 就地写 + readback。
+    _obs_val = "0"
+    for _kv in (args.env or []):
+        if _kv.strip().startswith("MGBAX_OBS_CHAIN="):
+            _obs_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
+    shell(["setprop", "debug.mgbax.link.obs_chain", _obs_val])
+    _obs_rb = shell(["getprop", "debug.mgbax.link.obs_chain"])
+    log("setprop debug.mgbax.link.obs_chain=%s readback=%s（Y1 提前：pm clear 后 / am start 前）"
+        % (_obs_val, _obs_rb.stdout.strip()
+           if _obs_rb is not None and _obs_rb.returncode == 0 else "?"))
+    if _obs_val == "1" and (not _obs_rb or _obs_rb.stdout.strip() != "1"):
+        log("WARN: OBS 门早写 readback != 1，APP 首帧 s_obsChain 将固化 0（本轮 APP 打点不可判）")
     if not start_app():
         return 6
     if args.app_nav:
@@ -1796,6 +1810,7 @@ def main():
               "MGBAX_LINK_REARM", "MGBAX_NO_DIRECT", "MGBAX_SIO_FAST",
               "MGBAX_SIO_CONNECT_POLL", "MGBAX_SIO_DELAY_N", "MGBAX_RH_OFF",
               "MGBAX_BATTLE_RELAY", "MGBAX_B7_VERBOSE", "MGBAX_RELAY_EXT_MS",
+              "MGBAX_OBS_CHAIN",  # OBS 打点总门：防宿主 export 泄漏造"默认开"假象
               "MGBAX_LINK_BTLCFG", "MGBAX_LINK_HSBYPASS", "MGBAX_HS_HOLD",
               "MGBAX_2222_STICKY",  # 路线A 0x2222 兜底门：防宿主 export 泄漏造 PC/移动端半开
               "MGBAX_BUS_HS_PRESERVE", "MGBAX_LOCALBUS_2P",  # path B LocalBus 保真/2P 钳位门
@@ -1825,6 +1840,7 @@ def main():
                 "MGBAX_FORCE_EXCHANGE": "0", "MGBAX_SEAT_ASSIST": "0",
                 "MGBAX_BATTLE_RELAY": "0",  # B7 块中继默认 OFF
                 "MGBAX_B7_VERBOSE": "0",
+                "MGBAX_OBS_CHAIN": "0",  # OBS 打点总门默认关；--env MGBAX_OBS_CHAIN=1 可显式开
                 "MGBAX_RELAY_EXT_MS": "5000",
                 "MGBAX_LINK_BTLCFG": "0",  # 方案Y var8004 写入门默认 OFF
                 "MGBAX_LINK_HSBYPASS": "1",  # P0/M1 握手态保真 8FFF 旁路门默认开（=0 秒回退）
@@ -1926,6 +1942,10 @@ def main():
         k, v = kv.split("=", 1)
         env[k.strip()] = v.strip()
         log("PC env 显式覆盖: %s=%s" % (k.strip(), v.strip()))
+    # OBS 门审计（只读）：通用 --env 循环已把 MGBAX_OBS_CHAIN 透传到 PC env；
+    # 这里只补一行日志确认门态，不改值、不写游戏态、不改判据。
+    log("[OBSCHAIN] PC env MGBAX_OBS_CHAIN=%s（只读打点门；门开≠CROSSED，不预设成功）"
+        % env.get("MGBAX_OBS_CHAIN", "0"))
 
     # ---------- 2b. Android 端 mgbax.* 系统属性（外部 setter）----------
     # app 对这些属性只读（__system_property_get），stock Android 没有应用内
@@ -1948,8 +1968,9 @@ def main():
         return got
 
     android_props = {
-        "mgbax.link.rearm": "1",    # 与 PC env MGBAX_LINK_REARM=1 对齐（ENV-REGISTRY D1）
-        "mgbax.link.forcehs": "1",  # 默认开，显式下发便于 A/B 对照
+        # 【Y1 修复5】forcehs/rearm 改 env 驱动：默认 "1" 保持兼容，--env 可设 0 做真零注入。
+        "mgbax.link.rearm": "1" if env.get("MGBAX_LINK_REARM", "1") != "0" else "0",
+        "mgbax.link.forcehs": "1" if env.get("MGBAX_LINK_FORCEHS", "1") != "0" else "0",
     }
     if fast_min is not None:
         android_props["mgbax.sio.fast.min_ok"] = str(fast_min)
@@ -2025,6 +2046,11 @@ def main():
             "1" if env.get("MGBAX_GRAY_ALL") == "1" else "0")
     setprop("debug.mgbax.link.gray_lobby_open",
             "1" if env.get("MGBAX_GRAY_LOBBY_OPEN") == "1" else "0")
+    # OBS 打点总门：移动端 C 读 debug.mgbax.link.obs_chain；debug.* 是 stock A14 AVD
+    # 唯一可 setprop 前缀（A11 教训）；默认 0。setprop() 自带 getprop readback + WARN。
+    # 门只开"只读日志打点"：不写 gLinkOpen/rem/nr/brs/st，不改判据、不造 CROSSED。
+    setprop("debug.mgbax.link.obs_chain",
+            "1" if env.get("MGBAX_OBS_CHAIN") == "1" else "0")
     # P0 证据断言：FORCE_EXCHANGE 已钉 0（禁强写 nr=FALSE/rem=1）；移动端
     # mgbax.force_exchange 为非 debug 前缀，stock A14 AVD SELinux 拒绝 setprop ⇒ 恒 0。
     log("P0 证据断言: FORCE_EXCHANGE=0（禁强写nr=FALSE）；RH_OFF=%s HSBYPASS=%s（两门独立，无互斥）"
@@ -2722,6 +2748,19 @@ def main():
         _recent = app_fps_samples(full_log_text)
         app_fps_pairs = {k: _recent[k] for k in sorted(_recent)[-15:]}
     app_fps = median_of(app_fps_pairs.values())
+    # OBS-E：沉默一律显式 UNOBSERVED(...)，禁写 0/空；纯读日志，不改判据。
+    _obs_pg_line = ""
+    _obs_sp_line = ""
+    for _ln in (full_log_text or "").splitlines():
+        if "[OPPGATE]" in _ln and not _obs_pg_line:
+            _obs_pg_line = _ln
+        if "[OPPSPECIES]" in _ln and not _obs_sp_line:
+            _obs_sp_line = _ln
+    _obs_oppgate = _obs_pg_line or "UNOBSERVED(no_b7_verbose_or_no_battle)"
+    _obs_g_enemy_party = _obs_sp_line or "UNOBSERVED(inBattle_gate)"
+    _obs_brs_m = re.search(r"\[(?:B7BLK|OPPGATE)\][^\n]*\bbrs=([0-9A-Fa-f]+)",
+                           full_log_text or "")
+    _obs_brs = _obs_brs_m.group(1) if _obs_brs_m else "UNOBSERVED(no_probe_line)"
 
     summary = [
         "tag=%s" % args.tag,
@@ -2739,6 +2778,9 @@ def main():
         "opponent_data_real=UNOBSERVED  # 双证据人工核对：RHPLYR ver=4003 且 OPPSPECIES 合法才 True",
         "opponent_trainer_evidence=%s" % (opp_tr_line or "<none>"),
         "opponent_species_evidence=%s" % (opp_sp_line or "<none>"),
+        "oppgate=%s  # OBS-E：无 [OPPGATE] 行→UNOBSERVED，不写 0；仅观测" % _obs_oppgate,
+        "gEnemyParty=%s  # OBS-E：无 [OPPSPECIES] 行→UNOBSERVED(inBattle_gate)，不写 0" % _obs_g_enemy_party,
+        "brs=%s  # OBS-E：无 [B7BLK]/[OPPGATE] brs 行→UNOBSERVED，不写 0000；不进判据" % _obs_brs,
         "email_app=%s email_pc=%s accounts_distinct_email=%s" % (
             email_app, email_pc, app_user != acc_user),
         "ip_local_PC=%s ip_local_APP=%s ip_distinct=%s" % (
@@ -2882,7 +2924,9 @@ def main():
             % (_p2p_tail(full_log_text), _p2p_tail(_pc_lobby)),
         ])
         # ---- PATHB-TCP 观测（只读打点；直连成功≠对手真实性，不预设）----
-        _tcp_pc_txt = pc.stdout_text()
+        # OBS-F（1 行纯 bug）：CloudLink::status() 的 TCP 状态行写进 mgba_lobby_debug.log
+        # （=_pc_lobby），不写 pc stdout。原只检索 stdout ⇒ 恒 UNOBSERVED 假阴性。
+        _tcp_pc_txt = pc.stdout_text() + "\n" + _pc_lobby
         _pc_listen_seen = "YES" if "正在监听 TCP 端口" in _tcp_pc_txt else "UNOBSERVED"
         _pc_tcp_up_seen = "YES" if "TCP 直连已建立" in _tcp_pc_txt else "UNOBSERVED"
         _app_tcp_bcast_seen = ("YES" if re.search(r"tcp broadcast peer=", full_log_text or "")

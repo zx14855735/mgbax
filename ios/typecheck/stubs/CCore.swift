@@ -37,6 +37,9 @@ public func mgbaMobileBusGameInBattle(_ g: OpaquePointer!) -> Bool { false }
 public func mgbaMobileBusGamePeek32(_ g: OpaquePointer!, _ addr: UInt32) -> UInt32 { 0 }
 public func mgbaMobileBusGamePeek8(_ g: OpaquePointer!, _ addr: UInt32) -> UInt8 { 0 }
 
+// X10 打点诊断方案乙：观测链总门 setter（三端同名同值，默认关；共享 C 实现）
+public func mgbaMobileSetObsChain(_ enabled: Bool) {}
+
 public func mgbaMobileCreate(_ saveDir: UnsafePointer<CChar>!, _ stateDir: UnsafePointer<CChar>!, _ port: UnsafePointer<CChar>!) -> OpaquePointer? { nil }
 public func mgbaMobileDestroy(_ emu: OpaquePointer?) {}
 public func mgbaMobileLock(_ emu: OpaquePointer?) {}
@@ -53,6 +56,8 @@ public func mgbaMobileSetAudioOutput(_ emu: OpaquePointer?, _ outRate: Int32) ->
 public func mgbaMobileReadAudioOut(_ emu: OpaquePointer?, _ out: UnsafeMutablePointer<Int16>!, _ maxFrames: Int32, _ speed: Double, _ drift: Float) -> Int32 { 0 }
 public func mgbaMobileSetAudioConstantPitch(_ emu: OpaquePointer?, _ on: Bool, _ stretch: Double) {}
 public func mgbaMobileSetAudioHoldMode(_ emu: OpaquePointer?, _ mode: Int32) {}
+// 音乐速度 rate（PC 第4自由度，Q7）
+public func mgbaMobileSetAudioRate(_ emu: OpaquePointer?, _ rate: Double) {}
 public func mgbaMobileWsolaDropped(_ emu: OpaquePointer?) -> Int { 0 }
 public func mgbaMobileNativeHoldCuts(_ emu: OpaquePointer?) -> Int { 0 }
 public func mgbaMobileSetAudioPaceFps(_ emu: OpaquePointer?, _ fps: Double) {}

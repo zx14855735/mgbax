@@ -174,6 +174,31 @@ bool sioNetPartyMailboxOn(void) {
     return (MGBAX_NET_PARTY_MAILBOX != 0) || (e && atoi(e) == 1);
 }
 
+/* ===== X10-OBSCHAIN：PC 侧只读观测链总门（方案乙，三端同名同值，默认关） =====
+ * 只新增标签 [OBSCHAIN]，不改任何现有 TAG 字段序列 ⇒ diff_party_check TAG_RE 不认。
+ * 门关（默认）时：不写任何游戏状态、不产生任何 [OBSCHAIN] 行、链路逻辑零改动；
+ * 仅一次 getenv 缓存读 + 立即 return（与 b7Verbose/rhPatchesOff 同构）。 */
+#ifndef MGBAX_OBS_CHAIN
+#define MGBAX_OBS_CHAIN 0
+#endif
+#define MGBAX_OBS_CHAIN_ENV "MGBAX_OBS_CHAIN"
+static bool obsChainOn(void) {
+	static int v = -1;
+	if (v < 0) {
+		const char* e = getenv(MGBAX_OBS_CHAIN_ENV);
+		v = ((MGBAX_OBS_CHAIN != 0) || (e && atoi(e) == 1)) ? 1 : 0;
+	}
+	return v != 0;
+}
+
+/* OBS-B'/OBS-C 用：gLink 结构内具名偏移（禁裸 hex，三端同名同值）。
+ * 块 1 [BPRX] 行无条件引用下列三宏，ST/PROV/BPRX 三处节流引用 SIO_OBS_CHAIN_MAX_LINES，
+ * 漏落即未定义符号。数值来自 gen8/include/link.h 与本文件 [diag] 的实测注释。 */
+#define SIO_GLINK_ISMASTER_OFF      0x00u   /* gLink.isMaster */
+#define SIO_GLINK_LOCALID_OFF       0x02u   /* gLink.localId */
+#define SIO_GLINK_RECV_NOTHING_OFF  0x0Cu   /* gLink.receivedNothing */
+#define SIO_OBS_CHAIN_MAX_LINES     200u    /* OBS-C/D/B' 各自独立的日志条数上限 */
+
 /* gPlayerPartyCount 1B（gPlayerParty[6] 紧邻的 u8），与移动端同名同值；只读。 */
 #define SIO_PLAYER_PARTY_COUNT  0x0202A5E9u
 
@@ -3903,6 +3928,127 @@ static void sioAlignCmdFrameHeader(struct SioLink* sio, uint32_t remote) {
 	SIO_LOG("CMDFRAMEALIGN header=%04X sc=%u->1 rc=%u->0", (unsigned) w, sc, rc);
 }
 
+/* ===================== X10-OBSCHAIN 观测链（纯只读，仅 SIO_LOG） =====================
+ * 不写 gLinkOpen / gLink.state / tempRecvBuffer / rem / nr / brs / party / 信任位；
+ * 唯一副作用是新增 [OBSCHAIN] 日志行，现有标签与判据零影响。 */
+
+/* driver-only 门（PC 无 C 门函数）的 env 只读回读，绝不臆造为 0。 */
+static int obsChainEnvOn(const char* name) {
+	const char* e = getenv(name);
+	return (e && atoi(e) == 1) ? 1 : 0;
+}
+
+/* OBS-A：启动一次性「现成门」快照。读本文件现成 getter；
+ * forcehs/race/isync 为 driver/移动端门，PC 侧按 env 只读回读并在字段旁注明。 */
+static void obsChainGateOnce(void) {
+	static bool done;
+	if (done || !obsChainOn()) {
+		return;
+	}
+	done = true;
+	SIO_LOG("[OBSCHAIN][GATES] gray_all=%u gray_lobby=%u btcfg=%u b7=%u rh_off=%u"
+	        " hsbypass=%u bus_hs_preserve=%u forcehs=%u hs_hold=%u sticky2222=%u"
+	        " localbus_2p=%u pathb_native=%u race=%u isync=%u",
+	        (unsigned) (sioGrayAllOn() ? 1 : 0),
+	        (unsigned) (sioGrayLobbyOpenOn() ? 1 : 0),
+	        (unsigned) (linkBtcfgOn() ? 1 : 0),
+	        (unsigned) (b7Verbose() ? 1 : 0),
+	        (unsigned) (rhPatchesOff() ? 1 : 0),
+	        (unsigned) (sioHsBypassOn() ? 1 : 0),
+	        (unsigned) (sioBusHsPreserveOn() ? 1 : 0),
+	        (unsigned) obsChainEnvOn("MGBAX_LINK_FORCEHS"),
+	        (unsigned) (sioHsHoldOn() ? 1 : 0),
+	        (unsigned) (sioBlock2222On() ? 1 : 0),
+	        (unsigned) (sioLocalBus2pOn() ? 1 : 0),
+	        (unsigned) (sioPathBNativeSioOn() ? 1 : 0),
+	        (unsigned) obsChainEnvOn("MGBAX_RACE_STRESS"),
+	        (unsigned) obsChainEnvOn("MGBAX_ISYNC_STATE_APPLY"));
+}
+
+/* OBS-C（state 变化沿）+ X10-B（open 只读） + OBS-D（provenance） + OBS-B'（代理字段）。
+ * 由 completeMultiTransfer 每轮调用；门关立即返回。 */
+static void obsChainTick(struct SioLink* sio) {
+	if (!obsChainOn()) {
+		return;
+	}
+	obsChainGateOnce();
+	if (!sio || !sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
+		return;
+	}
+	struct GBA* gba = (struct GBA*) sio->core->board;
+	if (!gba || !gba->cpu) {
+		return;
+	}
+	struct ARMCore* cpu = gba->cpu;
+	uint32_t lk = SIO_IW(SIO_GLINK_STATE);
+	uint8_t st = GBAView8(cpu, lk + SIO_GLINK_STATE_OFF);
+	uint8_t pc = GBAView8(cpu, lk + SIO_GLINK_PLAYERCOUNT_OFF);
+
+	/* ---- OBS-C：gLink.state 变化沿（含 4→2 回落），200 条上限，非采样 ---- */
+	static uint8_t lastSt = 0xFFu;
+	static uint32_t stN;
+	if (st != lastSt && stN < SIO_OBS_CHAIN_MAX_LINES) {
+		uint16_t mu = GBAView16(cpu, SIO_EW(SIO_BATTLE_COMM)) & 0xFFu;
+		uint16_t brs = GBAView16(cpu, SIO_IW(SIO_GLOBAL_BLK_RECV_STATUS));
+		uint32_t cb = (uint32_t) GBAView32(cpu, SIO_IW(SIO_GLINK_CALLBACK));
+		uint32_t cb2 = (uint32_t) GBAView32(cpu, SIO_CB2_PTR);
+		/* X10-B 决定性项：gLinkOpen **只读**；严禁复用 [B7OPEN] 的 GBAPatch8 写路径。 */
+		uint8_t open = GBAView8(cpu, SIO_EW(SIO_LINK_OPEN));
+		++stN;
+		SIO_LOG("[OBSCHAIN][ST] n=%u from=%u->%u(0x%02X) cb2=%08X mu=%u pc=%u open=%u cb=%08X brs=%04X wall_ms=%u",
+		        (unsigned) stN, (unsigned) lastSt, (unsigned) st, (unsigned) st,
+		        (unsigned) cb2, (unsigned) mu, (unsigned) pc, (unsigned) open,
+		        (unsigned) cb, (unsigned) brs, (unsigned) wallNowMs());
+		lastSt = st;
+	}
+
+	/* ---- OBS-D / OBS-B' 的只读字段 ---- */
+	uint16_t own = (uint16_t) gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	uint16_t push = sioWordOrEmpty(sio, sio->sioSelfSlot);
+	uint16_t peer = (uint16_t) sio->sioRemote;
+	uint8_t isMaster = GBAView8(cpu, lk + SIO_GLINK_ISMASTER_OFF);
+	uint8_t localId = GBAView8(cpu, lk + SIO_GLINK_LOCALID_OFF);
+	uint8_t recvNothing = GBAView8(cpu, lk + SIO_GLINK_RECV_NOTHING_OFF);
+
+	const char* src;
+	if (own == 0u && push == 0xFFFFu) {
+		src = "empty";
+	} else if ((own == LINK_HANDSHAKE_MASTER || own == LINK_HANDSHAKE_SLAVE)
+	           && (sioPathBNativeSioOn() || sioHsBypassOn() || sioBusHsPreserveOn())) {
+		src = "localbus";
+	} else if (push != own) {
+		src = "bridge";
+	} else {
+		src = "game";
+	}
+
+	static uint16_t lastProvOwn, lastProvPush, lastProxyOwn, lastProxyPeer;
+	static uint32_t provN, proxyN;
+	static unsigned obsN;
+	++obsN;
+	bool beat = ((obsN & SIO_PROBE_HEARTBEAT_MASK) == 0u);
+
+	/* ---- OBS-D：[PROV] own_slot_word / net_push_word / src ---- */
+	if ((own != lastProvOwn || push != lastProvPush || beat) && provN < SIO_OBS_CHAIN_MAX_LINES) {
+		++provN;
+		SIO_LOG("[OBSCHAIN][PROV] n=%u own_slot_word=%04X net_push_word=%04X src=%s st=%u wall_ms=%u",
+		        (unsigned) provN, (unsigned) own, (unsigned) push, src,
+		        (unsigned) st, (unsigned) wallNowMs());
+		lastProvOwn = own; lastProvPush = push;
+	}
+
+	/* ---- OBS-B'：tempRecvBuffer 无具名宏/rom.map 0 命中，直读不可行；
+	 * 只打显式标注的代理字段，peer_deliver_word 用 sioRemote 代理，绝不写成真值。 ---- */
+	if ((own != lastProxyOwn || peer != lastProxyPeer || beat) && proxyN < SIO_OBS_CHAIN_MAX_LINES) {
+		++proxyN;
+		SIO_LOG("[OBSCHAIN][BPRX] proxy_for_temp_recv=1 n=%u pc=%u receivedNothing=%u isMaster=%u localId=%u sioRemote=%04X own_slot_word=%04X peer_deliver_word=%04X st=%u wall_ms=%u",
+		        (unsigned) proxyN, (unsigned) pc, (unsigned) recvNothing,
+		        (unsigned) isMaster, (unsigned) localId, (unsigned) peer,
+		        (unsigned) own, (unsigned) peer, (unsigned) st, (unsigned) wallNowMs());
+		lastProxyOwn = own; lastProxyPeer = peer;
+	}
+}
+
 static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool haveRemote, uint32_t cyclesLate) {
 	if (!sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) {
 		return;
@@ -4074,6 +4220,7 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 	sioRoundsPerFrame(sio);
 	sioCmdTrace(sio);
 	sioLinkStat(sio);
+	obsChainTick(sio);   /* X10-OBSCHAIN：新增只读观测；门关立即返回 */
 	if (sio->core && sio->core->platform(sio->core) == mPLATFORM_GBA) {
 		/* 【ROOTHUNT】去掉 haveRemote 门：sc==0 的校验和对比**包含自槽**，
 		 * 本轮没有对端字时也必须把自槽改写成 gLink.checksum，否则主机
@@ -4163,6 +4310,7 @@ static void completeMultiTransferBus(struct SioLink* sio, const uint32_t vals[4]
 			        (unsigned) vals[0], (unsigned) vals[1], (unsigned) vals[2], (unsigned) vals[3]);
 		}
 	}
+	obsChainTick(sio);   /* X10-OBSCHAIN：3人 LocalBus 路径补 hook（本轮 E2E 走此路径，原仅2人路径有） */
 	finishMultiTransfer(sio, data, cyclesLate);
 }
 
@@ -7575,6 +7723,7 @@ void sioLinkDiagCore(struct mCore* core) {
 	}
 	diagMs = now;
 	logLinkDiag((struct GBA*) core->board);
+	obsChainGateOnce();   /* X10-OBSCHAIN：门快照每进程只打一行（链路未配对时也可见） */
 }
 
 /* ===== S2 PC 源端：只读导出本机真 gPlayerParty → 填整份 500B GNP 邮槽镜像 =====

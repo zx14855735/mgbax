@@ -15,6 +15,9 @@
     <string name="speed_pick">倍速</string>
     <string name="speed_sound">倍速声音</string>
     <string name="speed_sound_const">音乐原速</string>
+    <string name="fast_audio_mode_varispeed">变调</string>
+    <string name="fast_audio_mode_wsola">不变调·连续</string>
+    <string name="fast_audio_mode_native">真正 1×</string>
     <string name="reset">复位</string>
     <string name="slot_initial">槽位 1</string>
     <string name="slot">槽位 %1$d</string>

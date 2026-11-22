@@ -53,6 +53,22 @@
 #define MGBAX_PATHB_NATIVE_SIO_ENV  "MGBAX_PATHB_NATIVE_SIO"
 #define MGBAX_PATHB_NATIVE_SIO_PROP "debug.mgbax.link.pathb_native_sio"
 
+/* 【X10 打点诊断方案乙 / MGBAX_OBS_CHAIN —— 三端同名同值，默认关】（唯一真源）
+ * 观测链总门：只驱动模拟器侧新增的 [OBSCHAIN] 只读打点，不改任何游戏状态/写径；
+ * 门关时零开销、行为逐字节不变。
+ *   PC / Qt : env   MGBAX_OBS_CHAIN（=1 开启）
+ *   Android : prop  debug.mgbax.link.obs_chain（=1 开启，driver setprop）
+ *   iOS     : mgbaMobileSetObsChain / UserDefaults "mgbax.link.obs_chain" + env（同名同值）
+ * 门开≠成功；零注入 CROSSED（APP 0006 ↔ PC 00D5）仍是唯一裁决。 */
+#ifndef MGBAX_OBS_CHAIN
+#define MGBAX_OBS_CHAIN 0
+#endif
+#if MGBAX_OBS_CHAIN != 0 && MGBAX_OBS_CHAIN != 1
+#error "MGBAX_OBS_CHAIN must be 0 or 1"
+#endif
+#define MGBAX_OBS_CHAIN_ENV  "MGBAX_OBS_CHAIN"
+#define MGBAX_OBS_CHAIN_PROP "debug.mgbax.link.obs_chain"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -154,6 +170,12 @@ enum {
 };
 
 void mgbaMobileSetAudioHoldMode(struct MgbaMobile* emu, int mode);
+/* 音乐速度 rate（PC 第 4 自由度，Q7）：钳位 [0.5, 4.0]，默认 1.0。
+ * 引擎内 stretch = speed / rate；rate=1 时与既有行为逐位一致（零回归）。 */
+#define MOBILE_AUDIO_RATE_MIN   0.5
+#define MOBILE_AUDIO_RATE_MAX   4.0
+#define MOBILE_AUDIO_RATE_DEF   1.0
+void mgbaMobileSetAudioRate(struct MgbaMobile* emu, double rate);
 /*
  * Frames the time-stretcher had to discard because its staging buffer could not
  * take them. Should always be 0; a non-zero value means a hole in the music
@@ -326,6 +348,10 @@ void mgbaMobileSetLocalBus2p(bool enabled);
 /* W92 / path B 原生 SIO 字路由门（默认关，true 开启；iOS 须在首个 linkPoll 前调）。
  * 与 PC env MGBAX_PATHB_NATIVE_SIO / Android debug.mgbax.link.pathb_native_sio 同名同值。 */
 void mgbaMobileSetPathBNativeSio(bool enabled);
+
+/* X10 打点诊断方案乙：观测链总门（默认关；iOS Swift / Android JNI 须在首个 SIO
+ * linkPoll 前显式设置）。只驱动只读 [OBSCHAIN] 打点，不写游戏状态。 */
+void mgbaMobileSetObsChain(bool enabled);
 /* M1 seed 崩溃修复：state-rearm 守卫门（默认关，true=修复；只在 armLinkEvent
  * 调用点加 linkAttached&&callback 守卫，不下沉 armLinkEvent 本体）。 */
 void mgbaMobileSetStateRearmGuard(bool enabled);

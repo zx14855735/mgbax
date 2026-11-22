@@ -22,6 +22,8 @@ def main():
                     help="日志 marker 文件/子串，命中后才开始触发（默认 LINKUP_OK）")
     ap.add_argument("--marker-file", default=None,
                     help="marker 日志文件路径（默认 <run-dir>/pc_nav.log）")
+    ap.add_argument("--after-seconds", type=float, default=None,
+                    help="固定延时模式：起跑后 N 秒开始触发（不依赖 marker；APP 崩溃/无 LINKUP_OK 时用）")
     ap.add_argument("--wait", type=float, default=1.0, help="命中后等待秒数")
     ap.add_argument("--repeat", type=int, default=5, help="触发次数")
     ap.add_argument("--interval", type=float, default=2.0, help="触发间隔秒（>=1）")
@@ -36,7 +38,11 @@ def main():
         return 2
 
     marker = args.marker_file or os.path.join(args.run_dir, "pc_nav.log")
-    if args.after_marker:
+    if args.after_seconds is not None:
+        # 固定延时模式：不依赖 marker（APP 崩溃/无 LINKUP_OK 时仍可触发）
+        print("[party_trigger] fixed-delay mode: wait %.1fs" % args.after_seconds, flush=True)
+        time.sleep(args.after_seconds)
+    elif args.after_marker:
         deadline = time.time() + 300
         while time.time() < deadline:
             hit = False

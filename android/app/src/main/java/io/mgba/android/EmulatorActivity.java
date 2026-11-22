@@ -771,6 +771,8 @@ public class EmulatorActivity extends AppCompatActivity {
     private double constantPitchStretch;
     /** Mode the native fast-forward audio pipeline was last told about, -1 when unknown. */
     private int constantPitchMode = -1;
+    /** Music rate (PC 第4自由度) last published to native; -1 forces re-publish on core reload. */
+    private double appliedAudioRate = -1;
     /** Software volume, 0-150 percent, applied when frames reach the track. */
     private int volumePercent = 100;
     private long nextFastPresent;
@@ -4100,6 +4102,7 @@ public class EmulatorActivity extends AppCompatActivity {
         appliedGameSpeed = -1;
         constantPitchOn = false;
         constantPitchMode = -1;
+        appliedAudioRate = -1;   /* core 重建后强制重发 rate */
         if (core != null) {
             core.setAudioConstantPitch(false, 1.0);
         }
@@ -4209,29 +4212,22 @@ public class EmulatorActivity extends AppCompatActivity {
     }
 
     /**
-     * Applies a speed or sound setting change. Fast-forward sound is produced by
-     * resampling at that speed (tape style, matching the iOS varispeed unit), so
-     * a change only needs the audio pipeline restarted. Returns true when the
-     * audio pipeline was reset, so the caller restarts its measurement windows:
-     * a pace window straddling the change blends the two rates (half a second of
-     * 1x plus half of 16x reports a meaningless middle value) and the resampler
-     * would lock onto it.
+     * Applies a speed or sound setting change. Returns true when the audio
+     * pipeline was reset, so the caller restarts its measurement windows.
      *
-     * While fast-forwarding (mult > 1) the music can be:
-     *   - 倍速声音 off            -> muted (no audio at all)
-     *   - 倍速声音 on, 不变速 off  -> varispeed: audio follows the game and pitches up (tape style)
-     *   - 倍速声音 on, 不变速 on   -> constant pitch: the music keeps its normal speed and the
-     *                                surplus samples the fast game produces are dropped by the resampler
+     * While fast-forwarding (mult > 1) the music mode (pref fast_audio_mode,
+     * aligned with PC audio_stretch.h: 0 变调 / 1 不变调·连续 WSOLA / 2 真正 1×):
+     *   - 倍速声音 off                 -> muted (no audio at all)
+     *   - mode 0 变调                  -> varispeed: audio follows the game, pitches up (tape style)
+     *   - mode 1 不变调·连续 (WSOLA)   -> keep every note, score compressed into real time (continuous)
+     *   - mode 2 真正 1× (native hold) -> play real samples at 1x, cut gaps between notes
      * At 1x and during slow motion the audio always tracks the game speed.
      */
     private boolean syncFastAudio(double mult) {
         boolean changed = false;
         SharedPreferences prefs = getPreferences(MODE_PRIVATE);
         boolean soundOn = prefs.getBoolean("fast_audio", true);
-        // 音乐原速 复选框写入的是 fast_audio_native；这里必须读同一个键，否则勾选
-        // 框形同虚设，而真正的开关却一直读着一个没人写过的旧键（fast_audio_const），
-        // 设备上残留的旧值会让整条路径在倍速下完全不生效（"完全没效果"）。
-        boolean musicNative = prefs.getBoolean("fast_audio_native", true);
+        int mode = fastAudioMode(prefs);
         boolean mute = !soundOn && mult > 1.01;
         double audioSpeed;
         boolean holdSurplus;
@@ -4239,12 +4235,10 @@ public class EmulatorActivity extends AppCompatActivity {
             // Normal speed and slow motion: audio always tracks the game.
             audioSpeed = mult;
             holdSurplus = false;
-        } else if (soundOn && musicNative) {
-            // 不变速: the music keeps its own speed and pitch. The fast game
-            // produces several times more audio than the device can play at
-            // that speed, so the surplus is parked and replayed instead of
-            // being shredded by the core's ring - without that the music
-            // comes out as scraps, right pitch but unrecognisable.
+        } else if (soundOn && mode != 0) {
+            // Constant-pitch family (WSOLA continuous or native hold): the music
+            // keeps its own speed and pitch; surplus audio is parked by the
+            // selected hold mode instead of being shredded by the core ring.
             audioSpeed = 1.0;
             holdSurplus = true;
         } else {
@@ -4254,10 +4248,15 @@ public class EmulatorActivity extends AppCompatActivity {
         }
         if (mult > 1.01) {
             android.util.Log.i("mGBA", "syncFast mult=" + mult + " soundOn=" + soundOn
-                    + " native=" + musicNative + " hold=" + holdSurplus + " speed=" + audioSpeed
+                    + " mode=" + mode + " hold=" + holdSurplus + " speed=" + audioSpeed
                     + " coreNull=" + (core == null));
         }
         if (core != null) {
+            double rate = prefs.getFloat("audio_rate", 1.0f);
+            if (Math.abs(rate - appliedAudioRate) > 0.001) {
+                core.setAudioRate(rate);
+                appliedAudioRate = rate;
+            }
             if (holdSurplus) {
                 // Keep the stretch in sync with the current multiplier. This runs
                 // on every emulated slice, so only publish changes: re-arming the
@@ -4266,10 +4265,11 @@ public class EmulatorActivity extends AppCompatActivity {
                     core.setAudioConstantPitch(true, mult);
                     constantPitchStretch = mult;
                 }
-                int mode = musicNative ? MgbaCore.HOLD_MODE_NATIVE : MgbaCore.HOLD_MODE_PITCH;
-                if (mode != constantPitchMode) {
-                    core.setAudioHoldMode(mode);
-                    constantPitchMode = mode;
+                // UI 1 (WSOLA continuous) -> HOLD_MODE_PITCH(=0); UI 2 (true 1x) -> HOLD_MODE_NATIVE(=1).
+                int holdMode = fastAudioHoldMode(mode);
+                if (holdMode != constantPitchMode) {
+                    core.setAudioHoldMode(holdMode);
+                    constantPitchMode = holdMode;
                 }
             } else if (constantPitchOn) {
                 core.setAudioConstantPitch(false, 1.0);
@@ -4294,6 +4294,36 @@ public class EmulatorActivity extends AppCompatActivity {
             changed = true;
         }
         return changed;
+    }
+
+    /** Fast-forward music mode (pref fast_audio_mode, aligned with PC 0/1/2).
+     *  Migrates the legacy fast_audio_native boolean once: off -> 0 (变调),
+     *  on -> 2 (真正 1×); default 2 matches the old on-by-default behaviour. */
+    private int fastAudioMode(SharedPreferences prefs) {
+        int mode = prefs.getInt("fast_audio_mode", -1);
+        if (mode < 0 || mode > 2) {
+            boolean legacy = prefs.getBoolean("fast_audio_native", true);
+            mode = legacy ? 2 : 0;
+            prefs.edit().putInt("fast_audio_mode", mode).apply();
+        }
+        return mode;
+    }
+
+    /** Maps UI mode (0 变调 / 1 WSOLA 连续 / 2 真正 1×) to the shared-C hold mode.
+     *  Only called for holdSurplus (mode != 0). PC uses 1=PITCH/2=NATIVE but the
+     *  mobile C constants are 0=PITCH/1=NATIVE, so this mapping is NOT identity. */
+    private int fastAudioHoldMode(int uiMode) {
+        return uiMode == 1 ? MgbaCore.HOLD_MODE_PITCH : MgbaCore.HOLD_MODE_NATIVE;
+    }
+
+    /** Short UI label for the current music mode (for the cycling button). */
+    private String audioModeLabel(int mode) {
+        switch (mode) {
+            case 0: return getString(io.mgba.android.R.string.fast_audio_mode_varispeed);
+            case 1: return getString(io.mgba.android.R.string.fast_audio_mode_wsola);
+            case 2: return getString(io.mgba.android.R.string.fast_audio_mode_native);
+            default: return getString(io.mgba.android.R.string.fast_audio_mode_native);
+        }
     }
 
     /** Effective emulation speed right now, including the held fast-forward key. */
@@ -6814,27 +6844,53 @@ public class EmulatorActivity extends AppCompatActivity {
         sound.setChecked(soundOn);
         audioRow.addView(sound);
 
-        CheckBox constSpeed = new CheckBox(this);
-        constSpeed.setText(R.string.speed_sound_const);
-        constSpeed.setTextColor(Color.WHITE);
-        constSpeed.setTextSize(13);
-        boolean constOn = prefs.getBoolean("fast_audio_native", true);
-        constSpeed.setChecked(constOn);
-        constSpeed.setEnabled(soundOn);
-        constSpeed.setAlpha(soundOn ? 1.0f : 0.45f);
-        audioRow.addView(constSpeed);
+        // PC 三模式对齐：点击循环 0 变调 → 1 不变调·连续 → 2 真正 1×。
+        final Button audioModeBtn = new Button(this);
+        final int[] audioMode = { fastAudioMode(prefs) };
+        audioModeBtn.setText("音乐: " + audioModeLabel(audioMode[0]));
+        audioModeBtn.setTextColor(Color.WHITE);
+        audioModeBtn.setTextSize(13);
+        audioModeBtn.setEnabled(soundOn);
+        audioModeBtn.setAlpha(soundOn ? 1.0f : 0.45f);
+        audioRow.addView(audioModeBtn);
 
-        sound.setOnCheckedChangeListener((v, checked) -> {
-            prefs.edit().putBoolean("fast_audio", checked).apply();
-            // 不变速 only makes sense when sound is on during fast-forward.
-            constSpeed.setEnabled(checked);
-            constSpeed.setAlpha(checked ? 1.0f : 0.45f);
+        audioModeBtn.setOnClickListener(v -> {
+            audioMode[0] = (audioMode[0] + 1) % 3;
+            prefs.edit().putInt("fast_audio_mode", audioMode[0]).apply();
+            audioModeBtn.setText("音乐: " + audioModeLabel(audioMode[0]));
             syncFastAudio(currentGameSpeed());
         });
-        constSpeed.setOnCheckedChangeListener((v, checked) -> {
-            prefs.edit().putBoolean("fast_audio_native", checked).apply();
+
+        // 音乐速度 rate（PC HOLD_RATES = 1/1.5/2/3，Q7）：点击循环，与 PC 第4自由度对齐。
+        final float[] audioRates = { 1.0f, 1.5f, 2.0f, 3.0f };
+        final float savedRate = prefs.getFloat("audio_rate", 1.0f);
+        final int[] audioRateIdx = { 0 };
+        for (int i = 0; i < audioRates.length; ++i) {
+            if (Math.abs(audioRates[i] - savedRate) < 0.01f) { audioRateIdx[0] = i; break; }
+        }
+        final Button audioRateBtn = new Button(this);
+        audioRateBtn.setText(String.format("音乐速度: %.1f×", audioRates[audioRateIdx[0]]));
+        audioRateBtn.setTextColor(Color.WHITE);
+        audioRateBtn.setTextSize(13);
+        audioRateBtn.setEnabled(soundOn);
+        audioRateBtn.setAlpha(soundOn ? 1.0f : 0.45f);
+        audioRow.addView(audioRateBtn);
+        sound.setOnCheckedChangeListener((v, on) -> {
+            prefs.edit().putBoolean("fast_audio", on).apply();
+            audioModeBtn.setEnabled(on);
+            audioModeBtn.setAlpha(on ? 1.0f : 0.45f);
+            audioRateBtn.setEnabled(on);
+            audioRateBtn.setAlpha(on ? 1.0f : 0.45f);
             syncFastAudio(currentGameSpeed());
         });
+        audioRateBtn.setOnClickListener(v -> {
+            audioRateIdx[0] = (audioRateIdx[0] + 1) % audioRates.length;
+            float r = audioRates[audioRateIdx[0]];
+            prefs.edit().putFloat("audio_rate", r).apply();
+            audioRateBtn.setText(String.format("音乐速度: %.1f×", r));
+            if (core != null) { core.setAudioRate(r); }
+        });
+        if (core != null) { core.setAudioRate(audioRates[audioRateIdx[0]]); }
         refreshSpeedButtons();
     }
 

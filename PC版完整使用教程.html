@@ -125,7 +125,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
 
 <section id="s1">
   <h2><span class="num">1</span>安装与运行</h2>
-  <p>整个程序就是 <b><code>mGBAx.exe</code> 一个文件</b>（约 98 MB），<b>不需要安装</b>，双击即可运行，也可以直接放 U 盘带到别的电脑。Qt、SDL、解码库等依赖都已打包进去，不需要额外装 .NET / VC++ 运行库，也不需要配套文件夹。</p>
+  <p>整个程序就是 <b><code>mGBAx-single-S2.exe</code> 一个文件</b>（约 95.7 MB），<b>不需要安装</b>，双击即可运行，也可以直接放 U 盘带到别的电脑。Qt、SDL、解码库等依赖都已打包进去，不需要额外装 .NET / VC++ 运行库，也不需要配套文件夹。该版本内含 S2 灰区实验通道，仅作诊断用途。</p>
   <table>
     <tr><th>事项</th><th>说明</th></tr>
     <tr><td><b>首次启动约 3～10 秒</b></td><td>程序会先把内容解压到系统临时目录再启动，属正常现象，稍等即可。</td></tr>
@@ -140,7 +140,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
   <ul>
     <li><b>菜单</b>：<code>File → Load ROM...</code>，选 <code>.gba</code> / <code>.gbc</code> / <code>.gb</code> / <code>.zip</code>。</li>
     <li><b>拖放</b>：把游戏文件直接拖进窗口。</li>
-    <li><b>命令行 / 文件关联</b>：<code>mGBAx.exe "D:\ROMs\游戏.gba"</code>；也可在资源管理器对 <code>.gba</code> 右键「打开方式」设为 mGBAx，以后双击即开。命令行参数会原样传给模拟器。</li>
+    <li><b>命令行 / 文件关联</b>：<code>mGBAx-single-S2.exe "D:\ROMs\游戏.gba"</code>；也可在资源管理器对 <code>.gba</code> 右键「打开方式」设为 mGBAx，以后双击即开。命令行参数会原样传给模拟器。</li>
   </ul>
   <p>支持从 ZIP 内直接读取。GBA BIOS 不是必须的；如需真机 BIOS，在 <code>Tools → Settings... → BIOS</code> 指定。</p>
 </section>
@@ -278,6 +278,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
 
 <section id="s6">
   <h2><span class="num">6</span>联机与云同步</h2>
+  <div class="box warn"><p><b>联机现状</b>：通道可连通，但跨设备双人对战尚未闭环——总门仍为 FAIL（对手真实性 0/9，零注入 CROSSED 从未产出）。连上后若对手显示 <code>? Lv0</code>、进不了战斗，是当前实现的已知限制，不是操作错误。iOS 暂不支持双人联机。详细前提与口径见根目录 <code>PC版完整使用教程.md</code>。</p></div>
   <table>
     <tr><th>入口</th><th>用途</th></tr>
     <tr><td><code>File → WiFi link (GBoy/My Boy)...</code></td><td>与手机端 GBoy / My Boy 模拟器联机</td></tr>
@@ -306,7 +307,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
   <div class="q"><div class="qq">Q：改了设置没效果？</div><div class="aa">没打开游戏时只保存、不即时生效，重开游戏即可。另外本版升级过配置键名（如 <code>audioHoldMode5</code>、<code>audioHoldRate2</code>），旧值不会覆盖新默认。</div></div>
   <div class="q"><div class="qq">Q：音乐发闷 / 断续 / 电音？</div><div class="aa">先看 <code>%APPDATA%\mGBA\audiodiag.log</code> 的 <code>on</code> 与 <code>dropped</code>。<b>dropped 在「真正 1× 原速」模式下数值很大是正常的</b> —— 那是按计划跳段丢弃的样本，不是故障。</div></div>
   <div class="q"><div class="qq">Q：完全没声音？</div><div class="aa">检查系统音量、<code>Tools → Settings... → Audio</code> 里的设备与采样率、以及增强面板的 6 条声道音量是否被拉到 0。</div></div>
-  <div class="q"><div class="qq">Q：首次启动很慢 / 被杀软删了？</div><div class="aa">首次运行要解压约 98 MB 到临时目录，属正常；无数字签名导致的误报加白名单即可。</div></div>
+  <div class="q"><div class="qq">Q：首次启动很慢 / 被杀软删了？</div><div class="aa">首次运行要解压约 95.7 MB 到临时目录，属正常；无数字签名导致的误报加白名单即可。当前单文件版 <code>mGBAx-single-S2.exe</code> 含 S2 灰区实验通道（灰区全开 / CROSSED 可信度存疑 / 非纯零注入），仅作诊断用途。</div></div>
 </section>
 
 <section id="s9">
@@ -335,7 +336,7 @@ footer{text-align:center;color:var(--muted);font-size:13px;padding:26px 0 0}
     <li>三选二硬约束：<b>「游戏 4× + 音乐严格 1× + 连续」不可兼得</b>，见 <a href="#s4">4.1</a>。</li>
     <li>「真正 1× 原速」会跳段；切点优先落在静音处并做 12 ms 淡入，但几乎没有静音的曲子仍能听出跳跃。</li>
     <li>高倍速（6× / 8×）下核心音频产出更大，音频延迟会略增。</li>
-    <li>每次启动都要把约 98 MB 解压到临时目录，冷启动会比原生程序略慢。</li>
+    <li>每次启动都要把约 95.7 MB 解压到临时目录，冷启动会比原生程序略慢。</li>
     <li>「音乐速度」的 <code>2×</code> / <code>3×</code> 会让音高升高（约一个八度甚至更多），此时已不是"不变调"。</li>
   </ul>
 </section>

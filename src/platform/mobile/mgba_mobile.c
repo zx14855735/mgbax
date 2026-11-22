@@ -293,6 +293,23 @@ static int mobileLogEnabled(void) {
 #define LINK_VERBOSE(...) ((void) 0)
 #endif
 
+/* 【OBSCHAIN / 方案乙 · J8B 方案A 运行时门】只读观测链包装宏。
+ * 修复：helper 无条件编译进 .so（去掉 #if MGBAX_OBS_CHAIN 包裹），门控完全靠
+ * helper 内部运行时 mobileObsChainOn() return——这样 prop=1 可运行时开打点，
+ * 不再因编译期默认 0 把 helper 裁掉（本轮 E2E APP 侧静默的根因）。
+ * helper 内部先查 mobileObsChainOn()，门关立即 return，运行时零打点、行为不变。
+ * 新标签 [OBSCHAIN] 不在 diff_party_check.py TAG_RE 内 ⇒ 判据零影响。 */
+#define MOBILE_OBS_ST_MAX          200u
+#define MOBILE_OBS_WORD_EMPTY      0xFFFFu
+#define MOBILE_OBS_SRC_GAME        "game"
+#define MOBILE_OBS_SRC_LOCALBUS    "localbus"
+#define MOBILE_OBS_SRC_BRIDGE      "bridge"
+#define MOBILE_OBS_SRC_EMPTY       "empty"
+#define OBSCHAIN_GATES()                    mobileObsChainGates()
+#define OBSCHAIN_ST(g, f, t, p, m, w)       mobileObsChainSt((g), (f), (t), (p), (m), (w))
+#define OBSCHAIN_PROV(o, n, p)              mobileObsChainProv((o), (n), (p))
+#define OBSCHAIN_PROXY(e, o, p)             mobileObsChainProxy((e), (o), (p))
+
 #ifdef _WIN32
 #include <direct.h>
 #define mobile_mkdir(path) _mkdir(path)
@@ -375,6 +392,27 @@ static void rhGetProp(const char* name, char* value) {
 #else
 #define rhGetProp(n, v) __system_property_get((n), (v))
 #endif
+
+/* 【OBSCHAIN / C-0 统一】唯一 getter + 唯一 static + 唯一 setter。
+ * getter 随 #if 门控（其调用者——四 helper 与四包装宏——均被门控，避免门关时
+ * -Wunused-function）；setter 与 s_obsChain 保持无条件，供 Android JNI / iOS Swift 调用。 */
+static int s_obsChain = -1;
+/* J8B 方案A：getter 无条件编译（运行时门），__attribute__((unused)) 防门关告警。 */
+static bool mobileObsChainOn(void) __attribute__((unused));
+static bool mobileObsChainOn(void) {
+	if (s_obsChain < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp(MGBAX_OBS_CHAIN_PROP, p);
+		s_obsChain = (p[0] == '1') ? 1 : 0;
+#else
+		const char* e = getenv(MGBAX_OBS_CHAIN_ENV);
+		s_obsChain = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+	}
+	return s_obsChain != 0;
+}
+void mgbaMobileSetObsChain(bool enabled) { s_obsChain = enabled ? 1 : 0; }
 
 static void mobileResolveRomAddresses(void) {
 	if (__atomic_load_n(&s_romAddrInit, __ATOMIC_ACQUIRE)) {
@@ -883,6 +921,9 @@ struct MgbaMobile {
 	size_t wsolaHs;                      /* synthesis hop, samples per channel */
 	double wsolaStretch;                 /* requested stretch (set by UI thread) */
 	double wsolaConfigured;              /* stretch the buffers were built for */
+	unsigned wsolaCoreRate;              /* core rate the buffers were built for（PC 重建守卫） */
+	double wsolaOutAcc;                  /* 墙钟发射债务 carry（PC audio_stretch.c:585） */
+	double wsolaLastTime;                /* 上一次发射的墙钟（PC audio_stretch.c:582） */
 	float* wsolaAcc;                     /* OLA signal accumulator, length wsolaN*2 */
 	int16_t* wsolaEmit;                  /* emit scratch, length wsolaN*2 */
 	int16_t* wsolaPrev;                  /* last ref2 emitted-domain samples (phase ref) */
@@ -920,6 +961,7 @@ struct MgbaMobile {
 	double natOutAcc;                     /* fractional output carry */
 	double natLastTime;                   /* wall clock of the previous read */
 	int audioHoldMode;                   /* MOBILE_AUDIO_HOLD_* (set by UI) */
+	double audioHoldRate;                /* 音乐速度 rate（PC 第4自由度，钳 [0.5,4]，默认 1） */
 	bool audioHoldOn;
 	bool audioHoldInited;
 	/* Set by the UI thread on every toggle; the audio thread clears the staged
@@ -1183,7 +1225,7 @@ static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stre
 	 * fast-forward speed changes. Rebuilding only ever happens here, on the
 	 * audio thread, so the buffers are never freed under a running
 	 * wsolaGenerate. */
-	if (emu->audioHoldInited && fabs(stretch - emu->wsolaConfigured) < 0.01) {
+	if (emu->audioHoldInited && fabs(stretch - emu->wsolaConfigured) < 0.01 && emu->wsolaCoreRate == coreRate) {
 		return;
 	}
 	deinitAudioHold(emu);
@@ -1208,6 +1250,7 @@ static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stre
 		emu->wsolaHa = 1;
 	}
 	emu->wsolaConfigured = stretch;
+	emu->wsolaCoreRate = coreRate;
 	emu->wsolaAnaPos = 0;
 	emu->wsolaDropped = 0;
 	/* Native-rate hold geometry (音乐原速): a lag ring a few seconds deep.
@@ -1237,6 +1280,8 @@ static void initAudioHold(struct MgbaMobile* emu, unsigned coreRate, double stre
 	/* Mark inited now so a failed allocation below is cleaned up by
 	 * deinitAudioHold() instead of leaking and leaving a half-built state. */
 	emu->audioHoldInited = true;
+	emu->wsolaOutAcc = 0.0;
+	emu->wsolaLastTime = 0.0;
 	emu->wsolaAcc = (float*) calloc(emu->wsolaN * 2, sizeof(float));
 	emu->wsolaEmit = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
 	emu->wsolaPrev = (int16_t*) calloc(emu->wsolaN * 2, sizeof(int16_t));
@@ -1306,6 +1351,22 @@ static void wsolaFeed(struct MgbaMobile* emu, struct mAudioBuffer* source) {
  * that is time compression, rendered via a smooth overlap-add rather than a
  * decimation, so it is inaudible as a jump.
  */
+/* 归一化互相关（照抄 PC audio_stretch.c:214-226）：把左右声道幅度和当单声道，
+ * 返回 [-1, 1]；粗、细两级搜索共用同一内循环。 */
+static float wsolaCorrelate(struct mAudioBuffer* in, const int16_t* prev, int d, size_t ref) {
+	long long dot = 0, e1 = 0, e2 = 0;
+	for (size_t i = 0; i < ref; ++i) {
+		int16_t L = mAudioBufferPeek(in, 0, d + i);
+		int16_t R = mAudioBufferPeek(in, 1, d + i);
+		int ma = (int) L + (int) R;
+		int mp = (int) prev[i * 2] + (int) prev[i * 2 + 1];
+		dot += (long long) ma * mp;
+		e1 += (long long) ma * ma;
+		e2 += (long long) mp * mp;
+	}
+	return e2 > 0 ? (float) dot / (sqrtf((float) e1 * e2) + 1) : 0;
+}
+
 static size_t wsolaGenerate(struct MgbaMobile* emu, size_t want) {
 	if (!emu->audioHoldInited) {
 		return 0;
@@ -1364,27 +1425,33 @@ static size_t wsolaGenerate(struct MgbaMobile* emu, size_t want) {
 		if (hi < lo) {
 			hi = lo;
 		}
+		/* 两级相位搜索（照抄 PC audio_stretch.c:280-316）：粗扫 step 4 找近似
+		 * 连续点，再在 bestD ± 8 内逐样本细化。旧单级 step 8 把相位量化到
+		 * 半周期外，两帧在 50% OLA 交叉抵消、掏空高频（发闷）。 */
+		int coarseStep = 4;
 		int bestD = (int) ap;
 		float best = -1e30f;
-		for (int d = lo; d <= hi; d += 8) {
-			long long dot = 0, e1 = 0, e2 = 0;
-			for (size_t i = 0; i < ref; ++i) {
-				int16_t L = mAudioBufferPeek(&emu->wsolaIn, 0, d + i);
-				int16_t R = mAudioBufferPeek(&emu->wsolaIn, 1, d + i);
-				int16_t pL = prev[i * 2];
-				int16_t pR = prev[i * 2 + 1];
-				int ma = (int) L + (int) R;
-				int mp = (int) pL + (int) pR;
-				dot += (long long) ma * mp;
-				e1 += (long long) ma * ma;
-				e2 += (long long) mp * mp;
-			}
-			float sc = e2 > 0 ? (float) dot / (sqrtf((float) e1 * e2) + 1) : 0;
+		for (int d = lo; d <= hi; d += coarseStep) {
+			float sc = wsolaCorrelate(&emu->wsolaIn, prev, d, ref);
 			if (sc > best) {
 				best = sc;
 				bestD = d;
 			}
 		}
+		int flo = bestD - 2 * coarseStep;
+		if (flo < lo) { flo = lo; }
+		int fhi = bestD + 2 * coarseStep;
+		if (fhi > hi) { fhi = hi; }
+		best = -1e30f;
+		int fineBest = bestD;
+		for (int d = flo; d <= fhi; ++d) {
+			float sc = wsolaCorrelate(&emu->wsolaIn, prev, d, ref);
+			if (sc > best) {
+				best = sc;
+				fineBest = d;
+			}
+		}
+		bestD = fineBest;
 		size_t fp = (size_t) bestD;
 		for (size_t i = 0; i < N; ++i) {
 			frame[i * 2] = mAudioBufferPeek(&emu->wsolaIn, 0, fp + i);
@@ -1490,7 +1557,9 @@ static void nativeHoldCut(struct MgbaMobile* emu, size_t need, unsigned coreRate
 		/* Degenerate (need larger than the backlog can spare): fall back to
 		 * the plain drop-to-fit so the ring invariant always holds. */
 		emu->natLagDrops += need;
-		emu->natR = landMin;
+		/* 照抄 PC audio_stretch.c:388-401：退化时 natR=natW（清空到写指针），
+		 * 不用 landMin——后者可 > natW 造成 natW-natR 下溢。 */
+		emu->natR = emu->natW;
 		emu->natPrimed = 0;
 		++emu->natCuts;
 		return;
@@ -1566,7 +1635,7 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	double dt = now - emu->natLastTime;
 	emu->natLastTime = now;
 	if (dt > 0.0 && dt < 0.5) {
-		emu->natOutAcc += dt * (double) coreRate;
+		emu->natOutAcc += dt * (double) coreRate * emu->audioHoldRate;   /* PC: *rate（音乐速度） */
 	}
 	double acc = emu->natOutAcc;
 	size_t budget = (size_t) acc;
@@ -1740,6 +1809,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 	if (!emu) {
 		return NULL;
 	}
+	emu->audioHoldRate = MOBILE_AUDIO_RATE_DEF;   /* rate 默认 1.0（calloc 为 0 会除零） */
 #ifdef __APPLE__
 	/* iOS 没装 mLog 前端 logger，核心日志全部丢弃——CI 上核心加载卡死时
 	 * 无从诊断。装一个直写 stderr 的默认 logger（含 INFO），日志经
@@ -3019,6 +3089,13 @@ static void armLinkEvent(struct MgbaMobile* emu) {
 
 static uint32_t mobilePartySidecar(struct MgbaMobile* emu, uint32_t word16);  /* ROOTHUNT2：定义见下方 */
 static bool mobilePathBNativeSioOn(void);  /* W92：门 reader 定义见下方（sidecar 早退要前置声明） */
+/* C-2：调用点 C 早于 helper 定义，必须前置声明（避免 -Werror 隐式声明失败）。
+ * J8B 方案A：无条件声明（helper 无条件编译）。 */
+static void mobileObsChainGates(void) __attribute__((unused));
+static void mobileObsChainSt(struct GBA* g, int from, int to, int pc,
+                             uint16_t m0, uint32_t wall) __attribute__((unused));
+static void mobileObsChainProv(uint16_t own, uint16_t netPush, uint16_t peer) __attribute__((unused));
+static void mobileObsChainProxy(struct MgbaMobile* emu, uint16_t own, uint16_t peer) __attribute__((unused));
 static uint32_t readLinkOut(struct MgbaMobile* emu, uint16_t* modeOut) {
 	if (!emu->core) {
 		return 0xFFFFFFFFu;
@@ -3991,6 +4068,10 @@ static void finishMultiTransfer(struct MgbaMobile* emu, uint16_t data[4], uint32
 				break;
 			}
 		}
+		/* OBS-D：own=游戏真写 IO 字；net_push=本轮实际投递槽字；peer=对端投递字；OBS-B' 代理。 */
+		OBSCHAIN_PROV((uint16_t) gba->memory.io[GBA_REG(SIOMLT_SEND)],
+		              data[me >= 0 && me < 4 ? me : 0], (uint16_t) peerWord);
+		OBSCHAIN_PROXY(emu, data[me >= 0 && me < 4 ? me : 0], (uint16_t) peerWord);
 		++emu->xferDbg;
 		MOBILE_LOGI("XFER #%u me=%d idx=%u own=%04X peer=%04X have=%d to=%u",
 		            emu->xferDbg, me, (unsigned) emu->sioIndex,
@@ -5367,6 +5448,119 @@ static bool mobilePathBNativeSioOn(void) {
 	return s_pathBNativeSio != 0;
 }
 void mgbaMobileSetPathBNativeSio(bool enabled) { s_pathBNativeSio = enabled ? 1 : 0; }
+
+/* J8B 方案A：四个 helper 无条件编译（运行时门靠内部 mobileObsChainOn() return），
+ * __attribute__((unused)) 由前置声明提供，避免门关时 -Wunused-function 告警。 */
+/* 【OBSCHAIN OBS-A】零注入口径一次性快照：读现成门函数，纯只读、零写。 */
+static void mobileObsChainGates(void) {
+	if (!mobileObsChainOn()) {
+		return;
+	}
+	static bool s_done;
+	if (s_done) {
+		return;
+	}
+	s_done = true;
+	MOBILE_LOGI("[OBSCHAIN][GATES] gray_all=%u gray_lobby=%u btcfg=%u b7=%u rh_off=%u "
+	            "hsbypass=%u bus_hs_preserve=%u forcehs=%u hs_hold=%u sticky2222=%u "
+	            "localbus_2p=%u pathb_native=%u race=%u isync=%s",
+	            (unsigned) (mobileGrayAllOn() ? 1 : 0),
+	            (unsigned) (mobileGrayLobbyOpenOn() ? 1 : 0),
+	            (unsigned) (linkBtcfgOn() ? 1 : 0),
+	            (unsigned) (b7Verbose() ? 1 : 0),
+	            (unsigned) (rhMOff() ? 1 : 0),
+	            (unsigned) (mobileHsBypassOn() ? 1 : 0),
+	            (unsigned) (mobileBusHsPreserveOn() ? 1 : 0),
+	            (unsigned) (mobileForceHandshake() ? 1 : 0),
+	            (unsigned) (mobileHsHoldOn() ? 1 : 0),
+	            (unsigned) (mobileBlock2222On() ? 1 : 0),
+	            (unsigned) (mobileLocalBus2pOn() ? 1 : 0),
+	            (unsigned) (mobilePathBNativeSioOn() ? 1 : 0),
+	            (unsigned) mobileRaceStressMs(),
+	            "NA(no_app_gate)");
+}
+
+/* 【OBSCHAIN OBS-C】gLink.state 变化沿（含 4→2 回落），精确事件非采样；200 条节流。
+ * X10-B 的 APP 侧 open= 复用现成 PEEK_LINK_OPEN（与 MOBILE_LINK_OPEN 同值）；
+ * 严禁复用 [B7OPEN] 的 GBAPatch8 写路径。 */
+static void mobileObsChainSt(struct GBA* g, int from, int to, int pc,
+                             uint16_t m0, uint32_t wall) {
+	if (!mobileObsChainOn() || !g || !g->cpu) {
+		return;
+	}
+	static unsigned s_n;
+	static unsigned s_reached4;
+	static unsigned s_fellFrom4;
+	if (to >= (int) MOBILE_LINK_STATE_CONN) {
+		s_reached4 = 1u;
+	} else if (s_reached4 && from >= (int) MOBILE_LINK_STATE_CONN) {
+		s_fellFrom4 = 1u;
+	}
+	if (s_n >= MOBILE_OBS_ST_MAX) {
+		return;
+	}
+	++s_n;
+	MOBILE_LOGI("[OBSCHAIN][ST] n=%u %d->%d cb2=%08X mu=%u pc=%d open=%u cb=%08X "
+	            "brs=%02X m0=%04X wall_ms=%u reached4=%u fell4=%u",
+	            s_n, from, to,
+	            (unsigned) GBAView32(g->cpu, NAV_CB2_PTR),
+	            (unsigned) GBAView8(g->cpu, NAV_EW(MOBILE_BATTLE_COMM)),
+	            pc,
+	            (unsigned) GBAView8(g->cpu, PEEK_LINK_OPEN),
+	            (unsigned) GBAView32(g->cpu, NAV_IW(MOBILE_GLINK_CALLBACK)),
+	            (unsigned) GBAView8(g->cpu, NAV_IW(MOBILE_GLOBAL_BLK_RECV_STATUS)),
+	            (unsigned) m0, (unsigned) wall,
+	            (unsigned) s_reached4, (unsigned) s_fellFrom4);
+}
+
+/* 【OBSCHAIN OBS-D】握手字 provenance 三列（只读）；src= 是派生标签，三列原始值权威。 */
+static void mobileObsChainProv(uint16_t own, uint16_t netPush, uint16_t peer) {
+	if (!mobileObsChainOn()) {
+		return;
+	}
+	static unsigned s_n;
+	if ((++s_n & 0x0Fu) != 0u) {
+		return;
+	}
+	const char* src;
+	if (own == MOBILE_OBS_WORD_EMPTY || own == 0u) {
+		src = MOBILE_OBS_SRC_EMPTY;
+	} else if (own == netPush) {
+		src = MOBILE_OBS_SRC_GAME;
+	} else if (mobileLocalBus2pOn()) {
+		src = MOBILE_OBS_SRC_LOCALBUS;
+	} else {
+		src = MOBILE_OBS_SRC_BRIDGE;
+	}
+	MOBILE_LOGI("[OBSCHAIN][PROV] n=%u own_slot_word=%04X net_push_word=%04X "
+	            "peer_deliver_word=%04X src=%s",
+	            s_n, (unsigned) own, (unsigned) netPush, (unsigned) peer, src);
+}
+
+/* 【OBSCHAIN OBS-B'】tempRecvBuffer 代理观测（直读不可行，显式 proxy_for_temp_recv=1）。 */
+static void mobileObsChainProxy(struct MgbaMobile* emu, uint16_t own, uint16_t peer) {
+	if (!mobileObsChainOn() || !emu || !emu->core) {
+		return;
+	}
+	struct GBA* g = (struct GBA*) emu->core->board;
+	if (!g || !g->cpu) {
+		return;
+	}
+	static unsigned s_n;
+	if ((++s_n & 0x3Fu) != 0u) {
+		return;
+	}
+	MOBILE_LOGI("[OBSCHAIN][BPROXY] n=%u pc=%u nr0=%02X isMaster=%u localId=%u "
+	            "sioRemote=%u own_slot_word=%04X peer_deliver_word=%04X proxy_for_temp_recv=1",
+	            s_n,
+	            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_PLAYERS),
+	            (unsigned) GBAView8(g->cpu, NAV_IW(MOBILE_REMOTE_PLAYERS_NOT_RECEIVED)),
+	            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_ISMASTER),
+	            (unsigned) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_LOCALID),
+	            (unsigned) (emu->sioHasRemote ? 1u : 0u),
+	            (unsigned) own, (unsigned) peer);
+}
+
 #define MOBILE_BATTLE_INIT_OFF 0x4Du
 static unsigned s_mobileBtcfgWrites;
 /* 【ROOTHUNT2 方案 b，与 PC sioEnsureLinkBtcfg 逐字对称】窄窗口补写 var8004=1：
@@ -7758,6 +7952,7 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		pollLink(emu);
 	}
 	mobileStartupTrace(emu);
+	OBSCHAIN_GATES();   /* OBS-A：一次性零注入门快照 */
 	/* 真实速度探针：模拟帧率是判断「游戏是不是被网络等待拖死」的第一指标。
 	 * 联机时模拟时钟会在等对端应答的那段时间里冻住，所以模拟帧率远低于
 	 * 真实帧率就说明有阻塞。每 60 个模拟帧打一行，带上真实耗时。 */
@@ -7868,6 +8063,8 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 				MOBILE_LOGI("ST idx=%d %d->%d pc %d->%d adv=%d hs=%d sic=%d lag=%d bck=%d m0=%04X m1=%04X me=%d",
 				            emu->busGameIdx, emu->sioPrevLinkState, st, emu->sioPrevPc, pc, adv, hs, sic, lag, bck, m0, m1,
 				            netLinkPlayer(emu->link));
+				/* X10-B open= 由 OBS-C [ST] 行的 open 覆盖（复用 PEEK_LINK_OPEN）；pc-only 变化时 from==to 如实打印。 */
+				OBSCHAIN_ST(g, emu->sioPrevLinkState, st, pc, (uint16_t) m0, wallNowMs());
 				emu->sioPrevLinkState = st;
 				emu->sioPrevPc = pc;
 			}
@@ -8101,6 +8298,18 @@ bool mgbaMobileSetAudioOutput(struct MgbaMobile* emu, int outRate) {
  * is on - the resampler rate is what sets the pitch, and this only decides
  * where the surplus goes.
  */
+/* 音乐速度 rate（PC 第4自由度，Q7）：UI 线程只发布请求、钳位，音频线程下次
+ * read 时生效。rate=1 与既有行为逐位一致（零回归）。 */
+void mgbaMobileSetAudioRate(struct MgbaMobile* emu, double rate) {
+	if (!emu) {
+		return;
+	}
+	if (rate < MOBILE_AUDIO_RATE_MIN) { rate = MOBILE_AUDIO_RATE_MIN; }
+	if (rate > MOBILE_AUDIO_RATE_MAX) { rate = MOBILE_AUDIO_RATE_MAX; }
+	if (fabs(rate - MOBILE_AUDIO_RATE_DEF) < 0.01) { rate = MOBILE_AUDIO_RATE_DEF; }
+	emu->audioHoldRate = rate;
+}
+
 void mgbaMobileSetAudioConstantPitch(struct MgbaMobile* emu, bool on, double stretch) {
 	if (!emu) {
 		return;
@@ -8439,7 +8648,13 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		// every staging buffer; the UI only ever sets audioHoldOn /
 		// wsolaStretch / audioHoldMode / wsolaClearPending (see
 		// mgbaMobileSetAudioConstantPitch).
-		initAudioHold(emu, coreRate, emu->wsolaStretch);
+		/* PC 公式（Q7）：stretch = speed / rate。wsolaStretch 保存的是 UI 传的
+		 * speed（倍率），rate 为音乐速度；rate=1 时 stretch 与既有逐位一致。 */
+		{
+			double rate = emu->audioHoldRate > MOBILE_AUDIO_RATE_MIN ? emu->audioHoldRate : MOBILE_AUDIO_RATE_DEF;
+			double stretch = emu->wsolaStretch / rate;
+			initAudioHold(emu, coreRate, stretch);
+		}
 		if (emu->audioHoldInited) {
 			if (emu->wsolaClearPending) {
 				// A toggle happened since last time: drop anything staged under
@@ -8452,13 +8667,37 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 			emu->natOutAcc = 0.0;
 			emu->natLastTime = 0.0;
 			emu->natLagDrops = 0;
+			emu->wsolaOutAcc = 0.0;
+			emu->wsolaLastTime = 0.0;
 			emu->wsolaClearPending = false;
 			}
 			if (emu->audioHoldMode == MOBILE_AUDIO_HOLD_NATIVE) {
 				held = nativeHoldGenerate(emu, source, (size_t) maxFrames);
 			} else {
 				wsolaFeed(emu, source);
-				held = wsolaGenerate(emu, (size_t) maxFrames);
+				/* 墙钟配速（照抄 PC audio_stretch.c:573-615）：拉伸器每秒只发
+				 * coreRate 帧，按整 hop 发射、债务 carry、低水位补顶。移动端
+				 * 无音乐速度 rate，按 PC 的 rate=1.0 语义处理。 */
+				double now = audioNow(emu);
+				double dt = now - emu->wsolaLastTime;
+				emu->wsolaLastTime = now;
+				if (dt > 0.0 && dt < 0.5) {
+					emu->wsolaOutAcc += dt * (double) coreRate * emu->audioHoldRate;   /* PC: *rate（音乐速度） */
+				}
+				double maxOwed = (double) coreRate * 0.25;
+				if (emu->wsolaOutAcc > maxOwed) { emu->wsolaOutAcc = maxOwed; }
+				double debt = emu->wsolaOutAcc;
+				if (debt < 0.0) { debt = 0.0; }
+				size_t budget = (size_t) debt;
+				size_t holdAvail = mAudioBufferAvailable(&emu->audioHold);
+				size_t lowWater = (size_t) (coreRate * 0.10 + 0.5);
+				size_t topUp = holdAvail < lowWater ? lowWater - holdAvail : 0;
+				size_t emitBudget = budget + topUp;
+				held = wsolaGenerate(emu, emitBudget);
+				emu->wsolaOutAcc -= (double) held;
+				if (emu->wsolaOutAcc < -(double) emu->wsolaHs) {
+					emu->wsolaOutAcc = -(double) emu->wsolaHs;
+				}
 			}
 			source = &emu->audioHold;
 		}
@@ -8479,7 +8718,8 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 
 	double inRate;
 	if (emu->audioHoldOn) {
-		inRate = (double) coreRate * (1.0 + drift);
+		/* PC sdl-audio.c:247 srcRate = coreRate * rate（音乐速度） */
+		inRate = (double) coreRate * emu->audioHoldRate * (1.0 + drift);
 	} else {
 		inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
 	}
