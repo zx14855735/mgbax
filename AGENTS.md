@@ -71,4 +71,5 @@
 - **永久排除**：`tmp_*`、`.workbuddy`、`.zcode*`、`cloud2p` 产物、`shots/output/opt/package_stub/ROM/logs`、拆解文档；`.github/workflows` 只在镜像存在，`checkout` 天然不碰（**禁 robocopy /MIR .github**，会删光工作流）。
 - **推送坑**：先 `git --version` 实测——EDR/AV 拦 git.exe 时两仓全拒、数小时后自解，等即可；GitHubDesktop 句柄锁只让镜像仓间歇"拒绝访问"，**不要杀用户 GitHubDesktop 进程**，脚本带 8 次×10s push 重试环。
 - **gitee 自动推送（同轮必做）**：主仓 remote `origin`=gitee（`mgba-android-version.git`）。每轮同步先在主仓 `git fetch origin`，若 `origin/master` 领先本地（有独立提交）则**不 force-push、跳过并如实报告**，否则 `git push origin master` 全量推送（带 8×10s 重试环，抗 GitHubDesktop/EDR）。gitee 与主仓同源，全量推（不像 GitHub 走白名单）。
+- **iOS CI 编译 + IPA 回拉（GitHub 推送后同轮必做）**：GitHub push 会对 HEAD 触发 `iOS Simulator` workflow（macOS，ios-build.yml）。父会话跑 `python tools/ios_ci_fetch.py [sha8]`——从 `git credential(manager)` 读 token（不写死/不打印），按 sha 找 run、轮询等完成（≤20 分钟，CI 红/超时如实报告不伪造）、下载 `mgbax-unsigned-ipa` 解出 .ipa 到 `ios_ci_artifacts/mGBAx-<sha8>.ipa` 并打印 md5（磁盘实测为准）。注意：GitHub 远端 HEAD 可能落后主仓（gitee 全量 vs GitHub 白名单），**默认取 GitHub 远端 HEAD 而非主仓 HEAD**。
 - **诚实**：镜像/远端内容以各远端实况为准；同步不改主仓门状态（FAIL/0/9/CROSSED 从未产出不变）。

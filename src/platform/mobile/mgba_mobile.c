@@ -962,6 +962,7 @@ struct MgbaMobile {
 	double natLastTime;                   /* wall clock of the previous read */
 	int audioHoldMode;                   /* MOBILE_AUDIO_HOLD_* (set by UI) */
 	double audioHoldRate;                /* 音乐速度 rate（PC 第4自由度，钳 [0.5,4]，默认 1） */
+	double audioHoldRateEff;             /* 钳位后 rate（PC: musicRate=min(rate,speed)），三端对齐 */
 	bool audioHoldOn;
 	bool audioHoldInited;
 	/* Set by the UI thread on every toggle; the audio thread clears the staged
@@ -1635,7 +1636,7 @@ static size_t nativeHoldGenerate(struct MgbaMobile* emu, struct mAudioBuffer* so
 	double dt = now - emu->natLastTime;
 	emu->natLastTime = now;
 	if (dt > 0.0 && dt < 0.5) {
-		emu->natOutAcc += dt * (double) coreRate * emu->audioHoldRate;   /* PC: *rate（音乐速度） */
+		emu->natOutAcc += dt * (double) coreRate * emu->audioHoldRateEff;   /* PC: *musicRate（已钳≤speed） */
 	}
 	double acc = emu->natOutAcc;
 	size_t budget = (size_t) acc;
@@ -1810,6 +1811,7 @@ struct MgbaMobile* mgbaMobileCreate(const char* saveDir, const char* stateDir, c
 		return NULL;
 	}
 	emu->audioHoldRate = MOBILE_AUDIO_RATE_DEF;   /* rate 默认 1.0（calloc 为 0 会除零） */
+	emu->audioHoldRateEff = MOBILE_AUDIO_RATE_DEF;
 #ifdef __APPLE__
 	/* iOS 没装 mLog 前端 logger，核心日志全部丢弃——CI 上核心加载卡死时
 	 * 无从诊断。装一个直写 stderr 的默认 logger（含 INFO），日志经
@@ -8651,7 +8653,12 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 		/* PC 公式（Q7）：stretch = speed / rate。wsolaStretch 保存的是 UI 传的
 		 * speed（倍率），rate 为音乐速度；rate=1 时 stretch 与既有逐位一致。 */
 		{
-			double rate = emu->audioHoldRate > MOBILE_AUDIO_RATE_MIN ? emu->audioHoldRate : MOBILE_AUDIO_RATE_DEF;
+			double rate = emu->audioHoldRate > 0.05 ? emu->audioHoldRate : MOBILE_AUDIO_RATE_DEF;
+			/* PC CoreController.cpp:948-962：musicRate = min(rate, speed)，
+			 * stretch = speed / musicRate。rate>speed 时 stretch<1 会让
+			 * initAudioHold:1232 早退、hold 静默退化 varispeed——三端对齐补此钳位。 */
+			if (rate > emu->wsolaStretch) { rate = emu->wsolaStretch; }
+			emu->audioHoldRateEff = rate;
 			double stretch = emu->wsolaStretch / rate;
 			initAudioHold(emu, coreRate, stretch);
 		}
@@ -8682,7 +8689,7 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 				double dt = now - emu->wsolaLastTime;
 				emu->wsolaLastTime = now;
 				if (dt > 0.0 && dt < 0.5) {
-					emu->wsolaOutAcc += dt * (double) coreRate * emu->audioHoldRate;   /* PC: *rate（音乐速度） */
+					emu->wsolaOutAcc += dt * (double) coreRate * emu->audioHoldRateEff;   /* PC: *musicRate（已钳≤speed） */
 				}
 				double maxOwed = (double) coreRate * 0.25;
 				if (emu->wsolaOutAcc > maxOwed) { emu->wsolaOutAcc = maxOwed; }
@@ -8718,8 +8725,8 @@ int mgbaMobileReadAudioOut(struct MgbaMobile* emu, int16_t* out, int maxFrames, 
 
 	double inRate;
 	if (emu->audioHoldOn) {
-		/* PC sdl-audio.c:247 srcRate = coreRate * rate（音乐速度） */
-		inRate = (double) coreRate * emu->audioHoldRate * (1.0 + drift);
+		/* PC sdl-audio.c:247 srcRate = coreRate * musicRate（已钳≤speed） */
+		inRate = (double) coreRate * emu->audioHoldRateEff * (1.0 + drift);
 	} else {
 		inRate = (double) coreRate * speed / fpsRatio * (1.0 + drift);
 	}
