@@ -4496,7 +4496,19 @@ static void testCoreSurface(const char* dir) {
  * 让游戏真正进入运行，而非 frame0 按一次 A 就静止。
  * 地址来自当轮 rom.map 具名符号（gRngValue=0x03004EF8 / gRng2Value=0x03004EFC），
  * 运行时以 IWRAM 基址 0x03000000 取偏移，改 ROM 须重解析，禁硬编码扩散。 */
-static void testG1Det(const char* rompath, const char* outpath, int frames) {
+/* G1 EX-1 具名常量：地址只在此定义一次，其余处只引用宏（禁裸 hex 扩散）。
+ * MGBAX_DET_RNG_ADDR 绑定 r10 冻结 ROM md5 6E0058EE…（二进制扫描 12 处引用铁证）；
+ * 换 ROM 必须重解析符号，禁沿用。 */
+#define MGBAX_DET_IWRAM_BASE   ((uint32_t) GBA_BASE_IWRAM)
+#define MGBAX_DET_RNG_OFF      ((uint32_t) 0x4EF8u)
+#define MGBAX_DET_RNG2_OFF     ((uint32_t) 0x4EFCu)
+#define MGBAX_DET_RNG_ADDR     (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG_OFF)
+#define MGBAX_DET_RNG2_ADDR    (MGBAX_DET_IWRAM_BASE + MGBAX_DET_RNG2_OFF)
+#define MGBAX_DET_SEED         ((uint32_t) 0x1A2B3C4Du)
+#define MGBAX_DET_SEED_FRAME   (14)
+
+static void testG1Det(const char* rompath, const char* outpath, int frames,
+                      int hasSeed, uint32_t seed, int seedFrame) {
 	struct mCore* core = mCoreCreate(mPLATFORM_GBA);
 	if (!core || !core->init(core)) {
 		fprintf(stderr, "g1det: no core / init failed\n");
@@ -4534,9 +4546,18 @@ static void testG1Det(const char* rompath, const char* outpath, int frames) {
 		else if (f >= 862 && f < 864) keys = 1u << 0;   /* A 选新游戏 */
 		else if (f >= 900 && f % 120 < 2) keys = 1u << 0; /* 每 2s 敲 A 推进对白 */
 		core->setKeys(core, keys);
+		/* EX-1：帧==seedFrame 时写同一具名 seed 到两端 live gRngValue，写后回读审计。
+		 * 必须在 runFrame 之前写（f13 游戏 SeedRng 会覆盖早写值，故 f>=14）。 */
+		if (hasSeed && f == seedFrame) {
+			int32_t old = 0;
+			GBAPatch32(g->cpu, MGBAX_DET_RNG_ADDR, (int32_t) seed, &old);
+			uint32_t readback = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+			fprintf(stderr, "g1det: seed_patch frame=%d requested=%08X old=%08X readback=%08X\n",
+			        f, seed, (uint32_t) old, readback);
+		}
 		core->runFrame(core);
-		uint32_t rng = *(const uint32_t*) (g->memory.iwram + 0x4EF8u);
-		uint32_t rng2 = *(const uint32_t*) (g->memory.iwram + 0x4EFCu);
+		uint32_t rng = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG_OFF);
+		uint32_t rng2 = *(const uint32_t*) (g->memory.iwram + MGBAX_DET_RNG2_OFF);
 		/* 帧缓冲 FNV：240*160*4 字节真实渲染输出，有逐帧区分力。 */
 		uint64_t h = 1469598103934665603ULL;
 		const uint8_t* fb = (const uint8_t*) buf;
@@ -4564,9 +4585,16 @@ int main(int argc, char** argv) {
 	WSAStartup(MAKEWORD(2, 2), &data);
 #endif
 	if (argc >= 2 && strcmp(argv[1], "--g1det") == 0) {
-		/* --g1det <rom> <out.csv> <frames> */
+		/* --g1det <rom> <out.csv> <frames>  (EX-0：不写 seed) */
 		testG1Det(argc > 2 ? argv[2] : "rom.gba", argc > 3 ? argv[3] : "g1det.csv",
-		          argc > 4 ? atoi(argv[4]) : 120);
+		          argc > 4 ? atoi(argv[4]) : 120, 0, MGBAX_DET_SEED, MGBAX_DET_SEED_FRAME);
+		return 0;
+	}
+	if (argc >= 2 && strcmp(argv[1], "--g1det-seed") == 0) {
+		/* --g1det-seed <rom> <out.csv> <frames> <seed_hex>  (EX-1：写具名 seed) */
+		uint32_t seed = (uint32_t) strtoul(argc > 5 ? argv[5] : "1A2B3C4D", NULL, 16);
+		testG1Det(argc > 2 ? argv[2] : "rom.gba", argc > 3 ? argv[3] : "g1det.csv",
+		          argc > 4 ? atoi(argv[4]) : 1200, 1, seed, MGBAX_DET_SEED_FRAME);
 		return 0;
 	}
 	if (argc >= 2 && strcmp(argv[1], "--render") == 0) {
