@@ -70,4 +70,5 @@
 - **执行**：`python tools/sync_github_mirror.py`（`--dry-run` 先看范围）。脚本固化 zcode 方法：先 fetch；远端若前进/重写则 `git reset --hard origin/main` 采用远端为基线、**绝不 force-push**；再把主仓 HEAD 的白名单目录（`android/src/ios/include/res/cinema/tools/doc`）+ 根文件（教程/ipa/使用说明/AGENTS.md/README×）用 `git checkout dev/master --` 增量叠上。
 - **永久排除**：`tmp_*`、`.workbuddy`、`.zcode*`、`cloud2p` 产物、`shots/output/opt/package_stub/ROM/logs`、拆解文档；`.github/workflows` 只在镜像存在，`checkout` 天然不碰（**禁 robocopy /MIR .github**，会删光工作流）。
 - **推送坑**：先 `git --version` 实测——EDR/AV 拦 git.exe 时两仓全拒、数小时后自解，等即可；GitHubDesktop 句柄锁只让镜像仓间歇"拒绝访问"，**不要杀用户 GitHubDesktop 进程**，脚本带 8 次×10s push 重试环。
-- **诚实**：镜像/远端内容以 GitHub 实况为准；同步不改主仓门状态（FAIL/0/9/CROSSED 从未产出不变）。
+- **gitee 自动推送（同轮必做）**：主仓 remote `origin`=gitee（`mgba-android-version.git`）。每轮同步先在主仓 `git fetch origin`，若 `origin/master` 领先本地（有独立提交）则**不 force-push、跳过并如实报告**，否则 `git push origin master` 全量推送（带 8×10s 重试环，抗 GitHubDesktop/EDR）。gitee 与主仓同源，全量推（不像 GitHub 走白名单）。
+- **诚实**：镜像/远端内容以各远端实况为准；同步不改主仓门状态（FAIL/0/9/CROSSED 从未产出不变）。

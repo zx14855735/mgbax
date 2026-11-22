@@ -64,6 +64,33 @@ def whitelist_paths():
     return paths
 
 
+def push_gitee(dry):
+    """主仓 origin=gitee 自动全量推送（与主仓同源，不像 GitHub 走白名单）。
+    远端若领先本地（有独立提交）则不 force-push、跳过并报告；带重试环抗锁。"""
+    run(["git", "fetch", "origin"], DEV)
+    lr = run(["git", "rev-list", "--left-right", "--count", "HEAD...origin/master"],
+             DEV).stdout.strip().split()
+    local_ahead, remote_ahead = (int(lr[0]), int(lr[1])) if len(lr) >= 2 else (0, 0)
+    if remote_ahead > 0:
+        print("gitee 远端领先 %d 提交（有独立提交），不 force-push、跳过" % remote_ahead)
+        return False
+    if local_ahead == 0:
+        print("gitee 已与本地一致（0 差异），无需推送")
+        return True
+    if dry:
+        print("gitee dry-run：本地领先 %d 提交，将执行 push origin master" % local_ahead)
+        return True
+    for i in range(1, 9):
+        p = run(["git", "push", "origin", "master"], DEV, False)
+        if p.returncode == 0:
+            print("gitee push 成功（第 %d 次，%d 提交）" % (i, local_ahead))
+            return True
+        print("gitee push 第 %d 次失败: %s；10s 后重试" % (i, p.stderr.strip()[:200]))
+        time.sleep(10)
+    print("gitee push 重试耗尽，需人工处理")
+    return False
+
+
 def main():
     dry = "--dry-run" in sys.argv
     # 0. git 可用性（EDR/AV 拦截检测：git --version 都拒 => 等，非仓库问题）
@@ -74,6 +101,9 @@ def main():
     # 1. fetch dev(主仓) + origin(GitHub)
     run(["git", "fetch", "dev"], MIRROR)
     run(["git", "fetch", REMOTE], MIRROR)
+
+    # 1b. gitee 自动推送（同轮必做；失败不阻断 GitHub，但末尾反映状态）
+    gitee_ok = push_gitee(dry)
 
     # 2. 远端基线：远端前进/重写则采用远端（绝不 force-push）
     local = run(["git", "rev-parse", BRANCH], MIRROR, False).stdout.strip()
@@ -136,8 +166,8 @@ def main():
         return 4
 
     new_head = run(["git", "rev-parse", "--short", BRANCH], MIRROR).stdout.strip()
-    print("完成：主仓 %s -> 镜像/远端 %s" % (dev_head, new_head))
-    return 0
+    print("完成：主仓 %s -> GitHub镜像/远端 %s" % (dev_head, new_head))
+    return 0 if gitee_ok else 5
 
 
 if __name__ == "__main__":
