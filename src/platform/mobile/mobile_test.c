@@ -4487,6 +4487,63 @@ static void testCoreSurface(const char* dir) {
 	mgbaMobileDestroy(emu);
 }
 
+/* G1 确定性前置实验 harness（EX-0 基线：同核双进程逐帧全等）。
+ * 只输出可证伪的运行时打点：每帧 (pc, gRngValue, gRng2Value, IWRAM FNV-1a)。
+ * 不写任何游戏内存、不构造 party/state；seed 由真实游戏自身派生。
+ * 地址来自当轮 rom.map 具名符号（gRngValue=0x03004EF8 / gRng2Value=0x03004EFC），
+ * 运行时以 IWRAM 基址 0x03000000 取偏移，改 ROM 须重解析，禁硬编码扩散。 */
+static void testG1Det(const char* rompath, const char* outpath, int frames) {
+	struct mCore* core = mCoreCreate(mPLATFORM_GBA);
+	if (!core || !core->init(core)) {
+		fprintf(stderr, "g1det: no core / init failed\n");
+		return;
+	}
+	mCoreInitConfig(core, "probe");
+	mCoreConfigSetOverrideIntValue(&core->config, "skipBios", 1);
+	mCoreConfigSetOverrideIntValue(&core->config, "useBios", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "audioSync", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "videoSync", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "frameskip", 0);
+	mCoreConfigSetOverrideIntValue(&core->config, "volume", 0x100);
+	if (!mCoreLoadFile(core, rompath)) {
+		fprintf(stderr, "g1det: load failed: %s\n", rompath);
+		core->deinit(core);
+		return;
+	}
+	mColor* buf = (mColor*) calloc((size_t) 240 * 160, sizeof(mColor));
+	core->setVideoBuffer(core, buf, 240);
+	core->reset(core);
+	struct GBA* g = (struct GBA*) core->board;
+	FILE* fp = fopen(outpath, "w");
+	if (!fp) {
+		fprintf(stderr, "g1det: cannot open out: %s\n", outpath);
+		free(buf);
+		core->deinit(core);
+		return;
+	}
+	fprintf(fp, "frame,pc,rng,rng2,iwram_fnv\n");
+	for (int f = 0; f < frames; ++f) {
+		/* 固定输入带：第 0 帧按 A 启动，其余松开；两实例完全一致。 */
+		core->setKeys(core, f == 0 ? (1u << 0) : 0);
+		core->runFrame(core);
+		uint32_t rng = *(const uint32_t*) (g->memory.iwram + 0x4EF8u);
+		uint32_t rng2 = *(const uint32_t*) (g->memory.iwram + 0x4EFCu);
+		/* 只 hash IWRAM 前 256B（安全区：含 IRQ 向量/启动关键区）。基线只需
+		 * 确定性摘要，两实例逐帧比对该摘要即可证伪不等，无需扫全 RAM。 */
+		uint64_t h = 1469598103934665603ULL;
+		for (size_t i = 0; i < 256; ++i) {
+			h ^= g->memory.iwram[i];
+			h *= 1099511628211ULL;
+		}
+		fprintf(fp, "%d,%08X,%08X,%08X,%016llX\n", f, g->cpu->gprs[15], rng, rng2,
+		        (unsigned long long) h);
+	}
+	fclose(fp);
+	free(buf);
+	core->deinit(core);
+	fprintf(stderr, "g1det: wrote %d frames -> %s (rom=%s)\n", frames, outpath, rompath);
+}
+
 int main(int argc, char** argv) {
 	char dir[512];
 	/* 行缓冲会随管道变成全缓冲：进程崩在下半场时，前面所有 ok 都被丢掉，
@@ -4497,6 +4554,12 @@ int main(int argc, char** argv) {
 	WSADATA data;
 	WSAStartup(MAKEWORD(2, 2), &data);
 #endif
+	if (argc >= 2 && strcmp(argv[1], "--g1det") == 0) {
+		/* --g1det <rom> <out.csv> <frames> */
+		testG1Det(argc > 2 ? argv[2] : "rom.gba", argc > 3 ? argv[3] : "g1det.csv",
+		          argc > 4 ? atoi(argv[4]) : 120);
+		return 0;
+	}
 	if (argc >= 2 && strcmp(argv[1], "--render") == 0) {
 		testRom64Render(argc > 2 ? argv[2] : "C:/Users/lenovo/Desktop/soulgold.gba");
 		return 0;
