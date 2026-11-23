@@ -58,6 +58,11 @@
 
 static uint32_t s_navIwDelta = MOBILE_IW_DELTA_DFLT;
 static uint32_t s_navEwDelta = 0;
+/* AJ1: callback2 真槽地址。旧 NAV_EW(MOBILE_MAIN_CB2) 因 EWRAM 非均匀位移
+ * (gMain +0x80 / gTasks +0x27C，单一全局 delta 无解) 读到零区 ⇒ cb2 恒 0。
+ * 由 mobileResolveMainCb2() 运行时按 struct Main 几何锚定；0 = 尚未解析，
+ * 回退到旧 NAV_EW() 地址（由 navCb2Ptr() 处理）。 */
+static uint32_t s_navCb2Addr = 0;
 static uint32_t s_battleLo = MOBILE_BATTLE_LO_DFLT;
 static uint32_t s_battleHi = MOBILE_BATTLE_LO_DFLT + MOBILE_BATTLE_SZ_DFLT;
 static uint32_t s_battleCb2 = MOBILE_BATTLE_LO_DFLT + MOBILE_BATTLE_CB2_OFF + 1u;
@@ -68,6 +73,7 @@ static uint32_t s_copyHi = MOBILE_COPY_HI_DFLT;
 static int s_romAddrInit = 0;
 static char s_mobileRomPath[1024];   /* mgbaMobileLoad() 记录真实加载路径 */
 static void mobileResolveRomAddresses(void);
+static void mobileResolveMainCb2(struct GBA* gba, bool quiet);  /* AJ1: gMain.callback2 运行时锚定 */
 
 /* 【竞态修复】先算完值、最后再置 init；path B 一个进程 4 核并发最坏各算一遍，
  * 结果一致。env/prop 强制值优先，之后才是 ROM 扫描。 */
@@ -104,8 +110,18 @@ static inline uint32_t mobileCodeDelta(void) {
  * NAV_EW()/NAV_IW() 包裹的裸字面量散落在判据/日志里，换 ROM 时无法一眼核对。
  * 全部沿用上面的自解析 delta（NAV_EW/NAV_IW），不引入新机制；数值与 Qt
  * sio_link.c 的同名宏逐项对齐（BATTLE_*_OFF 两端字面同名）。 */
-#define MOBILE_MAIN_CB2         0x02029118u   /* gMain @0x02029114 的 callback2 槽 */
-#define NAV_CB2_PTR             NAV_EW(MOBILE_MAIN_CB2)   /* 当前 callback2 函数指针 */
+#define MOBILE_MAIN_CB2         0x02029118u   /* gMain @0x02029114 的 callback2 槽（旧基线） */
+/* AJ1: callback2 真槽。s_navCb2Addr 由运行时 gMain 锚定解析；0 = 回退旧 NAV_EW 地址。 */
+#define NAV_CB2_PTR             navCb2Ptr()
+static inline uint32_t navCb2Ptr(void) {
+    /* 懒加载：首次读 cb2 时触发 mobileResolveRomAddresses()（其中 struct GBA 完整），
+     * 该函数末尾会调 mobileResolveMainCb2() 运行时锚定 callback2 真槽。 */
+    if (!__atomic_load_n(&s_romAddrInit, __ATOMIC_ACQUIRE)) {
+        mobileResolveRomAddresses();
+    }
+    uint32_t a = __atomic_load_n(&s_navCb2Addr, __ATOMIC_ACQUIRE);
+    return a ? a : NAV_EW(MOBILE_MAIN_CB2);
+}
 #define MOBILE_READY_CLOSE_LINK 0x03002AA6u   /* gReadyToCloseLink[]（关链握手位） */
 #define NAV_READY_CLOSE_LINK    NAV_IW(MOBILE_READY_CLOSE_LINK)
 /* 战斗启动窗口相对 battle_main.o .text 段首的几何偏移（两份 ROM map 实测，
@@ -375,6 +391,84 @@ static bool mobileLooksLikeTasks(struct GBA* gba, uint32_t base) {
 	return nonzero >= 1u && active >= 1u && active <= 8u;
 }
 
+/* AJ1/AK1: 按 struct Main 几何锚定 gMain.callback2（include/main.h:8-42：
+ * +0x000 callback1、+0x004 callback2、+0x008 savedCallback）。
+ * 旧单一 EWRAM delta 因 gMain/gTasks 非均匀位移失效 ⇒ cb2 读零区恒 0。
+ * AK1 铁证(main.c:200)：overworld 期 callback1=NULL、SetMainCallback2 只写 cb2，
+ * 故判据只要求 cb2 必落 ROM 段，cb1/saved 允许 0 或 ROM（strict=0 档）。 */
+static int mobileMainScore(struct GBA* gba, uint32_t base) {
+	if (!gba || !gba->cpu || base + 0x10u > GBA_EWRAM_END) {
+		return -1;
+	}
+	uint32_t cb1 = GBAView32(gba->cpu, base);
+	uint32_t cb2 = GBAView32(gba->cpu, base + 4u);
+	uint32_t saved = GBAView32(gba->cpu, base + 8u);
+	/* callback2 必为 ROM 代码地址（Thumb 位已置）—— gMain 的决定性特征。 */
+	if ((cb2 & 0xFE000000u) != GBA_ROM_BASE) {
+		return -1;
+	}
+	int score = 2;  /* cb2 落 ROM 已得 2 分 */
+	/* cb1/saved 允许 0 或 ROM；落 ROM 各加 1 分用于多命中选优。 */
+	if (cb1 == 0u || (cb1 & 0xFE000000u) == GBA_ROM_BASE) {
+		++score;
+	}
+	if (saved == 0u || (saved & 0xFE000000u) == GBA_ROM_BASE) {
+		++score;
+	}
+	return score;
+}
+
+static volatile unsigned s_gmainFailLogTick = 0;
+
+static void mobileResolveMainCb2(struct GBA* gba, bool quiet) {
+	/* 旧基线地址附近搜索（EWRAM 位移幅度有限，实测 gMain +0x80），
+	 * 前后各 0x2000，4 字节对齐；多命中取最高分。 */
+	const uint32_t center = MOBILE_MAIN_CB2;
+	const uint32_t lo = (center > 0x2000u) ? (center - 0x2000u) : GBA_EWRAM_BASE;
+	const uint32_t hi = center + 0x2000u;
+	uint32_t best = 0;
+	int bestScore = 1;
+	for (uint32_t a = lo; a + 0x10u <= hi && a + 0x10u <= GBA_EWRAM_END; a += 4u) {
+		int sc = mobileMainScore(gba, a);
+		if (sc > bestScore) {
+			bestScore = sc;
+			best = a;
+		}
+	}
+	if (best) {
+		uint32_t cb2ptr = best + 4u;  /* gMain 基址 + 0x004 = callback2 槽 */
+		__atomic_store_n(&s_navCb2Addr, cb2ptr, __ATOMIC_RELEASE);
+		MOBILE_LOGI("SIOGM gMain=0x%08X cb2slot=0x%08X score=%d cb1=0x%08X cb2=0x%08X",
+		            (unsigned) best, (unsigned) cb2ptr, bestScore,
+		            (unsigned) GBAView32(gba->cpu, best),
+		            (unsigned) GBAView32(gba->cpu, cb2ptr));
+		return;
+	}
+	/* 失败日志节流：quiet 模式每 32 次打一次，避免刷屏；成功必打。 */
+	unsigned tick = __atomic_add_fetch(&s_gmainFailLogTick, 1u, __ATOMIC_RELAXED);
+	if (!quiet || (tick & 31u) == 0u) {
+		uint32_t probe = center + 0x80u;  /* 期望真址附近，dump 供下一轮一锤定音 */
+		MOBILE_LOGI("SIOGM 未找到 gMain(cb2 沿用旧 NAV_EW; probe=0x%08X cb1=0x%08X cb2=0x%08X tick=%u)",
+		            (unsigned) probe,
+		            (unsigned) GBAView32(gba->cpu, probe),
+		            (unsigned) GBAView32(gba->cpu, probe + 4u), tick);
+	}
+}
+
+/* AK1: 延迟重试钩子。resolver 启动期跑时 gMain 未填真值，需在游戏态(PEEK 块)重扫。
+ * 已锚定即零开销返回；节流每 4 次真扫一次。 */
+static void ensureCb2Anchor(struct GBA* gba) {
+	if (__atomic_load_n(&s_navCb2Addr, __ATOMIC_ACQUIRE) != 0u) {
+		return;  /* 已锚定 */
+	}
+	static volatile unsigned s_retryTick = 0;
+	unsigned t = __atomic_add_fetch(&s_retryTick, 1u, __ATOMIC_RELAXED);
+	if ((t & 3u) != 0u) {
+		return;  /* 每 4 次 PEEK 扫一次 */
+	}
+	mobileResolveMainCb2(gba, true);
+}
+
 /* 【ROOTHUNT 迭代 13】Android 属性读取兼容层：
  * stock A14 AVD 的 SELinux 拒绝 setprop mgbax.*（驱动里所有 "setprop mgbax.*
  * WARN" 都是真的被拒），但 debug.* 可写。这里先读原名，读不到再用
@@ -606,6 +700,9 @@ static void mobileResolveRomAddresses(void) {
 			MOBILE_LOGE("SIOEW 没找到可信 gTasks，EWRAM delta 沿用 0x%X",
 			            (unsigned) s_navEwDelta);
 		}
+		/* AJ1 step 4.5: 独立锚定 gMain.callback2（不受 gTasks delta 失败影响）。
+		 * 启动期 gMain 可能未填真值，游戏态由 ensureCb2Anchor() 在 PEEK 块延迟重扫。 */
+		mobileResolveMainCb2(gba, false);
 	}
 
 	/* 5) 代码段：段首 12 字节 Thumb 序言在 ROM 里唯一命中 → 段首运行地址。 */
@@ -8327,6 +8424,9 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            g->sio.driver != NULL, emu->sioWaiting);
 #if MGBA_LINK_PEEK
 			{
+				/* AK1: 游戏态延迟重扫 gMain（启动期 resolver 时 gMain 未填真值）。
+				 * 在求值 cb2(NAV_CB2_PTR) 前运行，当拍 PEEK 即见新值。 */
+				ensureCb2Anchor(g);
 				uint32_t sb1 = (uint32_t) GBAView32(g->cpu, PEEK_SAVEBLOCK1);
 				int posX = sb1 ? (int) GBAView16(g->cpu, sb1 + 0) : -1;
 				int posY = sb1 ? (int) GBAView16(g->cpu, sb1 + 2) : -1;
