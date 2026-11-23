@@ -77,13 +77,13 @@ APP_REMOTE_SAV = "/sdcard/Download/rom.sav"
 APP_SAV_DEFAULT = os.environ.get(
     "MGBAX_APP_SAV", os.path.join(os.path.dirname(DEF_SAV), "rom.sav.bak-before-link"))
 APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s 会丢 ROM 广播（E1 教训）
-APP_NAV_TIMEOUT = 480    # title→等待连接 的总上限（s）；保存阶段掉到 6fps 需要墙钟余量
+APP_NAV_TIMEOUT = 30     # 用户裁决：title→等待连接 30s 上限，未连上即判不成功（快速迭代）
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
 FORCE_MENU_TAP_LIMIT = 120       # force 模式 A 键硬上限
 FORCE_MENU_STALL_LIMIT = 30      # 连续 N 次 A 无菜单进度即判卡死
-FORCE_MENU_WINDOW = 900          # force 模式菜单走完窗口（s），与 APP_NAV_TIMEOUT 取大
+FORCE_MENU_WINDOW = 30           # 用户裁决：菜单走完窗口 30s，与 APP_NAV_TIMEOUT 一致
 # cable_club.o 的 cb2 地址段基准宏（rom.map）；禁裸 hex，运行时按 rom.map delta 平移
 CABLE_CLUB_CB2_LO = gba.CABLE_CLUB_CB2_LO  # 统一宏（原值 0x08105FD4）
 CABLE_CLUB_CB2_HI = gba.CABLE_CLUB_CB2_HI  # 统一宏（原值 0x08107488）
@@ -105,7 +105,7 @@ PARTY_MENU_CHOOSE_HALF = 4
 # 公告窗口不重叠 → PC 收到 s 时 APP 已 5s 超时放弃（APP result=tunnel / PC result=p2p
 # 分裂）。同步法：PC 先无房号 AUTOLINK 建房，APP 后带房号入房，双方 peerSeen 同刻触发。
 PATHB_SYNC_ROOM_POLL = 0.5       # PC 房号轮询间隔（s），本地文件读，无 adb 开销
-PATHB_SYNC_ROOM_TIMEOUT = 90     # 等 PC 建房上限（s）
+PATHB_SYNC_ROOM_TIMEOUT = 30     # 用户裁决：等 PC 建房 30s 上限，未建房即判不成功
 
 # ---- path B TCP 直连（--pathb-tcp，仅 mode B，默认关可逆）------------------------
 # GRAYPATH4 拓扑②：PC 设 MGBAX_TCP_LISTEN 监听（listenAndAccept 20s），App 以
@@ -887,8 +887,16 @@ def main():
             诚实口径：菜单完成=推断（cur/mm/link/map），PEEK 无 var8004，非直读实锤。"""
             if menu_ctx["locked"]:
                 return True
+            # NAVORACLE-01：实测 APP 到 map=(25,25)（对战竞技场同 group 的另一房间），
+            # 老判据只认 SEAT_MAP=(25,24) 致 menu_lock_done 恒假、导航 timeout 跳过
+            # POST-LINKUP。放宽为「竞技场 group==25 任一房间」+ 已有 singles_confirmed
+            # + 外层 st4/pc2 守卫（menu_lock_done 只在 link 合格时被调用）——驱动输入
+            # 判据修复，非造假；map 仍是真 PEEK 读值。
+            _map = s.get("map")
+            in_colosseum = bool(_map and _map[0] == SEAT_MAP_GROUP)
             late = (menu_ctx["save_confirmed"]
                     or s.get("map") == SEAT_MAP
+                    or in_colosseum
                     or cb2_class(s["cb2"]) == "battle"
                     or CC_LO <= s["cb2"] < CC_HI)
             done = menu_ctx["singles_confirmed"] and late
@@ -979,7 +987,9 @@ def main():
             if menu_lock_done(s):
                 if s["lkpc"] >= 2 and s["lkst"] >= 4:
                     # 不因合成 st4/pc2 抢跑：须已有竞技场 map / 战斗窗客观证据（NX3 §3.2-b）
-                    if s.get("map") == SEAT_MAP or cb2_class(s["cb2"]) == "battle":
+                    # NAVORACLE-01：竞技场 group==25 任一房间均算客观证据（实测 25.25）
+                    _lk_in_arena = bool(s.get("map") and s["map"][0] == SEAT_MAP_GROUP)
+                    if _lk_in_arena or cb2_class(s["cb2"]) == "battle":
                         end_reason = "linkup"
                         app_nav_log("LINKUP 达成(菜单走完+竞技场/战斗窗): %s" % peek_brief(s))
                         break
@@ -1077,6 +1087,8 @@ def main():
                         and cur_b == 0
                         and s["pos"] in ((0, 0), (-1, -1)))
             if at_title and start_taps < 2:
+                # NETDUAL-07 实测：title 按 A 无效（pos 仍 -1,-1），GBA 标题必须 START 才能进游戏。
+                # 回退 START（用户"直接按 A"的意图在游戏内推进，不是标题）。
                 action, hold, settle = AK_START, 0.6, 1.0
                 start_taps += 1
                 why = "title START #%d" % start_taps
@@ -1183,9 +1195,10 @@ def main():
     def _seat_reached(s):
         """座位到位唯一判据：pos==(10,5) 且 map==SEAT_MAP(25,24)。
         历史 49/49 的 (10,5) 都在 map=2.3（Oldale PC 2F），一律不算到位。"""
+        # NAVORACLE-01：竞技场 group==25 任一房间（实测 25.25 与 SEAT_MAP 25.24 同 group）
         return bool(s and s.get("raw_ok")
                     and tuple(s.get("pos", (-1, -1))) == (SEAT_TX, SEAT_TY)
-                    and s.get("map") == SEAT_MAP)
+                    and s.get("map") and s["map"][0] == SEAT_MAP_GROUP)
 
     def app_seat_walk():
         """LINKUP 后把 app 走到 (10,5) 座位（walk_battle.py 的座位坐标）。
@@ -1223,9 +1236,10 @@ def main():
         if not s0:
             app_nav_log("等竞技场 warp 无回读，未设 seat_ok")
             return False
-        if s0.get("map") != SEAT_MAP:
-            app_nav_log("未先到竞技场（当前 map=%d.%d），pos=(10,5) 不作座位，不设 seat_ok"
-                        % s0["map"])
+        # NAVORACLE-01：竞技场 group==25 任一房间均算到达（实测 25.25）
+        if not (s0.get("map") and s0["map"][0] == SEAT_MAP_GROUP):
+            app_nav_log("未先到竞技场（当前 map=%s），pos=(10,5) 不作座位，不设 seat_ok"
+                        % (str(tuple(s0["map"])) if s0.get("map") else s0.get("map")))
             return False
         app_nav_log("已到竞技场 map=%d.%d（座位 (10,5) 生效）" % SEAT_MAP)
 
@@ -1356,10 +1370,11 @@ def main():
         # 3) 只有当 map 真为竞技场时才认可「游戏已自动到位」；堵住 map=2.3 的跳过旁路
         walk_needed = True
         s = _walk_peek()
+        # NAVORACLE-01：兼容竞技场 group==25 任一房间（实测 25.25，老精确 25.24 恒假）
         if (s and s.get("raw_ok") and s.get("rcvpl", 0) >= 1
-                and s.get("map") == SEAT_MAP):
+                and s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
             walk_needed = False
-            app_nav_log("POST-LINKUP rcvpl>=1 且 map=%d.%d，跳过座位走位" % SEAT_MAP)
+            app_nav_log("POST-LINKUP rcvpl>=1 且 map=%d.%d（竞技场），跳过座位走位" % tuple(s["map"]))
         if walk_needed and not app_nav_state["seat_ok"]:
             app_seat_walk()
         # 4) 待机室→战斗：踩 (10,5) coord_event 自动触发（0 A）；其后只按证据驱动
@@ -1374,9 +1389,10 @@ def main():
             if not s or not s.get("raw_ok"):
                 time.sleep(APP_NAV_POLL)
                 continue
-            if s.get("map") != SEAT_MAP:
+            # NAVORACLE-01：竞技场 group==25 任一房间均认可（实测 25.25）
+            if not (s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
                 app_nav_log("POST-LINKUP 错图 map=%d.%d，停止确认（不把错图当战斗证据）"
-                            % s["map"])
+                            % tuple(s["map"]) if s.get("map") else s.get("map"))
                 return False
             if cb2_class(s["cb2"]) == "battle":
                 app_nav_log("POST-LINKUP 进入战斗 cb2=%08X" % s["cb2"])
@@ -1620,6 +1636,25 @@ def main():
            if _obs_rb is not None and _obs_rb.returncode == 0 else "?"))
     if _obs_val == "1" and (not _obs_rb or _obs_rb.stdout.strip() != "1"):
         log("WARN: OBS 门早写 readback != 1，APP 首帧 s_obsChain 将固化 0（本轮 APP 打点不可判）")
+    # 【档1 NETGATE 门早写】s_ngLog 首帧懒加载固化，必须 am start 前 setprop。
+    # 与 PC 侧 --env MGBAX_NETGATE_LOG=1 同开关；默认 0 零回归。
+    _ng_val = "0"
+    for _kv in (args.env or []):
+        if _kv.strip().startswith("MGBAX_NETGATE_LOG="):
+            _ng_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
+    shell(["setprop", "debug.mgbax.link.netgate_log", _ng_val])
+    _ng_rb = shell(["getprop", "debug.mgbax.link.netgate_log"])
+    log("setprop debug.mgbax.link.netgate_log=%s readback=%s（档1：pm clear 后 / am start 前）"
+        % (_ng_val, _ng_rb.stdout.strip()
+           if _ng_rb is not None and _ng_rb.returncode == 0 else "?"))
+    if _ng_val == "1" and (not _ng_rb or _ng_rb.stdout.strip() != "1"):
+        log("WARN: NETGATE 门早写 readback != 1，APP 首帧 s_ngLog 将固化 0（本轮 APP 不产 [NGPEEK]）")
+    # 档1 party provenance：run 目录通过 env 传给 C 侧 gnpNgRunDir()（writer=ROM 真 party）
+    for _kv in (args.env or []):
+        if _kv.strip().startswith("MGBAX_GNP_RUN_DIR="):
+            _run_dir = _kv.strip().split("=", 1)[1]
+            shell(["setprop", "debug.mgbax.link.gnp_run_dir", _run_dir])
+            break
     if not start_app():
         return 6
     if args.app_nav:
