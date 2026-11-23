@@ -940,8 +940,9 @@ def main():
             # AT1/AQ1 权威判据：cb2 落 field 段(CB2_Overworld 族)且连续稳定 = 游戏真进 field，
             # 此时才有 avatar 可走格。替代 2.2fps 下不可靠的截图 template。
             # map/pos 由注入档立即满足，但 cb2 只在 UI 链真走完(标题→菜单→继续游戏→field)后才落 field 段。
-            if (_cb2 and NAV_FIELD_CB2_LO <= _cb2 < NAV_FIELD_CB2_HI
-                    and _map == (INTRO_MAP_GROUP, INTRO_MAP_NUM)):
+            # BB1: 去掉 map==(25,24) 构造档专属条件——干净母本从 Oldale PC(2.3/10,4) 起步，
+            # 进任意 field(含 2.3) 都应放行到 SCREENSHOT oracle 走完整 club 导航。
+            if _cb2 and NAV_FIELD_CB2_LO <= _cb2 < NAV_FIELD_CB2_HI:
                 if _cb2 == last_field_cb2:
                     field_cb2_streak += 1
                 else:
