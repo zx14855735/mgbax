@@ -77,13 +77,15 @@ APP_REMOTE_SAV = "/sdcard/Download/rom.sav"
 APP_SAV_DEFAULT = os.environ.get(
     "MGBAX_APP_SAV", os.path.join(os.path.dirname(DEF_SAV), "rom.sav.bak-before-link"))
 APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s 会丢 ROM 广播（E1 教训）
-APP_NAV_TIMEOUT = 30     # 用户裁决：title→等待连接 30s 上限，未连上即判不成功（快速迭代）
+APP_NAV_TIMEOUT = 180    # 输入层修复(AVDWIPE-03)后恢复完整导航时间：title→club→等待连接；
+                         # 30s 是输入层坏(Held≠FrameKeys)时的快速失败口径，现已不适用
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
 FORCE_MENU_TAP_LIMIT = 120       # force 模式 A 键硬上限
 FORCE_MENU_STALL_LIMIT = 30      # 连续 N 次 A 无菜单进度即判卡死
-FORCE_MENU_WINDOW = 30           # 用户裁决：菜单走完窗口 30s，与 APP_NAV_TIMEOUT 一致
+FORCE_MENU_WINDOW = 180          # 输入层修复后恢复：菜单走完窗口与 APP_NAV_TIMEOUT 对齐；
+                                 # 30s 是输入层坏时的快速失败口径，现已不适用
 # cable_club.o 的 cb2 地址段基准宏（rom.map）；禁裸 hex，运行时按 rom.map delta 平移
 CABLE_CLUB_CB2_LO = gba.CABLE_CLUB_CB2_LO  # 统一宏（原值 0x08105FD4）
 CABLE_CLUB_CB2_HI = gba.CABLE_CLUB_CB2_HI  # 统一宏（原值 0x08107488）
@@ -584,6 +586,35 @@ def main():
             log("  !! adb shell 失败 %s: %s" % (" ".join(argv), ex))
             return None
 
+    # ---- AD5/沉浸层 dismiss（默认开，env 可关）--------------------------------
+    # 根因实证(2026-11-23)：-wipe-data 全新 userdata 首次启动，系统 ImmersiveModeConfirmation
+    # 覆盖层("Viewing full screen / Got it")抢走 mCurrentFocus，截图 oracle 看到对话框非游戏、
+    # 按键被吞。实测 swipe 从顶部下滑即可 dismiss 并使 mCurrentFocus 回到 EmulatorActivity。
+    IMMERSIVE_DISMISS = os.environ.get("MGBAX_IMMERSIVE_DISMISS", "1") == "1"
+    def dismiss_immersive():
+        if not IMMERSIVE_DISMISS:
+            return
+        def focus():
+            r = shell(["dumpsys", "window"])
+            m = re.search(r"mCurrentFocus=Window\{[^}]*\s([^\s}]+)\}", r.stdout) if r else None
+            return m.group(1) if m else ""
+        try:
+            for attempt in range(3):
+                cur = focus()
+                if "ImmersiveModeConfirmation" in cur:
+                    log("沉浸覆盖层遮挡(mCurrentFocus=%s)，swipe 顶部下滑 dismiss (第%d次)"
+                        % (cur, attempt + 1))
+                    shell(["input", "swipe", "240", "5", "240", "400", "400"])
+                    time.sleep(2)
+                    if "EmulatorActivity" in focus():
+                        log("沉浸层已 dismiss，焦点回到 EmulatorActivity")
+                        return
+                else:
+                    return  # 无覆盖层，无需处理
+            log("WARN: 沉浸层 dismiss 3 次未确认焦点，继续(诊断标注)")
+        except Exception as ex:                    # noqa: BLE001
+            log("WARN: dismiss_immersive 异常 %s，继续" % ex)
+
     # ================= app 侧导航助手（--app-nav）===============================
     # 全部只依赖已定义的 shell()/log()/ADB。PEEK 是唯一状态 oracle；按键走
     # android_drive.py 的 KEYS 广播（每次按键前显式 release，防 A 粘键）。
@@ -855,6 +886,10 @@ def main():
         每键要求归一化签名连续 APP_STABLE_N 次一致，绝不每轮盲按 A。"""
         app_nav_log("PEEK oracle 路径：cur/mm/link/pos 作状态机判据")
         force_menu = bool(args.force_full_menu)
+        # AD2: 构造档座位初态导航门（driver 本地 env 门，默认关可逆；非三端 C 门）
+        # 读父进程 os.environ（与 MGBAX_AVD_WIPE 同风格），不经 --env 下发 PC/Android。
+        nav_spawn_at_seat = os.environ.get("MGBAX_NAV_SPAWN_AT_SEAT", "0") == "1"
+        app_nav_log("AD2 gate MGBAX_NAV_SPAWN_AT_SEAT=%d" % (1 if nav_spawn_at_seat else 0))
         # force 窗口与现有 APP_NAV_TIMEOUT 共存：取大者，避免 480s 先到期截断菜单路径
         deadline = time.time() + (max(APP_NAV_TIMEOUT, FORCE_MENU_WINDOW)
                                   if force_menu else APP_NAV_TIMEOUT)
@@ -934,6 +969,20 @@ def main():
 
             # --- 观测 cb2/cur_b 演变（默认模式也跑，供 menu_lock 判早退） ---
             cb2, cb = s["cb2"], s["cur"][1]
+            # ---- AD2 观测口径适配门（默认关，可逆）----
+            # 读真 PEEK（map/pos/cb2）非造假；构造存档是受控输入，可信度存疑、
+            # 非纯零注入、不进 CROSSED 裁决。三重防误判：map group==SEAT_MAP_GROUP
+            # 且 pos==(SEAT_TX,SEAT_TY) 且 cb2_class!="zero"（cb2 漂移恒0时不误置）。
+            if (nav_spawn_at_seat
+                    and not menu_ctx["singles_confirmed"]
+                    and s.get("map") and s["map"][0] == SEAT_MAP_GROUP
+                    and s["pos"] == (SEAT_TX, SEAT_TY)
+                    and cb2_class(s["cb2"]) != "zero"):
+                menu_ctx["singles_confirmed"] = True
+                app_nav_log("AD2: 座位初态源自预置档(map=%s pos=%s cb2=%08X)，"
+                            "singles_confirmed 由 PEEK 推断置位（非 var8004 直读、非造假；"
+                            "受控输入可信度存疑/非纯零注入、不进 CROSSED 裁决）"
+                            % (s["map"], s["pos"], s["cb2"]))
             if not menu_ctx["seq"] or menu_ctx["seq"][-1] != cb2:
                 menu_ctx["seq"].append(cb2)
                 if len(menu_ctx["seq"]) > 24:
@@ -1676,6 +1725,10 @@ def main():
         # 早发的 ROM 广播会被丢（两次 exit-6）。等真正就绪再发，保证导航前 ROM 已加载。
         log("APP-NAV: 等 EmulatorActivity onResume 就绪 %ds 后再发 ROM 广播" % APP_READY_WAIT)
         time.sleep(APP_READY_WAIT)
+        # AD5：覆盖层在 onResume 后才出现，等待期结束后 dismiss，再发 ROM 广播/导航。
+        dismiss_immersive()
+    else:
+        dismiss_immersive()
     shell(["am", "broadcast", "-a", "io.mgba.android.action.ROM", "--es",
            "path", REMOTE_ROM])
     if not wait_rom_loaded():
