@@ -104,7 +104,7 @@ NAV_COORD_STEP = os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1"
 NAV_PEEK_ARENA = os.environ.get("MGBAX_NAV_PEEK_ARENA", "0") == "1"
 # AQ1: field-ready 判据（具名近似区间，待 C 侧精确化）——CB2_Overworld 族落在 main/menu 段，
 # 高于 intro(~0x0817) 且低于 title(~0x0821)。截图+pos 为主证，cb2 区间为辅。
-NAV_FIELD_CB2_LO = 0x08190000
+NAV_FIELD_CB2_LO = 0x081A0000   # 实测真 field cb2=081A52AD；menu 态=081900ED 须排除(旧下界0x08190000假阳性)
 NAV_FIELD_CB2_HI = 0x081E0000
 NAV_FIELD_CB2_STREAK = 3             # cb2 连续 N 拍稳定才认 field idle
 INTRO_MIN_LUMA = 25.0                # 演变判据亮度下界（菜单非纯白）
