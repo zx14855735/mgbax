@@ -77,10 +77,9 @@ APP_REMOTE_SAV = "/sdcard/Download/rom.sav"
 APP_SAV_DEFAULT = os.environ.get(
     "MGBAX_APP_SAV", os.path.join(os.path.dirname(DEF_SAV), "rom.sav.bak-before-link"))
 APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s 会丢 ROM 广播（E1 教训）
-APP_NAV_TIMEOUT = 240    # AF1/AF3：导航前需等开场动画走完(APP 4fps 软渲染下 ROM→主菜单≈157s)，
-                         # 180s 被吃满；抬到 240s，deadline 在等动画完成后起算。
+APP_NAV_TIMEOUT = 480    # AQ1: 2.2fps 下 UI 链(标题→菜单→field)≈6-8min，480s；deadline 在等动画后起算。
 # AF6 等开场动画常量（模板匹配主 + 画面演变备 + cap 兜底）
-INTRO_WAIT_CAP_S = 180       # 等主菜单上限（AF3: 157s 上界 + 余量）
+INTRO_WAIT_CAP_S = 360       # AQ1: 2.2fps 下 UI 链到 field≈6-8min，抬到 360s（截图 template 等主菜单）
 INTRO_TPL_NAME = "tpl_main_menu.png"  # nav_028 主菜单帧（已落 .workbuddy/drive/）
 INTRO_SIG_SIZE = (120, 90)           # 与 topmenu_sig 一致的灰度签名尺寸
 INTRO_MENU_THRESH = 12.0             # AF6 实测：主菜单0/黑屏15.4/Logo33.7/战斗93.6/灰屏160.5
@@ -100,6 +99,14 @@ INTRO_MAP_STREAK = 3              # 连续 N 次 map/pos 命中才放行（同 T
 # 不走格 → tookStep 恒 FALSE → coord_event 座位事件链不触发 → link.state 停 1。
 # 需 DOWN 离格→UP 踩回（2 次方向步）触发，方进 cable club 握手。
 NAV_COORD_STEP = os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1"
+# AQ1: peek-arena 放行门（默认关）。注入 club 档使 pos/map 立即=25.24，会在 UI 链跑完前
+# 提前放行→方向键被当菜单光标吞。默认走截图 template 等真主菜单，oracle 解耦。
+NAV_PEEK_ARENA = os.environ.get("MGBAX_NAV_PEEK_ARENA", "0") == "1"
+# AQ1: field-ready 判据（具名近似区间，待 C 侧精确化）——CB2_Overworld 族落在 main/menu 段，
+# 高于 intro(~0x0817) 且低于 title(~0x0821)。截图+pos 为主证，cb2 区间为辅。
+NAV_FIELD_CB2_LO = 0x08190000
+NAV_FIELD_CB2_HI = 0x081E0000
+NAV_FIELD_CB2_STREAK = 3             # cb2 连续 N 拍稳定才认 field idle
 INTRO_MIN_LUMA = 25.0                # 演变判据亮度下界（菜单非纯白）
 INTRO_MAX_LUMA = 180.0               # 演变判据亮度上界
 INTRO_MIN_CHANGES = 3                # 演变判据：至少经历 N 次画面变化
@@ -110,7 +117,7 @@ APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（�
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
 FORCE_MENU_TAP_LIMIT = 120       # force 模式 A 键硬上限
 FORCE_MENU_STALL_LIMIT = 30      # 连续 N 次 A 无菜单进度即判卡死
-FORCE_MENU_WINDOW = 240          # AF6：与 APP_NAV_TIMEOUT=240 对齐（等动画后起算）
+FORCE_MENU_WINDOW = 480          # AQ1：与 APP_NAV_TIMEOUT=480 对齐
 # cable_club.o 的 cb2 地址段基准宏（rom.map）；禁裸 hex，运行时按 rom.map delta 平移
 CABLE_CLUB_CB2_LO = gba.CABLE_CLUB_CB2_LO  # 统一宏（原值 0x08105FD4）
 CABLE_CLUB_CB2_HI = gba.CABLE_CLUB_CB2_HI  # 统一宏（原值 0x08107488）
@@ -899,7 +906,11 @@ def main():
                 map_streak += 1
             else:
                 map_streak = 0
-            if map_streak >= INTRO_MAP_STREAK:
+            # NOTE(AP1): 注入存档使 pos/map 立即=25.24，peek-arena 会在 UI 链(标题→菜单→field)
+            # 跑完前就命中；此时按方向键会被当菜单光标吞掉。真正修法需主动过 UI 链到 field
+            # 再踩格——见 .zcode-tmp/AP1-STEP-BLOCKED.md，待完整 driver 重构，暂不在此处加
+            # cb2 稳定门（2.2fps 下等 field≈8min 会超 cap）。
+            if map_streak >= INTRO_MAP_STREAK and NAV_PEEK_ARENA:
                 try:
                     shot[0].save(os.path.join(app_shot_dir, INTRO_HIT_SHOT))
                     shot[0].save(os.path.join(app_shot_dir, "nav_000.png"))
@@ -973,7 +984,8 @@ def main():
         # AL1: INTRO 后若已 peek-arena 到竞技场（PEEK 现在可读 map=25.24/pos=10,5），
         # 切回 PEEK oracle——SCREENSHOT oracle 走不到 AD2 门/踩格分支，只会 timeout。
         # coord_step 门开时强制切（需要 PEEK 语义判座位格踩格）。
-        if (NAV_COORD_STEP and app_nav_state.get("intro_why") == "peek-arena"):
+        if (NAV_COORD_STEP
+                and str(app_nav_state.get("intro_why", "")).startswith("peek-arena")):
             app_nav_log("AL1: 竞技场起点 + coord_step 门开 → 切回 PEEK oracle（含踩格/AD2门）")
             return app_nav_peek()
         deadline = time.time() + APP_NAV_TIMEOUT
@@ -989,6 +1001,9 @@ def main():
         i = 0
         end_reason = "timeout"
         pid_miss = 0
+        # AQ1: field-ready 检测（截图 oracle 走完 UI 链后，PEEK 确认真进 field 才切踩格）
+        field_cb2_streak = 0
+        last_field_cb2 = None
         while time.time() < deadline:
             if app_pid() is None:
                 pid_miss += 1
@@ -1007,6 +1022,23 @@ def main():
             ps = peek_state()
             if ps:
                 app_nav_state["final_peek"] = ps.get("line", "")
+            # AQ1 field-ready：截图 oracle 已走完 UI 链，PEEK 确认真进 field
+            # (pos 在座位格 + cb2 落 field 区间且连续稳定) → 切 PEEK oracle 踩格。
+            _cb2v = (ps.get("cb2", 0) & ~1) if ps else 0
+            if (NAV_COORD_STEP and ps and ps.get("raw_ok")
+                    and ps.get("pos") == (SEAT_TX, SEAT_TY)
+                    and ps.get("map") == SEAT_MAP
+                    and _cb2v and NAV_FIELD_CB2_LO <= _cb2v < NAV_FIELD_CB2_HI):
+                _c = _cb2v
+                if _c == last_field_cb2:
+                    field_cb2_streak += 1
+                else:
+                    field_cb2_streak = 0
+                last_field_cb2 = _c
+                if field_cb2_streak >= NAV_FIELD_CB2_STREAK:
+                    app_nav_log("AQ1: field-ready pos=%s map=%s cb2=%08X streak=%d → 切 PEEK oracle 踩格"
+                                % (ps["pos"], ps["map"], ps["cb2"], field_cb2_streak))
+                    return app_nav_peek()
             td = sig_dist(topmenu_sig(), shot[1])
             if not down_done and td >= 0 and td < 10:
                 ok, d = app_advance("down", AK_DOWN, 0.6, 0.9)

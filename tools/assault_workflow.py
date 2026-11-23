@@ -109,7 +109,7 @@ def launch(tag, app_sav=None, pc_sav=None):
     log_path = os.path.join(CLOUD_DIR, tag + "_run.out")
     args = [
         sys.executable, os.path.join(TOOLS, "cloud2p_avd.py"),
-        "--tag", tag, "--mode", "B", "--runsec", "320", "--app-nav",  # AF6: 等动画157s+导航240s
+        "--tag", tag, "--mode", "B", "--runsec", "900", "--app-nav",  # AQ1: 2.2fps UI链6-8min+导航480s
         "--no-emulator", "--serial", "emulator-5554",
         "--pathb-pc-nav",
         "--env", "MGBAX_NETGATE_LOG=1",
