@@ -555,10 +555,16 @@ def main():
     if not args.no_emulator:
         env = dict(os.environ)
         env["ANDROID_AVD_HOME"] = AVD_HOME
-        log("启动 emulator -avd %s -no-window -gpu angle_indirect (AVD_HOME=%s)"
-            % (args.avd, AVD_HOME))
+        # AVDWIPE-01：禁今日劣化的 quickboot 快照(saveOnExit 持续覆写)+全新 userdata，
+        # 恢复 11/19 稳定输入层。env MGBAX_AVD_WIPE 可回退到默认行为。
+        _wipe = os.environ.get("MGBAX_AVD_WIPE", "1") == "1"
+        _emu_args = [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", "angle_indirect"]
+        if _wipe:
+            _emu_args += ["-wipe-data", "-no-snapshot", "-no-snapshot-save", "-no-snapshot-load"]
+        log("启动 emulator %s (AVD_HOME=%s wipe=%s)"
+            % (" ".join(_emu_args[1:]), AVD_HOME, _wipe))
         emu_proc = subprocess.Popen(
-            [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", "angle_indirect"],
+            _emu_args,
             cwd=ROOT, env=env,
             stdout=open(os.path.join(gdir, "emulator.log"), "w"),
             stderr=subprocess.STDOUT)
@@ -1608,9 +1614,17 @@ def main():
     # MANAGE_EXTERNAL_STORAGE，被撤掉后 File.isFile() 假 ⇒ ROM 加载失败。补回。
     shell(["appops", "set", PKG, "MANAGE_EXTERNAL_STORAGE", "allow"])
     log("推送 app ROM %s -> %s" % (args.app_rom, REMOTE_ROM))
-    push = subprocess.run(ADB + ["push", args.app_rom, REMOTE_ROM], capture_output=True)
-    if push.returncode != 0:
-        log("FATAL: 推送 app ROM 失败 rc=%s" % push.returncode)
+    # AVDWIPE-01 教训：-wipe-data 后 boot_completed=1 但 /sdcard 可能未就绪，push 偶发 rc=1。
+    # 重试 3 次(每次等 3s)，不破坏既有成功路径。
+    push = None
+    for _pr in range(3):
+        push = subprocess.run(ADB + ["push", args.app_rom, REMOTE_ROM], capture_output=True)
+        if push.returncode == 0:
+            break
+        log("推送 app ROM 第 %d 次失败 rc=%s，等 3s 重试" % (_pr + 1, push.returncode))
+        time.sleep(3)
+    if push is None or push.returncode != 0:
+        log("FATAL: 推送 app ROM 失败(3次) rc=%s" % (push.returncode if push else "?"))
         return 6
     if args.app_nav:
         # 干净存档把玩家 spawn 在俱乐部柜台 pos=10,4（walk_battle.py / NAVSTATE §0.1）。
