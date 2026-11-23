@@ -78,6 +78,7 @@ Examples
 
 import argparse
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -133,6 +134,101 @@ NET_SRC_BLACKLIST = ("template", "constant", "const:", "cache", "dummy",
                      "mock", "fake", "hardcode", "hard-code")
 
 NETGATE_TAG_RE = re.compile(r"\[NETGATE\]")
+
+# party md5 零预测基线前置（opt-in，仅 --party-baseline 开启时生效；J4/J5）。
+# 一致性门/tripwire，非翻门充分条件：md5 相等只证最终字节==门关基线/可复现，
+# 不证过程无预测、不证对手真实；predicted_free 由 checker 派生、无独立判别力。
+PARTY_MD5_FIELD = "party_md5"
+PARTY_SEED_FIELD = "seed"
+PARTY_MD5_RE = re.compile(r"[0-9a-f]{8,32}$")
+REGISTRY_DIGEST_ALGO = "sha256"
+
+
+def party_baseline_gate(net_rows, run_dir, registry_path, expected_seed,
+                        expected_rom_md5):
+    """party md5 零预测基线前置（opt-in 启用时调用；fail-closed）。
+
+    基线来源 A+B：A=--party-baseline 钉死的门关 registry（外部可信，writer≠checker）；
+    B=跨端 party md5 对账（A.rx==B.tx 且 B.rx==A.tx 且两向互异）。predicted_free 由
+    checker 派生，绝不采信 writer 自报。
+
+    【J3 语义边界】本门是【一致性/tripwire】，非翻门充分条件。能证伪「最终字节错」，
+    但盲于①伪字节写入后回滚/覆盖使最终字节==基线、②预测恰命中真字、③主动构造==基线；
+    md5 相等只证可复现/最终态一致，不证过程无预测、不证对手真实。predicted_free 无独立
+    判别力（md5 比较改名），不得据此宣称「零预测污染」。
+    """
+    info = {"registry_ok": False, "party_md5_ok": False, "cross_end_ok": False,
+            "seed_match": False, "predicted_free": False,
+            "party_md5s": {}, "reason": ""}
+    if not registry_path:
+        info["reason"] = "未给定 --party-baseline（门未启用；调用方应跳过本门）"
+        return False, info
+    try:
+        with open(registry_path, "r", encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except Exception as e:
+        info["reason"] = "registry 读/解析失败: %s" % e
+        return False, info
+    payload = {k: reg[k] for k in ("version", "digest_algo", "entries") if k in reg}
+    if (reg.get("digest_algo") != REGISTRY_DIGEST_ALGO
+            or hashlib.sha256(json.dumps(payload, sort_keys=True,
+                                         ensure_ascii=False).encode("utf-8")).hexdigest()
+            != (reg.get("digest") or "").lower()):
+        info["reason"] = "registry 整体摘要不符/算法不支持（fail-closed）"
+        return False, info
+    info["registry_ok"] = True
+    ent = None
+    for e in reg.get("entries", []):
+        if ((e.get("rom_md5") or "").lower() == (expected_rom_md5 or "").lower()
+                and str(e.get("seed")) == str(expected_seed)):
+            if ent is not None:
+                info["reason"] = "registry 条目 (rom_md5,seed) 不唯一（fail-closed）"
+                return False, info
+            ent = e
+    base = (ent or {}).get("party_md5") or ""
+    if not ent or not PARTY_MD5_RE.fullmatch(base.lower()):
+        info["reason"] = "registry 缺 (rom_md5,seed) 条目或 party_md5 缺/畸形（fail-closed）"
+        return False, info
+    info["seed_match"] = str(ent.get("baseline_seed", ent.get("seed"))) == str(expected_seed)
+    if not info["seed_match"]:
+        info["reason"] = "baseline_seed 与钉死 seed 不一致（fail-closed）"
+        return False, info
+    baseline_md5 = base.lower()
+
+    def _snap_or_line(side):
+        snap = os.path.join(run_dir, "party_snapshot_%s.bin" % side)
+        if os.path.isfile(snap):
+            with open(snap, "rb") as fh:
+                return hashlib.md5(fh.read()).hexdigest()
+        vals = {(r["fields"].get(PARTY_MD5_FIELD) or "").lower()
+                for r in net_rows[side] if r["fields"].get(PARTY_MD5_FIELD)}
+        return vals.pop() if len(vals) == 1 else None
+
+    md5a, md5p = _snap_or_line("APP"), _snap_or_line("PC")
+    info["party_md5s"] = {"app": md5a, "pc": md5p, "baseline": baseline_md5}
+    info["party_md5_ok"] = bool(md5a and md5p and md5a == baseline_md5 == md5p)
+
+    def _rx_tx(side):
+        rx = {(r["fields"].get("rx_party_md5") or "").lower()
+              for r in net_rows[side] if r["fields"].get("rx_party_md5")}
+        tx = {(r["fields"].get("tx_party_md5") or "").lower()
+              for r in net_rows[side] if r["fields"].get("tx_party_md5")}
+        return (rx.pop() if len(rx) == 1 else None,
+                tx.pop() if len(tx) == 1 else None)
+    arx, atx = _rx_tx("APP")
+    brx, btx = _rx_tx("PC")
+    info["cross_end_ok"] = bool(arx and btx and brx and atx
+                                and arx == btx and brx == atx and arx != brx)
+    steady = any("confirmed" in n and "CLOSED" in n for n in
+                 (r["fields"].get("src_tag") or "" for s in ("APP", "PC")
+                  for r in net_rows[s]))
+    info["predicted_free"] = bool(info["registry_ok"] and info["seed_match"]
+                                  and info["party_md5_ok"] and info["cross_end_ok"]
+                                  and steady)
+    if not info["predicted_free"]:
+        info["reason"] = info["reason"] or (
+            "party md5 基线/跨端对账/seed/稳态口径任一不满足（fail-closed）")
+    return info["predicted_free"], info
 
 
 def zero_criterion():
@@ -686,7 +782,8 @@ def evaluate_netgate(net_rows, run_dir, expected_rom_md5=None):
     return ok, info
 
 
-def check(run_dir, mode=MODE_AUTO, l0_mode=L0_SIO, expected_rom_md5=None):
+def check(run_dir, mode=MODE_AUTO, l0_mode=L0_SIO, expected_rom_md5=None,
+          party_baseline_registry=None, baseline_seed=None):
     """模式分派：auto 维持原标签计数；zero/inject 由 CLI 显式钉死（fail-closed）。
 
     mode=zero 不绕过注入标签检测：仍完整扫描；任一注入标签命中即告警 + 降级
@@ -703,7 +800,8 @@ def check(run_dir, mode=MODE_AUTO, l0_mode=L0_SIO, expected_rom_md5=None):
 
     records, file_sides = load(run_dir)
     if l0_mode == L0_NETGATE:
-        return check_netgate(records, file_sides, run_dir, mode, expected_rom_md5)
+        return check_netgate(records, file_sides, run_dir, mode, expected_rom_md5,
+                             party_baseline_registry, baseline_seed)
     inj_hits = [r for r in records if r["tag"] in INJ_TAGS]
     inj_tags = sorted({r["tag"] for r in inj_hits})
     mode_source = (MODE_SOURCE_EXPLICIT if mode in (MODE_ZERO, MODE_INJECT)
@@ -1224,7 +1322,8 @@ def check_zero(records, file_sides, run_dir):
     }
 
 
-def check_netgate(records, file_sides, run_dir, mode=MODE_AUTO, expected_rom_md5=None):
+def check_netgate(records, file_sides, run_dir, mode=MODE_AUTO, expected_rom_md5=None,
+                  party_baseline_registry=None, baseline_seed=None):
     """pathB-net 等效 L0 裁决（只读 [NETGATE] 字段，不改任何 sio 判据分支）。
 
     门槛不降：NETGATE L0 闭合 + 跨端 digest 对账 + 全部旧否定门
@@ -1301,6 +1400,22 @@ def check_netgate(records, file_sides, run_dir, mode=MODE_AUTO, expected_rom_md5
 
     l0_ok, info = evaluate_netgate(net_rows, run_dir, expected_rom_md5)
 
+    # party md5 零预测基线前置（opt-in，J5）：仅在 --party-baseline 传入时启用。
+    # 未启用时 baseline_ok=True 不参与合取，现有 CROSSED 正例/回归维持原口径。
+    gate_active = bool(party_baseline_registry)
+    baseline_ok = True
+    baseline_info = {"registry_ok": None, "party_md5_ok": None,
+                     "cross_end_ok": None, "seed_match": None,
+                     "predicted_free": None, "party_md5s": {}, "reason": "未启用"}
+    if gate_active:
+        baseline_ok, baseline_info = party_baseline_gate(
+            net_rows, run_dir, party_baseline_registry, baseline_seed, expected_rom_md5)
+    ev.append("PARTY_BASELINE active=%s registry_ok=%s party_md5_ok=%s cross_end_ok=%s "
+              "seed_match=%s predicted_free=%s reason=%s"
+              % (gate_active, baseline_info["registry_ok"], baseline_info["party_md5_ok"],
+                 baseline_info["cross_end_ok"], baseline_info["seed_match"],
+                 baseline_info["predicted_free"], baseline_info["reason"]))
+
     for side in ("APP", "PC"):
         q = info["qualified"][side]
         ev.append("NETGATE %s 合格样本=%d seq=%s" %
@@ -1327,12 +1442,18 @@ def check_netgate(records, file_sides, run_dir, mode=MODE_AUTO, expected_rom_md5
     notes.append("NETGATE 为 L0 等效重锚：判据可用≠对手真实已证；"
                  "差分标记 0006/00D5 为人工构造输入、可信度存疑、非纯零注入；"
                  "门 FAIL/0/9 不自动翻，须视觉门人工复核重新裁决。")
+    notes.append("NETGATE/party md5 前置局限（J3/J5，opt-in）：本门仅在 --party-baseline "
+                 "开启时生效，未开启时 CROSSED 维持协议级/pathB-net/非原 ZERO 原口径。"
+                 "开启时本门为【一致性/tripwire】，非翻门充分条件：md5 相等只证最终字节==门关基线/"
+                 "可复现，不证过程无预测、不证对手真实；盲于回滚后复归、预测命中真字、主动构造基线字节。"
+                 "predicted_free 由 checker 派生但无独立判别力（md5 比较改名），writer 自报不采信；"
+                 "不得据本门宣称零预测污染或对手真实。第一因仍是相位硬门使预测字节永不进 ROM party 写径。")
     notes.append("L0 裁决理由：%s" % info["verdict_reason"])
 
     l2_ok = (app_l2 is True and pc_l2 is True and slot_ok and ec_ok and not polluted)
     observed_any = bool(net_rows["APP"] or net_rows["PC"] or app_l2 or pc_l2
                         or app_self or pc_self)
-    if l0_ok and l2_ok:
+    if l0_ok and l2_ok and baseline_ok:
         verdict, verdict_cn, exit_code = ("CROSSED",
             "真交换（NETGATE L0 闭合双交叉 + 跨端 digest 对账 + L2 cross_marker 双交叉）", 0)
         ev.append("NETGATE 跨端 digest：APP.rx==PC.tx / PC.rx==APP.tx 均成立且两向不同")
@@ -1372,6 +1493,9 @@ def check_netgate(records, file_sides, run_dir, mode=MODE_AUTO, expected_rom_md5
                     "ec_ok": ec_ok, "slot_ok": slot_ok, "no_pollution": not polluted,
                     "netgate_self_echo": net_self,
                     "three_question_check": netgate_criterion()["three_question_check"],
+                    "party_baseline_gate_active": gate_active,
+                    "party_baseline_ok": (baseline_ok if gate_active else None),
+                    "predicted_free": (baseline_info["predicted_free"] if gate_active else None),
                 })
 
 
@@ -2133,6 +2257,12 @@ def main(argv=None):
     ap.add_argument("--net-rom-md5", default=None,
                     help="仅 netgate 模式：期望的 rom.gba 磁盘实测 md5；"
                          "给定后所有 [NETGATE] rom_md5 必须等于它（未给定时只要求两端一致）")
+    ap.add_argument("--party-baseline", default=None,
+                    help="仅 netgate：门关零预测 party md5 registry JSON 路径（opt-in）。"
+                         "给定才启用 party md5 一致性门；一致性/tripwire，非翻门充分条件，"
+                         "未给定时 CROSSED 维持协议级/pathB-net/非原 ZERO 原口径")
+    ap.add_argument("--baseline-seed", default=None,
+                    help="仅 netgate：与 registry 条目匹配的确定性 seed；启用门时未给定则 fail-closed")
     ap.add_argument("--self-test", action="store_true",
                     help="用合成日志自测 CROSSED/SELF_ECHO/UNOBSERVED（含 netgate 模式）")
     args = ap.parse_args(argv)
@@ -2143,7 +2273,9 @@ def main(argv=None):
         ap.error("需要 run_dir（或用 --self-test）")
 
     r = check(args.run_dir, args.mode,
-              l0_mode=args.l0_mode, expected_rom_md5=args.net_rom_md5)
+              l0_mode=args.l0_mode, expected_rom_md5=args.net_rom_md5,
+              party_baseline_registry=args.party_baseline,
+              baseline_seed=args.baseline_seed)
     if args.json:
         print(json.dumps(r, ensure_ascii=False, indent=2))
     else:

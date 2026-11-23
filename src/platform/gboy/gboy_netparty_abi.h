@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <mgba-util/md5.h>
 
@@ -44,7 +45,7 @@
 #define MGBAX_PREDICT_MODE          0            /* 0=last-word hold；1=seq 递增；2=保留扩展 */
 #endif
 #ifndef MGBAX_PREDICT_HISTORY
-#define MGBAX_PREDICT_HISTORY       8            /* 预测字历史深度（轮），环形缓冲容量 */
+#define MGBAX_PREDICT_HISTORY       128          /* 预测字历史深度（轮），环形缓冲容量；2 的幂、≥128（E4/E12） */
 #endif
 #ifndef MGBAX_PREDICT_MASK
 #define MGBAX_PREDICT_MASK          0xFFFFu      /* SIO 字比较掩码（16bit 全比） */
@@ -82,6 +83,44 @@
 #endif
 #if MGBAX_ROLLBACK_SNAP_BYTES < 0
 #error "MGBAX_ROLLBACK_SNAP_BYTES must be >= 0"
+#endif
+
+/* 协议控制字具名宏（三端同名同值，唯一裁决来源=本共享头；PC/mobile .c 中的
+ * 同名旧定义均先于本 include，靠 #ifndef 跳过，值必须逐字一致）。硬门 out.word
+ * 扩展（父会话裁决方案 i）据此禁投：5FFF/2222/2233/BBBB/8888/握手字一律
+ * speculative=0，杜绝预测字触发 completeMultiTransfer 的写径。 */
+#ifndef LINKCMD_READY_CLOSE_LINK
+#define LINKCMD_READY_CLOSE_LINK 0x5FFFu
+#endif
+#ifndef LINKCMD_SEND_LINK_TYPE
+#define LINKCMD_SEND_LINK_TYPE   0x2222u
+#endif
+#ifndef LINKCMD_SEND_LINK_TYPE_EX
+#define LINKCMD_SEND_LINK_TYPE_EX 0x2233u   /* 帧首 opcode 变体，与 2222 同禁投机 */
+#endif
+#ifndef LINKCMD_INIT_BLOCK
+#define LINKCMD_INIT_BLOCK       0xBBBBu
+#endif
+#ifndef LINKCMD_CONT_BLOCK
+#define LINKCMD_CONT_BLOCK       0x8888u
+#endif
+#ifndef LINK_HANDSHAKE_MASTER
+#define LINK_HANDSHAKE_MASTER    0x8FFFu
+#endif
+#ifndef LINK_HANDSHAKE_SLAVE
+#define LINK_HANDSHAKE_SLAVE     0xB9A0u
+#endif
+#ifndef LINK_HANDSHAKE_SLAVE_MASK
+#define LINK_HANDSHAKE_SLAVE_MASK 0x3u
+#endif
+
+/* 相位分类的 state 阈值（与 PC SIO_LINK_STATE_* / mobile MOBILE_LINK_STATE_*
+ * 同值；具名、禁裸 hex 散落判据）。 */
+#ifndef GNP_PRED_ST_HANDSHAKE
+#define GNP_PRED_ST_HANDSHAKE 2u
+#endif
+#ifndef GNP_PRED_ST_CONN
+#define GNP_PRED_ST_CONN      4u
 #endif
 
 typedef struct {
@@ -147,6 +186,10 @@ typedef struct {
 #define GNP_NG_HEX_BYTES         4u                    /* 4B 指纹 → 8 hex（≥4，无 0x 前缀） */
 #define GNP_NG_SP_BYTES          2u                    /* u16 → 4 hex */
 #define GNP_NG_MAX_LINES         64u
+/* party provenance 字段（32hex，与 checker diff_party_check.py:141/212-215 同名同形） */
+#define GNP_FIELD_PARTY_MD5      "party_md5"
+#define GNP_FIELD_RX_PARTY_MD5   "rx_party_md5"
+#define GNP_FIELD_TX_PARTY_MD5   "tx_party_md5"
 
 typedef struct {
     volatile uint8_t  state;                         /*  0 GNP_RX_* 四态，仅 ROM 写 */
@@ -222,6 +265,33 @@ struct NgLatch {
     int      valid;                   /* 76 latch 是否已被稳态采样填充 */
 };
 
+/* 预测输入/输出与影子槽（E12 §2；三端同名同值，放共享头避免 driver 各写一份）。 */
+typedef struct {
+	uint8_t  st;            /* gLink.state 只读 */
+	uint8_t  role;          /* 0=MASTER, 1=SLAVE（由 netLinkPlayer 定） */
+	uint16_t localId;       /* 从机字低 2 位来源（只读） */
+	enum GnpPredictPhase phase;
+	uint16_t ownWord;       /* 起轮自槽 SIOMLT_SEND（真来源，非造字） */
+	uint16_t peerPrev;      /* 上轮真对端字，仅作判据不填值 */
+	uint32_t seq;           /* 轮次标签 */
+	uint8_t  sc;            /* gLink.sendCmdIndex 只读 */
+} MgbaxPredictIn;
+
+typedef struct {
+	uint16_t word;
+	enum GnpPredictConf conf;
+	int      speculative;
+} MgbaxPredictOut;
+
+typedef struct {
+	uint16_t word;
+	uint16_t ownWord;
+	uint8_t  sc;
+	uint8_t  state;   /* 1=PREDICTED 2=CONFIRMED 3=ROLLED */
+	uint32_t seq;
+	uint32_t wallMs;
+} MgbaxPredSlot;
+
 /* 编译期尺寸锁（不符即编译失败，fail-closed）——用 __LINE__ 生成唯一 typedef 名，
  * 避免对字符串字面量做 ## 拼接（C99 回退分支合法）。 */
 #define GNP_SA_CAT2(a, b) a##b
@@ -283,6 +353,90 @@ GNP_STATIC_ASSERT(offsetof(struct NgLatch, digestAtSeq) == 68, "NgLatch digest o
 GNP_STATIC_ASSERT(offsetof(struct NgLatch, tagOkSticky) == 72, "NgLatch tagOk offset");
 GNP_STATIC_ASSERT(offsetof(struct NgLatch, valid) == 76,  "NgLatch valid offset");
 GNP_STATIC_ASSERT(sizeof(struct NgLatch) == (GNP_NG_DIAG_SIZE + 16u), "NgLatch size");
+GNP_STATIC_ASSERT(MGBAX_PREDICT_HISTORY >= 128u, "predict history >= 128");
+GNP_STATIC_ASSERT((MGBAX_PREDICT_HISTORY & (MGBAX_PREDICT_HISTORY - 1u)) == 0u, "predict history pow2");
+GNP_STATIC_ASSERT(MGBAX_ROLLBACK_MAX_FRAMES > 0u, "rollback max frames > 0");
+
+/* ===== 档1 A 预测纯判据（无状态、C/C++ 兼容、三端同名同值）=====
+ * 红线：判据只决定「SIO 投递字是否可投机」，绝不写任何游戏态；party 块字/握手字/
+ * opcode 控制字一律禁投机（父会话方案 i）。状态读取由各 driver 完成，这里只收数值。 */
+static inline int gnpPredPhaseAllowsSpec(enum GnpPredictPhase phase) {
+    return phase == GNP_PHASE_HANDSHAKE
+        || phase == GNP_PHASE_CMD_HEADER
+        || phase == GNP_PHASE_SEQ_INDEX;
+}
+
+static inline int gnpPredConfAllows(enum GnpPredictConf conf) {
+    return (unsigned) conf >= (unsigned) GNP_CONF_HIGH;
+}
+
+/* 相位族粗分；细分 opcode/seq 由 driver 只读快照处理。st/sc 为只读现场值。 */
+static inline enum GnpPredictPhase gnpPredClassify(uint8_t st, uint8_t sc,
+                                                    uint32_t seq, int isMaster) {
+    (void) seq;
+    (void) isMaster;
+    if (st < GNP_PRED_ST_HANDSHAKE) { return GNP_PHASE_HANDSHAKE; }
+    if (sc == 0u) { return GNP_PHASE_CHECKSUM; }
+    if (st < GNP_PRED_ST_CONN) { return GNP_PHASE_HANDSHAKE; }
+    return GNP_PHASE_SEQ_INDEX;
+}
+
+/* out.word 扩展硬门：控制/opcode/块/握手字绝不许作投机字。 */
+static inline int gnpPredWordForbidden(uint16_t w) {
+    return w == LINKCMD_READY_CLOSE_LINK
+        || w == LINKCMD_SEND_LINK_TYPE
+        || w == LINKCMD_SEND_LINK_TYPE_EX
+        || w == LINKCMD_INIT_BLOCK
+        || w == LINKCMD_CONT_BLOCK
+        || w == LINK_HANDSHAKE_MASTER
+        || (uint16_t) (w & LINK_HANDSHAKE_SLAVE_MASK) == LINK_HANDSHAKE_SLAVE;
+}
+
+/* 10 条 AND 纯数值核（+ out.word 扩展 = 11）。任一否定即禁投机。
+ * sp0/brs 为 diag 只读值（读不到由 driver fail-closed 不进本函数）。 */
+static inline int gnpPredHardGatePure(int gateOn, enum GnpPredictConf conf,
+        enum GnpPredictPhase phase, uint8_t st, uint8_t sc, uint16_t sp0, uint16_t brs,
+        int inCmdPhase, int inBattleRelay, int isBlockWord, int isHandshakePeer,
+        int outWordForbidden) {
+    if (!gateOn) { return 0; }                                              /* 1 总门 */
+    if (!gnpPredConfAllows(conf)) { return 0; }                             /* 2 置信 */
+    if (!gnpPredPhaseAllowsSpec(phase)) { return 0; }                       /* 3 相位白名单 */
+    if ((unsigned) st < GNP_PRED_ST_HANDSHAKE) { return 0; }                /* 4 st>=2 */
+    if ((phase == GNP_PHASE_CMD_HEADER || phase == GNP_PHASE_SEQ_INDEX)
+        && (unsigned) st < GNP_PRED_ST_CONN) { return 0; }                  /* 5 CMD/SEQ 需 st>=4 */
+    if (sc == 0u) { return 0; }                                             /* 6 校验和对比轮 */
+    if (inCmdPhase || inBattleRelay) { return 0; }                          /* 7/8 命令/战斗块窗 */
+    if (isBlockWord) { return 0; }                                          /* 9 块字 */
+    if (sp0 != 0u || brs != 0u) { return 0; }                               /* 10 sp0/brs 硬门 */
+    if (phase == GNP_PHASE_HANDSHAKE && !isHandshakePeer) { return 0; }     /* 10b 握手 peer 校验 */
+    if (outWordForbidden) { return 0; }                                     /* 11 out.word 扩展（方案 i） */
+    return 1;
+}
+
+/* predicted→confirmed 状态机（E13 §2）：唯一合法迁移 PREDICTED→CONFIRMED；
+ * 禁超时转正、禁重放中改标、禁 CONFIRMED 退回。word 在转正时由真字覆盖。 */
+static inline void gnpNgConfirm(struct NgHist* h, uint32_t realWord) {
+    if (!h) { return; }
+    if (h->tag == NG_PREDICTED) {
+        h->word = realWord;
+        h->tag = NG_CONFIRMED;
+    }
+}
+
+/* 注入只放行 CONFIRMED；未确认帧不注入（party 前沿宁可掉帧不造假）。 */
+static inline int gnpNgInjectWord(const struct NgHist* h, uint32_t* out) {
+    if (!h || h->tag != NG_CONFIRMED) { return 0; }
+    if (out) { *out = h->word; }
+    return 1;
+}
+
+/* 单调保护（E13 §3）：seq 严格增、tag_ok 只 sticky、digest 按 (seq,digest) 绑定。 */
+static inline int gnpNgSampleOk(const struct NgLatch* L, uint32_t seq, uint32_t digest) {
+    if (!L || !L->valid) { return 0; }
+    if (seq < L->seq) { return 0; }
+    if (seq == L->seq) { return digest == L->digestAtSeq; }
+    return 1;
+}
 
 /* ===== manifest（方案 A：新 ROM 绝对地址）=====
  * 具名宏 GNP_MB_IW/GNP_PEEK_IW/GNP_APPLIED_IW/GNP_ROM_MD5_HEX 由
@@ -397,7 +551,8 @@ static uint32_t gnpNgRead32(const uint8_t* p) {
  * 前置条件由调用方保证：diag state==CLOSED、msg_type==PARTY、src_tag 合法、seq 单调去重。
  * tag_ok 逐字读真值（禁写 1）；state/msg_type 打印字面常量（仅前置条件成立时 truthful）。 */
 static void gnpNgRender(char* buf, size_t cap, const uint8_t* diag,
-                        const char* role, const char* sender, const char* romMd5Hex) {
+                        const char* role, const char* sender, const char* romMd5Hex,
+                        const char* partyMd5, const char* rxPartyMd5, const char* txPartyMd5) {
     char sSeq[16], sCnt[16], sTagOk[16], sSp0[8], sTxSp0[8];
     char sNonce[16], sBlob[16], sTag[16], sRx[16], sTx[16];
     uint16_t sp0, tx_sp0;
@@ -419,11 +574,77 @@ static void gnpNgRender(char* buf, size_t cap, const uint8_t* diag,
     snprintf(buf, cap,
         "[NETGATE] role=%s state=%s seq=%s sender=%s rom_md5=%s blob=%s nonce=%s "
         "tag=%s rx_digest=%s tx_digest=%s msg_type=%s src_tag=%s cnt=%s sp0=%s "
-        "tx_sp0=%s tag_ok=%s",
+        "tx_sp0=%s tag_ok=%s "
+        GNP_FIELD_PARTY_MD5 "=%s " GNP_FIELD_RX_PARTY_MD5 "=%s " GNP_FIELD_TX_PARTY_MD5 "=%s",
         role, GNP_NG_STATE_STR, sSeq, sender, romMd5Hex, sBlob, sNonce,
         sTag, sRx, sTx, GNP_NG_MSG_TYPE_STR, (const char*) (diag + GNP_OFF_NG_SRC_TAG),
-        sCnt, sSp0, sTxSp0, sTagOk);
+        sCnt, sSp0, sTxSp0, sTagOk,
+        partyMd5 ? partyMd5 : "", rxPartyMd5 ? rxPartyMd5 : "", txPartyMd5 ? txPartyMd5 : "");
 }
+
+/* ===== party provenance 生产者（档1 A；writer=ROM 真 party 字节序列化）=====
+ * header-only static inline：主 Qt app 只编 sio_link.c 不链 mgba_mobile.c，故实现
+ * 必须放共享头，避免未定义符号。调用方（driver）逐字节只读 party 区（具名宏，
+ * manifest 唯一裸 hex 来源），把 480B rx/tx 传进来；本段只算 md5/写独立快照文件，
+ * 绝不写游戏态、不含预测字。run dir 经 gnpNgSetRunDir 或 env MGBAX_GNP_RUN_DIR
+ * 指定时才写文件；两者皆空则只产字段（零副作用）。 */
+static char s_gnpPartyMd5[2][33];
+static char s_gnpRxPartyMd5[2][33];
+static char s_gnpTxPartyMd5[2][33];
+static uint8_t s_gnpSnapMd5[2][16];
+static int s_gnpSnapDone[2];
+
+static inline const char* gnpNgRunDir(void) {
+    const char* e = getenv("MGBAX_GNP_RUN_DIR");
+    return (e && e[0]) ? e : NULL;   /* NULL=不写快照文件，仅产 md5 字段 */
+}
+
+/* run 目录注入接口：写进程 env（跨 TU 共享），driver 初始化或 cloud2p 收尾前调。 */
+static inline void gnpNgSetRunDir(const char* dir) {
+    if (!dir || !dir[0]) { return; }
+#ifdef _WIN32
+    (void) _putenv_s("MGBAX_GNP_RUN_DIR", dir);
+#else
+    (void) setenv("MGBAX_GNP_RUN_DIR", dir, 1);
+#endif
+}
+
+static inline void gnpNgWriteSnapshot(int role, const uint8_t* rx, const uint8_t digest[16]) {
+    char path[640];
+    const char* dir = gnpNgRunDir();
+    int n;
+    FILE* f;
+    size_t wrote;
+    if (!dir) { return; }
+    if (s_gnpSnapDone[role] && !memcmp(s_gnpSnapMd5[role], digest, 16u)) { return; }
+    n = snprintf(path, sizeof(path), "%s%cparty_snapshot_%s.bin", dir, '/',
+                 role == 0 ? "APP" : "PC");
+    if (n < 0 || (size_t) n >= sizeof(path)) { return; }
+    f = fopen(path, "wb");
+    if (!f) { return; }
+    wrote = fwrite(rx, 1u, GNP_BLOB_SIZE, f);
+    fclose(f);
+    if (wrote == (size_t) GNP_BLOB_SIZE) {
+        memcpy(s_gnpSnapMd5[role], digest, 16u);
+        s_gnpSnapDone[role] = 1;
+    }
+}
+
+static inline void gnpNgPartyProvenance(int role, const uint8_t* rx, const uint8_t* tx) {
+    uint8_t drx[16], dtx[16];
+    role &= 1;
+    if (!rx || !tx) { return; }
+    md5Buffer(rx, GNP_BLOB_SIZE, drx);
+    md5Buffer(tx, GNP_BLOB_SIZE, dtx);
+    gnpNgHexBytes(s_gnpPartyMd5[role], drx, 16u);
+    gnpNgHexBytes(s_gnpRxPartyMd5[role], drx, 16u);
+    gnpNgHexBytes(s_gnpTxPartyMd5[role], dtx, 16u);
+    gnpNgWriteSnapshot(role, rx, drx);
+}
+
+static inline const char* gnpNgPartyMd5(int role)   { return s_gnpPartyMd5[role & 1]; }
+static inline const char* gnpNgRxPartyMd5(int role) { return s_gnpRxPartyMd5[role & 1]; }
+static inline const char* gnpNgTxPartyMd5(int role) { return s_gnpTxPartyMd5[role & 1]; }
 
 /* ===== host CRC16 镜像：逐位复刻 gen8 src/util.c:240 CalcCRC16WithTable =====
  * init=0x1121 / 反射 poly=0x8408 表 / 末 ~crc；表由 poly 运行时生成。

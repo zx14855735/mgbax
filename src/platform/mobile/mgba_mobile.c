@@ -238,9 +238,10 @@ static inline uint32_t mobileCodeDelta(void) {
 #include <mgba-util/vfs.h>
 
 /* S2 Android 宿端写口：GNP 500B/CRC16 ABI 镜像 + manifest 绝对地址具名宏。
- * include 根为 src/，故带 platform/gboy/ 前缀；共享头全 static/宏，无新链接符号。 */
-#include "platform/gboy/gboy_netparty_abi.h"
+ * include 根为 src/，故带 platform/gboy/ 前缀；共享头全 static/宏，无新链接符号。
+ * manifest 必须先于 abi.h：abi.h 的 party provenance 用 GNP_*_PARTY_* 具名宏。 */
 #include "platform/gboy/gnp_manifest.h"
+#include "platform/gboy/gboy_netparty_abi.h"
 
 #include "link_net.h"
 #include "link_lockstep.h"
@@ -1036,7 +1037,42 @@ struct MgbaMobile {
 	int sioPipelineEnabled;  /* -1 = not read yet */
 	unsigned diagTick;
 	unsigned traceTick;
+
+	/* ===== 档1 A 预测回滚（门默认关，零回归；与 PC struct SioLink 逐行对偶）=====
+	 * 影子账本只记投机字是否最终与真字一致，绝不写权威态；NgLatch/NgHist 供
+	 * 回滚保真与 confirmed-only 重放。历史输入按帧存，重放不读实时按键。 */
+	MgbaxPredSlot sioPredShadow[MGBAX_PREDICT_HISTORY];
+	uint32_t sioPredHead;
+	uint32_t sioPredConfirmed;
+	uint32_t sioPredMismatch;
+	uint32_t sioPredMismatchSeq;
+	uint32_t sioPredVsFastConflict;
+	bool sioRemoteIsPredicted;
+	struct NgLatch sioNgLatch;
+	struct NgHist sioNgHist[MGBAX_PREDICT_HISTORY];
+	/* 历史按键（按 frameNo 索引，confirmed-only 回放用），与 savestate 分离。 */
+	struct {
+		uint32_t frameNo;
+		uint32_t keys;
+		enum NgTag tag;
+	} sioNgInput[MGBAX_PREDICT_HISTORY];
+	uint32_t sioNgFrameNo;
+	int sioNgRollingBack;                 /* 回滚进行中：抑制 [NGPEEK] 原始行 */
 };
+
+/* 档1 A：预测门读缓存（定义见文件后段，beginFrameKeys 需前向声明）。 */
+#if MGBAX_ROLLBACK_ENABLE
+static bool mobilePredRollbackReady(const struct MgbaMobile* emu);
+#endif
+/* 回滚期抑制 [NGPEEK] 原始行（mobileNetGatePeek 只拿到 GBA*，用文件域镜像）。 */
+static int s_mobileNgRollingBack = 0;
+/* 门面 setter 状态（定义见文件后段；env 与 setter 任一为 1 即开）。 */
+static bool s_rollbackEnabled;
+#if MGBAX_ROLLBACK_ENABLE
+/* rewind 保真回调（定义见文件后段；在每帧 NETGATE 采样点幂等注册）。 */
+static void mobileDiagPreserveCb(void* vf, void* ud);
+static void mobileDiagVerifyCb(void* vf, void* ud);
+#endif
 
 /* ROM 自解析的内存回退：struct MgbaMobile 定义完成后才解引用（见文件头声明）。 */
 static struct MgbaMobile* s_romScanEmu;
@@ -2607,6 +2643,17 @@ static uint32_t beginFrameKeys(struct MgbaMobile* emu) {
 	uint32_t held = loadHeld(emu);
 	uint32_t latch = __atomic_exchange_n(&emu->latchedKeys, 0, __ATOMIC_ACQ_REL);
 	emu->frameKeys = applyTurbo(emu, held | latch);
+#if MGBAX_ROLLBACK_ENABLE
+	/* 档1 A：按帧录入真实按键（本机输入是真值，标 CONFIRMED），供回滚重放。
+	 * 门关时全段消解，beginFrameKeys 行为逐字节不变。 */
+	if (mobilePredRollbackReady(emu)) {
+		uint32_t fn = emu->sioNgFrameNo++;
+		uint32_t slot = fn & (MGBAX_PREDICT_HISTORY - 1u);
+		emu->sioNgInput[slot].frameNo = fn;
+		emu->sioNgInput[slot].keys = emu->frameKeys;
+		emu->sioNgInput[slot].tag = NG_CONFIRMED;
+	}
+#endif
 	return emu->frameKeys;
 }
 
@@ -4214,7 +4261,9 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	/* ROOTHUNT 迭代 38: 直接置 gReadyToCloseLink[0..1]（canonical 0x03002AA6），
 	 * 绕过 LinkMain2 的 CONN 位门；APPHUNT-5FFF 实证回显发出但 rdy 恒 0。 */
-	if (emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA
+	/* 【档1 A 方案 i 写径门，对偶 PC :4138】投机字绝不进 5FFF 关链写径。 */
+	if (!emu->sioRemoteIsPredicted
+	    && emu->core && emu->core->platform(emu->core) == mPLATFORM_GBA
 	    && ((uint16_t) remote == LINKCMD_READY_CLOSE_LINK
 	        || (GBAView16(gba->cpu, NAV_IW(0x03002AB0u)) == 0xFF5Fu))) {
 		unsigned pb = GBAView8(gba->cpu, NAV_READY_CLOSE_LINK);
@@ -4310,7 +4359,8 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 	 * finishMultiTransfer(→ GBASIOMultiplayerFinishTransfer → GBA_IRQ_SIO →
 	 * SerialCB → DoRecv) 之前。用原始 remote 判据（不定 data[]，检测不受影响）。
 	 * 不碰 queue pos/count、serialIntrCounter —— 那些是游戏独占的。 */
-	if (haveRemote) {
+	/* 【档1 A 方案 i 写径门，对偶 PC】投机字不进帧首 opcode 写 sc/rc 的写径。 */
+	if (haveRemote && !emu->sioRemoteIsPredicted) {
 		mobileAlignCmdFrameHeader(emu, remote);
 	}
 	finishMultiTransfer(emu, data, cyclesLate);
@@ -5829,6 +5879,124 @@ static bool mobileIsBlockWord(uint16_t w) {
 	return w == LINKCMD_INIT_BLOCK || w == LINKCMD_CONT_BLOCK
 	    || (mobileBlock2222On() && w == LINKCMD_SEND_LINK_TYPE);
 }
+
+/* ===== 档1 A 预测回滚本体（APP/共享 C 侧；与 PC sio_link.c 逐行对偶、role 反置）=====
+ * 红线同 PC：只读游戏态，绝不写 party/信任位/brs/rem/nr/st/gLinkOpen；
+ * 投机字只作 completeMultiTransfer 的 remote 入参，写径前由标记拦截。
+ * 整块裹编译门：门关时这些 static 函数不参与编译，避免 -Wunused-function(-Werror)。 */
+#if MGBAX_ROLLBACK_ENABLE
+
+static bool mobilePredRollbackReady(const struct MgbaMobile* emu) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char* v = getenv(MGBAX_ROLLBACK_ENV);
+		enabled = (v && atoi(v) == 1) ? 1 : 0;
+	}
+	if (!MGBAX_ROLLBACK_ENABLE || !(enabled || s_rollbackEnabled) || !emu) { return false; }
+	return true;
+}
+
+static bool mobilePredReadSp0Brs(struct MgbaMobile* emu, uint16_t* sp0, uint16_t* brs) {
+	struct GBA* gba;
+	uint32_t diag = (uint32_t) GNP_DIAG_EW;
+	if (!emu || !emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) { return false; }
+	gba = (struct GBA*) emu->core->board;
+	if (!gba || !gba->cpu || !gnpAbsEwOk(diag, GNP_NG_DIAG_SIZE)) { return false; }
+	*sp0 = (uint16_t) ((uint16_t) GBAView8(gba->cpu, diag + GNP_OFF_NG_SP0)
+	                 | ((uint16_t) GBAView8(gba->cpu, diag + GNP_OFF_NG_SP0 + 1u) << 8));
+	*brs = GBAView16(gba->cpu, NAV_IW(MOBILE_GLOBAL_BLK_RECV_STATUS));
+	return true;
+}
+
+/* 方案 i：握手/opcode/块字一律禁投机；仅 SEQ_INDEX 用起轮自槽真字作末字保持。 */
+static int mobilePredictWord(const struct MgbaMobile* emu, const MgbaxPredictIn* in,
+                             MgbaxPredictOut* out) {
+	out->word = 0u;
+	out->conf = GNP_CONF_LOW;
+	out->speculative = 0;
+	if (!in || !emu || !mobilePredRollbackReady(emu)) { return 0; }
+	if (in->phase == GNP_PHASE_HANDSHAKE || in->phase == GNP_PHASE_CMD_HEADER
+	    || in->phase == GNP_PHASE_SEQ_INDEX) {
+		out->conf = GNP_CONF_HIGH;
+	}
+	if (!gnpPredConfAllows(out->conf)) { out->conf = GNP_CONF_LOW; return 0; }
+	if (in->phase == GNP_PHASE_HANDSHAKE || in->phase == GNP_PHASE_CMD_HEADER) { return 0; }
+	if (in->phase == GNP_PHASE_SEQ_INDEX) {
+		out->word = in->ownWord;
+		if (gnpPredWordForbidden(out->word)) { out->word = 0u; return 0; }
+		out->speculative = 1;
+	}
+	return out->speculative;
+}
+
+static void mobilePredictShadowPut(struct MgbaMobile* emu, uint32_t seq, uint8_t sc,
+                                   const MgbaxPredictOut* out, uint16_t ownWord) {
+	MgbaxPredSlot* s = &emu->sioPredShadow[emu->sioPredHead & (MGBAX_PREDICT_HISTORY - 1u)];
+	s->word = out->word;
+	s->ownWord = ownWord;
+	s->sc = sc;
+	s->state = 1u;
+	s->seq = seq;
+	s->wallMs = wallNowMs();
+	++emu->sioPredHead;
+}
+
+static void mobilePredictConfirm(struct MgbaMobile* emu, uint32_t seq, uint16_t realWord) {
+	uint32_t i;
+	if (!emu) { return; }
+	for (i = 0u; i < MGBAX_PREDICT_HISTORY; ++i) {
+		MgbaxPredSlot* s = &emu->sioPredShadow[i];
+		if (s->state != 1u || s->seq != seq) { continue; }
+		if ((uint16_t) (s->word & MGBAX_PREDICT_MASK) ==
+		    (uint16_t) (realWord & MGBAX_PREDICT_MASK)) {
+			s->state = 2u;
+			++emu->sioPredConfirmed;
+		} else {
+			s->state = 3u;
+			++emu->sioPredMismatch;
+			emu->sioPredMismatchSeq = seq;
+		}
+	}
+}
+
+static bool mobilePredHardGate(struct MgbaMobile* emu, const MgbaxPredictIn* in,
+                               const MgbaxPredictOut* out) {
+	uint16_t sp0 = 0u, brs = 0u;
+	int isBlockW, isHsW;
+	if (!out || !out->speculative || !mobilePredRollbackReady(emu)) { return false; }
+	if (!mobilePredReadSp0Brs(emu, &sp0, &brs)) { return false; }
+	isBlockW = mobileIsBlockWord(in->peerPrev) || mobileIsBlockWord(in->ownWord);
+	isHsW = (in->peerPrev == LINK_HANDSHAKE_MASTER
+	         || (uint16_t) (in->peerPrev & ~LINK_HANDSHAKE_SLAVE_MASK) == LINK_HANDSHAKE_SLAVE);
+	return gnpPredHardGatePure(1, out->conf, in->phase, in->st, in->sc, sp0, brs,
+	        mobileInCmdPhase(emu) ? 1 : 0,
+	        (battleRelayOn() && inBattleBlockRelay(emu)) ? 1 : 0,
+	        isBlockW, isHsW, gnpPredWordForbidden(out->word) ? 1 : 0) != 0;
+}
+
+static void mobileCompletePredictedTransfer(struct MgbaMobile* emu, uint16_t word,
+                                            uint32_t cyclesLate) {
+	emu->sioRemoteIsPredicted = true;
+	completeMultiTransfer(emu, (uint32_t) word, true, cyclesLate);
+	emu->sioRemoteIsPredicted = false;
+}
+
+/* diag 稳态采样（latch 只读来源）：confirmed+CLOSED+PARTY，seq 严格增、tag_ok sticky。 */
+static void mobileNgLatchSample(struct MgbaMobile* emu, const uint8_t* diag) {
+	struct NgLatch* L = &emu->sioNgLatch;
+	uint32_t seq = gnpNgRead32(diag + GNP_OFF_NG_SEQ);
+	uint32_t digest = gnpNgRead32(diag + GNP_OFF_NG_RX_DIGEST);
+	if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED
+	    || diag[GNP_OFF_NG_MSG_TYPE] != GNP_NG_MSG_PARTY) { return; }
+	if (!gnpNgSampleOk(L, seq, digest)) { return; }
+	memcpy(L->diag, diag, GNP_NG_DIAG_SIZE);
+	L->seq = seq;
+	L->digestAtSeq = digest;
+	if (diag[GNP_OFF_NG_TAG_OK]) { L->tagOkSticky = 1; }
+	L->valid = 1;
+}
+#endif /* MGBAX_ROLLBACK_ENABLE：门关时全部预测本体内联函数不参与编译 */
+
 /* 【ROOTHUNT2 V1 相位锁】只读 gLink.sendCmdIndex（sc，+0x16），绝不写索引。
  * gen8 9 拍帧：DoSend 在 sc∈[0,7] 写 data[sc]、sc==8 写真 checksum。
  * 起轮捕获到的 sc 是"本轮 DoSend 要用的相位"，而 SIOMLT_SEND 在飞的字是
@@ -6684,6 +6852,9 @@ static void sioSlaveDoneEvent(struct mTiming* timing, void* user, uint32_t cycle
 	}
 	emu->sioIndex = got;
 	emu->sioHasRemote = true;
+#if MGBAX_ROLLBACK_ENABLE
+	if (mobilePredRollbackReady(emu)) { mobilePredictConfirm(emu, (uint32_t) got, (uint16_t) remote); }
+#endif
 	emu->sioRemote = remote;
 	/* 严格路径也要喂「最近一轮真实对端字」：从机的快帧分支（见
 	 * sioSlaveDoneEvent 里的 mobileFastFrameSlave 调用）以 sioFastRemoteValid 为
@@ -7088,6 +7259,33 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 			return;
 		}
 	}
+	/* ===== 档1 A 投机插入点：严格阻塞等待之前（对偶 PC sioDoneEvent）=====
+	 * 真字 > 预测字 > 空字：快帧/CMD-GUARD 路径已 return，落到此处才投机。 */
+#if MGBAX_ROLLBACK_ENABLE
+	if (mobilePredRollbackReady(emu) && emu->core
+	    && emu->core->platform(emu->core) == mPLATFORM_GBA
+	    && !emu->sioRemoteIsPredicted) {
+		MgbaxPredictIn pin;
+		MgbaxPredictOut pout;
+		memset(&pin, 0, sizeof(pin));
+		pin.st       = (uint8_t) GBAView8(((struct GBA*) emu->core->board)->cpu,
+		                    NAV_IW(MOBILE_GLINK_STATE) + MOBILE_GLINK_STATE_OFF);
+		pin.role     = (uint8_t) ((netLinkPlayer(emu->link) == 0) ? 0 : 1);
+		pin.localId  = emu->sioIndex;
+		pin.sc       = emu->sioBlockPhase;
+		pin.seq      = emu->sioIndex;
+		pin.ownWord  = emu->sioSelfSlotValid ? emu->sioSelfSlot : 0xFFFFu;
+		pin.peerPrev = (uint16_t) emu->sioRemote;
+		pin.phase    = gnpPredClassify(pin.st, pin.sc, pin.seq, pin.role == 0);
+		if (mobilePredictWord(emu, &pin, &pout) && mobilePredHardGate(emu, &pin, &pout)) {
+			mobilePredictShadowPut(emu, pin.seq, pin.sc, &pout, pin.ownWord);
+			emu->sioWaiting = false;
+			emu->sioConnectSince = 0;
+			mobileCompletePredictedTransfer(emu, pout.word, cyclesLate);
+			return;
+		}
+	}
+#endif
 	/* 真的阻塞等待：睡的是真实时间，模拟时钟冻在这里，所以一帧内的传输次数
 	 * 还是真机的量级。游戏的 LAG 判定就是数“每帧有几个 SIO 中断”（1P 那边
 	 * 少于 9 个就报 LAG_MASTER），一用模拟时间空转去等一个 16ms 的往返，
@@ -7166,6 +7364,9 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		}
 		emu->sioWaiting = false;
 		emu->sioHasRemote = true;
+#if MGBAX_ROLLBACK_ENABLE
+		if (mobilePredRollbackReady(emu)) { mobilePredictConfirm(emu, (uint32_t) got, (uint16_t) remote); }
+#endif
 		emu->sioRemote = remote;
 		/* 同上：让快帧分支在第一轮锁存时就有可复用的真实字，避免
 		 * completeMultiTransfer(…, 0, false) 喂一次空槽（Qt 侧用 sioRemote
@@ -8000,6 +8201,28 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		}
 		/* NETGATE 拼行钩子：逐帧只读 64B diag，门关/未 CLOSED/缺字段均零行零副作用。 */
 		mobileNetGatePeek(g);
+#if MGBAX_ROLLBACK_ENABLE
+		/* 档1 A 稳态采样 + diag 保真回调幂等注册（只对确认+CLOSED+PARTY 采样）。
+		 * 门关时全段消解，回调保持 NULL，rewind 钩子零副作用。 */
+		if (mobilePredRollbackReady(emu) && emu->core
+		    && emu->core->platform(emu->core) == mPLATFORM_GBA
+		    && g && g->cpu) {
+			uint8_t rbDiag[GNP_NG_DIAG_SIZE];
+			unsigned rbi;
+			uint32_t rbAddr = (uint32_t) GNP_DIAG_EW;
+			if (gnpAbsEwOk(rbAddr, GNP_NG_DIAG_SIZE)) {
+				for (rbi = 0u; rbi < GNP_NG_DIAG_SIZE; ++rbi) {
+					rbDiag[rbi] = (uint8_t) GBAView8(g->cpu, rbAddr + rbi);
+				}
+				mobileNgLatchSample(emu, rbDiag);
+			}
+			gnpRewindSetDiagPreserve(mobileDiagPreserveCb, emu);
+			gnpRewindSetDiagVerify(mobileDiagVerifyCb, emu);
+		} else {
+			gnpRewindSetDiagPreserve(NULL, NULL);
+			gnpRewindSetDiagVerify(NULL, NULL);
+		}
+#endif
 		/* 握手卡住时扫一次内存，定位游戏真实的 link 数据区（只做一次）。 */
 		if (!emu->memScan && emu->sioOk > 150 && g->sio.mode == GBA_SIO_MULTI) {
 			emu->memScan = 1;
@@ -8913,6 +9136,26 @@ bool mgbaMobileSaveStateToMemory(struct MgbaMobile* emu, void** out, size_t* out
 }
 
 /* 状态注入的实现体。调用方必须已持有核心锁。 */
+/* GBALoadState 内 mTimingClear() 会摘掉 linkEvent/sioDone/sioSlaveDone，但
+ * sioSlaveArmed 仍 true ⇒ serviceLink 守卫永假、链路不再重挂。三处 restore 后
+ * 统一调用本 helper（:loadStateFromMemory / mgbaMobileRewind / RewindFrames）。 */
+static void mobileSioRearmAfterLoad(struct MgbaMobile* emu) {
+	struct mTiming* timing = coreTiming(emu);
+	emu->sioSlaveArmed = false;
+	emu->sioRoundWordValid = false;
+	if (timing) {
+		mTimingDeschedule(timing, &emu->sioSlaveDone);
+		mTimingDeschedule(timing, &emu->sioDone);
+	}
+	if (mobileStateRearmGuardOn()) {
+		if (emu->linkAttached && emu->linkEvent.callback) {
+			armLinkEvent(emu);
+		}
+	} else {
+		armLinkEvent(emu);   /* 门关=复现崩溃，便于 A/B 对照 */
+	}
+}
+
 static bool mobileLoadStateLocked(struct MgbaMobile* emu, const void* data, size_t size) {
 	if (!emu || !emu->core || !data || size == 0) {
 		return false;
@@ -8943,34 +9186,9 @@ static bool mobileLoadStateLocked(struct MgbaMobile* emu, const void* data, size
 	bool ok = mCoreLoadStateNamed(emu->core, vf, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
 	vf->close(vf);
 	if (ok) {
-		/* 【path B 关键】GBALoadState 内部会 mTimingClear()，把 linkEvent /
-		 * sioDone / sioSlaveDone 全部从 timing 链表摘掉，但 emu->sioSlaveArmed
-		 * 仍是 true：serviceLink 的 `!sioSlaveArmed` 守卫从此永远为假，
-		 * 那颗核再也不会重挂从机事件、不推总线字（PB23/24：唯一被灌
-		 * TYPE_STATE 的 slot 1 在主机 50 轮后一次 busRoundLocal 都没调，
-		 * 主机 p=011 永远收不齐 3 份、BCAST=0、m1=FFFF、pc=0）。
-		 * 这里把 mTimingClear 破坏的不变量补回来；不动 serviceLink 的
-		 * roundReady 判据，path A / TCP 总线行为不变。 */
-		{
-			struct mTiming* timing = coreTiming(emu);
-			emu->sioSlaveArmed = false;
-			emu->sioRoundWordValid = false;
-			if (timing) {
-				mTimingDeschedule(timing, &emu->sioSlaveDone);
-				mTimingDeschedule(timing, &emu->sioDone);
-			}
-			/* 【M1 seed 崩溃修复】只在门开时加运行时守卫：锁步核 linkAttached=false、
-			 * linkEvent 全零（gbaLinkInit 从不跑），seed applied 后 arm 零事件 →
-			 * 下一帧 mTimingTick 调 NULL callback 崩溃。守卫放在【调用点】，不下沉
-			 * armLinkEvent()（后者在 linkAttached=true 之前的首挂是合法的）。 */
-			if (mobileStateRearmGuardOn()) {
-				if (emu->linkAttached && emu->linkEvent.callback) {
-					armLinkEvent(emu);
-				}
-			} else {
-				armLinkEvent(emu);   /* 门关=复现崩溃，便于 A/B 对照 */
-			}
-		}
+		/* 【path B 关键】restore 后补回 mTimingClear 破坏的不变量（helper 抽出，
+		 * 三处 restore 同调；含 mobileStateRearmGuardOn 运行时守卫）。 */
+		mobileSioRearmAfterLoad(emu);
 		applyFrameskip(emu->core, 0);
 		ensureVideo(emu);
 		emu->fast = -1;
@@ -9044,6 +9262,8 @@ bool mgbaMobileRewind(struct MgbaMobile* emu, int seconds) {
 	}
 	bool ok = mCoreRewindRestore(&emu->rewind, emu->core, count);
 	if (ok) {
+		mobileSioRearmAfterLoad(emu);   /* 档1 A：rewind restore 后重挂链路事件 */
+		s_mobileNgRollingBack = 0;
 		applyFrameskip(emu->core, 0);
 		ensureVideo(emu);
 		emu->fast = -1;
@@ -9070,6 +9290,23 @@ void mgbaMobileSetVideoLayer(struct MgbaMobile* emu, size_t id, bool enable) {
 	mgbaMobileUnlock(emu);
 }
 
+#if MGBAX_ROLLBACK_ENABLE
+/* 历史输入回放：按 frameNo 取当帧录入的真实按键；只放行 CONFIRMED 帧。
+ * 门关时本 helper 不参与（回放仍走 beginFrameKeys，零回归）。 */
+static bool mobileNgReplayKeys(struct MgbaMobile* emu, uint32_t frameNo, uint32_t* keys) {
+	uint32_t i;
+	if (!emu || !mobilePredRollbackReady(emu)) { return false; }
+	for (i = 0u; i < MGBAX_PREDICT_HISTORY; ++i) {
+		if (emu->sioNgInput[i].frameNo == frameNo
+		    && emu->sioNgInput[i].tag == NG_CONFIRMED) {
+			*keys = emu->sioNgInput[i].keys;
+			return true;
+		}
+	}
+	return false;   /* 未确认/无记录帧：阻塞，不造假 */
+}
+#endif
+
 bool mgbaMobileRewindFrames(struct MgbaMobile* emu, int frames) {
 	if (!emu || !emu->core || frames <= 0) {
 		return false;
@@ -9079,11 +9316,13 @@ bool mgbaMobileRewindFrames(struct MgbaMobile* emu, int frames) {
 	if (emu->rewindInited) {
 		int remaining = frames;
 		ok = true;
+		s_mobileNgRollingBack = 1;   /* 回滚期抑制 [NGPEEK] 原始行，防误读 */
 		while (remaining > 0) {
 			if (!mCoreRewindRestore(&emu->rewind, emu->core, 1)) {
 				ok = false;
 				break;
 			}
+			mobileSioRearmAfterLoad(emu);   /* 每一步 restore 后重挂（含 mTimingClear 修复） */
 			if (remaining >= REWIND_DIVIDER) {
 				remaining -= REWIND_DIVIDER;
 			} else {
@@ -9091,12 +9330,24 @@ bool mgbaMobileRewindFrames(struct MgbaMobile* emu, int frames) {
 				 * 这样净效果正好是回退 frames 帧。 */
 				int replay = REWIND_DIVIDER - remaining;
 				for (int i = 0; i < replay; ++i) {
-					emu->core->setKeys(emu->core, beginFrameKeys(emu));
+#if MGBAX_ROLLBACK_ENABLE
+					if (mobilePredRollbackReady(emu)) {
+						uint32_t keys = 0u;
+						uint32_t fn = emu->sioNgFrameNo - (uint32_t) (replay - i);
+						/* 未确认帧：阻塞（掉帧），绝不读实时键补位造假。 */
+						if (!mobileNgReplayKeys(emu, fn, &keys)) { continue; }
+						emu->core->setKeys(emu->core, keys);
+					} else
+#endif
+					{
+						emu->core->setKeys(emu->core, beginFrameKeys(emu));
+					}
 					emu->core->runFrame(emu->core);
 				}
 				remaining = 0;
 			}
 		}
+		s_mobileNgRollingBack = 0;
 		if (ok) {
 			applyFrameskip(emu->core, 0);
 			ensureVideo(emu);
@@ -9678,11 +9929,71 @@ static bool mobileNetGateLogOn(void) {
 }
 void mgbaMobileNetGateLogSet(bool enabled) { s_ngLog = enabled ? 1 : 0; }
 
-/* 预测回滚门（档1 A 方向，默认关零回归）。门面占位：只维护门控状态，
- * 本体（预测字投机/快照回滚/diag 保真）由 gboy_netparty_abi.h 的 MGBAX_ROLLBACK_* 宏控制。
- * iOS 恒 UNOBS；本函数不写任何游戏态/信任位/party。 */
-static bool s_rollbackEnabled = false;
-void mgbaMobileRollbackSet(bool enabled) { s_rollbackEnabled = enabled; }
+/* 预测回滚门（档1 A 方向，默认关零回归）。本体（预测字投机/快照回滚/diag 保真）
+ * 由 gboy_netparty_abi.h 的 MGBAX_ROLLBACK_* 宏控制；iOS 恒 UNOBS。
+ * 本段不写任何游戏态/信任位/party。 */
+/* s_rollbackEnabled 定义见文件前段（门面 setter 与预测门共用）。 */
+
+#if MGBAX_ROLLBACK_ENABLE
+/* APP 侧 diag 保真：写快照不写 live；偏移由 mCoreStateEwramOffset() 给出。 */
+static void mobileDiagPreserveCb(void* vfp, void* ud) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ud;
+	struct VFile* vf = (struct VFile*) vfp;
+	struct NgLatch* L;
+	size_t off;
+	uint8_t snapSeq[4];
+	if (!emu || !vf || !emu->sioNgLatch.valid) { return; }
+	L = &emu->sioNgLatch;
+	off = mCoreStateEwramOffset();
+	/* VFile.map 无 offset 参数（vfs.h:46，恒从文件 0 映射），定点写必须 seek+write；
+	 * 旧 map(off+64) 写法会把 latch 写进快照头 64B、unmap 回写破坏 savestate。 */
+	if (vf->seek(vf, (off_t) (off + GNP_OFF_NG_SEQ), SEEK_SET) < 0) { goto done; }
+	if (vf->read(vf, snapSeq, sizeof(snapSeq)) != (ssize_t) sizeof(snapSeq)) { goto done; }
+	if (L->seq < gnpNgRead32(snapSeq)) { goto done; }   /* 单调：不卷回 diag */
+	if (vf->seek(vf, (off_t) off, SEEK_SET) < 0) { goto done; }
+	(void) vf->write(vf, L->diag, GNP_NG_DIAG_SIZE);
+done:
+	(void) vf->seek(vf, 0, SEEK_SET);
+}
+
+/* restore 后只 PEEK 复核、零写 live（回滚层绝不伪造 diag/信任位）。 */
+static void mobileDiagVerifyCb(void* vfp, void* ud) {
+	struct MgbaMobile* emu = (struct MgbaMobile*) ud;
+	struct NgLatch* L;
+	uint8_t diag[GNP_NG_DIAG_SIZE];
+	unsigned i;
+	(void) vfp;
+	if (!emu || !emu->core || emu->core->platform(emu->core) != mPLATFORM_GBA) { return; }
+	L = &emu->sioNgLatch;
+	if (!L->valid) { return; }
+	{
+		struct GBA* g = (struct GBA*) emu->core->board;
+		uint32_t addr = (uint32_t) GNP_DIAG_EW;
+		if (!g || !g->cpu || !gnpAbsEwOk(addr, GNP_NG_DIAG_SIZE)) { return; }
+		for (i = 0u; i < GNP_NG_DIAG_SIZE; ++i) {
+			diag[i] = (uint8_t) GBAView8(g->cpu, addr + i);
+		}
+	}
+	if (gnpNgRead32(diag + GNP_OFF_NG_SEQ) < L->seq) {
+		MOBILE_LOGI("[RB] rollback rolled back diag seq (live=%u latch=%u) — no live write",
+		            (unsigned) gnpNgRead32(diag + GNP_OFF_NG_SEQ), (unsigned) L->seq);
+	}
+}
+#endif /* MGBAX_ROLLBACK_ENABLE */
+
+/* party provenance 实现已下沉共享头 gboy_netparty_abi.h（header-only static inline），
+ * 避免主 Qt app 只编 sio_link.c 而不链 mgba_mobile.c 时出现未定义符号。 */
+
+void mgbaMobileRollbackSet(bool enabled) {
+	s_rollbackEnabled = enabled;
+#if MGBAX_ROLLBACK_ENABLE
+	if (!enabled) {
+		/* 门关 immediate-return：新字段恒 0、回调注销，零回归。 */
+		gnpRewindSetDiagPreserve(NULL, NULL);
+		gnpRewindSetDiagVerify(NULL, NULL);
+	}
+#endif
+}
 bool mgbaMobileRollbackOn(void) { return s_rollbackEnabled; }
 
 /* seq 严格单调去重 + 规范行 64 条上限；[NGPEEK] 旁路独立节流。 */
@@ -9693,7 +10004,7 @@ static unsigned s_ngPeekLines = 0;
 
 static void mobileNetGatePeek(struct GBA* g) {
 	uint8_t diag[GNP_NG_DIAG_SIZE];
-	char line[512];
+	char line[768];   /* 追加 party_md5/rx/tx 三字段后留足余量，防 snprintf 截断 */
 	char romMd5[33];
 	uint32_t addr = (uint32_t) GNP_DIAG_EW;
 	uint32_t sig, seq;
@@ -9721,7 +10032,8 @@ static void mobileNetGatePeek(struct GBA* g) {
 	      ((uint32_t) diag[GNP_OFF_NG_TAG_OK] << 16) |
 	      ((uint32_t) diag[GNP_OFF_NG_MSG_TYPE] << 8) |
 	      (uint32_t) diag[GNP_OFF_NG_COUNT];
-	if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED &&
+	if (!s_mobileNgRollingBack &&
+	    diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED &&
 	    sig != s_ngPeekSig && s_ngPeekLines < GNP_NG_MAX_LINES) {
 		s_ngPeekSig = sig;
 		++s_ngPeekLines;
@@ -9746,6 +10058,20 @@ static void mobileNetGatePeek(struct GBA* g) {
 	/* role/sender/rom_md5 = driver 身份真值：APP 端本端 APP、对端 PC；
 	 * rom_md5 由 driver 实测 ROM 字节渲染（非 manifest 常量样例，且上面已验身份）。 */
 	gnpNgRomMd5Hex(rom, romSize, romMd5);
-	gnpNgRender(line, sizeof(line), diag, "APP", "PC", romMd5);
+	/* party provenance：产 CONFIRMED [NETGATE] 行时逐字节只读 ROM 真 party 区，
+	 * 落纯 party 480B 快照 + 三字段（具名宏地址；非预测字、零写游戏态）。 */
+	if (g && g->cpu
+	    && gnpAbsEwOk(GNP_ENEMY_PARTY_EW, GNP_PARTY_BLOB_BYTES)
+	    && gnpAbsEwOk(GNP_PLAYER_PARTY_EW, GNP_PARTY_BLOB_BYTES)) {
+		uint8_t rbRx[GNP_PARTY_BLOB_BYTES], rbTx[GNP_PARTY_BLOB_BYTES];
+		unsigned rbj;
+		for (rbj = 0u; rbj < GNP_PARTY_BLOB_BYTES; ++rbj) {
+			rbRx[rbj] = (uint8_t) GBAView8(g->cpu, GNP_ENEMY_PARTY_EW + rbj);
+			rbTx[rbj] = (uint8_t) GBAView8(g->cpu, GNP_PLAYER_PARTY_EW + rbj);
+		}
+		gnpNgPartyProvenance(0, rbRx, rbTx);   /* role=APP */
+	}
+	gnpNgRender(line, sizeof(line), diag, "APP", "PC", romMd5,
+	            gnpNgPartyMd5(0), gnpNgRxPartyMd5(0), gnpNgTxPartyMd5(0));
 	MOBILE_LOGI("%s", line);
 }

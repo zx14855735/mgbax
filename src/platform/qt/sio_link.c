@@ -614,6 +614,8 @@ static void sioResolveCodeDelta(struct SioLink* sio) {
 }
 
 #include <mgba/core/core.h>
+#include <mgba/core/serialize.h>
+#include <mgba-util/vfs.h>
 #include <mgba/gba/interface.h>
 #include <mgba/internal/gba/gba.h>
 #include <mgba/internal/gba/sio.h>
@@ -635,8 +637,12 @@ static void sioResolveCodeDelta(struct SioLink* sio) {
 /* S2 PC 写口：GNP 500B/CRC16 ABI 镜像 + manifest 绝对地址具名宏。
  * 两头已在 src/platform/gboy/ 落盘；include 根为 src/，故带 platform/gboy/ 前缀。
  * 均为宏/typedef/static 助手，无新增链接符号；门默认关时相关 static 函数不被调用。 */
-#include "platform/gboy/gboy_netparty_abi.h"
+/* manifest 必须先于 abi.h：abi.h 的 party provenance 用 GNP_*_PARTY_* 具名宏。 */
 #include "platform/gboy/gnp_manifest.h"
+#include "platform/gboy/gboy_netparty_abi.h"
+
+/* ===== 档1 A 预测回滚：影子槽类型定义见共享头 gboy_netparty_abi.h（三端同名同值）===== */
+#define MGBAX_PRED_IDX_MASK (MGBAX_PREDICT_HISTORY - 1u)
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -699,7 +705,7 @@ static unsigned s_ngPeekLines = 0;
 
 static void sioNetGatePeek(struct GBA* gba, const uint8_t* rom, size_t romSize) {
     uint8_t diag[GNP_NG_DIAG_SIZE];
-    char line[512];
+    char line[768];   /* 追加 party_md5/rx/tx 三字段后留足余量，防 snprintf 截断 */
     char romMd5[33];
     uint32_t addr = (uint32_t) GNP_DIAG_EW;
     uint32_t sig, seq;
@@ -737,7 +743,21 @@ static void sioNetGatePeek(struct GBA* gba, const uint8_t* rom, size_t romSize) 
     ++s_ngLines;
 
     gnpNgRomMd5Hex(rom, romSize, romMd5);
-    gnpNgRender(line, sizeof(line), diag, "PC", "APP", romMd5);
+    /* party provenance：产 CONFIRMED [NETGATE] 行时逐字节只读 ROM 真 party 区，
+     * 落纯 party 480B 快照 + 三字段（具名宏地址；非预测字、零写游戏态）。 */
+    if (gba && gba->cpu
+        && gnpAbsEwOk(GNP_ENEMY_PARTY_EW, GNP_PARTY_BLOB_BYTES)
+        && gnpAbsEwOk(GNP_PLAYER_PARTY_EW, GNP_PARTY_BLOB_BYTES)) {
+        uint8_t rbRx[GNP_PARTY_BLOB_BYTES], rbTx[GNP_PARTY_BLOB_BYTES];
+        unsigned rbj;
+        for (rbj = 0u; rbj < GNP_PARTY_BLOB_BYTES; ++rbj) {
+            rbRx[rbj] = (uint8_t) GBAView8(gba->cpu, GNP_ENEMY_PARTY_EW + rbj);
+            rbTx[rbj] = (uint8_t) GBAView8(gba->cpu, GNP_PLAYER_PARTY_EW + rbj);
+        }
+        gnpNgPartyProvenance(1, rbRx, rbTx);   /* role=PC */
+    }
+    gnpNgRender(line, sizeof(line), diag, "PC", "APP", romMd5,
+                gnpNgPartyMd5(1), gnpNgRxPartyMd5(1), gnpNgTxPartyMd5(1));
     SIO_LOG("%s", line);
 }
 
@@ -1014,7 +1034,32 @@ struct SioLink {
 	bool sioDelayAnchored;     /* 消费链已锚定（state>=4 的第一轮完成） */
 	bool sioDelayPrefill;      /* state==2：只推不消费地积累 N 深队列 */
 	uint32_t sioDelayWaits;    /* 该标签未到、短周期重挂的次数（诊断） */
+
+	/* ===== 档1 A 预测回滚（门默认关，零回归）=====
+	 * 账本只记「投机字是否最终与真字一致」，绝不写权威态；预测字不进
+	 * gEnemyParty/信任位/brs/rem/nr/st。sioRemoteIsPredicted 是写径拦截标记：
+	 * 仅投机投递的那一轮置位，供 completeMultiTransfer 的 5FFF/帧首写径前挡下。 */
+	MgbaxPredSlot sioPredShadow[MGBAX_PREDICT_HISTORY];
+	uint32_t sioPredHead;
+	uint32_t sioPredConfirmed;
+	uint32_t sioPredMismatch;
+	uint32_t sioPredMismatchSeq;
+	uint32_t sioPredVsFastConflict;   /* 双预测源互斥自证，正常恒 0 */
+	bool sioRemoteIsPredicted;        /* 本轮 remote 是投机字（写径拦截用） */
+	struct NgLatch sioNgLatch;        /* diag 保真（回滚层只读） */
+	struct NgHist sioNgHist[MGBAX_PREDICT_HISTORY]; /* 按帧索引，与 savestate 分离 */
 };
+
+/* 档1 A：预测门/采样/保真回调前向声明（定义见文件后段，逐帧采样点先用到）。 */
+static bool sioPredRollbackReady(const struct SioLink* sio);
+#if MGBAX_ROLLBACK_ENABLE
+static void sioNgLatchSample(struct SioLink* sio, const uint8_t* diag);
+static void sioDiagPreserveCb(void* vf, void* ud);
+static void sioDiagVerifyCb(void* vf, void* ud);
+#endif
+/* PC 门面对偶标记（对偶 mobile s_rollbackEnabled）：env 或 setter 任一为 1 即开。 */
+static bool s_sioRollbackEnabled = false;
+void sioRollbackSet(bool enabled) { s_sioRollbackEnabled = enabled; }
 
 /* LOADED-ROM 回退：文件扫描器找不到 ROM 时，用当前已加载核心的 ROM 镜像。
  * 玩家设备 / 任意部署路径下这是唯一一定存在的 ROM 来源（与 mobile 侧
@@ -4135,9 +4180,12 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 	 * ProcessRecvCmds，0x5FFF 即使落在 gRecvCmds[0][0] 也不会置标志。
 	 * 与 rearm 补 handshakeAsMaster 同款：收到/发出 0x5FFF 时直接把
 	 * gReadyToCloseLink[0..1] 置 1，让 LinkCB_WaitCloseLink 立即满足。 */
-	if ((uint16_t) remote == LINKCMD_READY_CLOSE_LINK
-	    || (GBAView8(((struct GBA*) sio->core->board)->cpu, SIO_IW(0x03002AB0u)) == 0xFFu
-	        && GBAView8(((struct GBA*) sio->core->board)->cpu, SIO_IW(0x03002AB1u)) == 0x5Fu)) {
+	/* 【档1 A 方案 i 写径门】投机字绝不进 5FFF 关链写径（5FFF 本身也已被
+	 * gnpPredWordForbidden 禁投机，此处为纵深防御；门关时标记恒 false，零回归）。 */
+	if (!sio->sioRemoteIsPredicted
+	    && ((uint16_t) remote == LINKCMD_READY_CLOSE_LINK
+	        || (GBAView8(((struct GBA*) sio->core->board)->cpu, SIO_IW(0x03002AB0u)) == 0xFFu
+	            && GBAView8(((struct GBA*) sio->core->board)->cpu, SIO_IW(0x03002AB1u)) == 0x5Fu))) {
 		unsigned pb = GBAView8(((struct GBA*) sio->core->board)->cpu, SIO_RDY_CLOSE_LINK);
 		GBAPatch8(((struct GBA*) sio->core->board)->cpu, SIO_RDY_CLOSE_LINK, 1, NULL);
 		GBAPatch8(((struct GBA*) sio->core->board)->cpu, SIO_RDY_CLOSE_LINK + 1u, 1, NULL);
@@ -4334,7 +4382,9 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 	 * 同一轮把 (1,0) 覆盖掉，日志虽打印 CMDFRAMEALIGN 但 DoRecv 看到的仍是
 	 * 旧相位 ⇒ 0x2222 落进 recvQueue[0][1] ⇒ gRecvCmds[0][0] 恒陈旧。
 	 * 用原始 remote 判据（CS_FORGE 只改 data[] 不改 remote，检测不受影响）。 */
-	if (haveRemote) {
+	/* 【档1 A 方案 i 写径门】帧首 opcode(2222/2233/BBBB/8888) 触发
+	 * sioAlignCmdFrameHeader 写 sc/rc（游戏态）；投机字一律不进此写径。 */
+	if (haveRemote && !sio->sioRemoteIsPredicted) {
 		sioAlignCmdFrameHeader(sio, remote);
 	}
 	finishMultiTransfer(sio, data, cyclesLate);
@@ -4461,6 +4511,25 @@ static void serviceLink(struct SioLink* sio) {
 			struct GBA* ngGba = (struct GBA*) sio->core->board;
 			const uint8_t* ngRom = sioLoadedRomBytes(sio, &ngRomSize);
 			sioNetGatePeek(ngGba, ngRom, ngRomSize);
+#if MGBAX_ROLLBACK_ENABLE
+			/* 档1 A 稳态采样 + diag 保真回调幂等注册（对偶 mobile）。 */
+			if (sioPredRollbackReady(sio) && ngGba && ngGba->cpu) {
+				uint8_t rbDiag[GNP_NG_DIAG_SIZE];
+				unsigned rbi;
+				uint32_t rbAddr = (uint32_t) GNP_DIAG_EW;
+				if (gnpAbsEwOk(rbAddr, GNP_NG_DIAG_SIZE)) {
+					for (rbi = 0u; rbi < GNP_NG_DIAG_SIZE; ++rbi) {
+						rbDiag[rbi] = (uint8_t) GBAView8(ngGba->cpu, rbAddr + rbi);
+					}
+					sioNgLatchSample(sio, rbDiag);
+				}
+				gnpRewindSetDiagPreserve(sioDiagPreserveCb, sio);
+				gnpRewindSetDiagVerify(sioDiagVerifyCb, sio);
+			} else {
+				gnpRewindSetDiagPreserve(NULL, NULL);
+				gnpRewindSetDiagVerify(NULL, NULL);
+			}
+#endif
 		}
 		int player = netLinkPlayer(sio->link);
 		/* The slave never starts a transfer itself: the 1P clock drives the
@@ -6336,6 +6405,146 @@ bool sioFastGateReady(bool disabled, uint32_t ok, unsigned gLinkState, unsigned 
 	return sioFastGateReadyEx(disabled, ok, gLinkState, gLinkPlayerCount, 256);
 }
 
+/* ===== 档1 A 预测回滚本体（PC 侧；与 sioFastGateReadyEx 并列互斥、不互推）=====
+ * 红线：所有函数只读游戏态，绝不写 party/信任位/brs/rem/nr/st/gLinkOpen；
+ * 投机字只作为 completeMultiTransfer 的 remote 入参，落 data[peer] 后立即由
+ * 写径门拦截控制字。门 MGBAX_ROLLBACK_ENABLE=0 时全段被编译器消解、零回归。 */
+
+/* 运行时独立门（默认 0）；env=1 或 sioRollbackSet(true) 任一开启，
+ * 对偶 mobile 的 enabled||s_rollbackEnabled；不读也不修改 sioFastFrame 的门。 */
+static bool sioPredRollbackReady(const struct SioLink* sio) {
+	static int enabled = -1;
+	if (enabled < 0) {
+		const char* v = getenv(MGBAX_ROLLBACK_ENV);
+		enabled = (v && atoi(v) == 1) ? 1 : 0;
+	}
+	if (!MGBAX_ROLLBACK_ENABLE || !(enabled || s_sioRollbackEnabled) || !sio) { return false; }
+	return true;
+}
+
+#if MGBAX_ROLLBACK_ENABLE
+/* diag 只读：sp0（NETGATE 64B 内定点偏移）+ brs（gBlockReceivedStatus）。
+ * 任一守卫失败即 false（fail-closed，绝不进硬门）。 */
+static bool sioPredReadSp0Brs(struct SioLink* sio, uint16_t* sp0, uint16_t* brs) {
+	struct GBA* gba;
+	uint32_t diag = (uint32_t) GNP_DIAG_EW;
+	if (!sio || !sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) { return false; }
+	gba = (struct GBA*) sio->core->board;
+	if (!gba || !gba->cpu || !gnpAbsEwOk(diag, GNP_NG_DIAG_SIZE)) { return false; }
+	*sp0 = (uint16_t) ((uint16_t) GBAView8(gba->cpu, diag + GNP_OFF_NG_SP0)
+	                 | ((uint16_t) GBAView8(gba->cpu, diag + GNP_OFF_NG_SP0 + 1u) << 8));
+	*brs = GBAView16(gba->cpu, SIO_IW(SIO_GLOBAL_BLK_RECV_STATUS));
+	return true;
+}
+
+/* 有状态字构造：只产出 SIO 投递字候选，不写游戏态。
+ * 父会话方案 i：握手字/opcode(2222/2233/BBBB/8888/5FFF)/块字一律 speculative=0；
+ * 仅 SEQ_INDEX 分支用起轮自槽真字作「末字保持」候选，且仍要过 gnpPredWordForbidden。 */
+static int sioPredictWord(const struct SioLink* sio, const MgbaxPredictIn* in, MgbaxPredictOut* out) {
+	out->word = 0u;
+	out->conf = GNP_CONF_LOW;
+	out->speculative = 0;
+	if (!in || !sio || !sioPredRollbackReady(sio)) { return 0; }
+	if (in->phase == GNP_PHASE_HANDSHAKE || in->phase == GNP_PHASE_CMD_HEADER
+	    || in->phase == GNP_PHASE_SEQ_INDEX) {
+		out->conf = GNP_CONF_HIGH;
+	}
+	if (!gnpPredConfAllows(out->conf)) { out->conf = GNP_CONF_LOW; return 0; }
+	if (in->phase == GNP_PHASE_HANDSHAKE) {
+		/* 握手字触发 maybeRearmHandshake/RHSLVINJ 写真握手字（写径），方案 i 禁投机。 */
+		return 0;
+	}
+	if (in->phase == GNP_PHASE_CMD_HEADER) {
+		/* opcode 触发 sioAlignCmdFrameHeader 写 sc/rc（写径），方案 i 禁投机。 */
+		return 0;
+	}
+	if (in->phase == GNP_PHASE_SEQ_INDEX) {
+		out->word = in->ownWord;                 /* 真来源：起轮自槽，非造字 */
+		if (gnpPredWordForbidden(out->word)) { out->word = 0u; return 0; }
+		out->speculative = 1;
+	}
+	return out->speculative;
+}
+
+/* 投机字登记入环形影子账本（与 sioRemote/sioPeerHist 物理分离）。 */
+static void sioPredictShadowPut(struct SioLink* sio, uint32_t seq, uint8_t sc,
+                                const MgbaxPredictOut* out, uint16_t ownWord) {
+	MgbaxPredSlot* s = &sio->sioPredShadow[sio->sioPredHead & MGBAX_PRED_IDX_MASK];
+	s->word = out->word;
+	s->ownWord = ownWord;
+	s->sc = sc;
+	s->state = 1u;                               /* PREDICTED */
+	s->seq = seq;
+	s->wallMs = wallNowMs();
+	++sio->sioPredHead;
+}
+
+/* 真字到达时核对：一致→CONFIRMED（只做账本迁移，不改 live 字）；分歧→ROLLED+计数，
+ * 交回滚引擎（sio NgHist 只保留 CONFIRMED 供重放，predicted 永不注入）。 */
+static void sioPredictConfirm(struct SioLink* sio, uint32_t seq, uint16_t realWord,
+                              int* mismatch, uint32_t* mismatchSeq) {
+	uint32_t i;
+	if (!sio) { return; }
+	if (mismatch) { *mismatch = 0; }
+	if (mismatchSeq) { *mismatchSeq = 0; }
+	for (i = 0u; i < MGBAX_PREDICT_HISTORY; ++i) {
+		MgbaxPredSlot* s = &sio->sioPredShadow[i];
+		if (s->state != 1u || s->seq != seq) { continue; }
+		if ((uint16_t) (s->word & MGBAX_PREDICT_MASK) ==
+		    (uint16_t) (realWord & MGBAX_PREDICT_MASK)) {
+			s->state = 2u;                       /* CONFIRMED（仅账本标签） */
+			++sio->sioPredConfirmed;
+		} else {
+			s->state = 3u;                       /* ROLLED */
+			++sio->sioPredMismatch;
+			sio->sioPredMismatchSeq = seq;
+			if (mismatch) { *mismatch = 1; }
+			if (mismatchSeq) { *mismatchSeq = seq; }
+		}
+	}
+}
+
+/* 相位硬门：取齐只读现场后交共享头纯数值核。sp0/brs 读不到即 fail-closed。 */
+static bool sioPredHardGate(struct SioLink* sio, const MgbaxPredictIn* in,
+                            const MgbaxPredictOut* out) {
+	uint16_t sp0 = 0u, brs = 0u;
+	int isBlockW, isHsW;
+	if (!out || !out->speculative || !sioPredRollbackReady(sio)) { return false; }
+	if (!sioPredReadSp0Brs(sio, &sp0, &brs)) { return false; }
+	isBlockW = sioIsBlockWord(in->peerPrev) || sioIsBlockWord(in->ownWord);
+	isHsW    = sioIsHandshakeWord(in->peerPrev);
+	return gnpPredHardGatePure(1, out->conf, in->phase, in->st, in->sc, sp0, brs,
+	        sioInCmdPhase(sio) ? 1 : 0,
+	        (battleRelayOn() && inBattleBlockRelay(sio)) ? 1 : 0,
+	        isBlockW, isHsW, gnpPredWordForbidden(out->word) ? 1 : 0) != 0;
+}
+
+/* 唯一投机投递口：置写径拦截标记 → 走原有 completeMultiTransfer → 清标记。
+ * 保持 completeMultiTransfer 本体与 SerialCB 唯一投递口语义不变。 */
+static void sioCompletePredictedTransfer(struct SioLink* sio, uint16_t word,
+                                         uint32_t cyclesLate) {
+	sio->sioRemoteIsPredicted = true;
+	completeMultiTransfer(sio, (uint32_t) word, true, cyclesLate);
+	sio->sioRemoteIsPredicted = false;
+}
+
+/* diag 保真：稳态采样只收「确认+CLOSED+PARTY」，seq 严格增、tag_ok 只 sticky。
+ * 回滚层只读本 latch，不据标签升门。 */
+static void sioNgLatchSample(struct SioLink* sio, const uint8_t* diag) {
+	struct NgLatch* L = &sio->sioNgLatch;
+	uint32_t seq = gnpNgRead32(diag + GNP_OFF_NG_SEQ);
+	uint32_t digest = gnpNgRead32(diag + GNP_OFF_NG_RX_DIGEST);
+	if (diag[GNP_OFF_NG_STATE] != GNP_NG_STATE_CLOSED
+	    || diag[GNP_OFF_NG_MSG_TYPE] != GNP_NG_MSG_PARTY) { return; }
+	if (!gnpNgSampleOk(L, seq, digest)) { return; }
+	memcpy(L->diag, diag, GNP_NG_DIAG_SIZE);
+	L->seq = seq;
+	L->digestAtSeq = digest;
+	if (diag[GNP_OFF_NG_TAG_OK]) { L->tagOkSticky = 1; }   /* 只 0->1，禁 1->0 */
+	L->valid = 1;
+}
+#endif /* MGBAX_ROLLBACK_ENABLE：门关时全部预测本体内联函数不参与编译，零 unused 警告 */
+
 /* 【角色不对称的门】主机 = 生产字方，快帧取不到从机字就复用上一轮自己喂
  * 给游戏的对端槽，只影响按键新鲜度，可以用 MGBAX_FAST_MIN_OK 提前放行救
  * LAG_MASTER；从机 = 消费字方，块交换期取不到主机字就把 sioFastLast 当本轮
@@ -6797,6 +7006,11 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 			sio->sioWaiting = false;
 			sio->sioConnectSince = 0;
 			sio->sioHasRemote = true;
+#if MGBAX_ROLLBACK_ENABLE
+			if (sioPredRollbackReady(sio)) {
+				sioPredictConfirm(sio, sio->sioIndex, (uint16_t) delayRemote, NULL, NULL);
+			}
+#endif
 			sio->sioRemote = delayRemote;
 			completeMultiTransfer(sio, delayRemote, true, cyclesLate);
 			return;
@@ -6822,7 +7036,14 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	 * 补槽，但轮次照常完成（completeMultiTransfer 照常调一次）。这样每帧仍是
 	 * 9 轮、模拟时间不膨胀，帧率回到 60；N 轮之后 peerQ 到深度 N，此后走下面
 	 * 的队首链逐轮消费。详见 sioCoastReady 的注释。 */
-	if (sioCoastReady(sio) && sio->sioHasRemote
+	/* 【双预测源互斥自证】预测门开时 COAST 陈旧字复用必须停用，禁止同一轮
+	 * 同时存在「预测字」与「陈旧真字」两个供给源；命中即 sioPredVsFastConflict++。
+	 * 门关（默认）时本段被消解，下面条件与改动前逐字节相同。 */
+	if (sioPredRollbackReady(sio) && sioCoastReady(sio) && sio->sioHasRemote
+	    && netLinkPeerPending(sio->link) < (int) sio->sioCoastN) {
+		++sio->sioPredVsFastConflict;
+	}
+	if (!sioPredRollbackReady(sio) && sioCoastReady(sio) && sio->sioHasRemote
 	    && netLinkPeerPending(sio->link) < (int) sio->sioCoastN) {
 		sio->sioWaiting = false;
 		sio->sioConnectSince = 0;
@@ -6866,6 +7087,11 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 			sio->sioFastMiss = 0;
 			sio->sioWaiting = false;
 			sio->sioHasRemote = true;
+#if MGBAX_ROLLBACK_ENABLE
+			if (sioPredRollbackReady(sio)) {
+				sioPredictConfirm(sio, (uint32_t) fastGot, (uint16_t) fastRemote, NULL, NULL);
+			}
+#endif
 			sio->sioRemote = (uint16_t) (fastRemote & 0xFFFFu);
 			completeMultiTransfer(sio, fastRemote, true, cyclesLate);
 			return;
@@ -6920,6 +7146,33 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		}
 		sio->sioWaiting = false;
 	}
+	/* ===== 档1 A 投机插入点：sioDoneEvent 严格取字/阻塞之前 =====
+	 * 此处尚未 sioTakePeerWord，不冻结模拟时钟。优先级 真字>预测字>空字：
+	 * 上面各路径（延迟线/COAST/快帧/CMD-GUARD）已消费真字或投空字并 return，
+	 * 只有落到严格路径才尝试投机。预测字绝不写权威态，且经
+	 * sioCompletePredictedTransfer 的写径拦截门。 */
+#if MGBAX_ROLLBACK_ENABLE
+	if (sioPredRollbackReady(sio) && !sio->sioRemoteIsPredicted) {
+		MgbaxPredictIn pin;
+		MgbaxPredictOut pout;
+		memset(&pin, 0, sizeof(pin));
+		pin.st       = (uint8_t) sioGLinkState(sio);
+		pin.role     = (uint8_t) ((netLinkPlayer(sio->link) == 0) ? 0 : 1);
+		pin.localId  = sio->sioIndex;
+		pin.sc       = sio->sioBlockPhase;
+		pin.seq      = sio->sioIndex;
+		pin.ownWord  = sioWordOrEmpty(sio, sio->sioSelfSlot);
+		pin.peerPrev = (uint16_t) sio->sioRemote;
+		pin.phase    = gnpPredClassify(pin.st, pin.sc, pin.seq, pin.role == 0);
+		if (sioPredictWord(sio, &pin, &pout) && sioPredHardGate(sio, &pin, &pout)) {
+			sioPredictShadowPut(sio, pin.seq, pin.sc, &pout, pin.ownWord);
+			sio->sioWaiting = false;
+			sio->sioConnectSince = 0;
+			sioCompletePredictedTransfer(sio, pout.word, cyclesLate);
+			return;
+		}
+	}
+#endif
 	uint32_t remote = 0;
 	uint16_t got = 0;
 	uint32_t waitT0 = wallNowMs();
@@ -6984,6 +7237,11 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		sio->sioHasRemote = true;
 		/* 主机侧同样按从机随行的在飞槽号落格（见 sioFollowSyncIdx）。 */
 		sioFollowSyncIdx(sio, remote);
+#if MGBAX_ROLLBACK_ENABLE
+		if (sioPredRollbackReady(sio)) {
+			sioPredictConfirm(sio, (uint32_t) got, (uint16_t) remote, NULL, NULL);
+		}
+#endif
 		sio->sioRemote = (uint16_t) (remote & 0xFFFFu);
 		completeMultiTransfer(sio, remote, true, cyclesLate);
 		return;
@@ -7228,17 +7486,104 @@ static uint32_t gbaLinkId(const struct GBASIODriver* driver) {
 	return 0x4C4B4E41u;
 }
 
+#if MGBAX_ROLLBACK_ENABLE
+/* PC 侧 diag 保真回调（对偶共享 C mgba_mobile.c）：写快照不写 live；
+ * 偏移由 mCoreStateEwramOffset() 给出（offsetof(wram)+diag 定点偏移）。 */
+static void sioDiagPreserveCb(void* vfp, void* ud) {
+	struct SioLink* sio = (struct SioLink*) ud;
+	struct VFile* vf = (struct VFile*) vfp;
+	struct NgLatch* L;
+	size_t off;
+	uint8_t snapSeq[4];
+	if (!sio || !vf || !sio->sioNgLatch.valid) { return; }
+	L = &sio->sioNgLatch;
+	off = mCoreStateEwramOffset();
+	/* VFile.map(vf,size,flags) 无 offset 参数（vfs.h:46，恒从文件 0 映射），
+	 * 不可用 map 做定点写：否则会把 latch 写进快照头 64B 并破坏 savestate。
+	 * 改用 seek+read 取单调判据 → seek+write 定点覆盖 diag 区。 */
+	if (vf->seek(vf, (off_t) (off + GNP_OFF_NG_SEQ), SEEK_SET) < 0) { goto done; }
+	if (vf->read(vf, snapSeq, sizeof(snapSeq)) != (ssize_t) sizeof(snapSeq)) { goto done; }
+	/* 单调：latch.seq 小于快照内 seq 时绝不回写（回滚不得卷回 diag/信任位）。 */
+	if (L->seq < gnpNgRead32(snapSeq)) { goto done; }
+	if (vf->seek(vf, (off_t) off, SEEK_SET) < 0) { goto done; }
+	(void) vf->write(vf, L->diag, GNP_NG_DIAG_SIZE);
+done:
+	(void) vf->seek(vf, 0, SEEK_SET);   /* 还原游标，勿动 stateSize 之后的 extdata */
+}
+
+/* restore 后只 PEEK 复核（零写 live）：回滚若把 diag 卷旧了只记日志，不修游戏态。 */
+static void sioDiagVerifyCb(void* vfp, void* ud) {
+	struct SioLink* sio = (struct SioLink*) ud;
+	struct NgLatch* L;
+	uint8_t diag[GNP_NG_DIAG_SIZE];
+	unsigned i;
+	(void) vfp;
+	if (!sio || !sio->core || sio->core->platform(sio->core) != mPLATFORM_GBA) { return; }
+	L = &sio->sioNgLatch;
+	if (!L->valid) { return; }
+	{
+		struct GBA* gba = (struct GBA*) sio->core->board;
+		uint32_t addr = (uint32_t) GNP_DIAG_EW;
+		if (!gba || !gba->cpu || !gnpAbsEwOk(addr, GNP_NG_DIAG_SIZE)) { return; }
+		for (i = 0u; i < GNP_NG_DIAG_SIZE; ++i) {
+			diag[i] = (uint8_t) GBAView8(gba->cpu, addr + i);
+		}
+	}
+	if (gnpNgRead32(diag + GNP_OFF_NG_SEQ) < L->seq) {
+		SIO_LOG("[RB] rollback rolled back diag seq (live=%u latch=%u) — no live write",
+		        (unsigned) gnpNgRead32(diag + GNP_OFF_NG_SEQ), (unsigned) L->seq);
+	}
+}
+
+/* GBALoadState 内 mTimingClear() 摘掉 linkEvent/sioDone/sioSlaveDone，
+ * 但 sioWaiting/sioSlaveArmed 仍 true ⇒ serviceLink 守卫永假、链路不重挂。
+ * 三处 restore 后统一调用（mobile 侧对偶 mobileSioRearmAfterLoad）。 */
+static void sioSioRearmAfterLoad(struct SioLink* sio) {
+	struct mTiming* timing;
+	if (!sio) { return; }
+	timing = coreTiming(sio);
+	sio->sioSlaveArmed = false;
+	sio->sioRoundWordValid = false;
+	if (timing) {
+		mTimingDeschedule(timing, &sio->sioSlaveDone);
+		mTimingDeschedule(timing, &sio->sioDone);
+	}
+	if (sio->linkAttached && sio->linkEvent.callback) {
+		armLinkEvent(sio);
+	}
+}
+#endif /* MGBAX_ROLLBACK_ENABLE */
+
 static bool gbaLinkLoadState(struct GBASIODriver* driver, const void* state, size_t size) {
-	UNUSED(driver);
+	struct GbaLinkDriver* d = (struct GbaLinkDriver*) driver;
 	UNUSED(state);
 	UNUSED(size);
+#if MGBAX_ROLLBACK_ENABLE
+	/* re-arm 只受编译门约束，与预测 runtime env/setter 解耦：
+	 * compile=1 但 env=0 时 restore 仍须补回 mTimingClear 摘掉的链路事件。 */
+	if (d && d->sio) {
+		sioSioRearmAfterLoad(d->sio);
+	}
+#else
+	UNUSED(d);
+#endif
 	return true;
 }
 
 static void gbaLinkSaveState(struct GBASIODriver* driver, void** state, size_t* size) {
+	struct GbaLinkDriver* d = (struct GbaLinkDriver*) driver;
 	UNUSED(driver);
 	*state = NULL;
 	*size = 0;
+#if MGBAX_ROLLBACK_ENABLE
+	/* 同上：回调注册只受编译门约束；latch 未采样时回调自身 no-op，零副作用。 */
+	if (d && d->sio) {
+		gnpRewindSetDiagPreserve(sioDiagPreserveCb, d->sio);
+		gnpRewindSetDiagVerify(sioDiagVerifyCb, d->sio);
+	}
+#else
+	UNUSED(d);
+#endif
 }
 
 static void gbaLinkSetMode(struct GBASIODriver* driver, enum GBASIOMode mode) {

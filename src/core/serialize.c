@@ -4,7 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include <mgba/core/serialize.h>
+#include <mgba/internal/gba/serialize.h>
 
+#include <stddef.h>
 #include <mgba/core/core.h>
 #include <mgba/core/cheats.h>
 #include <mgba/core/interface.h>
@@ -19,6 +21,16 @@
 #endif
 
 mLOG_DEFINE_CATEGORY(SAVESTATE, "Savestate", "core.serialize");
+
+/* 档1 A 回滚 diag 保真：裸快照（未压缩 struct GBASerializedState）内 diag 定点偏移。
+ * 具名偏移 + 编译期边界锁，末字节不越入 NET_TX_PORT_ABS（diag 右开边界）。 */
+size_t mCoreStateEwramOffset(void) {
+	static_assert(offsetof(struct GBASerializedState, wram) + MGBAX_NG_DIAG_STATE_OFF
+	              + MGBAX_NG_DIAG_BYTES <= sizeof(struct GBASerializedState),
+	              "NG diag state offset overruns GBASerializedState");
+	return (size_t) offsetof(struct GBASerializedState, wram)
+	       + (size_t) MGBAX_NG_DIAG_STATE_OFF;
+}
 
 struct mBundledState {
 	size_t stateSize;

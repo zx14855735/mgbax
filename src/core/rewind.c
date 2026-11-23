@@ -12,6 +12,28 @@
 
 DEFINE_VECTOR(mCoreRewindPatches, struct PatchFast);
 
+/* ===== 档1 A 回滚 diag 保真钩子（默认 NULL=零回归）=====
+ * 由 SIO driver 注册；rewind 只负责在正确的时机回调，不认识 diag 地址/游戏态。
+ * preserve 在 mCoreSaveStateNamed 之后、线程早退之前（否则 onThread 跳过）；
+ * verify 在 mCoreRewindRestore 的 mCoreLoadStateNamed 之后，只 PEEK 不写 live。 */
+void gnpRewindSetDiagPreserve(void (*cb)(void*, void*), void* ud);
+void gnpRewindSetDiagVerify(void (*cb)(void*, void*), void* ud);
+
+static void (*s_gnpDiagPreserve)(void*, void*) = NULL;
+static void* s_gnpDiagPreserveUd = NULL;
+static void (*s_gnpDiagVerify)(void*, void*) = NULL;
+static void* s_gnpDiagVerifyUd = NULL;
+
+void gnpRewindSetDiagPreserve(void (*cb)(void*, void*), void* ud) {
+	s_gnpDiagPreserve = cb;
+	s_gnpDiagPreserveUd = ud;
+}
+
+void gnpRewindSetDiagVerify(void (*cb)(void*, void*), void* ud) {
+	s_gnpDiagVerify = cb;
+	s_gnpDiagVerifyUd = ud;
+}
+
 static void _rewindDiff(struct mCoreRewindContext* context);
 
 #ifndef DISABLE_THREADING
@@ -78,6 +100,11 @@ void mCoreRewindAppend(struct mCoreRewindContext* context, struct mCore* core) {
 #endif
 	struct VFile* nextState = context->previousState;
 	mCoreSaveStateNamed(core, nextState, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+	/* 【插入点】必须紧贴 mCoreSaveStateNamed 之后、线程早退之前：
+	 * onThread=true 时下面 return，放在其后会被整段跳过。 */
+	if (s_gnpDiagPreserve) {
+		s_gnpDiagPreserve((void*) nextState, s_gnpDiagPreserveUd);
+	}
 	context->previousState = context->currentState;
 	context->currentState = nextState;
 #ifndef DISABLE_THREADING
@@ -160,6 +187,10 @@ bool mCoreRewindRestore(struct mCoreRewindContext* context, struct mCore* core, 
 	}
 
 	mCoreLoadStateNamed(core, context->currentState, SAVESTATE_SAVEDATA | SAVESTATE_RTC);
+	/* restore 后只复核、零写 live（回滚层绝不伪造 diag/信任位）。 */
+	if (s_gnpDiagVerify) {
+		s_gnpDiagVerify((void*) context->currentState, s_gnpDiagVerifyUd);
+	}
 
 
 #ifndef DISABLE_THREADING

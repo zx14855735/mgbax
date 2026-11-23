@@ -217,6 +217,22 @@ void mgbaMobileNetGateLogSet(bool enabled);
  * 具名门宏集中在 platform/gboy/gboy_netparty_abi.h（MGBAX_ROLLBACK_ENABLE 等）。 */
 void mgbaMobileRollbackSet(bool enabled);
 bool mgbaMobileRollbackOn(void);
+/* PC 侧对偶门（与 env MGBAX_ROLLBACK_ENV 并列，任一为 1 即开）；
+ * test-gboylink/前端可在首个 linkPoll 前调，移动端不需（用上面的 setter）。 */
+void sioRollbackSet(bool enabled);
+
+/* 档1 A 回滚 diag 保真回调（rewind.c 定义，driver 注册；默认 NULL=零回归）。
+ * preserve：mCoreSaveStateNamed 后写快照的 diag 定点区（不写 live）；
+ * verify  ：mCoreRewindRestore 后只 PEEK 复核（不写 live、不改游戏态）。
+ * 用 void* 遮住 VFile，避免 core/rewind.h 与 platform 头互相 include。 */
+typedef void (*GnpDiagRewindCb)(void* vf, void* ud);
+void gnpRewindSetDiagPreserve(GnpDiagRewindCb cb, void* ud);
+void gnpRewindSetDiagVerify(GnpDiagRewindCb cb, void* ud);
+
+/* party provenance 生产者声明在共享头 gboy_netparty_abi.h（header-only static inline，
+ * 主 Qt app 只编 sio_link.c 不链 mgba_mobile.c，故不可放本头做导出符号）。
+ * 接口：gnpNgSetRunDir(dir) / gnpNgPartyProvenance(role, rx480, tx480) /
+ * gnpNg{Party,RxParty,TxParty}Md5(role)，role 0=APP/1=PC，三字段 32hex。 */
 /*
  * Whether the resampler's input rate can be trusted at the speed being read:
  * a locked estimate or a remembered device throughput to seed from. Front
