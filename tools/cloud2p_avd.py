@@ -77,15 +77,36 @@ APP_REMOTE_SAV = "/sdcard/Download/rom.sav"
 APP_SAV_DEFAULT = os.environ.get(
     "MGBAX_APP_SAV", os.path.join(os.path.dirname(DEF_SAV), "rom.sav.bak-before-link"))
 APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s 会丢 ROM 广播（E1 教训）
-APP_NAV_TIMEOUT = 180    # 输入层修复(AVDWIPE-03)后恢复完整导航时间：title→club→等待连接；
-                         # 30s 是输入层坏(Held≠FrameKeys)时的快速失败口径，现已不适用
+APP_NAV_TIMEOUT = 240    # AF1/AF3：导航前需等开场动画走完(APP 4fps 软渲染下 ROM→主菜单≈157s)，
+                         # 180s 被吃满；抬到 240s，deadline 在等动画完成后起算。
+# AF6 等开场动画常量（模板匹配主 + 画面演变备 + cap 兜底）
+INTRO_WAIT_CAP_S = 180       # 等主菜单上限（AF3: 157s 上界 + 余量）
+INTRO_TPL_NAME = "tpl_main_menu.png"  # nav_028 主菜单帧（已落 .workbuddy/drive/）
+INTRO_SIG_SIZE = (120, 90)           # 与 topmenu_sig 一致的灰度签名尺寸
+INTRO_MENU_THRESH = 12.0             # AF6 实测：主菜单0/黑屏15.4/Logo33.7/战斗93.6/灰屏160.5
+INTRO_SAMPLE_SEC = 1.5               # 等待期采样间隔
+INTRO_CHANGE_EPS = 6.0               # 签名变化阈值（动画进行中）
+INTRO_STABLE_EPS = 1.5               # 签名稳定阈值（主菜单静止）
+INTRO_BRIGHT_LUMA = 100.0            # AG3: 高亮演出段门槛(Logo暗帧luma19.6必须被挡;亮屏nav_004=182)
+INTRO_CONFIRM_SEC = 4.0              # AG3: 首命中后二次确认等待(s)
+INTRO_MIN_WAIT_S = 120.0             # AG3: 最小等待(误命中102.5s;真菜单156.8s;防早期假阳性)
+# AG4: PEEK map 语义硬确认（club 档到竞技场 25.24/(10,5) 才放行，否决 Logo 帧假阳性）
+INTRO_MAP_GROUP = 25
+INTRO_MAP_NUM = 24
+INTRO_MAP_TX = 10
+INTRO_MAP_TY = 5
+INTRO_MAP_STREAK = 3              # 连续 N 次 map/pos 命中才放行（同 TID 连续，排除抖动）
+INTRO_MIN_LUMA = 25.0                # 演变判据亮度下界（菜单非纯白）
+INTRO_MAX_LUMA = 180.0               # 演变判据亮度上界
+INTRO_MIN_CHANGES = 3                # 演变判据：至少经历 N 次画面变化
+INTRO_MENU_STABLE = 3                # 演变判据：连续 N 次稳定
+INTRO_HIT_SHOT = "intro_hit.png"
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
 FORCE_MENU_TAP_LIMIT = 120       # force 模式 A 键硬上限
 FORCE_MENU_STALL_LIMIT = 30      # 连续 N 次 A 无菜单进度即判卡死
-FORCE_MENU_WINDOW = 180          # 输入层修复后恢复：菜单走完窗口与 APP_NAV_TIMEOUT 对齐；
-                                 # 30s 是输入层坏时的快速失败口径，现已不适用
+FORCE_MENU_WINDOW = 240          # AF6：与 APP_NAV_TIMEOUT=240 对齐（等动画后起算）
 # cable_club.o 的 cb2 地址段基准宏（rom.map）；禁裸 hex，运行时按 rom.map delta 平移
 CABLE_CLUB_CB2_LO = gba.CABLE_CLUB_CB2_LO  # 统一宏（原值 0x08105FD4）
 CABLE_CLUB_CB2_HI = gba.CABLE_CLUB_CB2_HI  # 统一宏（原值 0x08107488）
@@ -795,6 +816,119 @@ def main():
                 app_nav_ctx["tpl"] = []
         return app_nav_ctx["tpl"]
 
+    # ---- AF6 等开场动画走完（ROM 加载后播 Game Freak Logo→战斗→主菜单，约 157s）----
+    # 性质：只读截图做模板/演变匹配，不注入任何按键、不改游戏态；等到主菜单才导航，
+    # 解决"导航从黑屏就开始、按键被动画吞"的入口轴时序 bug（AF1 读图实证）。
+    def intro_menu_sig():
+        if app_nav_ctx.get("intro_tpl") is None:
+            try:
+                from PIL import Image
+                p = os.path.join(ROOT, ".workbuddy", "drive", INTRO_TPL_NAME)
+                app_nav_ctx["intro_tpl"] = list(
+                    Image.open(p).convert("L").resize(INTRO_SIG_SIZE).getdata())
+            except Exception as ex:                   # noqa: BLE001
+                app_nav_log("主菜单模板读取失败 %s（退回演变判据）" % ex)
+                app_nav_ctx["intro_tpl"] = []
+        return app_nav_ctx["intro_tpl"]
+
+    def app_wait_intro_done():
+        t0 = time.time()
+        last_sig = None
+        changes = 0
+        stable = 0
+        seen_bright = False
+        candidate = None       # AG3: 首次命中候选，二次确认后放行
+        candidate_t = 0.0
+        map_streak = 0         # AG4: PEEK map 连续命中竞技场的计数
+        tpl = intro_menu_sig()
+        app_nav_log("INTRO-WAIT 开始 cap=%.0fs tpl=%s min_wait=%.0fs bright=%.0f"
+                    % (INTRO_WAIT_CAP_S, bool(tpl), INTRO_MIN_WAIT_S, INTRO_BRIGHT_LUMA))
+        while time.time() - t0 < INTRO_WAIT_CAP_S:
+            if app_pid() is None:
+                time.sleep(INTRO_SAMPLE_SEC)
+                continue
+            shot = app_shot_sig()
+            if not shot:
+                time.sleep(INTRO_SAMPLE_SEC)
+                continue
+            sig = shot[1]
+            luma = sum(sig) / len(sig)
+            td = sig_dist(tpl, sig) if tpl else -1.0
+            elapsed = time.time() - t0
+            if luma >= INTRO_BRIGHT_LUMA:
+                seen_bright = True
+            if last_sig is not None:
+                sd = sig_dist(last_sig, sig)
+                if sd >= INTRO_CHANGE_EPS:
+                    changes += 1
+                    stable = 0
+                elif sd < INTRO_STABLE_EPS:
+                    stable += 1
+                else:
+                    stable = 0
+            last_sig = sig
+            # AG3 修正：模板命中必须满足 seen_bright(已过高亮演出段) + stable>=3(静止) + 最小等待。
+            # 原 hit_tpl 只看 td<12，Logo 暗帧(td=9.7 luma=19.6)误命中；加此三条件挡掉。
+            hit_tpl = (td >= 0 and td < INTRO_MENU_THRESH and seen_bright
+                       and stable >= INTRO_MENU_STABLE and elapsed >= INTRO_MIN_WAIT_S)
+            hit_evo = (not tpl and seen_bright and changes >= INTRO_MIN_CHANGES
+                       and stable >= INTRO_MENU_STABLE
+                       and INTRO_MIN_LUMA < luma < INTRO_MAX_LUMA
+                       and elapsed >= INTRO_MIN_WAIT_S)
+            hit = hit_tpl or hit_evo
+            # AG3 二次确认：首次命中记候选，INTRO_CONFIRM_SEC 后复测签名仍稳定才放行。
+            if hit and candidate is None:
+                candidate = sig
+                candidate_t = elapsed
+                app_nav_log("INTRO-WAIT 候选命中 td=%.1f luma=%.1f stable=%d，%.1fs 后复测确认"
+                            % (td, luma, stable, INTRO_CONFIRM_SEC))
+                time.sleep(INTRO_CONFIRM_SEC)
+                continue
+            # AG4 独立放行路径：club 档直接到竞技场 (25,24)/(10,5)，PEEK map 是最可靠信号，
+            # 不依赖图像 seen_bright（club 档可能跳过亮演出/主菜单，图像路会死等）。
+            # 连续 INTRO_MAP_STREAK 次 map/pos 命中才放行，排除哨兵(-1/-1,0/0)。
+            _ps = peek_state()
+            _map = _ps.get("map") if _ps else None
+            _pos = _ps.get("pos") if _ps else None
+            if (_map == (INTRO_MAP_GROUP, INTRO_MAP_NUM)
+                    and _pos == (INTRO_MAP_TX, INTRO_MAP_TY)):
+                map_streak += 1
+            else:
+                map_streak = 0
+            if map_streak >= INTRO_MAP_STREAK:
+                try:
+                    shot[0].save(os.path.join(app_shot_dir, INTRO_HIT_SHOT))
+                    shot[0].save(os.path.join(app_shot_dir, "nav_000.png"))
+                except Exception as ex:               # noqa: BLE001
+                    app_nav_log("INTRO-WAIT 证据图保存失败（忽略）: %s" % ex)
+                app_nav_log("INTRO_DONE elapsed=%.1fs reason=peek-arena map=%s pos=%s streak=%d"
+                            % (elapsed, _map, _pos, map_streak))
+                return True, elapsed, "peek-arena"
+            if hit and candidate is not None:
+                if sig_dist(candidate, sig) < INTRO_STABLE_EPS and td >= 0 and td < INTRO_MENU_THRESH:
+                    pass  # 图像二次确认通过（无 club 档时走此路，如真到主菜单）
+                else:
+                    candidate = None   # 复测失败，重新等待候选
+                    app_nav_log("INTRO-WAIT 二次确认未过(漂移)，重新等待")
+                    time.sleep(INTRO_SAMPLE_SEC)
+                    continue
+            elif not hit and candidate is not None:
+                candidate = None       # 命中消失，重置
+            if hit and candidate is not None:
+                try:
+                    shot[0].save(os.path.join(app_shot_dir, INTRO_HIT_SHOT))
+                    shot[0].save(os.path.join(app_shot_dir, "nav_000.png"))
+                except Exception as ex:               # noqa: BLE001
+                    app_nav_log("INTRO-WAIT 证据图保存失败（忽略）: %s" % ex)
+                why = "template-confirm" if hit_tpl else "evolution-confirm"
+                app_nav_log("INTRO_DONE elapsed=%.1fs reason=%s td=%.1f luma=%.1f changes=%d stable=%d bright=%d"
+                            % (time.time() - t0, why, td, luma, changes, stable, seen_bright))
+                return True, time.time() - t0, why
+            time.sleep(INTRO_SAMPLE_SEC)
+        app_nav_log("INTRO_DONE elapsed=%.1fs reason=cap（兜底上限，未确认主菜单）"
+                    % (time.time() - t0))
+        return False, time.time() - t0, "cap"
+
     def app_advance(tag, mask, hold=0.9, settle=1.3, tries=3, threshold=0.15):
         """按键直到画面真的变了（丢键自动补，生效立刻停手）—— 与 final_battle.advance 同口径。"""
         shot = app_shot_sig()
@@ -825,6 +959,13 @@ def main():
         """title → 游戏 → 有线俱乐部服务菜单 → 单打 → 等待连接（截图 oracle 兜底）。"""
         os.makedirs(app_shot_dir, exist_ok=True)
         app_nav_log("开始（timeout=%ds，oracle=screencap，PEEK 仅诊断）" % APP_NAV_TIMEOUT)
+        # AF6：先等开场动画走完到主菜单，再起算 deadline（180s 全留给导航）
+        if not app_nav_state.get("intro_done"):
+            _ok, _elapsed, _why = app_wait_intro_done()
+            app_nav_state["intro_done"] = True
+            app_nav_state["intro_why"] = _why
+            app_nav_log("INTRO-WAIT 收尾 ok=%s elapsed=%.1fs why=%s；deadline 重新起算"
+                        % (_ok, _elapsed, _why))
         deadline = time.time() + APP_NAV_TIMEOUT
         # 1) 标题 LOGO 只吃 START：按到画面变化为止
         for i in range(3):
@@ -890,6 +1031,13 @@ def main():
         # 读父进程 os.environ（与 MGBAX_AVD_WIPE 同风格），不经 --env 下发 PC/Android。
         nav_spawn_at_seat = os.environ.get("MGBAX_NAV_SPAWN_AT_SEAT", "0") == "1"
         app_nav_log("AD2 gate MGBAX_NAV_SPAWN_AT_SEAT=%d" % (1 if nav_spawn_at_seat else 0))
+        # AF6：先等开场动画走完到主菜单，再起算 deadline（备用 PEEK oracle 路径）
+        if not app_nav_state.get("intro_done"):
+            _ok, _elapsed, _why = app_wait_intro_done()
+            app_nav_state["intro_done"] = True
+            app_nav_state["intro_why"] = _why
+            app_nav_log("INTRO-WAIT 收尾 ok=%s elapsed=%.1fs why=%s；deadline 重新起算"
+                        % (_ok, _elapsed, _why))
         # force 窗口与现有 APP_NAV_TIMEOUT 共存：取大者，避免 480s 先到期截断菜单路径
         deadline = time.time() + (max(APP_NAV_TIMEOUT, FORCE_MENU_WINDOW)
                                   if force_menu else APP_NAV_TIMEOUT)
