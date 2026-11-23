@@ -117,8 +117,9 @@ INTRO_HIT_SHOT = "intro_hit.png"
 NAV_INTRO_KEYPUSH = os.environ.get("MGBAX_INTRO_KEYPUSH", "0") == "1"
 INTRO_PULSE_MASK = 8                 # AK_START：intro 任意 newKeys 可跳过(af4)
 INTRO_PULSE_HOLD = 0.6               # ≥1 模拟帧(2.4fps≈0.42s/帧)，长按 newKeys 恒 0 故用脉冲
-INTRO_PULSE_GAP = 0.5
-INTRO_PULSE_BURST = 3                # 每轮 3 个边沿，摊到多轮防冲过头
+INTRO_PULSE_GAP = 0.3                # ZEROE2E: 缩短间隔提高 newKeys 命中率(手动密集连打18-25成功)
+INTRO_PULSE_BURST = 12               # ZEROE2E: 每轮12边沿(原3太稀疏,2.2fps下命中概率低致动画跳不过)
+                                     # 脉冲内每边沿查cb2,到field立即停手,不会冲过头
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
@@ -853,6 +854,8 @@ def main():
     # AV1b 修正：每个边沿后必查 cb2，一旦落 field 段立即停手——否则连打 START 会把
     # 已到 field 的游戏推回 main_menu（AV1 实测 081A5039↔0818FE79 严格交替震荡）。
     def intro_pulse_step():
+        # ZEROE2E: burst 内连续发(不每边沿查 logcat,否则打乱节奏致命中率极低),
+        # 整个 burst 发完查一次 cb2。手动密集连打18-25脉冲能稳定跳过动画,据此提高密度。
         for _ in range(INTRO_PULSE_BURST):
             akeys(0)
             time.sleep(INTRO_PULSE_GAP)
@@ -860,11 +863,11 @@ def main():
             time.sleep(INTRO_PULSE_HOLD)
             akeys(0)
             time.sleep(INTRO_PULSE_GAP)
-            ps = peek_state()
-            cb = (ps.get("cb2", 0) & ~1) if ps else 0
-            if cb and NAV_FIELD_CB2_LO <= cb < NAV_FIELD_CB2_HI:
-                app_nav_log("AV1b: 脉冲后 cb2 已落 field 段(%08X)，停手防推回菜单" % cb)
-                return True
+        ps = peek_state()
+        cb = (ps.get("cb2", 0) & ~1) if ps else 0
+        if cb and NAV_FIELD_CB2_LO <= cb < NAV_FIELD_CB2_HI:
+            app_nav_log("AV1b: burst后 cb2 已落 field 段(%08X)，停手防推回菜单" % cb)
+            return True
         return False
 
     def app_wait_intro_done():
