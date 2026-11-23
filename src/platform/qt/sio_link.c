@@ -6543,6 +6543,245 @@ static void sioNgLatchSample(struct SioLink* sio, const uint8_t* diag) {
 	if (diag[GNP_OFF_NG_TAG_OK]) { L->tagOkSticky = 1; }   /* 只 0->1，禁 1->0 */
 	L->valid = 1;
 }
+
+#if MGBAX_ROLLBACK_ENABLE && MGBAX_PRED_SELFTEST
+/* ===== 档1 B 有状态预测回滚本体运行时自测探针（默认关，双门裹）=====
+ * 直驱上面四个真实静态本体：sioPredictWord / sioPredictShadowPut /
+ * sioPredictConfirm / sioNgLatchSample，栈上 mock struct SioLink（memset 零），
+ * 借 sioRollbackSet(true) 绕开 sioPredRollbackReady 的 getenv 静态缓存（退出恢复原值）。
+ *
+ * 诚实边界（Q1 §1/§5）：不直调 sioPredHardGate（依赖 live gba->cpu）与
+ * sioCompletePredictedTransfer（写游戏态）；硬门用 gnpPredHardGatePure 注入合成
+ * sp0=0/brs=0 与同款 flag 提取；"权威态"用纯 FNV-1a 摘要（非真 savestate 回滚）。
+ * 字流纯控制字白名单（pred_word_is_control 自检），预测字绝不落 gEnemyParty/信任位；
+ * diag 保真只写 mock 的定点快照区（sioNgLatchSample），属灰区写快照、非 live/checker。
+ * 本探针 PASS 仅证机制工程可行，不出 tag_ok=1、不产 CROSSED、不升任何门。 */
+#define GNP_SELFTEST_FNV_OFFSET  UINT32_C(0x811C9DC5)
+#define GNP_SELFTEST_FNV_PRIME   UINT32_C(0x01000193)
+
+/* FNV-1a：按 uint16 字的低字节、高字节顺序喂入（确定性，等价桩 state_digest 的规范化）。 */
+static uint32_t gnpSelftestFnvFeed(uint32_t h, uint16_t w) {
+	h ^= (uint32_t) (uint8_t) (w & 0xFFu);  h *= GNP_SELFTEST_FNV_PRIME;
+	h ^= (uint32_t) (uint8_t) (w >> 8);     h *= GNP_SELFTEST_FNV_PRIME;
+	return h;
+}
+
+/* 真字流 = master_word（仿 sio_cmd_sim.py:368）：t=0..7 控制字、t=8 校验和、其余 0。 */
+static uint16_t gnpSelftestTrueWord(uint32_t t) {
+	static const uint16_t tbl[8] = {
+		LINKCMD_SEND_LINK_TYPE, LINKCMD_SEND_LINK_TYPE_EX,
+		0u, 0u, 0u, 0u, 0u, 0u
+	};
+	if (t < 8u) { return tbl[t]; }
+	if (t == 8u) { return (uint16_t) (LINKCMD_SEND_LINK_TYPE + LINKCMD_SEND_LINK_TYPE_EX); }
+	return 0u;
+}
+
+/* 分歧字 = 另一个合法控制字（_PRED_DIVERGE_SUB），保证分歧字仍过红线（绝不造 party 数据）。 */
+static uint16_t gnpSelftestPredWord(uint32_t t, uint32_t divergeAt) {
+	uint16_t w = gnpSelftestTrueWord(t);
+	if (divergeAt != UINT32_C(0xFFFFFFFF) && t == divergeAt) {
+		if (w == LINKCMD_SEND_LINK_TYPE)     { return LINKCMD_INIT_BLOCK; }
+		if (w == LINKCMD_SEND_LINK_TYPE_EX)  { return LINKCMD_SEND_LINK_TYPE; }
+		if (w == LINKCMD_INIT_BLOCK)         { return LINKCMD_SEND_LINK_TYPE_EX; }
+		return LINKCMD_INIT_BLOCK;
+	}
+	return w;
+}
+
+/* 控制字白名单自检（仿 sio_cmd_sim.py:166 pred_word_is_control，红线：出现 party 负载即 FAIL）。
+ * 注意与 gnpPredWordForbidden 不同维度：这里是 mock 输入合法性（防造 party），
+ * 后者是投机输出注入禁令（防猜错写径），二者勿混（Q5 口径辨析）。 */
+static int gnpSelftestIsControl(uint16_t w) {
+	static const uint16_t wl[5] = {
+		LINK_HANDSHAKE_MASTER, LINK_HANDSHAKE_SLAVE, LINKCMD_SEND_LINK_TYPE,
+		LINKCMD_SEND_LINK_TYPE_EX, LINKCMD_INIT_BLOCK
+	};
+	uint32_t i, j;
+	if (w == 0u) { return 1; }
+	for (i = 0u; i < 5u; ++i) { if (w == wl[i]) { return 1; } }
+	for (i = 0u; i < 5u; ++i) {
+		for (j = 0u; j < 5u; ++j) {
+			if (w == (uint16_t) (wl[i] + wl[j])) { return 1; }
+		}
+	}
+	return 0;
+}
+
+int gnpPredRollbackSelfTest(const struct GnpPredSelfTestReq* req,
+                            struct GnpPredSelfTestRes* res) {
+	struct SioLink mock;
+	uint8_t diag[GNP_NG_DIAG_SIZE];
+	struct NgLatch probeLatch;
+	struct NgHist hist;
+	uint32_t rounds, t, rt, divergeAt, D, anchor;
+	uint32_t digestBase, digestSpec, digestReplay, anchorSnap;
+	uint32_t mismatchSeq, replayedRounds, arrived, expectMismatch, dseq, ddig, injected;
+	uint32_t seqBefore;
+	int mismatch, guardErr, reconciled, gateOk, gateDeny;
+	bool prevRollback;
+
+	if (!req || !res) { return -1; }
+	memset(&mock, 0, sizeof(mock));
+	memset(res, 0, sizeof(*res));
+	memset(diag, 0, sizeof(diag));
+	memset(&probeLatch, 0, sizeof(probeLatch));
+	memset(&hist, 0, sizeof(hist));
+	/* sioNgLatchSample 经 gnpNgSampleOk 采样：latch.valid==0 时首样被拒（生产同款行为），
+	 * 故 mock 先置 valid=1 引导到稳态（仅元数据，不置 tag_ok；tag_ok 仍由真函数逐字读 mock diag）。
+	 * 这暴露了 sioNgLatchSample 无法从零自举的潜在点，属观察项，不在本自测范围修改生产逻辑。 */
+	mock.sioNgLatch.valid = 1;
+	mock.sioNgLatch.seq = 0u;
+	mock.sioNgLatch.digestAtSeq = 0u;
+
+	prevRollback = s_sioRollbackEnabled;
+	sioRollbackSet(true);   /* 绕过 getenv 静态缓存；退出恢复，不污染全局门 */
+	guardErr = 0;
+	rounds = req->frames * 9u;
+	D = req->delayRounds;
+	divergeAt = req->divergeAt;
+	anchor = (divergeAt == UINT32_C(0xFFFFFFFF)) ? 0u : (divergeAt / 9u) * 9u;
+	mismatchSeq = 0u;
+	replayedRounds = 0u;
+	mismatch = 0;
+	reconciled = 0;
+
+	/* 硬门纯判据复核：合成 sp0=0/brs=0（非 live gba->cpu），out.word=0 未禁投。
+	 * 正例放行、禁投否定——与 gnpPredHardGatePure 真值表逐字一致（层 A 已全覆盖）。 */
+	gateOk = gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX,
+	                             4u, 1u, 0u, 0u, 0, 0, 0, 0, 0);
+	gateDeny = gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX,
+	                               4u, 1u, 0u, 0u, 0, 0, 0, 0, 1);
+	if (!gateOk || gateDeny) { ++guardErr; }
+
+	/* mock diag 模板：CLOSED+PARTY（仅此组合被 sioNgLatchSample 采样）。 */
+	diag[GNP_OFF_NG_STATE] = GNP_NG_STATE_CLOSED;
+	diag[GNP_OFF_NG_MSG_TYPE] = GNP_NG_MSG_PARTY;
+	diag[GNP_OFF_NG_COUNT] = 1u;
+
+	/* 阶段A：投机驱动 + 真字延迟确认 + diag 采样；同时算 digestBase（门关直吃真字）。 */
+	digestBase = GNP_SELFTEST_FNV_OFFSET;
+	for (t = 0u; t < rounds; ++t) {
+		MgbaxPredictIn in;
+		MgbaxPredictOut out, ledger;
+		uint16_t tw = gnpSelftestTrueWord(t);
+		uint16_t pw = gnpSelftestPredWord(t, divergeAt);
+
+		/* 红线：真字/预测字都必须是合法控制字（ mock 绝不造 party 负载）。 */
+		if (!gnpSelftestIsControl(tw) || !gnpSelftestIsControl(pw)) { ++guardErr; }
+		digestBase = gnpSelftestFnvFeed(digestBase, tw);
+
+		/* 直调 #1 sioPredictWord：非零控制字一律不投机（写径红线）；out.word 恒 0。 */
+		memset(&in, 0, sizeof(in));
+		in.phase = GNP_PHASE_SEQ_INDEX;   /* 唯一可能出投机字的相位 */
+		in.ownWord = pw;
+		in.st = 4u; in.sc = 1u; in.seq = t;
+		memset(&out, 0, sizeof(out));
+		sioPredictWord(&mock, &in, &out);
+		if (out.word != 0u) { ++guardErr; }                       /* 控制字绝不泄漏为投机输出 */
+		if (pw != 0u && out.speculative != 0) { ++guardErr; }     /* 非零控制字禁止投机 */
+
+		/* 直调 #2 sioPredictShadowPut：以 mock 控制字填影子账本（非游戏态）。 */
+		memset(&ledger, 0, sizeof(ledger));
+		ledger.word = pw; ledger.conf = GNP_CONF_HIGH; ledger.speculative = 1;
+		sioPredictShadowPut(&mock, t, in.sc, &ledger, pw);
+
+		/* 直调 #3 sioPredictConfirm：真字延迟 D 到达 seq=t-D，比对账本 → 确认/分歧。 */
+		if (D <= t) {
+			sioPredictConfirm(&mock, t - D, gnpSelftestTrueWord(t - D),
+			                  &mismatch, &mismatchSeq);
+		}
+
+		/* 直调 #4 sioNgLatchSample：只收 CLOSED+PARTY；seq 严格增、tag_ok 只 0->1。
+		 * diag 是 mock 注入样本（非 live/checker），tag_ok 置 1 仅为验证 sticky 语义。 */
+		dseq = t;
+		ddig = gnpSelftestFnvFeed(GNP_SELFTEST_FNV_OFFSET, tw);
+		diag[GNP_OFF_NG_SEQ + 0] = (uint8_t) (dseq & 0xFFu);
+		diag[GNP_OFF_NG_SEQ + 1] = (uint8_t) ((dseq >> 8) & 0xFFu);
+		diag[GNP_OFF_NG_SEQ + 2] = (uint8_t) ((dseq >> 16) & 0xFFu);
+		diag[GNP_OFF_NG_SEQ + 3] = (uint8_t) ((dseq >> 24) & 0xFFu);
+		diag[GNP_OFF_NG_RX_DIGEST + 0] = (uint8_t) (ddig & 0xFFu);
+		diag[GNP_OFF_NG_RX_DIGEST + 1] = (uint8_t) ((ddig >> 8) & 0xFFu);
+		diag[GNP_OFF_NG_RX_DIGEST + 2] = (uint8_t) ((ddig >> 16) & 0xFFu);
+		diag[GNP_OFF_NG_RX_DIGEST + 3] = (uint8_t) ((ddig >> 24) & 0xFFu);
+		diag[GNP_OFF_NG_TAG_OK] = (t >= rounds / 2u && t < rounds - 2u) ? 1u : 0u;
+		sioNgLatchSample(&mock, diag);
+		res->specRounds = t + 1u;
+	}
+
+	/* 非 CLOSED+PARTY 组合必须被 sioNgLatchSample 忽略（latch.seq 不变）。
+	 * 用全新 seq=1000 让「若错误采样」必然改变 latch.seq，使检查可证伪。 */
+	seqBefore = mock.sioNgLatch.seq;
+	diag[GNP_OFF_NG_SEQ + 0] = (uint8_t) 1000u;
+	diag[GNP_OFF_NG_SEQ + 1] = (uint8_t) (1000u >> 8);
+	diag[GNP_OFF_NG_SEQ + 2] = 0u;
+	diag[GNP_OFF_NG_SEQ + 3] = 0u;
+	diag[GNP_OFF_NG_STATE] = 1u;   /* 非 CLOSED */
+	sioNgLatchSample(&mock, diag);
+	if (mock.sioNgLatch.seq != seqBefore) { ++guardErr; }
+	diag[GNP_OFF_NG_STATE] = GNP_NG_STATE_CLOSED;
+	diag[GNP_OFF_NG_MSG_TYPE] = 2u; /* 非 PARTY */
+	sioNgLatchSample(&mock, diag);
+	if (mock.sioNgLatch.seq != seqBefore) { ++guardErr; }
+	diag[GNP_OFF_NG_MSG_TYPE] = GNP_NG_MSG_PARTY;
+
+	/* gnpNgSampleOk：seq 严格增 / 重复 seq digest 绑定。 */
+	probeLatch.valid = 1; probeLatch.seq = 10u; probeLatch.digestAtSeq = 0xABCDu;
+	if (!gnpNgSampleOk(&probeLatch, 11u, 0x1234u)) { ++guardErr; }  /* 增 seq OK */
+	if (gnpNgSampleOk(&probeLatch, 9u, 0x1234u)) { ++guardErr; }    /* 旧 seq 拒 */
+	if (!gnpNgSampleOk(&probeLatch, 10u, 0xABCDu)) { ++guardErr; }  /* 同 seq 同 digest OK */
+	if (gnpNgSampleOk(&probeLatch, 10u, 0x0000u)) { ++guardErr; }   /* 同 seq 异 digest 拒 */
+
+	/* gnpNgConfirm / gnpNgInjectWord：未确认禁注入，转正后只注入真字。 */
+	hist.frameNo = 0u; hist.word = 0x1111u; hist.tag = NG_PREDICTED;
+	injected = 0u;
+	if (gnpNgInjectWord(&hist, &injected)) { ++guardErr; }
+	gnpNgConfirm(&hist, 0x2222u);
+	if (hist.tag != NG_CONFIRMED || hist.word != 0x2222u) { ++guardErr; }
+	if (!gnpNgInjectWord(&hist, &injected) || injected != 0x2222u) { ++guardErr; }
+
+	/* 账本一致性：到达 seq 数 = rounds-D；其中分歧 1 条，其余确认。 */
+	arrived = (D < rounds) ? (rounds - D) : 0u;
+	expectMismatch = (divergeAt < arrived) ? 1u : 0u;
+	if (mock.sioPredMismatch != expectMismatch) { ++guardErr; }
+	if (expectMismatch && mock.sioPredMismatchSeq != divergeAt) { ++guardErr; }
+	if (mock.sioPredConfirmed != (arrived - expectMismatch)) { ++guardErr; }
+
+	/* 阶段B：投机路径摘要 + 分歧回滚重放（三路摘要之一）。 */
+	digestSpec = GNP_SELFTEST_FNV_OFFSET;
+	for (t = 0u; t < rounds; ++t) {
+		if (t % 9u == 0u) { anchorSnap = digestSpec; }  /* 帧首快照（回滚锚点） */
+		if (divergeAt != UINT32_C(0xFFFFFFFF) && t == divergeAt && !reconciled) {
+			digestSpec = anchorSnap;                     /* 回滚到 <=分歧 的最近帧锚点 */
+			for (rt = anchor; rt < rounds; ++rt) {
+				digestSpec = gnpSelftestFnvFeed(digestSpec, gnpSelftestTrueWord(rt));
+			}
+			replayedRounds = rounds - anchor;
+			reconciled = 1;
+			break;
+		}
+		digestSpec = gnpSelftestFnvFeed(digestSpec, gnpSelftestPredWord(t, divergeAt));
+	}
+
+	/* 重放路径摘要：真字从锚点独立重放（与 base 各自累加，互不相借）。 */
+	digestReplay = GNP_SELFTEST_FNV_OFFSET;
+	for (t = 0u; t < rounds; ++t) {
+		digestReplay = gnpSelftestFnvFeed(digestReplay, gnpSelftestTrueWord(t));
+	}
+
+	res->digestSpec = digestSpec;
+	res->digestBase = digestBase;
+	res->digestReplay = digestReplay;
+	res->framesClosed = rounds / 9u;
+	res->replayedRounds = (divergeAt == UINT32_C(0xFFFFFFFF)) ? 0u : replayedRounds;
+	res->mismatchSeq = mismatchSeq;
+	res->tagOkSticky = mock.sioNgLatch.tagOkSticky;
+	res->predVsFastConflict = mock.sioPredVsFastConflict;
+
+	sioRollbackSet(prevRollback);
+	return guardErr;
+}
+#endif /* MGBAX_ROLLBACK_ENABLE && MGBAX_PRED_SELFTEST */
 #endif /* MGBAX_ROLLBACK_ENABLE：门关时全部预测本体内联函数不参与编译，零 unused 警告 */
 
 /* 【角色不对称的门】主机 = 生产字方，快帧取不到从机字就复用上一轮自己喂

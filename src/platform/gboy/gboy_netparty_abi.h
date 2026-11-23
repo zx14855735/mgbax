@@ -59,6 +59,9 @@
 #ifndef MGBAX_ROLLBACK_SNAP_BYTES
 #define MGBAX_ROLLBACK_SNAP_BYTES   0            /* 0=用 mCore save-state API 动态取，不写死尺寸 */
 #endif
+#ifndef MGBAX_PRED_SELFTEST
+#define MGBAX_PRED_SELFTEST         0            /* 档1 B 有状态自测探针：1=编译探针+测试分派；默认0零回归 */
+#endif
 
 #if (MGBAX_ROLLBACK_ENABLE != 0) && (MGBAX_ROLLBACK_ENABLE != 1)
 #error "MGBAX_ROLLBACK_ENABLE must be 0 or 1"
@@ -83,6 +86,9 @@
 #endif
 #if MGBAX_ROLLBACK_SNAP_BYTES < 0
 #error "MGBAX_ROLLBACK_SNAP_BYTES must be >= 0"
+#endif
+#if (MGBAX_PRED_SELFTEST != 0) && (MGBAX_PRED_SELFTEST != 1)
+#error "MGBAX_PRED_SELFTEST must be 0 or 1"
 #endif
 
 /* 协议控制字具名宏（三端同名同值，唯一裁决来源=本共享头；PC/mobile .c 中的
@@ -292,6 +298,29 @@ typedef struct {
 	uint32_t wallMs;
 } MgbaxPredSlot;
 
+/* ===== 档1 B 有状态预测回滚自测探针 ABI（门 MGBAX_PRED_SELFTEST=1 才参与编译）=====
+ * 仅用于单机可控字流驱动预测/回滚真静态本体，证机制工程可行；非真 savestate、
+ * 不出 tag_ok=1、不产 CROSSED、不升门。字流纯控制字白名单，绝不造 party 负载。
+ * 用具名 struct tag 以便 sio_link.h 无额外 include 即可前向声明（C/C++ 兼容）。 */
+typedef struct GnpPredSelfTestReq {
+	uint32_t seed;          /* 仅可选确定性扰动，默认固定 0 */
+	uint32_t frames;        /* 帧数，每帧 9 轮；rounds = frames*9 */
+	uint32_t delayRounds;   /* 真字延迟到达轮数 D ∈ {0,8,32} */
+	uint32_t divergeAt;     /* 分歧轮；0xFFFFFFFF=无分歧 */
+} GnpPredSelfTestReq;
+
+typedef struct GnpPredSelfTestRes {
+	uint32_t digestSpec;         /* 投机+回滚路径 FNV-1a 摘要 */
+	uint32_t digestBase;         /* 门关零预测直吃真字 FNV-1a 摘要 */
+	uint32_t digestReplay;       /* 真字从锚点重放 FNV-1a 摘要 */
+	uint32_t framesClosed;       /* 实际闭合帧数，应 == frames */
+	uint32_t replayedRounds;     /* 重放轮数 = rounds - anchor */
+	uint32_t specRounds;         /* 投机驱动轮数，应 == rounds */
+	uint32_t mismatchSeq;        /* 实际分歧 seq，应 == divergeAt */
+	int      tagOkSticky;        /* 回滚期 tag_ok 只 0->1，不 1->0 */
+	uint32_t predVsFastConflict; /* 双预测源互斥计数，应恒 0 */
+} GnpPredSelfTestRes;
+
 /* 编译期尺寸锁（不符即编译失败，fail-closed）——用 __LINE__ 生成唯一 typedef 名，
  * 避免对字符串字面量做 ## 拼接（C99 回退分支合法）。 */
 #define GNP_SA_CAT2(a, b) a##b
@@ -389,7 +418,9 @@ static inline int gnpPredWordForbidden(uint16_t w) {
         || w == LINKCMD_INIT_BLOCK
         || w == LINKCMD_CONT_BLOCK
         || w == LINK_HANDSHAKE_MASTER
-        || (uint16_t) (w & LINK_HANDSHAKE_SLAVE_MASK) == LINK_HANDSHAKE_SLAVE;
+        /* B9A0 红线堵漏(Q11)：原漏 ~ 致 (w&0x3)==0xB9A0 恒假，slave 握手字未禁投。
+         * 补 ~ 后匹配 {B9A0..B9A3} 低2位容差族，与 gen8 link.c:2271 语义一致。 */
+        || (uint16_t) (w & ~LINK_HANDSHAKE_SLAVE_MASK) == LINK_HANDSHAKE_SLAVE;
 }
 
 /* 10 条 AND 纯数值核（+ out.word 扩展 = 11）。任一否定即禁投机。

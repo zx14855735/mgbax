@@ -5555,6 +5555,11 @@ static int predRollbackTest() {
 	chk("word 2222 forbidden", gnpPredWordForbidden(0x2222) != 0, true);
 	chk("word BBBB forbidden", gnpPredWordForbidden(0xBBBB) != 0, true);
 	chk("word 8FFF(handshake) forbidden", gnpPredWordForbidden(0x8FFF) != 0, true);
+	/* B9A0 红线堵漏(Q11)：slave 握手字低2位容差族必须全禁投机。 */
+	chk("word B9A0(slave handshake) forbidden", gnpPredWordForbidden(0xB9A0) != 0, true);
+	chk("word B9A1(slave variant) forbidden", gnpPredWordForbidden(0xB9A1) != 0, true);
+	chk("word B9A2(slave variant) forbidden", gnpPredWordForbidden(0xB9A2) != 0, true);
+	chk("word B9A3(slave variant) forbidden", gnpPredWordForbidden(0xB9A3) != 0, true);
 	chk("word 0000 allowed", gnpPredWordForbidden(0x0000) == 0, true);
 
 	/* 5. 11 条 AND 硬门：正例全绿；逐条否定必须全拒。 */
@@ -5595,6 +5600,86 @@ static int predRollbackTest() {
 
 	printf("\npredrollback: %d failures (pure-predicate/redline truth table; NOT CROSSED, gate FAIL/0/9)\n", failures);
 	return failures;
+}
+
+/* ===== 档1 B 有状态预测回滚本体运行时自测（--predstateful）=====
+ * 经门开导出的 gnpPredRollbackSelfTest 探针直驱真实静态本体（sioPredictWord /
+ * sioPredictShadowPut / sioPredictConfirm / sioNgLatchSample），跑 D=0/8/32 三档，
+ * 逐档断言 Q1 §3 四Assertion。门关（MGBAX_PRED_SELFTEST=0）时不引用探针符号、
+ * 直接 SKIP，保默认构建零回归。
+ * 诚实标注：灰区写快照(mock diag)/非真savestate/非纯零注入，CROSSED可信度存疑；
+ * PASS 仅证机制工程可行，不出 tag_ok=1、不产 CROSSED、不升门（FAIL/0/9 不变）。 */
+static int predStatefulSelfTest() {
+#if MGBAX_ROLLBACK_ENABLE && MGBAX_PRED_SELFTEST
+	int failures = 0;
+	auto chk = [&](const char* what, bool got, bool want) {
+		if (got == want) {
+			printf("ok predstateful: %s\n", what);
+		} else {
+			++failures;
+			printf("FAIL predstateful: %s (got %d want %d)\n", what, got ? 1 : 0, want ? 1 : 0);
+		}
+	};
+	const uint32_t frames = 8u;
+	const uint32_t rounds = frames * 9u;   /* 每帧 9 轮 */
+	const uint32_t divergeAt = 13u;        /* 第 2 帧第 4 轮；真字 0 → 分歧字 BBBB（合法控制字） */
+	const uint32_t anchor = (divergeAt / 9u) * 9u;
+	const uint32_t delays[3] = { 0u, 8u, 32u };
+	const char* dname[3] = { "D0", "D8", "D32" };
+	int k;
+
+	for (k = 0; k < 3; ++k) {
+		GnpPredSelfTestReq req;
+		GnpPredSelfTestRes res;
+		char tag[96];
+		memset(&req, 0, sizeof(req));
+		req.seed = 0u; req.frames = frames; req.delayRounds = delays[k]; req.divergeAt = divergeAt;
+		int guard = gnpPredRollbackSelfTest(&req, &res);
+
+		snprintf(tag, sizeof(tag), "%s probe-integrity(guard==0,redline+diag)", dname[k]);
+		chk(tag, guard == 0, true);
+
+		/* A1 末态一致：三路 FNV 摘要逐字节相等。 */
+		snprintf(tag, sizeof(tag), "%s A1 digestSpec==digestBase", dname[k]);
+		chk(tag, res.digestSpec == res.digestBase, true);
+		snprintf(tag, sizeof(tag), "%s A1 digestBase==digestReplay", dname[k]);
+		chk(tag, res.digestBase == res.digestReplay, true);
+
+		/* A2 不丢帧：闭合帧数/轮数达标；重放轮数 = rounds-anchor。 */
+		snprintf(tag, sizeof(tag), "%s A2 framesClosed==frames", dname[k]);
+		chk(tag, res.framesClosed == frames, true);
+		snprintf(tag, sizeof(tag), "%s A2 specRounds==rounds", dname[k]);
+		chk(tag, res.specRounds == rounds, true);
+		snprintf(tag, sizeof(tag), "%s A2 replayedRounds==rounds-anchor", dname[k]);
+		chk(tag, res.replayedRounds == rounds - anchor, true);
+
+		/* A3 隐藏延迟：分歧 seq 真值上报（账本计数一致性由 probe-integrity 核准）。 */
+		snprintf(tag, sizeof(tag), "%s A3 mismatchSeq==divergeAt", dname[k]);
+		chk(tag, res.mismatchSeq == divergeAt, true);
+
+		/* A4 diag 保真：tag_ok 只 0->1（sticky）；双预测源无冲突。 */
+		snprintf(tag, sizeof(tag), "%s A4 tagOkSticky==1(0->1 only)", dname[k]);
+		chk(tag, res.tagOkSticky == 1, true);
+		snprintf(tag, sizeof(tag), "%s A4 predVsFastConflict==0", dname[k]);
+		chk(tag, res.predVsFastConflict == 0u, true);
+
+		printf("     %s: spec=%08X base=%08X replay=%08X frames=%u replayed=%u mismatch=%u\n",
+		       dname[k], (unsigned) res.digestSpec, (unsigned) res.digestBase,
+		       (unsigned) res.digestReplay, (unsigned) res.framesClosed,
+		       (unsigned) res.replayedRounds, (unsigned) res.mismatchSeq);
+		if (delays[k] > MGBAX_ROLLBACK_MAX_FRAMES) {
+			printf("     NOTE %s: D>%d (N4 RTT 超 8 帧回滚预算) — 机制档 PASS 不等于 N4 可行，不宣称满足延迟预算\n",
+			       dname[k], MGBAX_ROLLBACK_MAX_FRAMES);
+		}
+	}
+
+	printf("\npredstateful: %d failures (stateful self-test; 灰区写快照mock diag/非真savestate/非纯零注入; "
+	       "NOT tag_ok=1, NOT CROSSED, gate FAIL/0/9)\n", failures);
+	return failures;
+#else
+	printf("predstateful: SKIPPED (需 -DMGBAX_ROLLBACK_ENABLE=1 -DMGBAX_PRED_SELFTEST=1 编译)\n");
+	return 0;
+#endif
 }
 
 static int fastGateTest() {
@@ -5834,6 +5919,9 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("--predrollback")) {
 		return predRollbackTest();
+	}
+	if (mode == QStringLiteral("--predstateful")) {
+		return predStatefulSelfTest();
 	}
 	/* 对称定长延迟线判据的真值表（纯函数，不需要 ROM / 网络）。 */
 	if (mode == QStringLiteral("--delayline") || mode == QStringLiteral("delayline")) {

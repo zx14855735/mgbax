@@ -79,6 +79,13 @@ bool sioFastGateReady(bool disabled, uint32_t ok, unsigned gLinkState, unsigned 
  * MGBAX_FAST_MIN_OK 把它降到握手后立即生效（如 8），验证能否救回链路。 */
 bool sioFastGateReadyEx(bool disabled, uint32_t ok, unsigned gLinkState, unsigned gLinkPlayerCount, uint32_t minOk);
 
+/** 档1 B 有状态预测回滚自测探针（仅 MGBAX_PRED_SELFTEST=1 && MGBAX_ROLLBACK_ENABLE=1
+ * 时定义在 sio_link.c；门关目标不引用本符号）。类型定义见 gboy_netparty_abi.h，
+ * 此处仅前置声明 struct tag，避免引入整个共享头。零注入 CROSSED 不靠本探针产出。 */
+struct GnpPredSelfTestReq;
+struct GnpPredSelfTestRes;
+int gnpPredRollbackSelfTest(const struct GnpPredSelfTestReq* req, struct GnpPredSelfTestRes* res);
+
 /** Diagnostics: smoothed RTT in µs (0 = unknown) and peer queue counters. */
 uint32_t sioLinkRttUs(const struct SioLink* sio);
 void sioLinkPeerStats(const struct SioLink* sio, uint32_t* stale, uint32_t* drops);

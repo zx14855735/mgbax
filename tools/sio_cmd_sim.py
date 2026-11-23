@@ -74,6 +74,7 @@ LINKTYPE_SINGLE_BATTLE = 0x2233
 LINKCMD_INIT_BLOCK = 0xBBBB
 MASTER_HANDSHAKE = 0x8FFF
 SLAVE_HANDSHAKE = 0xB9A0
+LINK_HANDSHAKE_SLAVE_MASK = 0x3  # 对齐 C abi.h / gen8 link.c:2271 的 ~0x3 容差族
 
 LINK_STATE_START0 = 0
 LINK_STATE_START1 = 1
@@ -164,8 +165,12 @@ def pred_word(t: int, diverge_at: int | None = None) -> int:
 
 
 def pred_word_is_control(w: int) -> bool:
-    """控制字白名单自检：出现任何 party 数据负载字即桩 FAIL（红线）。"""
+    """控制字白名单自检（生成端 mock 合法性，非投机禁令）：出现 party 数据字即 FAIL。
+    slave 握手字按低2位容差族匹配 {B9A0..B9A3}（Q15，对齐 C ~MASK 语义）。"""
     w &= 0xFFFF
+    # slave 握手字容差族：不改 _CTRL_WHITELIST（避免放宽 checksum 双循环）
+    if (w & ~LINK_HANDSHAKE_SLAVE_MASK) == SLAVE_HANDSHAKE:
+        return True
     if w in _CTRL_WHITELIST or w == 0:
         return True
     # 合法 checksum 类别：计算式 (0x2222+0x2233)&0xFFFF == 0x4455，
