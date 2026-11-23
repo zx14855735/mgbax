@@ -95,7 +95,11 @@ INTRO_MAP_GROUP = 25
 INTRO_MAP_NUM = 24
 INTRO_MAP_TX = 10
 INTRO_MAP_TY = 5
-INTRO_MAP_STREAK = 3              # 连续 N 次 map/pos 命中才放行（同 TID 连续，排除抖动）
+INTRO_MAP_STREAK = 3              # 连续 N 次 map/pos 命中才放行（同 TID 连续，排除抖动)
+# AL1: 座位格 coord_event 踩格门（默认关、具名、受控输入灰区）。构造档直接放 (10,5)
+# 不走格 → tookStep 恒 FALSE → coord_event 座位事件链不触发 → link.state 停 1。
+# 需 DOWN 离格→UP 踩回（2 次方向步）触发，方进 cable club 握手。
+NAV_COORD_STEP = os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1"
 INTRO_MIN_LUMA = 25.0                # 演变判据亮度下界（菜单非纯白）
 INTRO_MAX_LUMA = 180.0               # 演变判据亮度上界
 INTRO_MIN_CHANGES = 3                # 演变判据：至少经历 N 次画面变化
@@ -966,6 +970,12 @@ def main():
             app_nav_state["intro_why"] = _why
             app_nav_log("INTRO-WAIT 收尾 ok=%s elapsed=%.1fs why=%s；deadline 重新起算"
                         % (_ok, _elapsed, _why))
+        # AL1: INTRO 后若已 peek-arena 到竞技场（PEEK 现在可读 map=25.24/pos=10,5），
+        # 切回 PEEK oracle——SCREENSHOT oracle 走不到 AD2 门/踩格分支，只会 timeout。
+        # coord_step 门开时强制切（需要 PEEK 语义判座位格踩格）。
+        if (NAV_COORD_STEP and app_nav_state.get("intro_why") == "peek-arena"):
+            app_nav_log("AL1: 竞技场起点 + coord_step 门开 → 切回 PEEK oracle（含踩格/AD2门）")
+            return app_nav_peek()
         deadline = time.time() + APP_NAV_TIMEOUT
         # 1) 标题 LOGO 只吃 START：按到画面变化为止
         for i in range(3):
@@ -1050,6 +1060,8 @@ def main():
         # 不是等待连接。确认一次后必须给保存阶段墙钟时间（掉到 6fps 可达 1~2 分钟），
         # 期间反复按 A 不会推进 —— 这正是 APPNAV4 看似卡住的原因（G6）。
         save_ctx = {"entered": False, "t": 0.0, "confirmed": False}
+        # AL1: 座位格踩格状态（构造档 spawn (10,5) 不走格，需 DOWN→UP 触发 coord_event）。
+        coord_step = {"phase": 0, "done": False}  # phase 0=未开始 1=已DOWN待UP 2=完成
         # menu_ctx：--force-full-menu 的 cb2/cur_b 演变观测器。主判据=cb2 进 cable_club 段
         # （游戏真进有线俱乐部）或战斗窗；cur_b 3→4 是俱乐部内服务/模式菜单，仅作辅助。
         menu_ctx = {
@@ -1289,7 +1301,25 @@ def main():
                         and s["lkpc"] == 0 and s["lkst"] in (0, 1)
                         and cur_b == 0
                         and s["pos"] in ((0, 0), (-1, -1)))
-            if at_title and start_taps < 2:
+            # AL1: 座位格 coord_event 踩格（构造档 spawn (10,5) 无走格 → tookStep 恒 FALSE）。
+            # 在竞技场座位格且 link 未起时，DOWN 离格→UP 踩回触发 coord_event 座位事件链。
+            at_seat = (s.get("map") == (SEAT_MAP_GROUP, SEAT_MAP_NUM)
+                       and s["pos"] == (SEAT_TX, SEAT_TY) and s["lkst"] <= 1)
+            if NAV_COORD_STEP and at_seat and not coord_step["done"]:
+                # AN1: GBA 走一格需 ~16 帧；AVD 软渲染 emuFps≈2.65 ⇒ 需 6-7s。
+                # 原 hold=1.0s 仅 ~2.7 帧(pos 从未到 10,6)，coord_event 不触发。
+                if coord_step["phase"] == 0:
+                    action, hold, settle = AK_DOWN, 7.0, 2.0
+                    why = "座位格 DOWN 离格 7s(低fps走格)触发 tookStep (coord_event 前半)"
+                    coord_step["phase"] = 1
+                elif coord_step["phase"] == 1:
+                    action, hold, settle = AK_UP, 7.0, 2.0
+                    why = "座位格 UP 踩回 7s 触发 coord_event → cable club 握手"
+                    coord_step["phase"] = 2
+                    coord_step["done"] = True
+                else:
+                    action, why = AK_A, "座位格踩格后 A 推进"
+            elif at_title and start_taps < 2:
                 # NETDUAL-07 实测：title 按 A 无效（pos 仍 -1,-1），GBA 标题必须 START 才能进游戏。
                 # 回退 START（用户"直接按 A"的意图在游戏内推进，不是标题）。
                 action, hold, settle = AK_START, 0.6, 1.0

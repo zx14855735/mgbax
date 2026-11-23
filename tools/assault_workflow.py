@@ -134,6 +134,10 @@ def launch(tag, app_sav=None, pc_sav=None):
     if os.environ.get("MGBAX_NAV_SPAWN_AT_SEAT", "0") == "1":
         env["MGBAX_NAV_SPAWN_AT_SEAT"] = "1"
         log("MGBAX_NAV_SPAWN_AT_SEAT=1（构造档已到座位·观测口径适配·灰区标注）")
+    # AL1: 座位格 coord_event 踩格门（DOWN→UP 触发，受控输入灰区）
+    if os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1":
+        env["MGBAX_NAV_COORD_STEP"] = "1"
+        log("MGBAX_NAV_COORD_STEP=1（座位格方向步触发 coord_event·受控输入灰区标注）")
     with open(log_path, "w", encoding="utf-8") as f:
         p = subprocess.Popen(args, cwd=TOOLS, env=env, stdout=f, stderr=subprocess.STDOUT)
     log("PID=%d TAG=%s LOG=%s" % (p.pid, tag, log_path))
