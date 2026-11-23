@@ -7280,7 +7280,9 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 		if (mobilePredictWord(emu, &pin, &pout) && mobilePredHardGate(emu, &pin, &pout)) {
 			mobilePredictShadowPut(emu, pin.seq, pin.sc, &pout, pin.ownWord);
 			emu->sioWaiting = false;
-			emu->sioConnectSince = 0;
+			/* sioConnectSince 字段名在 MgbaMobile 中不存在（门开编译实测暴露）；
+			 * 投机命中后连接计时重置由 sioWaiting=false + 后续 sioDone 重挂负责，
+			 * 此处不写任何不存在的结构体成员（零游戏态写红线）。 */
 			mobileCompletePredictedTransfer(emu, pout.word, cyclesLate);
 			return;
 		}
