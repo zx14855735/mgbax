@@ -112,6 +112,13 @@ INTRO_MAX_LUMA = 180.0               # 演变判据亮度上界
 INTRO_MIN_CHANGES = 3                # 演变判据：至少经历 N 次画面变化
 INTRO_MENU_STABLE = 3                # 演变判据：连续 N 次稳定
 INTRO_HIT_SHOT = "intro_hit.png"
+# AV1: INTRO-WAIT 连打键推进 UI 链（默认关、具名、受控输入灰区）。
+# 死锁根因：AQ1 纯等 cb2 进 field 但 intro 出口需 newKeys 按键⇒永不到 field。
+NAV_INTRO_KEYPUSH = os.environ.get("MGBAX_INTRO_KEYPUSH", "0") == "1"
+INTRO_PULSE_MASK = 8                 # AK_START：intro 任意 newKeys 可跳过(af4)
+INTRO_PULSE_HOLD = 0.6               # ≥1 模拟帧(2.4fps≈0.42s/帧)，长按 newKeys 恒 0 故用脉冲
+INTRO_PULSE_GAP = 0.5
+INTRO_PULSE_BURST = 3                # 每轮 3 个边沿，摊到多轮防冲过头
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
@@ -842,6 +849,16 @@ def main():
                 app_nav_ctx["intro_tpl"] = []
         return app_nav_ctx["intro_tpl"]
 
+    # AV1: intro 连打键推进（newKeys 单帧边沿，长按无效 → 用 0→mask→0 脉冲）
+    def intro_pulse_step():
+        for _ in range(INTRO_PULSE_BURST):
+            akeys(0)
+            time.sleep(INTRO_PULSE_GAP)
+            akeys(INTRO_PULSE_MASK)
+            time.sleep(INTRO_PULSE_HOLD)
+            akeys(0)
+            time.sleep(INTRO_PULSE_GAP)
+
     def app_wait_intro_done():
         t0 = time.time()
         last_sig = None
@@ -959,9 +976,15 @@ def main():
                 app_nav_log("INTRO_DONE elapsed=%.1fs reason=%s td=%.1f luma=%.1f changes=%d stable=%d bright=%d"
                             % (time.time() - t0, why, td, luma, changes, stable, seen_bright))
                 return True, time.time() - t0, why
+            # AV1: 未到任何放行态 → 连打键推进 UI 链（intro 出口需 newKeys）。
+            # 放在所有 return 之后，达 field/arena/template 即停手，不会推进过头。
+            if NAV_INTRO_KEYPUSH:
+                intro_pulse_step()
+                app_nav_state["intro_pulses"] = app_nav_state.get("intro_pulses", 0) + INTRO_PULSE_BURST
             time.sleep(INTRO_SAMPLE_SEC)
         app_nav_log("INTRO_DONE elapsed=%.1fs reason=cap（兜底上限，未确认主菜单）"
-                    % (time.time() - t0))
+                    " intro_pulses=%d last_cb2=%08X"
+                    % (time.time() - t0, app_nav_state.get("intro_pulses", 0), _cb2 or 0))
         return False, time.time() - t0, "cap"
 
     def app_advance(tag, mask, hold=0.9, settle=1.3, tries=3, threshold=0.15):

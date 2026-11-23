@@ -138,6 +138,9 @@ def launch(tag, app_sav=None, pc_sav=None):
     if os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1":
         env["MGBAX_NAV_COORD_STEP"] = "1"
         log("MGBAX_NAV_COORD_STEP=1（座位格方向步触发 coord_event·受控输入灰区标注）")
+    if os.environ.get("MGBAX_INTRO_KEYPUSH", "0") == "1":
+        env["MGBAX_INTRO_KEYPUSH"] = "1"
+        log("MGBAX_INTRO_KEYPUSH=1（INTRO 连打键推进 UI 链·受控输入灰区标注）")
     with open(log_path, "w", encoding="utf-8") as f:
         p = subprocess.Popen(args, cwd=TOOLS, env=env, stdout=f, stderr=subprocess.STDOUT)
     log("PID=%d TAG=%s LOG=%s" % (p.pid, tag, log_path))
