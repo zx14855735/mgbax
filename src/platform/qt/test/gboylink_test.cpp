@@ -46,6 +46,8 @@
 #include "TcpDirectLink.h"
 #endif
 #include "sio_link.h"
+/* 档1 A 预测纯判据自测（header-only static inline，C/C++ 兼容，无 ROM/网络）。 */
+#include "../../gboy/gboy_netparty_abi.h"
 #include "../mobile/link_net.h"
 #include "../mobile/link_lockstep.h"
 #include "../mobile/mgba_mobile.h"
@@ -5512,6 +5514,89 @@ static bool pathALinkupStable(unsigned state, unsigned pc, uint32_t st) {
 	return state == 4u && pc == 2u && (st & kPathAMasterBit) != 0u;
 }
 
+/* ===== 档1 A 预测纯判据自测（--predrollback）=====
+ * 只调共享头 header-only static inline 判据，无 ROM / 网络 / 有状态 driver。
+ * 红线：验证「控制字/握手字/块字/校验和轮/低置信」一律禁投机（out.word 方案 i）。
+ * 产物标注：机制工程自证 / 非 CROSSED / 门 FAIL 0/9 不变；PASS 不升门。 */
+static int predRollbackTest() {
+	int failures = 0;
+	auto chk = [&](const char* what, bool got, bool want) {
+		if (got == want) {
+			printf("ok predrollback: %s\n", what);
+		} else {
+			++failures;
+			printf("FAIL predrollback: %s (got %d want %d)\n", what, got ? 1 : 0, want ? 1 : 0);
+		}
+	};
+
+	/* 1. 相位白名单：只有 HANDSHAKE/CMD_HEADER/SEQ_INDEX 可投机；
+	 *    CHECKSUM/BLOCK_DATA/PHASE_BLOCK_DATA/INVALID 全禁（块字/校验和红线）。 */
+	chk("phase HANDSHAKE allows", gnpPredPhaseAllowsSpec(GNP_PHASE_HANDSHAKE) != 0, true);
+	chk("phase CMD_HEADER allows", gnpPredPhaseAllowsSpec(GNP_PHASE_CMD_HEADER) != 0, true);
+	chk("phase SEQ_INDEX allows", gnpPredPhaseAllowsSpec(GNP_PHASE_SEQ_INDEX) != 0, true);
+	chk("phase CHECKSUM denied", gnpPredPhaseAllowsSpec(GNP_PHASE_CHECKSUM) == 0, true);
+	chk("phase BLOCK_DATA denied", gnpPredPhaseAllowsSpec(GNP_PHASE_BLOCK_DATA) == 0, true);
+	chk("phase PHASE_BLOCK_DATA denied", gnpPredPhaseAllowsSpec(GNP_PHASE_PHASE_BLOCK_DATA) == 0, true);
+	chk("phase INVALID denied", gnpPredPhaseAllowsSpec(GNP_PHASE_INVALID) == 0, true);
+
+	/* 2. 置信度：只有 HIGH 放行。 */
+	chk("conf LOW denied", gnpPredConfAllows(GNP_CONF_LOW) == 0, true);
+	chk("conf MED denied", gnpPredConfAllows(GNP_CONF_MED) == 0, true);
+	chk("conf HIGH allows", gnpPredConfAllows(GNP_CONF_HIGH) != 0, true);
+
+	/* 3. 相位分类（只读现场值 st/sc）。 */
+	chk("classify st1 -> HANDSHAKE", gnpPredClassify(1, 3, 0, 0) == GNP_PHASE_HANDSHAKE, true);
+	chk("classify st4 sc0 -> CHECKSUM", gnpPredClassify(4, 0, 0, 0) == GNP_PHASE_CHECKSUM, true);
+	chk("classify st2 sc3 -> HANDSHAKE", gnpPredClassify(2, 3, 0, 0) == GNP_PHASE_HANDSHAKE, true);
+	chk("classify st4 sc3 -> SEQ_INDEX", gnpPredClassify(4, 3, 0, 0) == GNP_PHASE_SEQ_INDEX, true);
+
+	/* 4. out.word 禁投机字（红线：控制/opcode/块/握手字绝不投机）。 */
+	chk("word 5FFF forbidden", gnpPredWordForbidden(0x5FFF) != 0, true);
+	chk("word 2222 forbidden", gnpPredWordForbidden(0x2222) != 0, true);
+	chk("word BBBB forbidden", gnpPredWordForbidden(0xBBBB) != 0, true);
+	chk("word 8FFF(handshake) forbidden", gnpPredWordForbidden(0x8FFF) != 0, true);
+	chk("word 0000 allowed", gnpPredWordForbidden(0x0000) == 0, true);
+
+	/* 5. 11 条 AND 硬门：正例全绿；逐条否定必须全拒。 */
+	auto good = [&]() {
+		return gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX,
+		                           4, 3, 0, 0, 0, 0, 0, 0, 0);
+	};
+	chk("hardgate positive(SEQ_INDEX st4 sc3) allows", good() != 0, true);
+	chk("hardgate 1 gateOff denied",
+	    gnpPredHardGatePure(0, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 2 confLOW denied",
+	    gnpPredHardGatePure(1, GNP_CONF_LOW, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 3 phaseBLOCK denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_BLOCK_DATA, 4, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 4 st1 denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 1, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 5 CMD st2 denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_CMD_HEADER, 2, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 6 sc0(checksum) denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 0, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 7 inCmdPhase denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 1, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 8 inBattleRelay denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 0, 1, 0, 0, 0) == 0, true);
+	chk("hardgate 9 isBlockWord denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 0, 0, 1, 0, 0) == 0, true);
+	chk("hardgate 10 sp0!=0 denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0x1234, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 10 brs!=0 denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0x1234, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 10b HANDSHAKE without peer denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_HANDSHAKE, 4, 3, 0, 0, 0, 0, 0, 0, 0) == 0, true);
+	chk("hardgate 11 outWordForbidden denied",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_SEQ_INDEX, 4, 3, 0, 0, 0, 0, 0, 0, 1) == 0, true);
+	/* HANDSHAKE 且 isHandshakePeer=1 是唯一握手投机的合法口子（仍受其它门约束）。 */
+	chk("hardgate HANDSHAKE peer allows",
+	    gnpPredHardGatePure(1, GNP_CONF_HIGH, GNP_PHASE_HANDSHAKE, 4, 3, 0, 0, 0, 0, 0, 1, 0) != 0, true);
+
+	printf("\npredrollback: %d failures (pure-predicate/redline truth table; NOT CROSSED, gate FAIL/0/9)\n", failures);
+	return failures;
+}
+
 static int fastGateTest() {
 	int failures = 0;
 	auto check = [&](const char* what, bool got, bool want) {
@@ -5746,6 +5831,9 @@ int main(int argc, char** argv) {
 	}
 	if (mode == QStringLiteral("--fastgate")) {
 		return fastGateTest();
+	}
+	if (mode == QStringLiteral("--predrollback")) {
+		return predRollbackTest();
 	}
 	/* 对称定长延迟线判据的真值表（纯函数，不需要 ROM / 网络）。 */
 	if (mode == QStringLiteral("--delayline") || mode == QStringLiteral("delayline")) {
