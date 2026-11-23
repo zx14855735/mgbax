@@ -849,7 +849,9 @@ def main():
                 app_nav_ctx["intro_tpl"] = []
         return app_nav_ctx["intro_tpl"]
 
-    # AV1: intro 连打键推进（newKeys 单帧边沿，长按无效 → 用 0→mask→0 脉冲）
+    # AV1/AV1b: intro 连打键推进（newKeys 单帧边沿，长按无效 → 用 0→mask→0 脉冲）。
+    # AV1b 修正：每个边沿后必查 cb2，一旦落 field 段立即停手——否则连打 START 会把
+    # 已到 field 的游戏推回 main_menu（AV1 实测 081A5039↔0818FE79 严格交替震荡）。
     def intro_pulse_step():
         for _ in range(INTRO_PULSE_BURST):
             akeys(0)
@@ -858,6 +860,12 @@ def main():
             time.sleep(INTRO_PULSE_HOLD)
             akeys(0)
             time.sleep(INTRO_PULSE_GAP)
+            ps = peek_state()
+            cb = (ps.get("cb2", 0) & ~1) if ps else 0
+            if cb and NAV_FIELD_CB2_LO <= cb < NAV_FIELD_CB2_HI:
+                app_nav_log("AV1b: 脉冲后 cb2 已落 field 段(%08X)，停手防推回菜单" % cb)
+                return True
+        return False
 
     def app_wait_intro_done():
         t0 = time.time()
@@ -872,6 +880,7 @@ def main():
         # 替代 2.2fps 下不可靠的截图 template。cb2 可观测性已由 AK1 gMain 锚定修好。
         field_cb2_streak = 0
         last_field_cb2 = None
+        field_pulse_hold = False    # AV1b: 脉冲曾到 field → 停发，让 streak 累积
         tpl = intro_menu_sig()
         app_nav_log("INTRO-WAIT 开始 cap=%.0fs tpl=%s min_wait=%.0fs bright=%.0f"
                     % (INTRO_WAIT_CAP_S, bool(tpl), INTRO_MIN_WAIT_S, INTRO_BRIGHT_LUMA))
@@ -976,10 +985,11 @@ def main():
                 app_nav_log("INTRO_DONE elapsed=%.1fs reason=%s td=%.1f luma=%.1f changes=%d stable=%d bright=%d"
                             % (time.time() - t0, why, td, luma, changes, stable, seen_bright))
                 return True, time.time() - t0, why
-            # AV1: 未到任何放行态 → 连打键推进 UI 链（intro 出口需 newKeys）。
-            # 放在所有 return 之后，达 field/arena/template 即停手，不会推进过头。
-            if NAV_INTRO_KEYPUSH:
-                intro_pulse_step()
+            # AV1/AV1b: 未到任何放行态 → 连打键推进 UI 链（intro 出口需 newKeys）。
+            # AV1b: 脉冲内到 field 即停发(hold)，让主循环 field streak 累积，不再推回菜单。
+            if NAV_INTRO_KEYPUSH and not field_pulse_hold:
+                if intro_pulse_step():
+                    field_pulse_hold = True
                 app_nav_state["intro_pulses"] = app_nav_state.get("intro_pulses", 0) + INTRO_PULSE_BURST
             time.sleep(INTRO_SAMPLE_SEC)
         app_nav_log("INTRO_DONE elapsed=%.1fs reason=cap（兜底上限，未确认主菜单）"
