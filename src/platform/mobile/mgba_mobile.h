@@ -211,6 +211,12 @@ int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu, const uint8_t* mb,
  * （tag_ok 真值、role/sender/rom_md5 由 driver 真值填，唯一生产者=共享 C）。
  * 协议级门控，默认关；iOS/Android/PC 三端同名同值。 */
 void mgbaMobileNetGateLogSet(bool enabled);
+
+/* 档1 A 预测回滚总门（三端同名同值、默认关）：须在首个 linkPoll 前调。
+ * 实现落共享 C mgba_mobile.c（第二批）；门关时机制本体 immediate-return、链路零回归。
+ * 具名门宏集中在 platform/gboy/gboy_netparty_abi.h（MGBAX_ROLLBACK_ENABLE 等）。 */
+void mgbaMobileRollbackSet(bool enabled);
+bool mgbaMobileRollbackOn(void);
 /*
  * Whether the resampler's input rate can be trusted at the speed being read:
  * a locked estimate or a remembered device throughput to seed from. Front

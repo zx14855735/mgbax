@@ -26,6 +26,64 @@
 #define GNP_CRC_SPAN              UINT16_C(496)          /* = GNP_OFF_BLOB + GNP_BLOB_SIZE，保持不变 */
 #define GNP_MONS_MAX              UINT8_C(6)
 
+/* ===== 档1 A 预测回滚门宏族（三端同名同值、默认关、零回归）=====
+ * 唯一落点=本共享头（PC sio_link.c / 共享 C mgba_mobile.c 双 include；Android 经
+ * jni_bridge.cpp、iOS 经 bridging header 间接可见）。沿用现有门风格：#ifndef 默认 +
+ * #if/#error 取值校验 + env/prop 覆盖（由各 driver 实施）。相位/置信用 C enum
+ * （GnpPredictPhase/GnpPredictConf），不占 MGBAX_ 宏命名空间。 */
+#ifndef MGBAX_ROLLBACK_ENABLE
+#define MGBAX_ROLLBACK_ENABLE       0            /* 总门：0=完全走现有 SIO 路径，行为零改动 */
+#endif
+#ifndef MGBAX_ROLLBACK_LOG
+#define MGBAX_ROLLBACK_LOG          0            /* 日志门：0=不产 [RB] 行 */
+#endif
+#ifndef MGBAX_ROLLBACK_ENV
+#define MGBAX_ROLLBACK_ENV          "MGBAX_ROLLBACK_ENABLE"  /* env 覆盖名（三端同值） */
+#endif
+#ifndef MGBAX_PREDICT_MODE
+#define MGBAX_PREDICT_MODE          0            /* 0=last-word hold；1=seq 递增；2=保留扩展 */
+#endif
+#ifndef MGBAX_PREDICT_HISTORY
+#define MGBAX_PREDICT_HISTORY       8            /* 预测字历史深度（轮），环形缓冲容量 */
+#endif
+#ifndef MGBAX_PREDICT_MASK
+#define MGBAX_PREDICT_MASK          0xFFFFu      /* SIO 字比较掩码（16bit 全比） */
+#endif
+#ifndef MGBAX_ROLLBACK_GRANULARITY
+#define MGBAX_ROLLBACK_GRANULARITY  1            /* 1=每次传输点快照；2=每帧；值越大开销越高 */
+#endif
+#ifndef MGBAX_ROLLBACK_MAX_FRAMES
+#define MGBAX_ROLLBACK_MAX_FRAMES   8            /* 最大可回滚帧数（有界，防内存失控/N4 预算） */
+#endif
+#ifndef MGBAX_ROLLBACK_SNAP_BYTES
+#define MGBAX_ROLLBACK_SNAP_BYTES   0            /* 0=用 mCore save-state API 动态取，不写死尺寸 */
+#endif
+
+#if (MGBAX_ROLLBACK_ENABLE != 0) && (MGBAX_ROLLBACK_ENABLE != 1)
+#error "MGBAX_ROLLBACK_ENABLE must be 0 or 1"
+#endif
+#if (MGBAX_ROLLBACK_LOG != 0) && (MGBAX_ROLLBACK_LOG != 1)
+#error "MGBAX_ROLLBACK_LOG must be 0 or 1"
+#endif
+#if (MGBAX_PREDICT_MODE < 0) || (MGBAX_PREDICT_MODE > 2)
+#error "MGBAX_PREDICT_MODE out of range [0,2]"
+#endif
+#if MGBAX_PREDICT_HISTORY < 0
+#error "MGBAX_PREDICT_HISTORY must be >= 0"
+#endif
+#if (MGBAX_PREDICT_MASK > 0xFFFFu)
+#error "MGBAX_PREDICT_MASK must fit in 16 bits"
+#endif
+#if MGBAX_ROLLBACK_GRANULARITY < 1
+#error "MGBAX_ROLLBACK_GRANULARITY must be >= 1"
+#endif
+#if (MGBAX_ROLLBACK_MAX_FRAMES < 0) || (MGBAX_ROLLBACK_MAX_FRAMES > 64)
+#error "MGBAX_ROLLBACK_MAX_FRAMES out of range [0,64]"
+#endif
+#if MGBAX_ROLLBACK_SNAP_BYTES < 0
+#error "MGBAX_ROLLBACK_SNAP_BYTES must be >= 0"
+#endif
+
 typedef struct {
     volatile uint32_t magic;         /* 0   GNP_MAGIC */
     volatile uint16_t version;       /* 4   GNP_PROTO_VER */
@@ -122,6 +180,48 @@ typedef struct {
 #define GNP_OFF_NG_SRC_TAG   offsetof(GnpNetGateDiagHost, src_tag)     /* 32 */
 #define GNP_OFF_NG_SIZE      sizeof(GnpNetGateDiagHost)               /* 64 */
 
+/* ===== 档1 A 预测回滚类型（C enum / struct，三端同源，不占 MGBAX_ 宏命名空间）=====
+ * 相位/置信度按 D3→裁决归一为具名枚举；predicted/confirmed 标签与 diag 保真 latch
+ * 依 E13 §2/§3。这些只声明数据与纯类型，不含预测/回滚本体（第二批另派）。 */
+enum GnpPredictPhase {
+    GNP_PHASE_INVALID = 0,
+    GNP_PHASE_HANDSHAKE,
+    GNP_PHASE_CMD_HEADER,
+    GNP_PHASE_SEQ_INDEX,
+    GNP_PHASE_CHECKSUM,
+    GNP_PHASE_BLOCK_DATA,
+    GNP_PHASE_PHASE_BLOCK_DATA
+};
+
+enum GnpPredictConf {
+    GNP_CONF_LOW = 0,
+    GNP_CONF_MED,
+    GNP_CONF_HIGH
+};
+
+/* predicted -> confirmed 标签（E13 §2）；唯一合法迁移 predicted→confirmed，禁超时转正。 */
+enum NgTag {
+    NG_PREDICTED = 0,
+    NG_CONFIRMED = 1
+};
+
+/* 按帧号索引的 host 侧历史（不进回滚快照）。word 是 SIO 字，tag 表 provenance。 */
+struct NgHist {
+    uint32_t frameNo;
+    uint32_t word;
+    enum NgTag tag;
+};
+
+/* host 侧 diag 保真镜像（E13 §3），回滚层只读它：seq 严格增、tag_ok 只 sticky、
+ * digest 按 (seq,digest) 绑定。真值只由 ROM 写 diag，host 逐字读、禁无条件置 1。 */
+struct NgLatch {
+    uint8_t  diag[GNP_NG_DIAG_SIZE];  /*  0..63 最近一次确认真 diag 快照 */
+    uint32_t seq;                     /* 64 历史最大 seq */
+    uint32_t digestAtSeq;             /* 68 maxSeq 处的 digest */
+    int      tagOkSticky;             /* 72 epoch 内 0->1 粘滞，回滚不得 1->0 */
+    int      valid;                   /* 76 latch 是否已被稳态采样填充 */
+};
+
 /* 编译期尺寸锁（不符即编译失败，fail-closed）——用 __LINE__ 生成唯一 typedef 名，
  * 避免对字符串字面量做 ## 拼接（C99 回退分支合法）。 */
 #define GNP_SA_CAT2(a, b) a##b
@@ -168,6 +268,21 @@ GNP_STATIC_ASSERT(GNP_OFF_NG_TX_DIGEST == 28,"NG tx_digest offset");
 GNP_STATIC_ASSERT(GNP_OFF_NG_SRC_TAG == 32,  "NG src_tag offset");
 GNP_STATIC_ASSERT(GNP_NG_DIAG_SIZE == 64,    "NG diag size");
 GNP_STATIC_ASSERT(GNP_OFF_NG_SIZE == 64,     "NG struct/frame size");
+
+/* 档1 A 新类型尺寸/偏移锁（三端同值，防 ABI 漂移；含 enum 自洽锁免 C/C++ enum 宽度歧义） */
+GNP_STATIC_ASSERT(MGBAX_PREDICT_MODE <= 2,   "predict mode domain");
+GNP_STATIC_ASSERT(offsetof(struct NgHist, frameNo) == 0,  "NgHist frameNo offset");
+GNP_STATIC_ASSERT(offsetof(struct NgHist, word) == 4,     "NgHist word offset");
+GNP_STATIC_ASSERT(offsetof(struct NgHist, tag) == 8,      "NgHist tag offset");
+GNP_STATIC_ASSERT(sizeof(struct NgHist) >=
+                  (2u * sizeof(uint32_t) + sizeof(enum NgTag)), "NgHist size lower bound");
+GNP_STATIC_ASSERT(sizeof(struct NgHist) <= 16u, "NgHist size upper bound");
+GNP_STATIC_ASSERT(offsetof(struct NgLatch, diag) == 0,    "NgLatch diag offset");
+GNP_STATIC_ASSERT(offsetof(struct NgLatch, seq) == 64,    "NgLatch seq offset");
+GNP_STATIC_ASSERT(offsetof(struct NgLatch, digestAtSeq) == 68, "NgLatch digest offset");
+GNP_STATIC_ASSERT(offsetof(struct NgLatch, tagOkSticky) == 72, "NgLatch tagOk offset");
+GNP_STATIC_ASSERT(offsetof(struct NgLatch, valid) == 76,  "NgLatch valid offset");
+GNP_STATIC_ASSERT(sizeof(struct NgLatch) == (GNP_NG_DIAG_SIZE + 16u), "NgLatch size");
 
 /* ===== manifest（方案 A：新 ROM 绝对地址）=====
  * 具名宏 GNP_MB_IW/GNP_PEEK_IW/GNP_APPLIED_IW/GNP_ROM_MD5_HEX 由

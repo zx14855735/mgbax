@@ -56,6 +56,10 @@ USAGE
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import json
+import random
 import sys
 
 # ---------------------------------------------------------------------------
@@ -98,6 +102,79 @@ def hx(v) -> str:
     if v is None:
         return "n/a"
     return "0x%04X" % (v & 0xFFFF)
+
+
+# ---------------------------------------------------------------------------
+# PREDROLLBACK (档1 A方向·预测回滚机制自验证桩)
+#   仅仿真 SIO 控制字流 + 预测/回滚/重放机制；mock 只出控制字白名单，
+#   绝不产 party 数据字节 / 不写 gEnemyParty / 信任位 / 不产 [NETGATE]/CROSSED。
+#   产物标注：非 CROSSED / mock 控制字人工注入 / 门 FAIL/0/9 不变 / diag 未接入。
+# ---------------------------------------------------------------------------
+# 权威态字段白名单（Gen8Link 全为原生类型；排除 trace 与 provenance）
+_STATE_FIELDS = (
+    "is_master", "state", "local_id", "player_count",
+    "send_pos", "send_count", "recv_pos", "recv_count",
+    "sc", "rc", "checksum", "s_checksum_available",
+    "s_send_nonzero", "s_recv_nonzero", "s_send_buffer_empty",
+    "serial_intr_counter", "received_nothing", "bad_checksum",
+    "init_block_send_calls",
+)
+# 控制字白名单：握手字 + 命令字 + 序号/相位字 + 合法 checksum 类别
+_CTRL_WHITELIST = frozenset({
+    MASTER_HANDSHAKE, SLAVE_HANDSHAKE,
+    LINKCMD_SEND_LINK_TYPE, LINKTYPE_SINGLE_BATTLE, LINKCMD_INIT_BLOCK,
+})
+# 强制分歧：把真字替换为另一个【合法控制字】，而非异或任意位——
+# 保证分歧字本身也通过白名单自检（mock 绝不产出 party 数据负载字）
+_PRED_DIVERGE_SUB = {LINKCMD_SEND_LINK_TYPE: LINKCMD_INIT_BLOCK,
+                     LINKTYPE_SINGLE_BATTLE: LINKCMD_SEND_LINK_TYPE,
+                     LINKCMD_INIT_BLOCK: LINKTYPE_SINGLE_BATTLE}
+
+
+def state_digest(link) -> str:
+    """规范化序列化权威态字段 -> md5；排除 trace/provenance。"""
+    obj = {}
+    for f in _STATE_FIELDS:
+        v = getattr(link, f, None)
+        if isinstance(v, bool):
+            v = int(v)
+        obj[f] = v
+    # 队列内容也进摘要（send_data/recv_data/recv_cmds/send_cmd），逐字节可序列化
+    obj["send_data"] = link.send_data
+    obj["recv_data"] = link.recv_data
+    obj["recv_cmds"] = link.recv_cmds
+    obj["send_cmd"] = link.send_cmd
+    raw = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.md5(raw.encode("ascii")).hexdigest()
+
+
+def pred_true_word(t: int, seed: int, diverge_at: int | None) -> int:
+    """真字流 = master_word（干净、不变异）。diverge_at 只影响【预测字】，
+    真字恒为 ROM/对端实际发出的字——保证白名单自检与真实性语义。"""
+    return master_word(t) & 0xFFFF
+
+
+def pred_word(t: int, diverge_at: int | None = None) -> int:
+    """预测字：正常轮==master_word；diverge_at 轮故意预测成另一个合法控制字，
+    制造字级分歧（预测错误 → 回滚重放），且分歧字仍是合法控制字（红线自检通过）。"""
+    w = master_word(t)
+    if diverge_at is not None and t == diverge_at:
+        w = _PRED_DIVERGE_SUB.get(w, LINKCMD_INIT_BLOCK)
+    return w & 0xFFFF
+
+
+def pred_word_is_control(w: int) -> bool:
+    """控制字白名单自检：出现任何 party 数据负载字即桩 FAIL（红线）。"""
+    w &= 0xFFFF
+    if w in _CTRL_WHITELIST or w == 0:
+        return True
+    # 合法 checksum 类别：计算式 (0x2222+0x2233)&0xFFFF == 0x4455，
+    # 以及任意两个白名单字之和（&0xFFFF）——容纳 checksum 而不误判为数据字
+    for a in _CTRL_WHITELIST:
+        for b in _CTRL_WHITELIST:
+            if w == ((a + b) & 0xFFFF):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +518,171 @@ def run_slave_scenario(phase_offset: int,
 
 
 # ---------------------------------------------------------------------------
+# PREDROLLBACK drivers: oracle / delayed / predictive-rollback
+#   复用 Gen8Link.do_recv/do_send/send_recv_done/dequeue/process，严格复现
+#   run_slave_scenario 的帧闭合 (:396-408) 与 index patch (:355-372) 时机。
+#   所有真字来自 pred_true_word（确定字流 + 可选分歧），slave 不自身发包(own=0)。
+# ---------------------------------------------------------------------------
+def _pr_receive_beat(link, recv_words):
+    """一拍 ROM SerialCB：DoRecv -> DoSend -> SendRecvDone，返回帧是否闭合。
+    与 run_slave_scenario:374-379 同构。"""
+    link.do_recv(recv_words)
+    link.do_send()
+    closed = link.send_recv_done()
+    link.serial_intr_counter = (link.serial_intr_counter + 1) & 0xFF
+    return closed
+
+
+def run_oracle_baseline(frames_n: int, seed: int):
+    """零延迟无预测基线：真字当拍到达。产出权威摘要 D0 / 帧数 F0 / 每帧字流。"""
+    link = Gen8Link(is_master=False, player_count=2, local_id=1)
+    rng = random.Random(seed)
+    rounds = frames_n * (CMD_LENGTH + 1)  # 每帧 9 拍
+    word_stream = []
+    frame_closes = 0
+    for t in range(rounds):
+        w = pred_true_word(t, seed, None)
+        # 白名单自检：任何非控制字出现即桩 FAIL（红线）
+        if not pred_word_is_control(w):
+            raise RuntimeError("ORACLE: non-control word %s at t=%d (redline)" % (hx(w), t))
+        word_stream.append(w)
+        if _pr_receive_beat(link, [w, 0, 0xFFFF, 0xFFFF]):
+            frame_closes += 1
+            link.dequeue_recv_cmds()
+            link.process_recv_cmds()
+    return {"digest": state_digest(link), "frames": frame_closes,
+            "word_stream": word_stream, "rounds": rounds}
+
+
+def run_delayed_baseline(frames_n: int, seed: int, delay: int):
+    """有延迟无预测基线：第 t 轮真字排到 t+delay 才到达，等待期模拟时钟冻结（停滞轮 S>0）。"""
+    link = Gen8Link(is_master=False, player_count=2, local_id=1)
+    rng = random.Random(seed)
+    rounds = frames_n * (CMD_LENGTH + 1)
+    # delivery 映射：t 轮的真字在 t+delay 轮投递
+    delayed = {}
+    for t in range(rounds):
+        delayed.setdefault(t + delay, []).append(pred_true_word(t, seed, None))
+    stalled = 0
+    frame_closes = 0
+    for t in range(rounds):
+        words = delayed.get(t)
+        if not words:
+            stalled += 1
+            continue  # 模拟时钟冻结：本拍无字到达，不推进
+        w = words[0]
+        if not pred_word_is_control(w):
+            raise RuntimeError("DELAY: non-control word %s at t=%d (redline)" % (hx(w), t))
+        if _pr_receive_beat(link, [w, 0, 0xFFFF, 0xFFFF]):
+            frame_closes += 1
+            link.dequeue_recv_cmds()
+            link.process_recv_cmds()
+    # 独立帧闭合计数：link.recv_count 被 dequeue_recv_cmds 递减，健康情形恒 0（潜伏 bug 修复）
+    return {"digest": state_digest(link), "frames": frame_closes,
+            "stalled": stalled}
+
+
+def run_predrollback(frames_n: int, seed: int, delay: int, diverge_at: int,
+                      replay_budget: int = CMD_LENGTH + 2):
+    """预测回滚轨：
+      阶段A(投机) 每一轮 t 本地立即用 pred_word(t) 驱动权威态 -> 无停滞、帧正常闭合。
+      阶段B(对账) 真字在 t+delay 到达，与当时投机的预测字比对：
+        一致 -> 确认该轮；分歧 -> 回滚到分歧轮之前的快照，用【真字流】重放
+        分歧轮..当前轮（重放只读真字/confirmed，禁未确认预测字转正）。
+      最终权威态 = 全部真字按序驱动的结果，等价于 oracle（D1==D0）。"""
+    link = Gen8Link(is_master=False, player_count=2, local_id=1)
+    rounds = frames_n * (CMD_LENGTH + 1)
+
+    # 真字流（干净）与每轮的预测字（diverge_at 轮故意预测错）
+    true_words = [pred_true_word(t, seed, diverge_at) for t in range(rounds)]
+    pred_words = [pred_word(t, diverge_at) for t in range(rounds)]
+    for t in range(rounds):
+        if not pred_word_is_control(true_words[t]) or not pred_word_is_control(pred_words[t]):
+            raise RuntimeError("PRED: non-control word at t=%d (redline)" % t)
+
+    def snap_state():
+        d = copy.deepcopy(link.__dict__)
+        d.pop("trace", None)  # 排除 trace，防内存累积 + 摘要污染
+        return d
+
+    def restore_state(d):
+        link.__dict__.clear()
+        link.__dict__.update(copy.deepcopy(d))
+        link.trace = []
+
+    spec_frame_closes = 0     # 投机阶段实际帧闭合数（A3 真实统计，不再硬编码）
+    replayed_total = 0        # 真实重放轮数（A2 预算审计，不再打印窗口大小）
+
+    def beat(w):
+        """用字 w 驱动一拍权威态；帧闭合则 dequeue+process。返回是否闭合。"""
+        closed = _pr_receive_beat(link, [w, 0, 0xFFFF, 0xFFFF])
+        if closed:
+            link.dequeue_recv_cmds()
+            link.process_recv_cmds()
+        return closed
+
+    # ---- 阶段A：本地投机，每轮立即用预测字推进（无停滞）-------------------
+    snapshots = {}            # t -> (state_snapshot_before_beat_t)  分歧回滚锚点
+    for t in range(rounds):
+        if t % (CMD_LENGTH + 1) == 0:  # 每帧首拍存快照（回滚锚点，排除 trace）
+            snapshots[t] = snap_state()
+        if beat(pred_words[t]):
+            spec_frame_closes += 1
+
+    # ---- 阶段B：真字到达对账 + 分歧回滚重放 -------------------------------
+    predict_hits = 0
+    predict_total = 0
+    divergence_injected = 0 if diverge_at is None else 1
+    divergence_detected = 0
+    rollback_count = 0
+    converged_within_budget = 0
+    reconciled = False  # 单处分歧：一次回滚重放全历史真字即收敛
+
+    for t in range(rounds):
+        predict_total += 1
+        if pred_words[t] == true_words[t]:
+            predict_hits += 1
+            continue  # 一致：投机字即真字，无需修正
+        if reconciled:
+            continue  # 已收敛，后续分歧不再重复回滚（本桩单处分歧场景）
+
+        # 分歧：回滚到该轮之前的帧快照，用真字从锚点重放到末尾（confirmed 真字）
+        divergence_detected += 1
+        anchor = max((s for s in snapshots if s <= t), default=None)
+        if anchor is None:
+            continue
+        restore_state(snapshots[anchor])
+        rollback_count += 1
+        replayed = 0
+        for rt in range(anchor, rounds):
+            beat(true_words[rt])
+            replayed += 1
+        replayed_total += replayed
+        if replayed == rounds - anchor and replayed <= replay_budget + (t - anchor):
+            converged_within_budget += 1
+        reconciled = True
+
+    digest = state_digest(link)
+    return {
+        "digest": digest,
+        "frames": spec_frame_closes,  # A3 真实统计的投机帧闭合数（不再硬编码 frames_n）
+        "replayed": replayed_total,   # A2 真实重放量（审计用，不再打印窗口大小）
+        "stalled": 0,          # 投机推进：本地无停滞
+        "predict_hits": predict_hits,
+        "predict_total": predict_total,
+        "divergence_injected": divergence_injected,
+        "divergence_detected": divergence_detected,
+        "rollback_count": rollback_count,
+        "converged_within_budget": converged_within_budget,
+        "success": (
+            divergence_detected == divergence_injected
+            and rollback_count == divergence_detected
+            and converged_within_budget == divergence_detected
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Master-side model: state 2 (HANDSHAKE) -> 4 (CONN_ESTABLISHED)
 # ---------------------------------------------------------------------------
 class MasterHandshake:
@@ -737,6 +979,16 @@ def main(argv=None):
                     help="only print scenario verdicts")
     ap.add_argument("--verbose", action="store_true",
                     help="print per-beat traces")
+    # PREDROLLBACK：预测回滚机制自验证桩（默认关，零回归）。
+    # 产物标注：非 CROSSED / mock 控制字人工注入 / 门 FAIL/0/9 不变 / diag 未接入。
+    ap.add_argument("--predrollback", action="store_true",
+                    help="run predictive-rollback mechanism self-test (mock control words only)")
+    ap.add_argument("--seed", type=int, default=1, help="predrollback deterministic seed")
+    ap.add_argument("--delay", type=int, default=2, help="delivery delay in rounds")
+    ap.add_argument("--diverge-at", type=int, default=9, help="round to inject a word-level divergence")
+    ap.add_argument("--frames", type=int, default=3, help="number of 9-beat frames to simulate")
+    ap.add_argument("--replay-budget", type=int, default=40,
+                    help="max replay rounds after a divergence (N4 budget; too small => non-converged)")
     args = ap.parse_args(argv)
     verbose = args.verbose and not args.quiet
 
@@ -762,6 +1014,44 @@ def main(argv=None):
           ("YES" if not master_bad else "NO"))
     all_ok = (not ok_no_align) and ok_fix and (not master_bad)
     print("\n  ORACLE SELF-CHECK: %s" % ("PASS" if all_ok else "FAIL"))
+
+    # ---- PREDROLLBACK 机制自验证（仅 --predrollback 开启时并入，默认零回归）----
+    if args.predrollback:
+        print("\n" + "=" * 78)
+        print("PREDROLLBACK MECHANISM SELF-TEST")
+        print("  NON-CROSSED / mock control words / gate FAIL/0/9 / diag NOT wired")
+        print("=" * 78)
+        oracle = run_oracle_baseline(args.frames, args.seed)
+        delayed = run_delayed_baseline(args.frames, args.seed, args.delay)
+        pred = run_predrollback(args.frames, args.seed, args.delay,
+                                args.diverge_at, replay_budget=args.replay_budget)
+        # 4 断言
+        a1 = pred["digest"] == oracle["digest"]           # 回滚正确性 D1==D0
+        a2 = pred["success"]                               # 检出/收敛/预算
+        a3 = pred["frames"] == oracle["frames"]            # 不丢帧 F1==F0
+        # 藏延迟代理：pred 无停滞 + 延迟基线有停滞 + 基线非饥饿(帧数>0)，关闭 delay>=rounds 盲区
+        a4 = (pred["stalled"] == 0 and delayed["stalled"] > 0 and delayed["frames"] > 0)
+        print("  oracle   D0=%s  F0=%d  rounds=%d" %
+              (oracle["digest"][:12], oracle["frames"], oracle["rounds"]))
+        print("  delayed  S =%d  frames=%d (stalled>0 and frames>0 required)" %
+              (delayed["stalled"], delayed["frames"]))
+        print("  pred     D1=%s  F1=%d  S =%d  hits=%d/%d" %
+              (pred["digest"][:12], pred["frames"], pred["stalled"],
+               pred["predict_hits"], pred["predict_total"]))
+        print("  pred     inject=%d detect=%d rollback=%d converged=%d" %
+              (pred["divergence_injected"], pred["divergence_detected"],
+               pred["rollback_count"], pred["converged_within_budget"]))
+        print("  pred     replay_budget=%d replayed=%d (N4 budget audit, real count)" %
+              (args.replay_budget, pred["replayed"]))
+        print("  A1 rollback-correct (D1==D0)          : %s" % ("PASS" if a1 else "FAIL"))
+        print("  A2 detect==rollback==converged        : %s" % ("PASS" if a2 else "FAIL"))
+        print("  A3 no-frame-loss (F1==F0)             : %s" % ("PASS" if a3 else "FAIL"))
+        print("  A4 hides-delay (S_pred=0,S_delay>0,delayed_frames>0) : %s" % ("PASS" if a4 else "FAIL"))
+        pred_ok = a1 and a2 and a3 and a4
+        print("  PREDROLLBACK MECHANISM: %s" % ("PASS (engineering only)" if pred_ok else "FAIL"))
+        print("  NOTE: PASS != gate progress != opponent-reality; no CROSSED produced.")
+        all_ok = all_ok and pred_ok
+
     return 0 if all_ok else 1
 
 

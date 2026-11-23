@@ -14,6 +14,9 @@ public final class MgbaCore {
 
     private long handle;
 
+    /** GNP 邮槽/出网帧尺寸：三端同值，对齐 gboy_netparty_abi.h:24 / jni_bridge.cpp:528；禁裸 500。 */
+    private static final int GNP_FRAME_SIZE = 532;
+
     public MgbaCore(File saveDir, File stateDir) {
         handle = nativeCreate(saveDir.getAbsolutePath(), stateDir.getAbsolutePath());
         if (handle == 0) {
@@ -471,9 +474,9 @@ public final class MgbaCore {
 
     private static native byte[] nativeBusReadBlock(long handle, int address, int size);
 
-    /** S2 TYPE_PARTY：把 500B GNP 邮槽镜像交给宿端写口（只搬字节，零写游戏态）。 */
+    /** S2 TYPE_PARTY：把 532B GNP 邮槽镜像交给宿端写口（只搬字节，零写游戏态）。 */
     public boolean writeGnpPartyMailbox(byte[] mb) {
-        return handle != 0 && mb != null && mb.length == 500 && nativeWriteGnpPartyMailbox(handle, mb);
+        return handle != 0 && mb != null && mb.length == GNP_FRAME_SIZE && nativeWriteGnpPartyMailbox(handle, mb);
     }
 
     /** S2 TYPE_PARTY：显式开/关宿端门（测试/驱动下发用）。 */
@@ -486,6 +489,11 @@ public final class MgbaCore {
         if (handle != 0) { nativeSetNetGateLog(handle, enabled); }
     }
 
+    /** 预测回滚总门（档1 A，三端同名同值、默认关）：开则共享 C 启用预测/回滚机制。 */
+    public void setRollback(boolean enabled) {
+        if (handle != 0) { nativeSetRollback(handle, enabled); }
+    }
+
     private static native boolean nativeWriteGnpPartyMailbox(long handle, byte[] mb);
 
     private static native void nativeSetGnpNetParty(long handle, boolean enabled);
@@ -495,6 +503,11 @@ public final class MgbaCore {
      * 门默认 0；[NETGATE] 行由共享 C 唯一生产（role/sender/rom_md5 由 driver 真值填），
      * 本 Java 侧只透传开关、不产行、不拼行、不回打（否则 seq 单调失败 -> UNOBS）。 */
     private static native void nativeSetNetGateLog(long handle, boolean enabled);
+
+    /* 预测回滚总门（must-match jni_bridge.cpp 的
+     * Java_io_mgba_android_MgbaCore_nativeSetRollback 签名，大小写 Rollback 对齐）。
+     * 门默认 0；开关语义由共享 C mgbaMobileRollbackSet 承载，本 Java 侧只透传。 */
+    private static native void nativeSetRollback(long handle, boolean enabled);
 
     private static native long nativeCreate(String saveDir, String stateDir);
 

@@ -7819,10 +7819,18 @@ size_t sioBuildNetPartyMailbox(struct GBA* gba, uint8_t* out, size_t cap) {
     cnt = (uint8_t) GBAView8(gba->cpu, SIO_EW(SIO_PLAYER_PARTY_COUNT));
     if (cnt < 1u || cnt > GNP_MONS_MAX) { return 0u; }
 
-    memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0；tag[500..531] 也归零：
-                                                                 * host 禁算 HMAC/禁持密钥，真 tag 只能来自
-                                                                 * ROM TX 邮槽 gGnpTxPort（待 ROM 侧接线）；
-                                                                 * 当前为零 ⇒ 对端 tag_ok fail-closed=0，诚实态 */
+    memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0；tag 先归零作 fail-closed 基线 */
+    /* E11-HOST-PEEK：把 ROM TX 邮槽真 tag 只读镜像到 mb.tag[500..531]。
+     * host 不持密钥/不算 HMAC/不写游戏态；tag_ok 真值仍只由 ROM GnpNetGate_HmacTagOk 写 diag。
+     * 守卫失败 → tag 保持 memset 零值 → 对端 HMAC 比较失败 → tag_ok=0（fail-closed，不产 CROSSED）。 */
+    if (gnpAbsEwOk(NET_TX_PORT_ABS, GNP_MB_SIZE)) {            /* EWRAM 范围+边界检查 abi:187-190 */
+        uint32_t t;
+        for (t = 0u; t < GNP_HMAC_TAG_SIZE / 4u; ++t) {         /* 32B/4=8 字；源 +500 四字节对齐 */
+            uint32_t w = (uint32_t) GBAView32(gba->cpu,
+                NET_TX_PORT_ABS + GNP_OFF_TAG + t * 4u);        /* 只读 EWRAM，写数=0；读 +500..+531 */
+            memcpy(mb.tag + t * 4u, &w, sizeof(w));             /* 小端原样落到 tag[500..531] */
+        }
+    }                                                           /* 守卫失败：tag 维持零 → fail-closed */
     mb.magic      = GNP_MAGIC;
     mb.version    = GNP_PROTO_VER;
     mb.seq        = ++s_gnpTxSeq;                               /* 单调，> GNP_SEQ_INIT */

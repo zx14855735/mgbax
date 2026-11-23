@@ -555,3 +555,15 @@ Java_io_mgba_android_MgbaCore_nativeSetNetGateLog(
 	(void) env; (void) handle;
 	mgbaMobileNetGateLogSet(enabled ? true : false);
 }
+
+/* 档1 A 预测回滚总门：Android 侧 JNI 对偶，与 nativeSetNetGateLog 同构。
+ * 门默认 0；真实开关语义由共享 C mgbaMobileRollbackSet 实现（第二批落地）。
+ * C 定义是 C linkage，此处必须 extern "C"，否则 C++ mangling 链接失败。 */
+extern "C" void mgbaMobileRollbackSet(bool enabled);
+
+extern "C" JNIEXPORT void JNICALL
+Java_io_mgba_android_MgbaCore_nativeSetRollback(
+        JNIEnv* env, jobject, jlong handle, jboolean enabled) {
+	(void) env; (void) handle;
+	mgbaMobileRollbackSet(enabled ? true : false);
+}

@@ -99,6 +99,14 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
             (getenv("MGBAX_NETGATE_LOG").flatMap { String(cString: $0) } == "1")
             || UserDefaults.standard.bool(forKey: "mgbax.link.netgate_log")
         mgbaMobileNetGateLogSet(netgateLog)
+        // 档1 A 预测回滚总门（三端同名同值、默认关）：env MGBAX_ROLLBACK_ENABLE=1
+        // 或 UserDefaults "mgbax.link.rollback_enable" 开启。默认关，禁止照抄 hsBypass
+        // 的「默认开、env=0 回退」范式。预测/回滚本体落共享 C（第二批）；iOS 运行时
+        // 恒 UNOBS（无设备验证），本处只透传开关、不下场写 PASS。
+        let rollback =
+            (getenv("MGBAX_ROLLBACK_ENABLE").flatMap { String(cString: $0) } == "1")
+            || UserDefaults.standard.bool(forKey: "mgbax.link.rollback_enable")
+        mgbaMobileRollbackSet(rollback)
         return true
     }
 

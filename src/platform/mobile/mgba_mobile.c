@@ -9678,6 +9678,13 @@ static bool mobileNetGateLogOn(void) {
 }
 void mgbaMobileNetGateLogSet(bool enabled) { s_ngLog = enabled ? 1 : 0; }
 
+/* 预测回滚门（档1 A 方向，默认关零回归）。门面占位：只维护门控状态，
+ * 本体（预测字投机/快照回滚/diag 保真）由 gboy_netparty_abi.h 的 MGBAX_ROLLBACK_* 宏控制。
+ * iOS 恒 UNOBS；本函数不写任何游戏态/信任位/party。 */
+static bool s_rollbackEnabled = false;
+void mgbaMobileRollbackSet(bool enabled) { s_rollbackEnabled = enabled; }
+bool mgbaMobileRollbackOn(void) { return s_rollbackEnabled; }
+
 /* seq 严格单调去重 + 规范行 64 条上限；[NGPEEK] 旁路独立节流。 */
 static uint32_t s_ngLastSeq = 0;
 static unsigned s_ngLines = 0;

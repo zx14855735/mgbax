@@ -48,7 +48,7 @@ public final class GBoyLinkSession {
         void onReset();
         /** A TYPE_STATE arrived with the save-state blob. */
         void onState(byte[] state);
-        /** S2: a TYPE_PARTY arrived with a 500B GNP mailbox image (byte-only; no game-state writes). */
+        /** S2: a TYPE_PARTY arrived with a 532B GNP mailbox image (byte-only; no game-state writes). */
         default void onPartyMailbox(byte[] mb) { }
         /** The peer finished the handshake. */
         void onReady();

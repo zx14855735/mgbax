@@ -132,6 +132,9 @@ public func mgbaMobileSetGrayAll(_ enabled: Bool) {}
 public func mgbaMobileSetGrayLobbyOpen(_ enabled: Bool) {}
 // NETGATE 拼行门（大写 G，逐字 must-match mgba_mobile.h / jni_bridge.cpp）
 public func mgbaMobileNetGateLogSet(_ enabled: Bool) {}
+// 档1 A 预测回滚总门（逐字 must-match mgba_mobile.h 的 mgbaMobileRollbackSet；
+// 三端同名同值默认关；漏此 stub 则全仓 typecheck 报未定义符号）
+public func mgbaMobileRollbackSet(_ enabled: Bool) {}
 public func mgbaMobileCpuPc(_ emu: OpaquePointer?) -> UInt32 { 0 }
 public func mgbaMobileLinkClose(_ emu: OpaquePointer?) {}
 public func mgbaMobileLinkStatus(_ emu: OpaquePointer?, _ out: UnsafeMutablePointer<CChar>!, _ outLen: Int) {}
