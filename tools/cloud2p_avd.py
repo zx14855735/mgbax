@@ -79,7 +79,7 @@ APP_SAV_DEFAULT = os.environ.get(
 APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s 会丢 ROM 广播（E1 教训）
 APP_NAV_TIMEOUT = 480    # AQ1: 2.2fps 下 UI 链(标题→菜单→field)≈6-8min，480s；deadline 在等动画后起算。
 # AF6 等开场动画常量（模板匹配主 + 画面演变备 + cap 兜底）
-INTRO_WAIT_CAP_S = 360       # AQ1: 2.2fps 下 UI 链到 field≈6-8min，抬到 360s（截图 template 等主菜单）
+INTRO_WAIT_CAP_S = 500       # AT1: 2.2fps 下 UI 链到 field 实测≈200-400s，cb2 field 判据留余量 500s
 INTRO_TPL_NAME = "tpl_main_menu.png"  # nav_028 主菜单帧（已落 .workbuddy/drive/）
 INTRO_SIG_SIZE = (120, 90)           # 与 topmenu_sig 一致的灰度签名尺寸
 INTRO_MENU_THRESH = 12.0             # AF6 实测：主菜单0/黑屏15.4/Logo33.7/战斗93.6/灰屏160.5
@@ -851,6 +851,10 @@ def main():
         candidate = None       # AG3: 首次命中候选，二次确认后放行
         candidate_t = 0.0
         map_streak = 0         # AG4: PEEK map 连续命中竞技场的计数
+        # AT1/AQ1: cb2 field 段稳定计数——游戏真到 field(有 avatar 可走)的权威信号，
+        # 替代 2.2fps 下不可靠的截图 template。cb2 可观测性已由 AK1 gMain 锚定修好。
+        field_cb2_streak = 0
+        last_field_cb2 = None
         tpl = intro_menu_sig()
         app_nav_log("INTRO-WAIT 开始 cap=%.0fs tpl=%s min_wait=%.0fs bright=%.0f"
                     % (INTRO_WAIT_CAP_S, bool(tpl), INTRO_MIN_WAIT_S, INTRO_BRIGHT_LUMA))
@@ -901,21 +905,37 @@ def main():
             _ps = peek_state()
             _map = _ps.get("map") if _ps else None
             _pos = _ps.get("pos") if _ps else None
+            _cb2 = (_ps.get("cb2", 0) & ~1) if _ps else 0
             if (_map == (INTRO_MAP_GROUP, INTRO_MAP_NUM)
                     and _pos == (INTRO_MAP_TX, INTRO_MAP_TY)):
                 map_streak += 1
             else:
                 map_streak = 0
-            # NOTE(AP1): 注入存档使 pos/map 立即=25.24，peek-arena 会在 UI 链(标题→菜单→field)
-            # 跑完前就命中；此时按方向键会被当菜单光标吞掉。真正修法需主动过 UI 链到 field
-            # 再踩格——见 .zcode-tmp/AP1-STEP-BLOCKED.md，待完整 driver 重构，暂不在此处加
-            # cb2 稳定门（2.2fps 下等 field≈8min 会超 cap）。
-            if map_streak >= INTRO_MAP_STREAK and NAV_PEEK_ARENA:
+            # AT1/AQ1 权威判据：cb2 落 field 段(CB2_Overworld 族)且连续稳定 = 游戏真进 field，
+            # 此时才有 avatar 可走格。替代 2.2fps 下不可靠的截图 template。
+            # map/pos 由注入档立即满足，但 cb2 只在 UI 链真走完(标题→菜单→继续游戏→field)后才落 field 段。
+            if (_cb2 and NAV_FIELD_CB2_LO <= _cb2 < NAV_FIELD_CB2_HI
+                    and _map == (INTRO_MAP_GROUP, INTRO_MAP_NUM)):
+                if _cb2 == last_field_cb2:
+                    field_cb2_streak += 1
+                else:
+                    field_cb2_streak = 0
+                last_field_cb2 = _cb2
+            else:
+                field_cb2_streak = 0
+                last_field_cb2 = None
+            if field_cb2_streak >= NAV_FIELD_CB2_STREAK:
                 try:
                     shot[0].save(os.path.join(app_shot_dir, INTRO_HIT_SHOT))
                     shot[0].save(os.path.join(app_shot_dir, "nav_000.png"))
                 except Exception as ex:               # noqa: BLE001
                     app_nav_log("INTRO-WAIT 证据图保存失败（忽略）: %s" % ex)
+                app_nav_log("INTRO_DONE elapsed=%.1fs reason=peek-field map=%s pos=%s "
+                            "cb2=%08X field_streak=%d (游戏真到 field,有 avatar 可走)"
+                            % (elapsed, _map, _pos, _cb2, field_cb2_streak))
+                return True, elapsed, "peek-field"
+            # 旧 peek-arena 路径（默认关 NAV_PEEK_ARENA；注入档 pos/map 假阳性，保留可回退）
+            if map_streak >= INTRO_MAP_STREAK and NAV_PEEK_ARENA:
                 app_nav_log("INTRO_DONE elapsed=%.1fs reason=peek-arena map=%s pos=%s streak=%d"
                             % (elapsed, _map, _pos, map_streak))
                 return True, elapsed, "peek-arena"
@@ -985,8 +1005,9 @@ def main():
         # 切回 PEEK oracle——SCREENSHOT oracle 走不到 AD2 门/踩格分支，只会 timeout。
         # coord_step 门开时强制切（需要 PEEK 语义判座位格踩格）。
         if (NAV_COORD_STEP
-                and str(app_nav_state.get("intro_why", "")).startswith("peek-arena")):
-            app_nav_log("AL1: 竞技场起点 + coord_step 门开 → 切回 PEEK oracle（含踩格/AD2门）")
+                and str(app_nav_state.get("intro_why", "")).startswith("peek")):
+            app_nav_log("AT1: field 已确认(%s) + coord_step 门开 → 切 PEEK oracle 踩格"
+                        % app_nav_state.get("intro_why"))
             return app_nav_peek()
         deadline = time.time() + APP_NAV_TIMEOUT
         # 1) 标题 LOGO 只吃 START：按到画面变化为止
