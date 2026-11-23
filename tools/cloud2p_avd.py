@@ -115,7 +115,7 @@ INTRO_HIT_SHOT = "intro_hit.png"
 # AV1: INTRO-WAIT 连打键推进 UI 链（默认关、具名、受控输入灰区）。
 # 死锁根因：AQ1 纯等 cb2 进 field 但 intro 出口需 newKeys 按键⇒永不到 field。
 NAV_INTRO_KEYPUSH = os.environ.get("MGBAX_INTRO_KEYPUSH", "0") == "1"
-INTRO_PULSE_MASK = 8                 # AK_START：intro 任意 newKeys 可跳过(af4)
+INTRO_PULSE_MASK = 1                 # ZEROE2E: 手动连打A(mask=1)实证能跳过动画;driver原用START(8)失败
 INTRO_PULSE_HOLD = 0.6               # ≥1 模拟帧(2.4fps≈0.42s/帧)，长按 newKeys 恒 0 故用脉冲
 INTRO_PULSE_GAP = 0.3                # ZEROE2E: 缩短间隔提高 newKeys 命中率(手动密集连打18-25成功)
 INTRO_PULSE_BURST = 12               # ZEROE2E: 每轮12边沿(原3太稀疏,2.2fps下命中概率低致动画跳不过)
