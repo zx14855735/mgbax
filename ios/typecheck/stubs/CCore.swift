@@ -115,6 +115,8 @@ public func mgbaMobileSetLinkBtcfg(_ enabled: Bool) {}
 public func mgbaMobileSetHsBypass(_ enabled: Bool) {}
 // ROOTHUNT2 路线A：从机握手保持门 setter（mgba_mobile.h）
 public func mgbaMobileSetHsHold(_ enabled: Bool) {}
+// BF1：主机握手字真自回环门 setter（mgba_mobile.h，默认关）
+public func mgbaMobileSetMasterEcho(_ enabled: Bool) {}
 // ROOTHUNT2 路线A：0x2222 启动字 sticky 兜底门 setter（mgba_mobile.h）
 public func mgbaMobileSetBlock2222(_ enabled: Bool) {}
 // path B：LocalBus 握手字保真 / 2P 钳位门 setter（mgba_mobile.h）

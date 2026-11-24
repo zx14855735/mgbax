@@ -2181,7 +2181,7 @@ def main():
               "MGBAX_SIO_CONNECT_POLL", "MGBAX_SIO_DELAY_N", "MGBAX_RH_OFF",
               "MGBAX_BATTLE_RELAY", "MGBAX_B7_VERBOSE", "MGBAX_RELAY_EXT_MS",
               "MGBAX_OBS_CHAIN",  # OBS 打点总门：防宿主 export 泄漏造"默认开"假象
-              "MGBAX_LINK_BTLCFG", "MGBAX_LINK_HSBYPASS", "MGBAX_HS_HOLD",
+              "MGBAX_LINK_BTLCFG", "MGBAX_LINK_HSBYPASS", "MGBAX_HS_HOLD", "MGBAX_SIO_MASTER_ECHO",
               "MGBAX_2222_STICKY",  # 路线A 0x2222 兜底门：防宿主 export 泄漏造 PC/移动端半开
               "MGBAX_BUS_HS_PRESERVE", "MGBAX_LOCALBUS_2P",  # path B LocalBus 保真/2P 钳位门
               "MGBAX_PATHB_NATIVE_SIO",  # W92 path B 原生 SIO 字路由门：防宿主 export 泄漏造半开
@@ -2386,6 +2386,9 @@ def main():
     # 路线A：从机握手保持门（推真 B9A0 + 窗口重装，移动端 debug.* 属性，默认开）。
     setprop("debug.mgbax.link.hs_hold",
             "1" if env.get("MGBAX_HS_HOLD", "1") != "0" else "0")
+    # BF1：主机握手字真自回环门（默认关，显式 =1 才开；只搬运真字非造字）。
+    setprop("debug.mgbax.link.sio_master_echo",
+            "1" if env.get("MGBAX_SIO_MASTER_ECHO", "0") == "1" else "0")
     # 路线A：0x2222 启动字 sticky 兜底门（移动端 debug.* 属性，默认开；
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",

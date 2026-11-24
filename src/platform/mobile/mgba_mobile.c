@@ -857,6 +857,10 @@ struct MgbaMobile {
 	 * 典型 phantom master。起轮这一刻定死本字段，收尾直接用它。 */
 	uint16_t sioSelfSlot;
 	bool sioSelfSlotValid;
+	/* BF1: 主机握手字真自回环（与 PC sioMasterEchoWord 对称）。握手期本端真写
+	 * 8FFF 时扣下，作 data[0] 最后写入者，模拟真电缆 MULTI 主机自发字回环。
+	 * 只搬运真字非造字；门 debug.mgbax.link.sio_master_echo 默认关。 */
+	uint16_t sioMasterEchoWord;
 	bool sioHasRemote;
 	uint32_t sioRemote;
 	/* 【路线A / sioHandshakeHold】从机握手保持窗口（与 PC sioHsHoldLeft/Armed 对称）：
@@ -3553,6 +3557,7 @@ static void mobileEnsureLinkBtcfg(struct GBA* g);  /* ROOTHUNT2 方案Y，定义
 static void mobileEnsureLinkOpen(struct MgbaMobile* emu);  /* ROOTHUNT2 块交换根治① */
 static bool linkBtcfgOn(void);                    /* ROOTHUNT2 方案Y 门，定义见下方 */
 static bool mobileHsHoldOn(void);          /* 路线A 握手保持门，定义见下方（首次调用在 completeMultiTransfer） */
+static bool mobileMasterEchoOn(void);      /* BF1 主机字回环门，定义见下方（首次调用在 completeMultiTransfer） */
 static bool b7Verbose(void);                /* ROOTHUNT2 B7 打点门，定义见下方 */
 static void mobileBattleKeepAlive(struct MgbaMobile* emu);  /* 定义见下方 */
 static bool mobileInBattleStartup(struct MgbaMobile* emu);  /* 定义见下方 */
@@ -4422,6 +4427,16 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		data[me] = mobileHandshakeHoldWord(emu,
 		    emu->sioSelfSlotValid ? emu->sioSelfSlot
 		                          : gba->memory.io[GBA_REG(SIOMLT_SEND)]);
+		/* BF1: 主机握手期真字自回环——扣下的真 8FFF 作 data[0] 最后写入者，
+		 * 模拟真电缆 MULTI 主机自发字回环进 SIOMULTI0。只搬运真字非造字；
+		 * 仅 st<4 + me==0(主机) 生效，与 PC sioMasterEchoWord 对称。 */
+		if (mobileMasterEchoOn() && me == 0
+		    && emu->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
+			uint32_t _lkm = NAV_IW(0x03002AF4u);
+			if (GBAView8(gba->cpu, _lkm + 1u) < MOBILE_LINK_STATE_CONN) {
+				data[0] = emu->sioMasterEchoWord;
+			}
+		}
 	}
 	if (haveRemote) {
 		data[me == 0 ? 1 : 0] = (uint16_t) remote;
@@ -5452,6 +5467,23 @@ static bool mobileHsHoldOn(void) {
 	return s_hsHold != 0;
 }
 void mgbaMobileSetHsHold(bool enabled) { s_hsHold = enabled ? 1 : 0; }
+/* BF1: 主机握手字真自回环门（默认关）。与 PC sioMasterEchoOn / iOS 逐字对称；
+ * Android 读 debug.mgbax.link.sio_master_echo，桌面读 MGBAX_SIO_MASTER_ECHO。 */
+static int s_masterEcho = -1;
+static bool mobileMasterEchoOn(void) {
+	if (s_masterEcho < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp("debug.mgbax.link.sio_master_echo", p);
+		s_masterEcho = (p[0] == '1') ? 1 : 0;   /* 默认关 */
+#else
+		const char* e = getenv("MGBAX_SIO_MASTER_ECHO");
+		s_masterEcho = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关 */
+#endif
+	}
+	return s_masterEcho != 0;
+}
+void mgbaMobileSetMasterEcho(bool enabled) { s_masterEcho = enabled ? 1 : 0; }
 /* 【路线A / 0x2222 兜底】独立布尔门：默认开，=0 秒回退。与 PC sioBlock2222On /
  * iOS UserDefaults 逐字对称；Android 读 debug.mgbax.link.block2222_sticky，
  * 桌面读 MGBAX_2222_STICKY。把 0x2222 启动字纳入 sticky 逐拍缓存（真队列帧头
@@ -7620,6 +7652,12 @@ static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driv
 	}
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	/* BF1: 握手期(st<4)扣下游戏真写的 8FFF，供 data[0] 自回环。只读真字，非造字。 */
+	if (mobileMasterEchoOn()
+	    && GBAView8(gba->cpu, NAV_IW(0x03002AF4u) + 1u) < MOBILE_LINK_STATE_CONN
+	    && local == LINK_HANDSHAKE_MASTER) {
+		emu->sioMasterEchoWord = local;
+	}
 	mobileCaptureBlockPhase(emu);  /* V1：起轮捕获 sc，自槽/push 同相位同源 */
 	mobileCaptureBlockWord(emu, local);  /* S5 打点对齐：起轮捕获真块字（与 PC beginMultiTransfer 对称） */
 	/* 【path A 主机自槽 = 主握手字】镜像 Qt beginMultiTransfer 的 13:20 修正：

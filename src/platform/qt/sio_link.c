@@ -868,6 +868,10 @@ struct SioLink {
 	 * 0x8FFF（/d/gen8/src/link.c:2276-2281），主机永远判不过，从机反而进了 4。
 	 * E1 实测：B 侧 st=0x349 出现 2 帧、A 侧 401 个样本里 0 次。 */
 	uint16_t sioSelfSlot;
+	/* BF1: 主机握手字回环。握手期本端真写 8FFF 时扣下，作为 data[0](本机 recv[0])
+	 * 的最后写入者——模拟真电缆 MULTI 主机自发字回环进 SIOMULTI0。
+	 * 只搬运真字(游戏真写的 8FFF)，非造字；门默认关。 */
+	uint16_t sioMasterEchoWord;
 	uint32_t sioPushValue;
 	uint16_t sioPushIndex;
 	bool sioPushed;
@@ -1332,6 +1336,18 @@ static bool sioHsHoldOn(void) {
 	if (v < 0) {
 		const char* e = getenv("MGBAX_HS_HOLD");
 		v = (e && atoi(e) == 0) ? 0 : 1;   /* 默认开，显式 =0 关闭 */
+	}
+	return v != 0;
+}
+/* BF1: 主机握手字真自回环门（默认关）。mode B/path B 下握手字不过网，主机
+ * 起轮真写 8FFF 却在自己 recv[0] 读到 0 → DoHandshake 硬条件不成立 → st=2 自锁。
+ * 开此门：握手期扣下真 8FFF 作 data[0] 最后写入者，模拟真电缆自回环，只搬运真字。
+ * 与移动端 debug.mgbax.link.sio_master_echo / iOS UserDefaults 逐字对称。 */
+static bool sioMasterEchoOn(void) {
+	static int v = -1;
+	if (v < 0) {
+		const char* e = getenv("MGBAX_SIO_MASTER_ECHO");
+		v = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关，显式 =1 打开 */
 	}
 	return v != 0;
 }
@@ -4294,6 +4310,17 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		 * 且 selfSlot==0（DoSend 空队列的合法字）时，对端收到的是 0，
 		 * 本机若投递 0xFFFF，两端 8 轮校验和就不等 → badChecksum。 */
 		data[me] = sioWordOrEmpty(sio, sio->sioSelfSlot);
+		/* BF1: 主机握手期真字自回环——把扣下的真 8FFF 作为 data[0] 最后写入者，
+		 * 模拟真电缆 MULTI 主机自发字回环进 SIOMULTI0。真字搬运非造字；
+		 * 仅 st<4 + me==0(主机) + 捕获到真 8FFF 时生效。 */
+		if (sioMasterEchoOn() && me == 0 && sio->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
+			struct GBA* gba_echo = (struct GBA*) sio->core->board;
+			if (gba_echo && gba_echo->cpu
+			    && GBAView8(gba_echo->cpu,
+			                SIO_IW(SIO_GLINK_STATE) + SIO_GLINK_STATE_OFF) < SIO_LINK_STATE_CONN) {
+				data[0] = sio->sioMasterEchoWord;
+			}
+		}
 	}
 	if (haveRemote) {
 		data[me == 0 ? 1 : 0] = (uint16_t) remote;
@@ -7545,6 +7572,12 @@ static bool beginMultiTransfer(struct SioLink* sio, struct GBASIODriver* driver)
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	/* BF1: 握手期(st<4)扣下游戏真写的 8FFF，供 data[0] 自回环。只读真字，非造字。 */
+	if (sioMasterEchoOn()
+	    && GBAView8(gba->cpu, SIO_IW(SIO_GLINK_STATE) + SIO_GLINK_STATE_OFF) < SIO_LINK_STATE_CONN
+	    && local == LINK_HANDSHAKE_MASTER) {
+		sio->sioMasterEchoWord = local;
+	}
 	sioCaptureBlockPhase(sio, gba);  /* V1：起轮捕获 sc，自槽/push 同相位同源 */
 	sioCaptureBlockWord(sio, local, gba);  /* 方案2：9 拍里捕获真块字 sticky */
 	/* 【唯一真源】本轮自身槽 = 本端真正推出去的字。放在这里是因为

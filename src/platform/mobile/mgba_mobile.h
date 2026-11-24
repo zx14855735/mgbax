@@ -366,6 +366,8 @@ void mgbaMobileSetLinkBtcfg(bool enabled);
 void mgbaMobileSetHsBypass(bool enabled);
 /* ROOTHUNT2 路线A：从机握手保持门（推真 B9A0 + 窗口重装，默认开，false 秒回退）。 */
 void mgbaMobileSetHsHold(bool enabled);
+/* BF1: 主机握手字真自回环门（默认关，true 才启用；只搬运游戏真写的 8FFF 非造字）。 */
+void mgbaMobileSetMasterEcho(bool enabled);
 /* ROOTHUNT2 路线A：0x2222 启动字 sticky 兜底门（真队列帧字逐拍推，默认开，false 秒回退）。 */
 void mgbaMobileSetBlock2222(bool enabled);
 /* path B：LocalBus 握手字保真门（bus abort 时回填真 8FFF 到主机自槽，默认开，false 秒回退）。 */

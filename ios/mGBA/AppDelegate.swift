@@ -35,6 +35,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         let hsHold = UserDefaults.standard.object(forKey: "mgbax.link.hs_hold") as? Bool
             ?? (hsHoldEnv.map { $0 != "0" } ?? true)
         mgbaMobileSetHsHold(hsHold)
+        // BF1：主机握手字真自回环门（默认关，只搬运游戏真写的 8FFF 非造字）。
+        let masterEcho = (getenv("MGBAX_SIO_MASTER_ECHO").flatMap { String(cString: $0) } == "1")
+            || UserDefaults.standard.bool(forKey: "mgbax.link.sio_master_echo")
+        mgbaMobileSetMasterEcho(masterEcho)
         // ROOTHUNT2 路线A：0x2222 启动字 sticky 兜底门，默认开；显式 env=0 或
         // UserDefaults false 秒回退（与 PC MGBAX_2222_STICKY 语义一致）。
         let b2222Env = getenv("MGBAX_2222_STICKY").flatMap { String(cString: $0) }
