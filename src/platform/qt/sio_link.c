@@ -4287,6 +4287,10 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		if (st < SIO_LINK_STATE_CONN || !hsOn) {
 			sio->sioHsHoldArmed = false;
 			sio->sioHsHoldLeft = 0;
+			/* BF1 健壮性(C1 观察项3)：握手重启时清掉上一会话扣下的真 8FFF，
+			 * 防止跨 LINK_RESET 残留旧 echo word 污染下一次握手。只清驱动侧快照，
+			 * 不写游戏态、不造字。与 mobile 侧对偶。 */
+			sio->sioMasterEchoWord = 0;
 		} else if (haveRemote && sioIsHandshakeWord((uint16_t) remote)) {
 			/* 真对端还在握手 ⇒ 重装窗口（B9A0 供给重新点亮）。 */
 			bool rearmed = sio->sioHsHoldLeft == 0u;
@@ -8144,6 +8148,7 @@ static void attachLink(struct SioLink* sio) {
 		sio->sioMisorder = 0;
 		sio->sioHasRemote = false;
 		sio->sioInitSeen = false;
+		sio->sioMasterEchoWord = 0;   /* BF1: 全局 reset 清 echo word，防跨会话残留(与 mobile 对偶) */
 		/* 新会话：上一局遗留的对端字不能进快帧补槽。 */
 		sio->sioFastLast = 0;
 		sio->sioFastLastValid = false;

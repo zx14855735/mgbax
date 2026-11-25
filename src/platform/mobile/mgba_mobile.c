@@ -4410,6 +4410,9 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		if (st < MOBILE_LINK_STATE_CONN || !hsOn) {
 			emu->sioHsHoldArmed = false;
 			emu->sioHsHoldLeft = 0;
+			/* BF1 健壮性(C1 观察项3，与 PC sio_link.c 对偶)：握手重启清掉旧 echo word，
+			 * 防跨 LINK_RESET 残留真 8FFF 污染下一次握手。只清驱动侧快照，不写游戏态。 */
+			emu->sioMasterEchoWord = 0;
 		} else if (haveRemote && peerHs) {
 			emu->sioHsHoldArmed = true;
 			emu->sioHsHoldLeft = (uint16_t) holdRounds;
@@ -8134,6 +8137,7 @@ static void attachLink(struct MgbaMobile* emu) {
 		emu->sioHasRemote = false;
 		emu->sioHsHoldArmed = false;
 		emu->sioHsHoldLeft = 0;
+		emu->sioMasterEchoWord = 0;   /* BF1: 全局 reset 清 echo word，防跨会话残留 */
 		emu->sioFastLatched = false;
 		emu->sioFastMiss = 0;
 		emu->sioFastRemote = 0;

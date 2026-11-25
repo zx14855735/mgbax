@@ -91,7 +91,7 @@ def preflight():
     return True
 
 
-def launch(tag, intro_keypush):
+def launch(tag, intro_keypush, master_echo=False, phase_align=False):
     log("=== LAUNCH %s ===" % tag)
     gdir = os.path.join(CLOUD_DIR, tag)
     os.makedirs(gdir, exist_ok=True)
@@ -108,6 +108,16 @@ def launch(tag, intro_keypush):
     env["PATH"] = (r"D:\Android\Sdk\emulator;D:\Android\Sdk\platform-tools;C:\msys64\usr\bin;" +
                    env.get("PATH", ""))
     env["PYTHONPATH"] = TOOLS
+    if master_echo:
+        args += ["--env", "MGBAX_SIO_MASTER_ECHO=1"]  # BF1 主机字回环门（真字搬运非造字）
+        log("MGBAX_SIO_MASTER_ECHO=1（BF1 主机握手字真自回环·门开验证）")
+    if phase_align:
+        # BG1: P5 相位错格门组合——CMD_HARD 优先(自动让位 PHASE_GATE/sioAlignCmdPhase),
+        # CMD_FRAMEALIGN=0 避免写序冲突, CS_FORGE 保持开(校验和兜底)。
+        args += ["--env", "MGBAX_CMD_HARD=1", "--env", "MGBAX_CMD_FRAMEALIGN=0",
+                 "--env", "MGBAX_PHASE_GATE=0", "--env", "MGBAX_SYNCIDX=0",
+                 "--env", "MGBAX_CS_FORGE=1"]
+        log("P5相位对齐门: CMD_HARD=1 CMD_FRAMEALIGN=0 PHASE_GATE=0 SYNCIDX=0 CS_FORGE=1")
     if intro_keypush:
         env["MGBAX_INTRO_KEYPUSH"] = "1"   # 受控输入辅助（非数据注入）
         log("MGBAX_INTRO_KEYPUSH=1（受控输入灰区，标注非纯玩家自然操作）")
@@ -179,6 +189,8 @@ def main():
     ap.add_argument("--tag", required=True)
     ap.add_argument("--launch", action="store_true")
     ap.add_argument("--intro-keypush", action="store_true")
+    ap.add_argument("--master-echo", action="store_true", help="BF1 主机握手字真自回环门开验证")
+    ap.add_argument("--phase-align", action="store_true", help="BG1 P5相位对齐门组合(CMD_HARD等)")
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--pid", type=int, default=0)
     ap.add_argument("--judge", action="store_true")
@@ -186,7 +198,7 @@ def main():
     if a.launch:
         if not preflight():
             return 2
-        launch(a.tag, a.intro_keypush)
+        launch(a.tag, a.intro_keypush, a.master_echo, a.phase_align)
         return 0
     if a.watch:
         return 0 if watch(a.tag, a.pid) else 1
