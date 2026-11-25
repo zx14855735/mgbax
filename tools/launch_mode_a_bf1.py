@@ -60,6 +60,9 @@ def main():
                     help="显式指定 PC exe 路径（具名 MGBAX_PC_EXE），用于冻结/避开被占用产物。默认 None=driver 默认。")
     ap.add_argument("--no-direct", action="store_true",
                     help="U2/A-B: 关 MGBAX_DIRECT_LOCAL_FIRST=0，让 PC 走 CloudLink serve()（含 party_mailbox 轮询）；默认关。")
+    ap.add_argument("--no-seat-walk", action="store_true",
+                    help="B2: 跳过 LINKUP 后 APP 座位走位（卡在 pos(5,8)）——GNP 带外 party 不依赖物理座位；"
+                         "透传 driver --no-app-seat-walk。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -113,6 +116,8 @@ def main():
             "--app-sav", BOOT_SAV]
     if a.attach_existing:
         args += ["--attach-existing"]
+    if a.no_seat_walk:
+        args += ["--no-app-seat-walk"]
     if not a.self_emulator:
         args += ["--no-emulator", "--serial", "emulator-5554"]
     else:
