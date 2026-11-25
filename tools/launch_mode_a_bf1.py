@@ -50,6 +50,9 @@ def main():
                     help="G1 切片乙: 三端宽松 label 取字，治 want/got 差一（默认关，A/B 用）")
     ap.add_argument("--btlcfg", action="store_true",
                     help="PUSH-VALUE-ROOT: 开三端块字路由门 MGBAX_LINK_BTLCFG=1，让 PC/mobile 真推 BBBB/8888/party 块字（默认关，A/B 用）")
+    ap.add_argument("--route-a", action="store_true",
+                    help="J1: 路线A完整配置——恢复 2222_sticky=1(源码默认,被GATES误关)+BTLCFG=1，"
+                         "让 APP 真 2222 走块路由出网→PC 收 2222→InitBlockSend→推真 BBBB/8888。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -82,6 +85,13 @@ def main():
     if a.btlcfg:
         # PUSH-VALUE-ROOT: 块字路由门，PC sioBlockOutWord / mobile 对偶默认早退返回
         # local(=0000)，块字从未进推送流。开=从 gLink.sendQueue 队头推真 BBBB/8888/party。
+        gates.append("MGBAX_LINK_BTLCFG=1")
+    if a.route_a:
+        # J1 源码终审: GATES 误把源码默认开的 2222_sticky 关成 0，致 APP 真 2222
+        # 从未出网→PC 收不到→不 InitBlockSend→sendQueue 空→推 0000。恢复 1 并配
+        # BTLCFG=1(2222 走 sioBlockOutWord 路由的硬门)。只搬真字非伪造。
+        gates = [g for g in gates if not g.startswith("MGBAX_2222_STICKY=")]
+        gates.append("MGBAX_2222_STICKY=1")
         gates.append("MGBAX_LINK_BTLCFG=1")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
