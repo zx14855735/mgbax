@@ -555,10 +555,12 @@ def main():
     if not args.no_emulator:
         env = dict(os.environ)
         env["ANDROID_AVD_HOME"] = AVD_HOME
-        log("启动 emulator -avd %s -no-window -gpu angle_indirect (AVD_HOME=%s)"
-            % (args.avd, AVD_HOME))
+        # K1: angle_indirect 非法→SwiftShader 软渲染；改 host（env 可回退）
+        _gpu = os.environ.get("MGBAX_AVD_GPU", "host")
+        log("启动 emulator -avd %s -no-window -gpu %s (AVD_HOME=%s)"
+            % (args.avd, _gpu, AVD_HOME))
         emu_proc = subprocess.Popen(
-            [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", "angle_indirect"],
+            [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", _gpu],
             cwd=ROOT, env=env,
             stdout=open(os.path.join(gdir, "emulator.log"), "w"),
             stderr=subprocess.STDOUT)

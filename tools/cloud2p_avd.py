@@ -600,7 +600,10 @@ def main():
         # AVDWIPE-01：禁今日劣化的 quickboot 快照(saveOnExit 持续覆写)+全新 userdata，
         # 恢复 11/19 稳定输入层。env MGBAX_AVD_WIPE 可回退到默认行为。
         _wipe = os.environ.get("MGBAX_AVD_WIPE", "1") == "1"
-        _emu_args = [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", "angle_indirect"]
+        # K1 坐实：'angle_indirect' 是非法 GPU 选项 → emulator fallback SwiftShader 软渲染(~4fps)，
+        # 拖垮 SIO 字率致 want≠got 漂移。改 host(硬件加速)；env MGBAX_AVD_GPU 可回退。
+        _gpu = os.environ.get("MGBAX_AVD_GPU", "host")
+        _emu_args = [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", _gpu]
         if _wipe:
             _emu_args += ["-wipe-data", "-no-snapshot", "-no-snapshot-save", "-no-snapshot-load"]
         log("启动 emulator %s (AVD_HOME=%s wipe=%s)"

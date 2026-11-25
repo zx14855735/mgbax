@@ -4435,8 +4435,8 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		 * 仅 st<4 + me==0(主机) 生效，与 PC sioMasterEchoWord 对称。 */
 		if (mobileMasterEchoOn() && me == 0
 		    && emu->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
-			uint32_t _lkm = NAV_IW(0x03002AF4u);
-			if (GBAView8(gba->cpu, _lkm + 1u) < MOBILE_LINK_STATE_CONN) {
+			uint32_t _lkm = NAV_IW(MOBILE_GLINK_STATE);
+			if (GBAView8(gba->cpu, _lkm + MOBILE_GLINK_STATE_OFF) < MOBILE_LINK_STATE_CONN) {
 				data[0] = emu->sioMasterEchoWord;
 			}
 		}
@@ -7657,7 +7657,7 @@ static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driv
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
 	/* BF1: 握手期(st<4)扣下游戏真写的 8FFF，供 data[0] 自回环。只读真字，非造字。 */
 	if (mobileMasterEchoOn()
-	    && GBAView8(gba->cpu, NAV_IW(0x03002AF4u) + 1u) < MOBILE_LINK_STATE_CONN
+	    && GBAView8(gba->cpu, NAV_IW(MOBILE_GLINK_STATE) + MOBILE_GLINK_STATE_OFF) < MOBILE_LINK_STATE_CONN
 	    && local == LINK_HANDSHAKE_MASTER) {
 		emu->sioMasterEchoWord = local;
 	}
