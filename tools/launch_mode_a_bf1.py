@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--netparty", action="store_true",
                     help="S1/B2: 开 GNP 带外 party 邮槽门 MGBAX_NET_PARTY_MAILBOX=1，"
                          "TYPE_PARTY 帧写 IWRAM 邮槽→ROM 直装 gEnemyParty（需匹配 ROM + 冷启动前 setprop）。默认关。")
+    ap.add_argument("--pc-exe", default=None,
+                    help="显式指定 PC exe 路径（具名 MGBAX_PC_EXE），用于冻结/避开被占用产物。默认 None=driver 默认。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -114,6 +116,9 @@ def main():
     for g in gates:
         args += ["--env", g]
     env = os.environ.copy()
+    if a.pc_exe:
+        os.environ["MGBAX_PC_EXE"] = a.pc_exe
+        env["MGBAX_PC_EXE"] = a.pc_exe
     env["PATH"] = (r"D:\Android\Sdk\emulator;D:\Android\Sdk\platform-tools;C:\msys64\usr\bin;" +
                    env.get("PATH", ""))
     env["PYTHONPATH"] = TOOLS

@@ -56,7 +56,7 @@ import gba_addrs as gba  # 统一地址宏（AGENTS §5，三端同名同值）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE = os.path.join(ROOT, ".zcode-tmp", "cloud2p")
-EXE = os.path.join(ROOT, "build-win", "dist", "mGBA.exe")
+EXE = os.environ.get("MGBAX_PC_EXE") or os.path.join(ROOT, "build-win", "dist", "mGBA.exe")
 AVD_HOME = os.environ.get("ANDROID_AVD_HOME", r"D:\avd-home\avd")
 EMULATOR = "emulator"
 REMOTE_ROM = "/sdcard/Download/rom.gba"
