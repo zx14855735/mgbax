@@ -2681,6 +2681,7 @@ QByteArray CloudLink::expect(ILink* link, int type, int timeoutMs) {
 void CloudLink::serve(ILink* link) {
 	qint64 lastKey = 0;
 	qint64 lastAdvertise = 0;
+	qint64 lastPartyPoll = 0;   /* U2: path A 也要轮询 party_mailbox 触发（原只在 serveOfficial/path B） */
 	int sentKeys = -1;
 	while (!m_closed.load(std::memory_order_relaxed) && !link->isClosed()) {
 		qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -2695,6 +2696,21 @@ void CloudLink::serve(ILink* link) {
 		}
 		if (m_sendReset.exchange(false, std::memory_order_relaxed)) {
 			link->send(GBoyFrames::frame(GBoyFrames::TYPE_RESET, 0));
+		}
+		/* U2 修复：path A 的 serve() 此前完全没有 party_mailbox 脚本触发轮询
+		 * （原块只在 serveOfficial/path B），导致 mode A 下 marker 永不消费、
+		 * TYPE_PARTY 从不发。这里补一个独立轮询：仅 party，复用现有具名门与
+		 * 只读 provider（不写 party/信任位/brs/rem/nr/st）。字节仍来自真 gPlayerParty。 */
+		if (now - lastPartyPoll >= 250) {
+			lastPartyPoll = now;
+			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
+			if (!dir.isEmpty()) {
+				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
+				if (partyTrigger.exists()) {
+					partyTrigger.remove();
+					sendPartyMailboxSync([link](const QByteArray& frame) { link->send(frame); });
+				}
+			}
 		}
 		// Host side: keep the signalling socket alive and re-broadcast the
 		// relay endpoint so the joiner can find it without manual entry. Not
