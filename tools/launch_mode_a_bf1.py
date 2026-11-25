@@ -46,6 +46,8 @@ def main():
                     help="F1: st4/pc2 真时接受 LINKUP 停 tap A，让块交换自跑（默认关）")
     ap.add_argument("--b7-verbose", action="store_true",
                     help="F1: 开 APP 侧 [B7BLK] 块打点（sc/rc/sq0/pos/cnt/brs），定位 APP 卡点")
+    ap.add_argument("--label-any", action="store_true",
+                    help="G1 切片乙: 三端宽松 label 取字，治 want/got 差一（默认关，A/B 用）")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -73,6 +75,8 @@ def main():
         os.environ["MGBAX_NAV_ACCEPT_ST4"] = "1"
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
+    if a.label_any:
+        gates.append("MGBAX_LABEL_ANY=1")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),

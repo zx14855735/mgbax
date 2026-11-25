@@ -3559,6 +3559,7 @@ static bool linkBtcfgOn(void);                    /* ROOTHUNT2 方案Y 门，定
 static bool mobileHsHoldOn(void);          /* 路线A 握手保持门，定义见下方（首次调用在 completeMultiTransfer） */
 static bool mobileMasterEchoOn(void);      /* BF1 主机字回环门，定义见下方（首次调用在 completeMultiTransfer） */
 static bool mobileHandshakeNoBarrierOn(void); /* 握手期跳过 400ms tick 栅栏门，定义见下方 */
+static bool mobileLabelAnyOn(void);           /* 宽松 label 取字门（对齐 PC MGBAX_LABEL_ANY），定义见下方 */
 static bool b7Verbose(void);                /* ROOTHUNT2 B7 打点门，定义见下方 */
 static void mobileBattleKeepAlive(struct MgbaMobile* emu);  /* 定义见下方 */
 static bool mobileInBattleStartup(struct MgbaMobile* emu);  /* 定义见下方 */
@@ -5486,6 +5487,25 @@ static bool mobileMasterEchoOn(void) {
 	return s_masterEcho != 0;
 }
 void mgbaMobileSetMasterEcho(bool enabled) { s_masterEcho = enabled ? 1 : 0; }
+/* 【G1 切片乙 / want-got 差一】PC sio_link.c 有 MGBAX_LABEL_ANY=1 门（宽松取字，
+ * 容忍落后 4 label，不依赖 label 精确相等），但 mobile/iOS 主取字路径一直是严格
+ * netLinkTakePeerWordCmd→块字错轮次/peer=0000/brs=0000。这里加对称门：开=用
+ * netLinkTakePeerWordAny(minIdx=sioIndex-4) 宽松取字，让 BBBB/8888/party 块字
+ * 真正落进 gRecvCmds[0][0]。只放宽配对序号，不改游戏态/不造字/不造信任位。 */
+static int s_labelAny = -1;
+static bool mobileLabelAnyOn(void) {
+	if (s_labelAny < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp("debug.mgbax.link.label_any", p);
+		s_labelAny = (p[0] == '1') ? 1 : 0;   /* 默认关 */
+#else
+		const char* e = getenv("MGBAX_LABEL_ANY");
+		s_labelAny = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关 */
+#endif
+	}
+	return s_labelAny != 0;
+}
 /* 【握手期字率墙根治】netLinkBarrier(link,400) 在两人路径(!bus)用
  * pthread_cond_timedwait 最多等 400ms 对端 tick；它只在 link 已连接、
  * 游戏未 attach(!linkAttached，即握手期)时每帧调用。cloud relay RTT ~600-1800ms
@@ -7447,9 +7467,18 @@ static void sioDoneEvent(struct mTiming* timing, void* user, uint32_t cyclesLate
 	double t0 = (double) wallNowMs();
 	/* 【D8 CMD-GUARD】块交换期用「超时不交付未来轮次字」的严格入口，避免把
 	 * 第 k+1 轮的块片段当第 k 轮消费（rem 恒 0）；其余阶段行为完全不变。 */
-	bool haveRemote = emu->link && (mobileInCmdPhase(emu)
-	    ? netLinkTakePeerWordCmd(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL)
-	    : netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL));
+	bool haveRemote;
+	if (mobileLabelAnyOn() && emu->link) {
+		/* 宽松取字：容忍落后 4 label，与 PC sioTakePeerWordRaw 的 minIdx 口径一致，
+		 * 治 want/got 差一致块字进不了接收缓冲（G1 切片乙，灰区保真）。 */
+		uint16_t _minIdx = (emu->sioIndex > 4u) ? (uint16_t) (emu->sioIndex - 4u) : 0u;
+		haveRemote = netLinkTakePeerWordAny(emu->link, _minIdx,
+		    sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL);
+	} else {
+		haveRemote = emu->link && (mobileInCmdPhase(emu)
+		    ? netLinkTakePeerWordCmd(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL)
+		    : netLinkTakePeerWord(emu->link, emu->sioIndex, sioPipelineWaitMs(emu, (int) emu->sioIndex), &remote, &got, NULL));
+	}
 	mobileCapturePeerParty(remote);   /* 迭代 50：高 16 位旁路收对端真实 species */
 	if (mobileRhVerbose() && (emu->sioOk <= 40 || (emu->sioOk % 64) == 0)) {
 		int qn = 0; unsigned qh = 0;

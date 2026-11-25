@@ -2415,6 +2415,10 @@ def main():
     # 属性名与 mgba_mobile.c::mob-HandshakeNoBarrier 逐字对齐，三端对称）。
     setprop("debug.mgbax.link.handshake_no_barrier",
             "1" if env.get("MGBAX_HANDSHAKE_NO_BARRIER", "0") == "1" else "0")
+    # G1 切片乙：宽松 label 取字门（PC 走 MGBAX_LABEL_ANY env，mobile 走同名 prop，
+    # 三端对称）。治 want/got 差一致块字进不了 APP 接收缓冲。默认关。
+    setprop("debug.mgbax.link.label_any",
+            "1" if env.get("MGBAX_LABEL_ANY", "0") == "1" else "0")
     # 路线A：0x2222 启动字 sticky 兜底门（移动端 debug.* 属性，默认开；
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",
