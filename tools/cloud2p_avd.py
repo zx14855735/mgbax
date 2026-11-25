@@ -1306,6 +1306,15 @@ def main():
                         app_nav_log("LINKUP 达成(菜单走完+竞技场/战斗窗): %s" % peek_brief(s))
                         break
                     app_nav_log("忽略LINKUP早退(st4/pc2真但地图/战斗窗未到): %s" % peek_brief(s))
+            elif (s["lkpc"] >= 2 and s["lkst"] >= 4
+                  and os.environ.get("MGBAX_NAV_ACCEPT_ST4", "0") == "1"):
+                # F1-60FPS 具名默认关门：st4/pc2 已是真握手收尾（非合成），
+                # 菜单 cb2 判据过死会一直 tap A 扰动块交换相位。开门即停止导航，
+                # 让 BBBB/8888 块交换自跑并进入采样。只改 driver 行为，不碰游戏态。
+                linkup_ctx["seen"] = True
+                end_reason = "linkup"
+                app_nav_log("NAV_ACCEPT_ST4: st=4 pc=2 真，停止 tap A 让块交换自跑")
+                break
             elif s["lkpc"] >= 2 and s["lkst"] >= 4:
                 app_nav_log("忽略LINKUP早退(st4/pc2真但菜单未走完): cb2=%08X seq=%s"
                             % (s["cb2"], menu_ctx["seq"]))

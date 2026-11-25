@@ -42,6 +42,10 @@ def main():
                     help="握手期跳过 netLinkBarrier(400) 自伤帧率门（默认关，A/B 用）")
     ap.add_argument("--attach-existing", action="store_true",
                     help="E1-60FPS: 跳过 APP 重建，接管已运行 APP 保留 60fps EGL（需 --app-nav）")
+    ap.add_argument("--nav-accept-st4", action="store_true",
+                    help="F1: st4/pc2 真时接受 LINKUP 停 tap A，让块交换自跑（默认关）")
+    ap.add_argument("--b7-verbose", action="store_true",
+                    help="F1: 开 APP 侧 [B7BLK] 块打点（sc/rc/sq0/pos/cnt/brs），定位 APP 卡点")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -64,6 +68,11 @@ def main():
     gates = list(GATES)
     if a.handshake_no_barrier:
         gates.append("MGBAX_HANDSHAKE_NO_BARRIER=1")
+    if a.nav_accept_st4:
+        # F1: driver 自身读 os.environ（非 PC env），需在 launch 进程环境里设
+        os.environ["MGBAX_NAV_ACCEPT_ST4"] = "1"
+    if a.b7_verbose:
+        gates.append("MGBAX_B7_VERBOSE=1")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),
