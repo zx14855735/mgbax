@@ -10015,23 +10015,25 @@ void mgbaMobileBiosFileName(const char* name, long size, char* out, size_t outLe
 #endif
 #define MGBAX_NET_PARTY_MAILBOX_ENV  "MGBAX_NET_PARTY_MAILBOX"
 #define MGBAX_NET_PARTY_MAILBOX_PROP "debug.mgbax.link.net_party_mailbox"
-static int s_gnpNetParty = -1;
+static int s_gnpNetParty = -1;   /* 1=JNI setter 强制开（最高优先）；其余每次动态读 prop */
 static bool mobileGnpNetPartyOn(void) {
-	if (s_gnpNetParty < 0) {
 #if MGBAX_NET_PARTY_MAILBOX != 0
-		s_gnpNetParty = 1;
-#else
-#ifdef __ANDROID__
-		char p[PROP_VALUE_MAX] = {0};
-		rhGetProp(MGBAX_NET_PARTY_MAILBOX_PROP, p);
-		s_gnpNetParty = (p[0] == '1') ? 1 : 0;
-#else
-		const char* e = getenv(MGBAX_NET_PARTY_MAILBOX_ENV);
-		s_gnpNetParty = (e && atoi(e) == 1) ? 1 : 0;
+		return true;
 #endif
-#endif
+	if (s_gnpNetParty == 1) {
+		return true;              /* mgbaMobileGnpSetNetParty(true) 强制开 */
 	}
-	return s_gnpNetParty != 0;
+	/* S1/B2 时序修复：原 static 首次读 prop 固化，driver late setprop 无法生效；
+	 * 改为每次动态读（GNP 写口为低频路径，开销可忽略）。这样冷 boot 直接起 APP
+	 * 拿 60fps 后，driver setprop 仍能让门生效，不必在 APP 启动前 setprop。 */
+#ifdef __ANDROID__
+	char p[PROP_VALUE_MAX] = {0};
+	rhGetProp(MGBAX_NET_PARTY_MAILBOX_PROP, p);
+	return p[0] == '1';
+#else
+	const char* e = getenv(MGBAX_NET_PARTY_MAILBOX_ENV);
+	return e && atoi(e) == 1;
+#endif
 }
 void mgbaMobileGnpSetNetParty(bool enabled) { s_gnpNetParty = enabled ? 1 : 0; }
 
@@ -10111,23 +10113,23 @@ int mgbaMobileGnpNetPartyMailboxWrite(struct MgbaMobile* emu,
 #endif
 #define MGBAX_NETGATE_LOG_ENV  "MGBAX_NETGATE_LOG"
 #define MGBAX_NETGATE_LOG_PROP "debug.mgbax.link.netgate_log"
-static int s_ngLog = -1;
+static int s_ngLog = -1;   /* 1=JNI setter 强制开（最高优先）；其余每次动态读 prop */
 static bool mobileNetGateLogOn(void) {
-	if (s_ngLog < 0) {
 #if MGBAX_NETGATE_LOG != 0
-		s_ngLog = 1;
-#else
-#ifdef __ANDROID__
-		char p[PROP_VALUE_MAX] = {0};
-		rhGetProp(MGBAX_NETGATE_LOG_PROP, p);
-		s_ngLog = (p[0] == '1') ? 1 : 0;
-#else
-		const char* e = getenv(MGBAX_NETGATE_LOG_ENV);
-		s_ngLog = (e && atoi(e) == 1) ? 1 : 0;
+		return true;
 #endif
-#endif
+	if (s_ngLog == 1) {
+		return true;
 	}
-	return s_ngLog != 0;
+	/* 同 GNP 门：动态读 prop，使 driver late setprop 生效（APP 60fps 冷启动优先）。 */
+#ifdef __ANDROID__
+	char p[PROP_VALUE_MAX] = {0};
+	rhGetProp(MGBAX_NETGATE_LOG_PROP, p);
+	return p[0] == '1';
+#else
+	const char* e = getenv(MGBAX_NETGATE_LOG_ENV);
+	return e && atoi(e) == 1;
+#endif
 }
 void mgbaMobileNetGateLogSet(bool enabled) { s_ngLog = enabled ? 1 : 0; }
 
