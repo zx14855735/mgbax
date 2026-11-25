@@ -29,11 +29,55 @@ def log(m):
     print("[HS %s] %s" % (time.strftime("%H:%M:%S"), m), flush=True)
 
 
+def write_fps_report(app_log, out_path, t_start, t_end):
+    """N1: 从握手期活 logcat 解析 FRM emuFps/callsFps，阶段化落盘。
+    0 样本写 UNOBSERVED，不写 0、不编造。emuFps≈4&callsFps≈60=lockstep 冻时钟
+    （非渲染慢）；两者都≈4=APP 层真慢；两者都≈60=之前 4fps 是导航假象。"""
+    import re, statistics
+    emu, calls = [], []
+    if os.path.exists(app_log):
+        # C 侧 FRM 已加阶段标签 link=<state> att=<0/1>；只收握手期(link=2 && att=0)
+        pat = re.compile(r"FRM me=\S+ emuFps=([0-9.]+) callsFps=([0-9.]+).*?link=(-?\d+) att=(\d+)")
+        with open(app_log, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = pat.search(line)
+                if m and m.group(3) == "2" and m.group(4) == "0":
+                    emu.append(float(m.group(1)))
+                    calls.append(float(m.group(2)))
+    lines = [
+        "# 握手期 APP 帧率（handshake_probe --fps，N1）",
+        "阶段=handshake (APP 已 cable club waiting + PC 纯链路加入，无 screencap 导航负载)",
+        "窗口=[%s, %s]" % (time.strftime("%H:%M:%S", time.localtime(t_start)),
+                           time.strftime("%H:%M:%S", time.localtime(t_end))),
+        "log=%s" % app_log,
+        "判据: emu≈4&calls≈4→APP层真慢; emu≈4&calls≈60→lockstep冻时钟(非渲染慢); emu≈60&calls≈60→之前4fps是导航假象",
+    ]
+    if not emu:
+        lines.append("FRM 样本=0 → UNOBSERVED（不写 0，不编造）")
+    else:
+        lines.append("FRM 样本 n=%d" % len(emu))
+        lines.append("fps_handshake_emu_median=%.2f (min=%.2f max=%.2f)" %
+                     (statistics.median(emu), min(emu), max(emu)))
+        lines.append("fps_handshake_calls_median=%.2f (min=%.2f max=%.2f)" %
+                     (statistics.median(calls), min(calls), max(calls)))
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    log("握手期帧率报告 → %s（FRM n=%d）" % (out_path, len(emu)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--room", required=True)
     ap.add_argument("--monitor", type=int, default=180)
     ap.add_argument("--tag", default="HSPROBE-01")
+    # N1：三个具名默认关 flag（握手期 FRM 阶段化采集 / mode A BF1 门对齐 / PC 导航）
+    ap.add_argument("--fps", action="store_true",
+                    help="活 logcat 抓 FRM emuFps/callsFps，阶段化落盘 handshake_fps.md")
+    ap.add_argument("--bf1", action="store_true",
+                    help="PC env 与 launch_mode_a_bf1.py 逐字对齐（含 MGBAX_SIO_MASTER_ECHO=1）")
+    ap.add_argument("--pc-nav", action="store_true",
+                    help="PC 侧写 nav_at=1500 2（与 mode A 同导航输入）")
+    ap.add_argument("--serial", default="emulator-5554", help="APP 设备 serial（--fps 活 logcat 用）")
     a = ap.parse_args()
 
     gdir = os.path.join(ROOT, ".zcode-tmp", a.tag)
@@ -58,14 +102,50 @@ def main():
         "MGBAX_LINK_REARM": "0",
         "MGBAX_NETGATE_LOG": "1",
     })
+    if a.bf1:
+        # N1: 与 launch_mode_a_bf1.py:24-31 + cloud2p mode A 逐字对齐。
+        # 绝不能漏 MGBAX_SIO_MASTER_ECHO=1（J1：漏开→主机发 8FFF 无回环→卡 st2）。
+        env.update({
+            "MGBAX_SIO_MASTER_ECHO": "1",
+            "MGBAX_RH_VERBOSE": "1",
+            "MGBAX_LINK_MODE": "A",
+            "MGBAX_SIO_LOG": "1",
+            "MGBAX_LINK_DIAG": "1",
+            "MGBAX_DIRECT_LOCAL_FIRST": "1",
+            "MGBAX_ROM_PATH": PC_ROM,
+            "MGBAX_GNP_RUN_DIR": gdir,
+        })
+        log("BF1 门对齐: SIO_MASTER_ECHO=1 RH_VERBOSE=1 MODE=A (J1 漏开会卡 st2)")
     # 不改系统 TEMP/TMP（改了会导致 Windows CreateProcess 拒绝/EDR 拦截）；
     # 隔离靠独立 cwd(ROOT) + 独立 keys/lobby 目录(D.Inst) + 不同账号/uuid。
-    pc = D.Inst("PC", pc_tmp, pc_keys, nav_on=False)
+    pc = D.Inst("PC", pc_tmp, pc_keys, nav_on=a.pc_nav)
+    if a.pc_nav:
+        # N1: 与 cloud2p:2487-2489 对齐，PC 侧走与 mode A 同导航输入
+        with open(os.path.join(pc_keys, "nav_at"), "w") as f:
+            f.write("1500 2")
+        log("PC nav_at=1500 2（与 mode A 对齐）")
     pc.stdout = os.path.join(gdir, "pc_stdout.log")
     pc.proc = subprocess.Popen([EXE, PC_ROM], cwd=ROOT, env=env,
                                stdout=open(pc.stdout, "w"), stderr=subprocess.STDOUT)
     pc.pid = pc.proc.pid
     log("PC 启动 pid=%d room=%s AUTOLINK=%s:…:%s" % (pc.pid, a.room, PC_ACC.split(":")[0], a.room))
+
+    # N1: --fps 起活 logcat（避免 -t600 被 SIO/PEEK 冲掉），全程落盘握手期 FRM
+    app_log = os.path.join(gdir, "app_link_startup.log")
+    logcat_proc = None
+    if a.fps:
+        import threading
+        def _pump_logcat():
+            nonlocal logcat_proc
+            try:
+                logcat_proc = subprocess.Popen(
+                    [ADB, "-s", a.serial, "logcat", "-v", "threadtime"],
+                    stdout=open(app_log, "w"), stderr=subprocess.STDOUT)
+                logcat_proc.wait()
+            except Exception as e:
+                log("logcat pump 异常: %s" % e)
+        threading.Thread(target=_pump_logcat, daemon=True).start()
+        log("FRM 采集: 活 logcat -s %s → %s" % (a.serial, app_log))
 
     # 监控：PC lobby + APP PEEK 握手演进
     t0 = time.time()
@@ -87,6 +167,14 @@ def main():
             log("APP %s | PC lobby末: %s" % (st_s, room_hits[-1][:100] if room_hits else "-"))
             last_st = st_s
     log("监控结束。诚实判据: APP st≥4 才是真握手; PC st4/pc2 是本地闭合不算。")
+    if a.fps:
+        if logcat_proc:
+            try:
+                logcat_proc.terminate()
+            except Exception:
+                pass
+        time.sleep(1)
+        write_fps_report(app_log, os.path.join(gdir, "handshake_fps.md"), t0, time.time())
     return 0
 
 

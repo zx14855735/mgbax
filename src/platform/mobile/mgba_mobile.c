@@ -8339,10 +8339,15 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 			 * 的那段时间里冻住，模拟帧率一低就说明游戏被网络等待拖死了。
 			 * calls/s 是真实帧率，用来对照：两者一比就知道时间花在哪儿。 */
 			double emuFrames = (double) (cyc - emu->probeCycAt) / 280896.0;
-			MOBILE_LOGI("FRM me=%d emuFps=%.2f callsFps=%.1f frames=%u wall=%ums",
+			/* N1 阶段标签：link=2 & att=0 = 握手期(cable club waiting)，att=1 = 战斗期。
+			 * 握手期 FRM 此前只在 driver in_battle 解析，离线判读无法分期；加这两个字段
+			 * 后 handshake_probe --fps 可按时间戳精确切出握手期帧率。 */
+			MOBILE_LOGI("FRM me=%d emuFps=%.2f callsFps=%.1f frames=%u wall=%ums link=%d att=%d",
 			            netLinkPlayer(emu->link), emuFrames * 1000.0 / (double) wall,
 			            (double) emu->probeFrames * 1000.0 / (double) wall,
-			            emu->probeFrames, wall);
+			            emu->probeFrames, wall,
+			            emu->link ? (int) netLinkState(emu->link) : -1,
+			            emu->linkAttached ? 1 : 0);
 			emu->probeWallAt = now;
 			emu->probeCycAt = cyc;
 			emu->probeFrames = 0;
