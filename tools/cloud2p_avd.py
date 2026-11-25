@@ -781,7 +781,7 @@ def main():
         "overshoots": 0,   # W22 落点校验真实记录（不伪造 0）
     }
     walk_ctx = {"tid": None}   # W81 走位核 TID 经此传给 _walk_peek（不重复 discover）
-    pc_guard_ctx = {"last": 0.0, "resyncs": 0}
+    pc_guard_ctx = {"last": 0.0, "resyncs": 0, "log_off": 0, "joined": False}
     linkup_ctx = {"seen": False, "master": False}
 
     def app_linkup_seen():
@@ -2543,6 +2543,13 @@ def main():
                                    stdout=open(pc.stdout, mode),
                                    stderr=subprocess.STDOUT)
         pc.pid = pc.proc.pid
+        # T1: 记录本代 PC 的 lobby 日志偏移 + 清"已入房"标记，使 pc_join_guard 只判本代。
+        try:
+            _lb = os.path.join(pc_tmp, "mgba_lobby_debug.log")
+            pc_guard_ctx["log_off"] = os.path.getsize(_lb) if os.path.exists(_lb) else 0
+        except OSError:
+            pc_guard_ctx["log_off"] = 0
+        pc_guard_ctx["joined"] = False
         log("PC pid=%d  MGBAX_AUTOLINK=%s:…%s（不同账号 + 不同 uuid）"
             % (pc.pid, acc_user, (":" + link_room) if link_room else "(建房)"))
         return link_room
@@ -2611,12 +2618,20 @@ def main():
             return
         try:
             lobby = os.path.join(pc_tmp, "mgba_lobby_debug.log")
-            txt = open(lobby, encoding="utf-8", errors="replace").read() \
-                  if os.path.exists(lobby) else ""
+            full = open(lobby, encoding="utf-8", errors="replace").read() \
+                   if os.path.exists(lobby) else ""
         except OSError:
-            txt = ""
-        bad = ("房间不存" in txt or "联机流程中断" in txt
-               or "join_room\" success:false" in txt)
+            full = ""
+        # T1 修复：只读本代 PC 新增日志（launch_pc 记录的偏移），且"已加入房间"清 bad。
+        # 原实现读全量累积日志，首个 PC 的陈旧失败文本永久残留 bad=True，
+        # 每 12s 误杀一个其实已成功入房的 PC（user_leave 反复打断 P2P 协商）。
+        txt = full[pc_guard_ctx["log_off"]:]
+        if (u"已加入房间" in txt or "player_joined" in txt
+                or "join_room\" success:true" in txt):
+            pc_guard_ctx["joined"] = True
+        bad = (not pc_guard_ctx["joined"]) and (
+            u"房间不存" in txt or u"联机流程中断" in txt
+            or "join_room\" success:false" in txt)
         if not (bad or not pc.alive()):
             return
         latest = extract_room(room_logcat_text())
