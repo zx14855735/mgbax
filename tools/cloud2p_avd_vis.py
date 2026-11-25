@@ -556,7 +556,7 @@ def main():
         env = dict(os.environ)
         env["ANDROID_AVD_HOME"] = AVD_HOME
         # K1: angle_indirect 非法→SwiftShader 软渲染；改 host（env 可回退）
-        _gpu = os.environ.get("MGBAX_AVD_GPU", "host")
+        _gpu = os.environ.get("MGBAX_AVD_GPU", "angle-vulkan")
         log("启动 emulator -avd %s -no-window -gpu %s (AVD_HOME=%s)"
             % (args.avd, _gpu, AVD_HOME))
         emu_proc = subprocess.Popen(
