@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--route-a", action="store_true",
                     help="J1: 路线A完整配置——恢复 2222_sticky=1(源码默认,被GATES误关)+BTLCFG=1，"
                          "让 APP 真 2222 走块路由出网→PC 收 2222→InitBlockSend→推真 BBBB/8888。默认关。")
+    ap.add_argument("--netparty", action="store_true",
+                    help="S1/B2: 开 GNP 带外 party 邮槽门 MGBAX_NET_PARTY_MAILBOX=1，"
+                         "TYPE_PARTY 帧写 IWRAM 邮槽→ROM 直装 gEnemyParty（需匹配 ROM + 冷启动前 setprop）。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -93,6 +96,8 @@ def main():
         gates = [g for g in gates if not g.startswith("MGBAX_2222_STICKY=")]
         gates.append("MGBAX_2222_STICKY=1")
         gates.append("MGBAX_LINK_BTLCFG=1")
+    if a.netparty:
+        gates.append("MGBAX_NET_PARTY_MAILBOX=1")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),

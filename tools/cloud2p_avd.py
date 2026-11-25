@@ -2423,6 +2423,11 @@ def main():
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",
             "1" if env.get("MGBAX_2222_STICKY", "1") != "0" else "0")
+    # S1/B2: GNP 带外 party 邮槽门（宿端写口 mgba_mobile.c mobileGnpNetPartyOn，
+    # 属性名逐字对齐 MGBAX_NET_PARTY_MAILBOX_PROP）。默认关；开=TYPE_PARTY 帧可写
+    # IWRAM 邮槽→ROM PollRx/Apply 直装 gEnemyParty（writer=ROM，不造字）。
+    setprop("debug.mgbax.link.net_party_mailbox",
+            "1" if env.get("MGBAX_NET_PARTY_MAILBOX", "0") == "1" else "0")
     # path B：LocalBus 握手字保真（默认开）+ 2P 钳位门（默认关）；属性名与 C 侧逐字对齐。
     setprop("debug.mgbax.link.bus_hs_preserve",
             "1" if env.get("MGBAX_BUS_HS_PRESERVE", "1") != "0" else "0")
