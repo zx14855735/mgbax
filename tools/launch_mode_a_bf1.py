@@ -48,6 +48,8 @@ def main():
                     help="F1: 开 APP 侧 [B7BLK] 块打点（sc/rc/sq0/pos/cnt/brs），定位 APP 卡点")
     ap.add_argument("--label-any", action="store_true",
                     help="G1 切片乙: 三端宽松 label 取字，治 want/got 差一（默认关，A/B 用）")
+    ap.add_argument("--btlcfg", action="store_true",
+                    help="PUSH-VALUE-ROOT: 开三端块字路由门 MGBAX_LINK_BTLCFG=1，让 PC/mobile 真推 BBBB/8888/party 块字（默认关，A/B 用）")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -77,6 +79,10 @@ def main():
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
         gates.append("MGBAX_LABEL_ANY=1")
+    if a.btlcfg:
+        # PUSH-VALUE-ROOT: 块字路由门，PC sioBlockOutWord / mobile 对偶默认早退返回
+        # local(=0000)，块字从未进推送流。开=从 gLink.sendQueue 队头推真 BBBB/8888/party。
+        gates.append("MGBAX_LINK_BTLCFG=1")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),
