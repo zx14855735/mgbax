@@ -119,6 +119,12 @@ def main():
     if a.pc_exe:
         os.environ["MGBAX_PC_EXE"] = a.pc_exe
         env["MGBAX_PC_EXE"] = a.pc_exe
+        # 22:08 弹窗根因：driver 用 cwd=ROOT 起 exe，Qt 从 ROOT 找不到 platform plugin
+        # ("no Qt platform plugin could be initialized")→PC 进程挂起/崩溃。显式钉插件路径
+        # （exe 同目录 platforms/），由 launch→driver→PC 子进程继承。
+        _qtplat = os.path.join(os.path.dirname(a.pc_exe), "platforms")
+        os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qtplat
+        env["QT_QPA_PLATFORM_PLUGIN_PATH"] = _qtplat
     env["PATH"] = (r"D:\Android\Sdk\emulator;D:\Android\Sdk\platform-tools;C:\msys64\usr\bin;" +
                    env.get("PATH", ""))
     env["PYTHONPATH"] = TOOLS
