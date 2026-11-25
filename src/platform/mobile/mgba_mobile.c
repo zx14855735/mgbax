@@ -702,7 +702,11 @@ static void mobileResolveRomAddresses(void) {
 		}
 		/* AJ1 step 4.5: 独立锚定 gMain.callback2（不受 gTasks delta 失败影响）。
 		 * 启动期 gMain 可能未填真值，游戏态由 ensureCb2Anchor() 在 PEEK 块延迟重扫。 */
-		mobileResolveMainCb2(gba, false);
+		/* 22:34 崩溃修复：PC exe 也编译本共享 C；gba=NULL（"无已加载核心"）时
+		 * mobileResolveMainCb2 内部解引用 gba->cpu → 0xC0000005。加 null guard，三端对称。 */
+		if (gba) {
+			mobileResolveMainCb2(gba, false);
+		}
 	}
 
 	/* 5) 代码段：段首 12 字节 Thumb 序言在 ROM 里唯一命中 → 段首运行地址。 */
