@@ -3558,6 +3558,7 @@ static void mobileEnsureLinkOpen(struct MgbaMobile* emu);  /* ROOTHUNT2 块交�
 static bool linkBtcfgOn(void);                    /* ROOTHUNT2 方案Y 门，定义见下方 */
 static bool mobileHsHoldOn(void);          /* 路线A 握手保持门，定义见下方（首次调用在 completeMultiTransfer） */
 static bool mobileMasterEchoOn(void);      /* BF1 主机字回环门，定义见下方（首次调用在 completeMultiTransfer） */
+static bool mobileHandshakeNoBarrierOn(void); /* 握手期跳过 400ms tick 栅栏门，定义见下方 */
 static bool b7Verbose(void);                /* ROOTHUNT2 B7 打点门，定义见下方 */
 static void mobileBattleKeepAlive(struct MgbaMobile* emu);  /* 定义见下方 */
 static bool mobileInBattleStartup(struct MgbaMobile* emu);  /* 定义见下方 */
@@ -5485,6 +5486,27 @@ static bool mobileMasterEchoOn(void) {
 	return s_masterEcho != 0;
 }
 void mgbaMobileSetMasterEcho(bool enabled) { s_masterEcho = enabled ? 1 : 0; }
+/* 【握手期字率墙根治】netLinkBarrier(link,400) 在两人路径(!bus)用
+ * pthread_cond_timedwait 最多等 400ms 对端 tick；它只在 link 已连接、
+ * 游戏未 attach(!linkAttached，即握手期)时每帧调用。cloud relay RTT ~600-1800ms
+ * 远大于 400ms ⇒ 每帧阻塞 ~400ms ⇒ APP 被钉在 2.5-4fps ⇒ SIO 字交换每轮等
+ * ~400ms，握手期 8FFF↔B9A0 连续字永远跟不上 ⇒ st=2 自锁、want≠got 漂移。
+ * 具名门默认关；开=握手期跳过该栅栏，core 按帧钟 60fps 跑，SIO 自身队列
+ * (netLinkPush/TakePeerWord)负责字同步，barrier 冗余且自伤。只改节拍，不造字。 */
+static int s_hsNoBarrier = -1;
+static bool mobileHandshakeNoBarrierOn(void) {
+	if (s_hsNoBarrier < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp("debug.mgbax.link.handshake_no_barrier", p);
+		s_hsNoBarrier = (p[0] == '1') ? 1 : 0;   /* 默认关 */
+#else
+		const char* e = getenv("MGBAX_HANDSHAKE_NO_BARRIER");
+		s_hsNoBarrier = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关 */
+#endif
+	}
+	return s_hsNoBarrier != 0;
+}
 /* 【路线A / 0x2222 兜底】独立布尔门：默认开，=0 秒回退。与 PC sioBlock2222On /
  * iOS UserDefaults 逐字对称；Android 读 debug.mgbax.link.block2222_sticky，
  * 桌面读 MGBAX_2222_STICKY。把 0x2222 启动字纳入 sticky 逐拍缓存（真队列帧头
@@ -8546,7 +8568,11 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 	 * 错误」。轮本身的阻塞（等对端推送）已经是背压，帧对齐交给两边的 60fps
 	 * 节拍就够了。 */
 	if (count == 1 && emu->link && netLinkState(emu->link) == 2 && !emu->linkAttached) {
-		netLinkBarrier(emu->link, 400);
+		/* 握手期 400ms tick 栅栏：cloud relay 下自伤帧率(2.5-4fps)，
+		 * 具名门默认关；开=跳过让 core 跑满帧钟(SIO 队列自带字同步)。 */
+		if (!mobileHandshakeNoBarrierOn()) {
+			netLinkBarrier(emu->link, 400);
+		}
 	}
 	applyFrameskip(emu->core, count > 1 ? count - 1 : emu->userSkip);
 	setFastAudio(emu, count > 1);

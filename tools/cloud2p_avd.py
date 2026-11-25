@@ -2392,6 +2392,10 @@ def main():
     # BF1：主机握手字真自回环门（默认关，显式 =1 才开；只搬运真字非造字）。
     setprop("debug.mgbax.link.sio_master_echo",
             "1" if env.get("MGBAX_SIO_MASTER_ECHO", "0") == "1" else "0")
+    # 握手期跳过 netLinkBarrier(400) 自伤帧率门（默认关，显式 =1 才开；
+    # 属性名与 mgba_mobile.c::mob-HandshakeNoBarrier 逐字对齐，三端对称）。
+    setprop("debug.mgbax.link.handshake_no_barrier",
+            "1" if env.get("MGBAX_HANDSHAKE_NO_BARRIER", "0") == "1" else "0")
     # 路线A：0x2222 启动字 sticky 兜底门（移动端 debug.* 属性，默认开；
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",
