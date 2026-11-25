@@ -4430,19 +4430,17 @@ static void completeMultiTransfer(struct MgbaMobile* emu, uint32_t remote, bool 
 		data[me] = mobileHandshakeHoldWord(emu,
 		    emu->sioSelfSlotValid ? emu->sioSelfSlot
 		                          : gba->memory.io[GBA_REG(SIOMLT_SEND)]);
-		/* BF1: 主机握手期真字自回环——扣下的真 8FFF 作 data[0] 最后写入者，
-		 * 模拟真电缆 MULTI 主机自发字回环进 SIOMULTI0。只搬运真字非造字；
-		 * 仅 st<4 + me==0(主机) 生效，与 PC sioMasterEchoWord 对称。 */
-		if (mobileMasterEchoOn() && me == 0
-		    && emu->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
-			uint32_t _lkm = NAV_IW(MOBILE_GLINK_STATE);
-			if (GBAView8(gba->cpu, _lkm + MOBILE_GLINK_STATE_OFF) < MOBILE_LINK_STATE_CONN) {
-				data[0] = emu->sioMasterEchoWord;
-			}
-		}
 	}
 	if (haveRemote) {
 		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	/* BF1 写序修复(2026-11-25)：主机 me==0 时上面 `data[me==0?1:0]=remote` 就是
+	 * data[0]=对端B9A0，会覆盖早先写的 8FFF 回环。必须放这里(=握手期最后 data 写入者，
+	 * CS_FORGE 仅 st>=4 生效不冲突)。只搬运游戏真写 8FFF，非造字；三端对称。 */
+	if (mobileMasterEchoOn() && me >= 0 && me == 0
+	    && emu->sioMasterEchoWord == LINK_HANDSHAKE_MASTER
+	    && GBAView8(gba->cpu, NAV_IW(MOBILE_GLINK_STATE) + MOBILE_GLINK_STATE_OFF) < MOBILE_LINK_STATE_CONN) {
+		data[0] = emu->sioMasterEchoWord;   /* 主机自发字真回环进 SIOMULTI0 */
 	}
 	/* 【ROOTHUNT CS_FORGE】mobile 侧原本完全没有校验和伪造（Qt 有）：gen8 的
 	 * DoRecv 在 sendCmdIndex==0 轮把 gLink.checksum 与【自己那一格】比对，

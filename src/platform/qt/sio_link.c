@@ -4314,20 +4314,20 @@ static void completeMultiTransfer(struct SioLink* sio, uint32_t remote, bool hav
 		 * 且 selfSlot==0（DoSend 空队列的合法字）时，对端收到的是 0，
 		 * 本机若投递 0xFFFF，两端 8 轮校验和就不等 → badChecksum。 */
 		data[me] = sioWordOrEmpty(sio, sio->sioSelfSlot);
-		/* BF1: 主机握手期真字自回环——把扣下的真 8FFF 作为 data[0] 最后写入者，
-		 * 模拟真电缆 MULTI 主机自发字回环进 SIOMULTI0。真字搬运非造字；
-		 * 仅 st<4 + me==0(主机) + 捕获到真 8FFF 时生效。 */
-		if (sioMasterEchoOn() && me == 0 && sio->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
-			struct GBA* gba_echo = (struct GBA*) sio->core->board;
-			if (gba_echo && gba_echo->cpu
-			    && GBAView8(gba_echo->cpu,
-			                SIO_IW(SIO_GLINK_STATE) + SIO_GLINK_STATE_OFF) < SIO_LINK_STATE_CONN) {
-				data[0] = sio->sioMasterEchoWord;
-			}
-		}
 	}
 	if (haveRemote) {
 		data[me == 0 ? 1 : 0] = (uint16_t) remote;
+	}
+	/* BF1 写序修复(2026-11-25，与 mobile 对偶)：me==0 时上面 data[me==0?1:0]=remote
+	 * 即 data[0]=对端B9A0，覆盖早先的 8FFF 回环。放这里=握手期最后 data 写入者
+	 * (CS_FORGE 仅 st>=4 不冲突)。只搬运游戏真写 8FFF，非造字。 */
+	if (sioMasterEchoOn() && me >= 0 && me == 0 && sio->sioMasterEchoWord == LINK_HANDSHAKE_MASTER) {
+		struct GBA* gba_echo = (struct GBA*) sio->core->board;
+		if (gba_echo && gba_echo->cpu
+		    && GBAView8(gba_echo->cpu,
+		                SIO_IW(SIO_GLINK_STATE) + SIO_GLINK_STATE_OFF) < SIO_LINK_STATE_CONN) {
+			data[0] = sio->sioMasterEchoWord;
+		}
 	}
 	/* 【平移线只在 state>=4 生效】握手期 DoHandshake 要求
 	 * tempRecvBuffer[0] 恰是主机的 0x8FFF（gen8/src/link.c:2289），
