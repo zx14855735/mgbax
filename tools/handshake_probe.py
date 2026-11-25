@@ -78,6 +78,8 @@ def main():
     ap.add_argument("--pc-nav", action="store_true",
                     help="PC 侧写 nav_at=1500 2（与 mode A 同导航输入）")
     ap.add_argument("--serial", default="emulator-5554", help="APP 设备 serial（--fps 活 logcat 用）")
+    ap.add_argument("--skip-present", action="store_true",
+                    help="setprop debug.mgbax.skip_present=1（诊断：跳过 presentFrame 判 EGL 读回阻塞）")
     a = ap.parse_args()
 
     gdir = os.path.join(ROOT, ".zcode-tmp", a.tag)
@@ -129,6 +131,14 @@ def main():
                                stdout=open(pc.stdout, "w"), stderr=subprocess.STDOUT)
     pc.pid = pc.proc.pid
     log("PC 启动 pid=%d room=%s AUTOLINK=%s:…:%s" % (pc.pid, a.room, PC_ACC.split(":")[0], a.room))
+
+    if a.skip_present:
+        subprocess.run([ADB, "-s", a.serial, "shell", "setprop",
+                        "debug.mgbax.skip_present", "1"], capture_output=True)
+        rb = subprocess.run([ADB, "-s", a.serial, "shell", "getprop",
+                             "debug.mgbax.skip_present"], capture_output=True, text=True)
+        log("诊断门 skip_present=1 readback=%s（跳过 presentFrame 判 EGL 读回阻塞）" %
+            (rb.stdout or "").strip())
 
     # N1: --fps 起活 logcat（避免 -t600 被 SIO/PEEK 冲掉），全程落盘握手期 FRM
     app_log = os.path.join(gdir, "app_link_startup.log")

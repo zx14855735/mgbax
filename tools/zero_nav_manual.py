@@ -64,7 +64,7 @@ def peek():
         import re
         m = re.search(pat, last)
         if m:
-            out[key] = m.groups() if m.groups() > 1 else m.group(1)
+            out[key] = m.groups() if len(m.groups()) > 1 else m.group(1)
     return out
 
 

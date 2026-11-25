@@ -3542,7 +3542,9 @@ public class EmulatorActivity extends AppCompatActivity {
                     pumpAudio();
                 }
                 if (factor <= 1.5f) {
-                    presentFrame();
+                    if (!skipPresentProp()) {
+                        presentFrame();
+                    }
                 } else {
                     long now = System.nanoTime();
                     if (now >= nextFastPresent) {
@@ -4050,6 +4052,20 @@ public class EmulatorActivity extends AppCompatActivity {
             } else {
                 toast(getString(R.string.rewind_empty));
             }
+        }
+    }
+
+    /* 诊断门（具名默认关）：debug.mgbax.skip_present=1 时完全跳过 presentFrame()，
+     * 用于判定软渲染下 core 帧率是否被同步 EGL 读回(core.copyVideo)拖慢。
+     * 反射读 android.os.SystemProperties（隐藏 API，失败回退 false=正常呈现）。 */
+    private static boolean skipPresentProp() {
+        try {
+            Class<?> c = Class.forName("android.os.SystemProperties");
+            Object v = c.getMethod("get", String.class, String.class)
+                        .invoke(null, "debug.mgbax.skip_present", "0");
+            return "1".equals(v);
+        } catch (Exception e) {
+            return false;
         }
     }
 
