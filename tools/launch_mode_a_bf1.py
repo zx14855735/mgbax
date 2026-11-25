@@ -58,6 +58,8 @@ def main():
                          "TYPE_PARTY 帧写 IWRAM 邮槽→ROM 直装 gEnemyParty（需匹配 ROM + 冷启动前 setprop）。默认关。")
     ap.add_argument("--pc-exe", default=None,
                     help="显式指定 PC exe 路径（具名 MGBAX_PC_EXE），用于冻结/避开被占用产物。默认 None=driver 默认。")
+    ap.add_argument("--no-direct", action="store_true",
+                    help="U2/A-B: 关 MGBAX_DIRECT_LOCAL_FIRST=0，让 PC 走 CloudLink serve()（含 party_mailbox 轮询）；默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -100,6 +102,10 @@ def main():
         gates.append("MGBAX_LINK_BTLCFG=1")
     if a.netparty:
         gates.append("MGBAX_NET_PARTY_MAILBOX=1")
+    if a.no_direct:
+        # driver :2255 默认钉 MGBAX_DIRECT_LOCAL_FIRST=1 → PC 走 DirectLink，
+        # 绕过 CloudLink serve()（party_mailbox 轮询只在 serve/serveOfficial）。关它走 serve()。
+        gates.append("MGBAX_DIRECT_LOCAL_FIRST=0")
     if a.shift:
         gates.append("MGBAX_PEER_SHIFT=%d" % a.shift)
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),
