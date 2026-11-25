@@ -40,6 +40,8 @@ def main():
                     help="让 driver 自起 emulator（新 -gpu host 生效）；默认复用")
     ap.add_argument("--handshake-no-barrier", action="store_true",
                     help="握手期跳过 netLinkBarrier(400) 自伤帧率门（默认关，A/B 用）")
+    ap.add_argument("--attach-existing", action="store_true",
+                    help="E1-60FPS: 跳过 APP 重建，接管已运行 APP 保留 60fps EGL（需 --app-nav）")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -67,6 +69,8 @@ def main():
     args = [PY, os.path.join(TOOLS, "cloud2p_avd.py"),
             "--tag", a.tag, "--mode", "A", "--runsec", str(a.runsec), "--app-nav",
             "--app-sav", BOOT_SAV]
+    if a.attach_existing:
+        args += ["--attach-existing"]
     if not a.self_emulator:
         args += ["--no-emulator", "--serial", "emulator-5554"]
     else:

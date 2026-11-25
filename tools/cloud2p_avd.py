@@ -491,6 +491,10 @@ def main():
                          "默认 OFF（原有行为不变：只有 PC 有 nav_at）。启用后会推入预置存档、"
                          "用 PEEK logcat 作状态 oracle 驱动 KEYS 广播，并在 summary 落 "
                          "app_nav_* 判据。")
+    ap.add_argument("--attach-existing", action="store_true",
+                    help="E1-60FPS: 跳过 APP 重建(pm clear/push/am start/ROM)，接管已运行的 APP。"
+                         "用于保留 angle-vulkan 下首次 EGL 上下文的 60fps；重建会回退 SwiftShader 4fps。"
+                         "需配合 --app-nav 让 driver 自动导航现有 APP 到 waiting。默认 OFF。")
     ap.add_argument("--app-sav", default=APP_SAV_DEFAULT,
                     help="app 端预置存档（spawn 在俱乐部柜台 pos=10,4），仅 --app-nav 时推入。")
     ap.add_argument("--no-app-seat-walk", action="store_true",
@@ -602,7 +606,7 @@ def main():
         _wipe = os.environ.get("MGBAX_AVD_WIPE", "1") == "1"
         # K1 坐实：'angle_indirect' 是非法 GPU 选项 → emulator fallback SwiftShader 软渲染(~4fps)，
         # 拖垮 SIO 字率致 want≠got 漂移。改 host(硬件加速)；env MGBAX_AVD_GPU 可回退。
-        _gpu = os.environ.get("MGBAX_AVD_GPU", "host")
+        _gpu = os.environ.get("MGBAX_AVD_GPU", "angle-vulkan")
         _emu_args = [EMULATOR, "-avd", args.avd, "-no-window", "-gpu", _gpu]
         if _wipe:
             _emu_args += ["-wipe-data", "-no-snapshot", "-no-snapshot-save", "-no-snapshot-load"]
@@ -1909,111 +1913,117 @@ def main():
     # 上一轮的旧 ROM（曾实测 reload 到 bus4.gba）。pm clear 同时 force-stop app，
     # 故必须随后 am start 重新拉起（ROM/CLOUD 接收器是动态注册的），
     # 再校验 app 实际加载路径 = 本轮推送路径，之后才发 CLOUD（single broadcast 不可重发）。
-    shell(["pm", "clear", PKG])
-    log("pm clear %s（清 lastRom 偏好，避免 reload 旧 ROM）" % PKG)
-    if args.app_nav:
-        # 必须清 logcat：否则上一轮残留的 LINKUP_OK 里程碑会让 app_linkup_seen()
-        # 在导航第一步就误判握手已收尾（APPNAVFINAL taps=0 的根因）。
-        shell(["logcat", "-c"])
-        log("APP-NAV: 清空 logcat，避免上一轮 LINKUP_OK 里程碑污染本轮 oracle")
-        # APPHUNT: 全程全 tag logcat 单独落盘。主采样循环的 app_logcat.log 每次只取
-        # -t600，链接启动期的 GBoyCloud/GBoyLink/mGBA-App / "Link attached as P%d" /
-        # "SIOCNT patched at attach" 行会被高频 SIO poll/PEEK 冲掉，导致无法判断
-        # native SIO 驱动是否挂载（APPNAVDEFINITIVE 就是这样丢掉第一现场的）。
-        live_path = os.path.join(gdir, "app_link_startup.log")
-        try:
-            live_fh = open(live_path, "wb")
-            live_proc = subprocess.Popen(
-                [ADB_BIN, "-s", serial, "logcat", "-v", "threadtime"],
-                stdout=live_fh, stderr=subprocess.DEVNULL)
-            atexit.register(_stop_live_log, live_proc, live_fh)
-            log("APP-NAV: 全程 logcat → %s（所有 tag，保住 link 启动期日志）" % live_path)
-        except Exception as ex:                          # noqa: BLE001
-            log("APP-NAV: WARN 全程 logcat 启动失败: %s" % ex)
-    # pm clear 会连带撤销运行时权限；targetSdk 36 读 /sdcard/Download 依赖
-    # MANAGE_EXTERNAL_STORAGE，被撤掉后 File.isFile() 假 ⇒ ROM 加载失败。补回。
-    shell(["appops", "set", PKG, "MANAGE_EXTERNAL_STORAGE", "allow"])
-    log("推送 app ROM %s -> %s" % (args.app_rom, REMOTE_ROM))
-    # AVDWIPE-01 教训：-wipe-data 后 boot_completed=1 但 /sdcard 可能未就绪，push 偶发 rc=1。
-    # 重试 3 次(每次等 3s)，不破坏既有成功路径。
-    push = None
-    for _pr in range(3):
-        push = subprocess.run(ADB + ["push", args.app_rom, REMOTE_ROM], capture_output=True)
-        if push.returncode == 0:
-            break
-        log("推送 app ROM 第 %d 次失败 rc=%s，等 3s 重试" % (_pr + 1, push.returncode))
-        time.sleep(3)
-    if push is None or push.returncode != 0:
-        log("FATAL: 推送 app ROM 失败(3次) rc=%s" % (push.returncode if push else "?"))
-        return 6
-    if args.app_nav:
-        # 干净存档把玩家 spawn 在俱乐部柜台 pos=10,4（walk_battle.py / NAVSTATE §0.1）。
-        # 不推这轮存档的话，rom.sav 是上一轮打完的状态，菜单步数会漂、导航必失败。
-        if os.path.exists(args.app_sav):
-            r_sav = subprocess.run(ADB + ["push", args.app_sav, APP_REMOTE_SAV],
-                                   capture_output=True)
-            log("APP-NAV: 推送预置存档 %s -> %s rc=%s" %
-                (args.app_sav, APP_REMOTE_SAV, r_sav.returncode))
-        else:
-            log("APP-NAV: WARN 预置存档不存在 %s（沿用设备上的 rom.sav）" % args.app_sav)
-    # 【Y1 修复2】OBS 门必须在 am start/首帧之前写入：mgba_mobile.c 的 s_obsChain
-    # 惰性缓存首次 OBS-A 即固化，原晚写 ~41s ⇒ 整轮 0 行。此处 env/setprop() 尚未
-    # 定义，直接解析 args.env（最后一次出现生效），用 shell 就地写 + readback。
-    _obs_val = "0"
-    for _kv in (args.env or []):
-        if _kv.strip().startswith("MGBAX_OBS_CHAIN="):
-            _obs_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
-    shell(["setprop", "debug.mgbax.link.obs_chain", _obs_val])
-    _obs_rb = shell(["getprop", "debug.mgbax.link.obs_chain"])
-    log("setprop debug.mgbax.link.obs_chain=%s readback=%s（Y1 提前：pm clear 后 / am start 前）"
-        % (_obs_val, _obs_rb.stdout.strip()
-           if _obs_rb is not None and _obs_rb.returncode == 0 else "?"))
-    if _obs_val == "1" and (not _obs_rb or _obs_rb.stdout.strip() != "1"):
-        log("WARN: OBS 门早写 readback != 1，APP 首帧 s_obsChain 将固化 0（本轮 APP 打点不可判）")
-    # 【档1 NETGATE 门早写】s_ngLog 首帧懒加载固化，必须 am start 前 setprop。
-    # 与 PC 侧 --env MGBAX_NETGATE_LOG=1 同开关；默认 0 零回归。
-    _ng_val = "0"
-    for _kv in (args.env or []):
-        if _kv.strip().startswith("MGBAX_NETGATE_LOG="):
-            _ng_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
-    shell(["setprop", "debug.mgbax.link.netgate_log", _ng_val])
-    _ng_rb = shell(["getprop", "debug.mgbax.link.netgate_log"])
-    log("setprop debug.mgbax.link.netgate_log=%s readback=%s（档1：pm clear 后 / am start 前）"
-        % (_ng_val, _ng_rb.stdout.strip()
-           if _ng_rb is not None and _ng_rb.returncode == 0 else "?"))
-    if _ng_val == "1" and (not _ng_rb or _ng_rb.stdout.strip() != "1"):
-        log("WARN: NETGATE 门早写 readback != 1，APP 首帧 s_ngLog 将固化 0（本轮 APP 不产 [NGPEEK]）")
-    # 档1 party provenance：run 目录通过 env 传给 C 侧 gnpNgRunDir()（writer=ROM 真 party）
-    for _kv in (args.env or []):
-        if _kv.strip().startswith("MGBAX_GNP_RUN_DIR="):
-            _run_dir = _kv.strip().split("=", 1)[1]
-            shell(["setprop", "debug.mgbax.link.gnp_run_dir", _run_dir])
-            break
-    if not start_app():
-        return 6
-    if args.app_nav:
-        # E1 教训：start_app() 只在 pid 出现后等 2s，而 EmulatorActivity onResume 需 ~14s，
-        # 早发的 ROM 广播会被丢（两次 exit-6）。等真正就绪再发，保证导航前 ROM 已加载。
-        log("APP-NAV: 等 EmulatorActivity onResume 就绪 %ds 后再发 ROM 广播" % APP_READY_WAIT)
-        time.sleep(APP_READY_WAIT)
-        # AD5：覆盖层在 onResume 后才出现，等待期结束后 dismiss，再发 ROM 广播/导航。
-        dismiss_immersive()
-    else:
-        dismiss_immersive()
-    shell(["am", "broadcast", "-a", "io.mgba.android.action.ROM", "--es",
-           "path", REMOTE_ROM])
-    if not wait_rom_loaded():
+    # E1-60FPS: --attach-existing 保留已运行的 60fps APP EGL 上下文，跳过整个 APP 重建段
+    # （pm clear/push am start/ROM 广播会重建 EGL 上下文→回退 SwiftShader 4fps）
+    attach_existing = bool(getattr(args, "attach_existing", False))
+    if attach_existing:
+        log("ATTACH-EXISTING: 跳过 APP 重建，保留现有 60fps EGL 上下文")
+    if not attach_existing:
+        shell(["pm", "clear", PKG])
+        log("pm clear %s（清 lastRom 偏好，避免 reload 旧 ROM）" % PKG)
         if args.app_nav:
-            # ROM 广播是可重试的（只有 CLOUD 广播是 single-shot）；onResume 慢导致
-            # 首播被丢时补发一次再验，避免无谓整轮失败。
-            log("APP-NAV: 首播未确认加载，补发 ROM 广播后重验")
-            time.sleep(5)
-            shell(["am", "broadcast", "-a", "io.mgba.android.action.ROM", "--es",
-                   "path", REMOTE_ROM])
-            if not wait_rom_loaded():
-                return 6
-        else:
+            # 必须清 logcat：否则上一轮残留的 LINKUP_OK 里程碑会让 app_linkup_seen()
+            # 在导航第一步就误判握手已收尾（APPNAVFINAL taps=0 的根因）。
+            shell(["logcat", "-c"])
+            log("APP-NAV: 清空 logcat，避免上一轮 LINKUP_OK 里程碑污染本轮 oracle")
+            # APPHUNT: 全程全 tag logcat 单独落盘。主采样循环的 app_logcat.log 每次只取
+            # -t600，链接启动期的 GBoyCloud/GBoyLink/mGBA-App / "Link attached as P%d" /
+            # "SIOCNT patched at attach" 行会被高频 SIO poll/PEEK 冲掉，导致无法判断
+            # native SIO 驱动是否挂载（APPNAVDEFINITIVE 就是这样丢掉第一现场的）。
+            live_path = os.path.join(gdir, "app_link_startup.log")
+            try:
+                live_fh = open(live_path, "wb")
+                live_proc = subprocess.Popen(
+                    [ADB_BIN, "-s", serial, "logcat", "-v", "threadtime"],
+                    stdout=live_fh, stderr=subprocess.DEVNULL)
+                atexit.register(_stop_live_log, live_proc, live_fh)
+                log("APP-NAV: 全程 logcat → %s（所有 tag，保住 link 启动期日志）" % live_path)
+            except Exception as ex:                          # noqa: BLE001
+                log("APP-NAV: WARN 全程 logcat 启动失败: %s" % ex)
+        # pm clear 会连带撤销运行时权限；targetSdk 36 读 /sdcard/Download 依赖
+        # MANAGE_EXTERNAL_STORAGE，被撤掉后 File.isFile() 假 ⇒ ROM 加载失败。补回。
+        shell(["appops", "set", PKG, "MANAGE_EXTERNAL_STORAGE", "allow"])
+        log("推送 app ROM %s -> %s" % (args.app_rom, REMOTE_ROM))
+        # AVDWIPE-01 教训：-wipe-data 后 boot_completed=1 但 /sdcard 可能未就绪，push 偶发 rc=1。
+        # 重试 3 次(每次等 3s)，不破坏既有成功路径。
+        push = None
+        for _pr in range(3):
+            push = subprocess.run(ADB + ["push", args.app_rom, REMOTE_ROM], capture_output=True)
+            if push.returncode == 0:
+                break
+            log("推送 app ROM 第 %d 次失败 rc=%s，等 3s 重试" % (_pr + 1, push.returncode))
+            time.sleep(3)
+        if push is None or push.returncode != 0:
+            log("FATAL: 推送 app ROM 失败(3次) rc=%s" % (push.returncode if push else "?"))
             return 6
+        if args.app_nav:
+            # 干净存档把玩家 spawn 在俱乐部柜台 pos=10,4（walk_battle.py / NAVSTATE §0.1）。
+            # 不推这轮存档的话，rom.sav 是上一轮打完的状态，菜单步数会漂、导航必失败。
+            if os.path.exists(args.app_sav):
+                r_sav = subprocess.run(ADB + ["push", args.app_sav, APP_REMOTE_SAV],
+                                       capture_output=True)
+                log("APP-NAV: 推送预置存档 %s -> %s rc=%s" %
+                    (args.app_sav, APP_REMOTE_SAV, r_sav.returncode))
+            else:
+                log("APP-NAV: WARN 预置存档不存在 %s（沿用设备上的 rom.sav）" % args.app_sav)
+        # 【Y1 修复2】OBS 门必须在 am start/首帧之前写入：mgba_mobile.c 的 s_obsChain
+        # 惰性缓存首次 OBS-A 即固化，原晚写 ~41s ⇒ 整轮 0 行。此处 env/setprop() 尚未
+        # 定义，直接解析 args.env（最后一次出现生效），用 shell 就地写 + readback。
+        _obs_val = "0"
+        for _kv in (args.env or []):
+            if _kv.strip().startswith("MGBAX_OBS_CHAIN="):
+                _obs_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
+        shell(["setprop", "debug.mgbax.link.obs_chain", _obs_val])
+        _obs_rb = shell(["getprop", "debug.mgbax.link.obs_chain"])
+        log("setprop debug.mgbax.link.obs_chain=%s readback=%s（Y1 提前：pm clear 后 / am start 前）"
+            % (_obs_val, _obs_rb.stdout.strip()
+               if _obs_rb is not None and _obs_rb.returncode == 0 else "?"))
+        if _obs_val == "1" and (not _obs_rb or _obs_rb.stdout.strip() != "1"):
+            log("WARN: OBS 门早写 readback != 1，APP 首帧 s_obsChain 将固化 0（本轮 APP 打点不可判）")
+        # 【档1 NETGATE 门早写】s_ngLog 首帧懒加载固化，必须 am start 前 setprop。
+        # 与 PC 侧 --env MGBAX_NETGATE_LOG=1 同开关；默认 0 零回归。
+        _ng_val = "0"
+        for _kv in (args.env or []):
+            if _kv.strip().startswith("MGBAX_NETGATE_LOG="):
+                _ng_val = "1" if _kv.strip().split("=", 1)[1] == "1" else "0"
+        shell(["setprop", "debug.mgbax.link.netgate_log", _ng_val])
+        _ng_rb = shell(["getprop", "debug.mgbax.link.netgate_log"])
+        log("setprop debug.mgbax.link.netgate_log=%s readback=%s（档1：pm clear 后 / am start 前）"
+            % (_ng_val, _ng_rb.stdout.strip()
+               if _ng_rb is not None and _ng_rb.returncode == 0 else "?"))
+        if _ng_val == "1" and (not _ng_rb or _ng_rb.stdout.strip() != "1"):
+            log("WARN: NETGATE 门早写 readback != 1，APP 首帧 s_ngLog 将固化 0（本轮 APP 不产 [NGPEEK]）")
+        # 档1 party provenance：run 目录通过 env 传给 C 侧 gnpNgRunDir()（writer=ROM 真 party）
+        for _kv in (args.env or []):
+            if _kv.strip().startswith("MGBAX_GNP_RUN_DIR="):
+                _run_dir = _kv.strip().split("=", 1)[1]
+                shell(["setprop", "debug.mgbax.link.gnp_run_dir", _run_dir])
+                break
+        if not start_app():
+            return 6
+        if args.app_nav:
+            # E1 教训：start_app() 只在 pid 出现后等 2s，而 EmulatorActivity onResume 需 ~14s，
+            # 早发的 ROM 广播会被丢（两次 exit-6）。等真正就绪再发，保证导航前 ROM 已加载。
+            log("APP-NAV: 等 EmulatorActivity onResume 就绪 %ds 后再发 ROM 广播" % APP_READY_WAIT)
+            time.sleep(APP_READY_WAIT)
+            # AD5：覆盖层在 onResume 后才出现，等待期结束后 dismiss，再发 ROM 广播/导航。
+            dismiss_immersive()
+        else:
+            dismiss_immersive()
+        shell(["am", "broadcast", "-a", "io.mgba.android.action.ROM", "--es",
+               "path", REMOTE_ROM])
+        if not wait_rom_loaded():
+            if args.app_nav:
+                # ROM 广播是可重试的（只有 CLOUD 广播是 single-shot）；onResume 慢导致
+                # 首播被丢时补发一次再验，避免无谓整轮失败。
+                log("APP-NAV: 首播未确认加载，补发 ROM 广播后重验")
+                time.sleep(5)
+                shell(["am", "broadcast", "-a", "io.mgba.android.action.ROM", "--es",
+                       "path", REMOTE_ROM])
+                if not wait_rom_loaded():
+                    return 6
+            else:
+                return 6
     # 'emu loop reloading' 在 loadRom() 之前打印；CLOUD 接收器要求 core.isLoaded()，
     # 给 32MB ROM 的加载留一个短 grace，避免 CLOUD 广播撞上加载中被丢弃（single
     # broadcast 不可重发，丢了只能等 120s 房号超时）。
