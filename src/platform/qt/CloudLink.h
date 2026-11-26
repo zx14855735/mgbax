@@ -331,6 +331,7 @@ private:
 
 	GbCloud::Session* m_session = nullptr;
 	KcpChannel* m_channel = nullptr;
+	ILink* m_activeLink = nullptr;   /* B2: 当前活跃数据 link（各建链路径汇聚点赋值），供 party 带外帧用 */
 	ILink* m_tunnel = nullptr;
 	SioLinkHost* m_controller = nullptr;
 	/** Local loopback socket to the native SIO link driver (分开控制). */

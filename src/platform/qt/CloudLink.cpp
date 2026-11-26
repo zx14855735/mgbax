@@ -739,14 +739,14 @@ bool CloudLink::waitAndProcess(int ms) {
 			if (!dir.isEmpty()) {
 				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
 				if (partyTrigger.exists()) {
-					GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker seen dir='%1' m_channel=%2")
-					                  .arg(dir).arg(m_channel ? 1 : 0));
-					if (m_channel) {
+					GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker seen dir='%1' activeLink=%2")
+					                  .arg(dir).arg(m_activeLink ? 1 : 0));
+					if (m_activeLink) {
 						partyTrigger.remove();
 						GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker consumed, link ready, sending"));
 						sendPartyMailboxSync([this](const QByteArray& frame) {
-							if (m_channel) {
-								m_channel->send(frame);
+							if (m_activeLink) {
+								m_activeLink->send(frame);
 							}
 						});
 					}
@@ -1204,6 +1204,7 @@ KcpChannel* CloudLink::startRelayLink(const QString& host, int port, Room* room,
 			       + QStringLiteral("\n中继还没有回应（已等待 ") + QString::number(waited) + QStringLiteral(" 秒）\n")
 			       + QStringLiteral("稍后将自动改用服务器隧道（跨网可联）"));
 		}
+		m_activeLink = link;   /* B2: peerSeen 等待期就有活跃 link，party 可提前发 */
 		waitAndProcess(1000);
 	}
 	if (link) {
@@ -2660,6 +2661,7 @@ void CloudLink::sendRegister(ILink* link, Room* room) {
 }
 
 void CloudLink::handshake(ILink* link, Room* room, int waitMs) {
+	m_activeLink = link;   /* B2: 汇聚点，party 带外帧用当前活跃 link */
 	// The cloud handshake of the official client:
 	//   -> type 1, body: int playerCount, short 0, int baseStateCount
 	//   <- type 3, body: int playerCount
@@ -2709,6 +2711,7 @@ QByteArray CloudLink::expect(ILink* link, int type, int timeoutMs) {
 }
 
 void CloudLink::serve(ILink* link) {
+	m_activeLink = link;   /* B2: 汇聚点 */
 	qint64 lastKey = 0;
 	qint64 lastAdvertise = 0;
 	qint64 lastPartyPoll = 0;   /* U2: path A 也要轮询 party_mailbox 触发（原只在 serveOfficial/path B） */
