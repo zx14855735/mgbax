@@ -3706,18 +3706,20 @@ void mgbaMobileSetRhOff(bool enabled) {
 }
 
 static void mobileSeatAssist(struct MgbaMobile* emu) {
-	static int en = -1;
 	static unsigned tk;
-	if (en < 0) {
+	int en = 0;
 #ifdef __ANDROID__
-		char v[PROP_VALUE_MAX] = {0};
-		rhGetProp("mgbax.link.seat_assist", v);
-		en = (v[0] == '1') ? 1 : 0;
+	char v[PROP_VALUE_MAX] = {0};
+	/* X1: stock A14 AVD 的 SELinux 拒绝设置 mgbax.* 属性（A11 教训），driver 写的是
+	 * debug.mgbax.link.seat_assist。原读 mgbax.link.seat_assist 永远读不到 → seat task
+	 * 从未手建 → 游戏从不进 CB2_HandleStartBattle。改读 debug.* 与 driver 一致。
+	 * 动态读（去 static 缓存）：driver 在 APP 启动后 setprop，首次固化会漏掉。 */
+	rhGetProp("debug.mgbax.link.seat_assist", v);
+	en = (v[0] == '1') ? 1 : 0;
 #else
-		const char* v = getenv("MGBAX_SEAT_ASSIST");
-		en = (v && atoi(v) == 1) ? 1 : 0;
+	const char* v = getenv("MGBAX_SEAT_ASSIST");
+	en = (v && atoi(v) == 1) ? 1 : 0;
 #endif
-	}
 	if (mobileGrayAllOn()) {
 		en = 1;   /* 灰区全开：蕴含 seat-assist 手建 task（不触碰 RL4 FORCE_EXCHANGE 门） */
 	}
