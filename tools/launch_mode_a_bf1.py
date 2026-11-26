@@ -90,6 +90,9 @@ def main():
     ap.add_argument("--phase-fix", action="store_true",
                     help="PHASE-FIX(灰区/具名默认关): rem==1 仅 trainer card 收齐,继续为 party 块钉正 8888 帧首相位"
                          "(修 FRESHALL PC [RHALIGN] n=8 sc=0 rc=0)。只写 sc/rc 索引,不写 brs/rem/nr/party。")
+    ap.add_argument("--iw-delta", type=str, default=None,
+                    help="强制 PC IWRAM delta(十六进制,如 0x260)用于判据正确性验证: "
+                         "默认签名扫描得 0x244,但 brs/rem/cb 三字段 map 真实地址需 0x260。默认 None=不强制。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -143,6 +146,9 @@ def main():
     if a.phase_fix:
         # PHASE-FIX: rem==1 后继续钉 party 块帧首相位(灰区,只写 sc/rc 索引)。
         gates.append("MGBAX_PHASE_FIX=1")
+    if a.iw_delta:
+        # 强制 PC IWRAM delta 验证 brs/rem/cb 地址正确性(判据验证,零改码)。
+        gates.append("MGBAX_IWRAM_DELTA=" + a.iw_delta)
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
