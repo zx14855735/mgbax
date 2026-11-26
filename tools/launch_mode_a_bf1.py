@@ -85,6 +85,8 @@ def main():
                     help="C3 直写 gLinkOpen=1 灰区门(具名默认关): st=4 但 LinkMain2 没调 callback 装 2222 时，"
                          "恢复链路打开态让 callback 执行。只写 gLinkOpen，不写 rem/nr/brs/party/信任位。"
                          "非纯零注入、CROSSED 可信度存疑、不进裁决。")
+    ap.add_argument("--obs-chain", action="store_true",
+                    help="OBS 打点总门(只读): 让移动端打 [OBSCHAIN][GATES]/[ST] open= 直证门缓存与 gLinkOpen。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -132,6 +134,9 @@ def main():
         # C3 直写 gLinkOpen=1 灰区门: st=4 但 callback 没装 2222 时恢复链路打开态。
         # 只写 gLinkOpen,不写 rem/nr/brs/party/信任位;非纯零注入、不进裁决。
         gates.append("MGBAX_GRAY_LOBBY_OPEN=1")
+    if a.obs_chain:
+        # 只读 OBS 打点门: 让移动端 [OBSCHAIN][GATES]/[ST] open= 直证门缓存与 gLinkOpen。
+        gates.append("MGBAX_OBS_CHAIN=1")
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
