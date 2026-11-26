@@ -76,6 +76,9 @@ def main():
     ap.add_argument("--arena-linkup", action="store_true",
                     help="游戏自走菜单 warp 竞技场(map group25)+st4/pc2 即判 linkup,免 singles_confirmed"
                          "(游戏没经driver cur_b==4确认点)。配 --counter-approach 用。默认关。")
+    ap.add_argument("--seat-walk-always", action="store_true",
+                    help="POST-LINKUP 竞技场但 pos≠(10,5) 时仍强制走位踩 coord_event 座位格"
+                         "(默认因rcvpl漂移跳过走位致卡pos=5,8不进战斗)。配 --arena-linkup 用。默认关。")
     ap.add_argument("--seat-assist", action="store_true",
                     help="X1: 单开 SEAT_ASSIST(不 GRAY_ALL)手建 seat task→CB2_InitBattle，让 ROM NetParty 钩子"
                          "在 case1 rem 门前 Apply 真 party（不触 rem 红线）。默认关。")
@@ -137,6 +140,9 @@ def main():
     if a.arena_linkup:
         # 竞技场客观证据优先判 linkup（driver 自身读 os.environ）
         os.environ["MGBAX_NAV_ARENA_LINKUP"] = "1"
+    if a.seat_walk_always:
+        # 竞技场 pos≠座位格时仍强制走位踩格（driver 自身读 os.environ）
+        os.environ["MGBAX_NAV_SEAT_WALK_ALWAYS"] = "1"
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")
