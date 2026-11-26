@@ -183,7 +183,7 @@ private:
 	/** 分开控制：pipe the native SIO link bytes through the tunnel. */
 	void startSioBridge(ILink* link, bool asHost);
 	/** 分开控制 over the official KCP relay (netLink packets in type-6 frames). */
-	void startSioRelayBridge(KcpChannel* link, intptr_t local, GbCloud::Session* sig,
+	void startSioRelayBridge(ILink* link, intptr_t local, GbCloud::Session* sig,
 	                         const QString& token, Room* room, bool asHost);
 	/**
 	 * Official GBoy layout (officialMode): a hidden mirror console joins the

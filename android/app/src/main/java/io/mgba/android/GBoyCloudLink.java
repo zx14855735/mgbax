@@ -118,6 +118,18 @@ public final class GBoyCloudLink {
     private final Object sendLock = new Object();
     private volatile boolean closed;
     private volatile KcpChannel channel;
+    /** mode A 本地 TCP 桥（MGBAX_PATHA_TCP）：非 null 时 path A 分派走它而非 KCP relay。 */
+    private volatile TcpRawLink pathaTcp;
+    private String pathaTcpPeer;
+    private int pathaTcpListen = 15678;
+
+    /** EmulatorActivity 收到 PATHA_TCP 广播后调用：建本地 TCP Link，不置 officialMode。 */
+    void setPathATcp(String peer, int listenPort) {
+        this.pathaTcpPeer = peer;
+        this.pathaTcpListen = listenPort > 0 ? listenPort : 15678;
+        this.pathaTcp = new TcpRawLink(peer, this.pathaTcpListen);
+        android.util.Log.i(TAG, "[patha-tcp] setPathATcp peer=" + peer + " listen=" + this.pathaTcpListen);
+    }
     private volatile Link wsLink;
     /** 官方 WiFi 直连（{@link GBoySocketLink}）的持有者，close() 时要一起关。 */
     private volatile GBoySocketLink socketLink;
@@ -630,7 +642,10 @@ public final class GBoyCloudLink {
                 }
             }
         }
-        KcpChannel link = null;
+        Link link = pathaTcp;  // MGBAX_PATHA_TCP: 本地 TCP 桥优先，跳过 KCP relay
+        if (link != null) {
+            status("SIO 链路：本地 TCP 桥（mode A 真 SIO 字，~1ms）");
+        }
         // 中继只试一次。以前"握不上就解散房间重建拿新节点"的玩法有两个致命副作用：
         //   1) 房主重建房间会把已经在房间里等着的对方踢出去（服务器直接解散旧房间）；
         //   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
@@ -639,7 +654,7 @@ public final class GBoyCloudLink {
         // sForceTunnel（io.mgba.android.action.NO_RELAY 广播置位）时跳过公共 KCP
         // 中继，直接走服务器 WS 隧道：两端在同一个已验证可用的信令通道上互换
         // hello，必然碰面，不受中继回收池「只有一端能注册」的坑影响。
-        if (!sForceTunnel && room.nodeAddress != null && room.nodePort > 0) {
+        if (link == null && !sForceTunnel && room.nodeAddress != null && room.nodePort > 0) {
             final boolean creator = asHost;
             link = startRelayLink(room.nodeAddress, room.nodePort, room, uuid,
                     new NodeQuery() {
@@ -1678,7 +1693,7 @@ public final class GBoyCloudLink {
      * {@code ch=kcp dir=tx|rx frames=N rawbytes=M type=6(STATE)} 及
      * {@code dir=rx filter-drop n=N type=X}（非 6 帧被丢弃，X 是实际 type）。</p>
      */
-    private void startSioRelayBridge(final KcpChannel link, final Socket local,
+    private void startSioRelayBridge(final Link link, final Socket local,
                                      final GbCloud.Session sig, final String token,
                                      final Room room, final boolean asHost) {
         final GBoyFrames.Reader relayReader = new GBoyFrames.Reader();

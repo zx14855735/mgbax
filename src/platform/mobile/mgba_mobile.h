@@ -53,6 +53,24 @@
 #define MGBAX_PATHB_NATIVE_SIO_ENV  "MGBAX_PATHB_NATIVE_SIO"
 #define MGBAX_PATHB_NATIVE_SIO_PROP "debug.mgbax.link.pathb_native_sio"
 
+/* 【mode A 本地 TCP 桥门 — 三端同名同值，默认关】
+ * 只换传输层：mode A 的真 SIO 字(来自两端游戏真写 SIOMLT_SEND)改走本地 TCP 桥
+ * (~1ms)绕过 cloud relay RTT 墙(614-1792ms)，不造 party/信任位/物种/CROSSED、
+ * 不强写 rem/nr/brs/st。身份门仍由带外 STUN 出口分离承担(VPN)。
+ * 属用户 §3.6「换同步方式不改对手必真」授权方向。
+ *   PC / Qt : env   MGBAX_PATHA_TCP（=1 开启）
+ *   Android : prop  debug.mgbax.link.patha_tcp（=1 开启）
+ *   iOS     : mgbaMobileSetPathATcp / UserDefaults + env（同名同值）
+ * 门开≠成功；本地桥非物理真机；零注入 CROSSED（APP 0006 ↔ PC 00D5）仍是唯一裁决。 */
+#ifndef MGBAX_PATHA_TCP
+#define MGBAX_PATHA_TCP 0
+#endif
+#if MGBAX_PATHA_TCP != 0 && MGBAX_PATHA_TCP != 1
+#error "MGBAX_PATHA_TCP must be 0 or 1"
+#endif
+#define MGBAX_PATHA_TCP_ENV  "MGBAX_PATHA_TCP"
+#define MGBAX_PATHA_TCP_PROP "debug.mgbax.link.patha_tcp"
+
 /* 【X10 打点诊断方案乙 / MGBAX_OBS_CHAIN —— 三端同名同值，默认关】（唯一真源）
  * 观测链总门：只驱动模拟器侧新增的 [OBSCHAIN] 只读打点，不改任何游戏状态/写径；
  * 门关时零开销、行为逐字节不变。

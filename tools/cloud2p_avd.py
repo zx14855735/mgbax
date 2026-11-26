@@ -157,6 +157,12 @@ PATHB_SYNC_ROOM_TIMEOUT = 30     # 用户裁决：等 PC 建房 30s 上限，未
 PATHB_TCP_PORT = 15678           # PC MGBAX_TCP_LISTEN / App peer 端口
 PATHB_TCP_HOST = "10.0.2.2"      # emulator 内宿主机回环别名
 PATHB_TCP_BROADCAST = "io.mgba.android.action.TCP"
+# ---- mode A 本地 TCP 桥（--patha-tcp，仅 mode A，默认关可逆）------------------------
+# 同拓扑②：PC MGBAX_TCP_LISTEN=15679 监听，App 以 10.0.2.2:15679 连入。
+# 端口与 path B 错开(15679)避免同 tag 并发混淆；只换 game-data 传输，mode A 真 SIO 字。
+PATHA_TCP_PORT = 15679
+PATHA_TCP_HOST = "10.0.2.2"
+PATHA_TCP_BROADCAST = "io.mgba.android.action.PATHA_TCP"
 # CloudLink::status() 把「正在监听 TCP 端口 N 等待对端…」写进 [status] lobby 日志；
 # driver 轮询该行才算 PC 进入 accept 窗，避免猜时间（UDP 直连耗时实测 20s+）。
 PATHB_TCP_LISTEN_RE = re.compile(r"正在监听 TCP 端口\s*(\d+)")
@@ -516,6 +522,12 @@ def main():
                           "只换 game-data 传输，CLOUD 邮箱登录广播保留；身份缺口用 "
                          "vpn_split STUN 探测补 public_ip_* 摘要（真实测量，非造 email/"
                          "party/CROSSED）。纯控制流，默认 OFF，可逆；不预设直连成功。")
+    ap.add_argument("--patha-tcp", action="store_true",
+                    help="--mode A 时本地 TCP 桥判别实验（MGBAX_PATHA_TCP）：PC 设 "
+                         "MGBAX_TCP_LISTEN=15679 监听，APP 以 --es peer 10.0.2.2:15679 "
+                         "连入。mode A 真 SIO 字走本地桥(~1ms)绕开 relay RTT 墙；身份门仍由 "
+                         "带外 STUN(VPN)承担。不设 NO_DIRECT(保留候选身份源)。默认 OFF 可逆，"
+                         "不预设成功；本地桥非物理真机。")
     ap.add_argument("--pathb-pc-nav", action="store_true",
                     help="--mode B 时给 PC 可见核恢复导航输入：把 MGBAX_NAV_AT=1500/"
                          "MGBAX_NAV_DOWNS=2 还给 env，CloudLink 在三镜像核就绪后写 nav_at，"
@@ -2172,6 +2184,13 @@ def main():
     pathb_tcp_ctx = {"broadcast_sent": False, "sent_at": None,
                      "listen_ready": None, "listen_wait": None,
                      "listen_port_seen": None, "listen_source": "none"}
+    # mode A 本地 TCP 桥判别实验（仅 mode A，默认关可逆）
+    patha_tcp = bool(args.mode == "A" and args.patha_tcp)
+    patha_tcp_ctx = {"broadcast_sent": False, "sent_at": None}
+    if patha_tcp:
+        log("[PATHA-TCP] 启用 mode A 本地 TCP 桥：PC MGBAX_TCP_LISTEN=%d，"
+            "APP 待连 %s:%d（真 SIO 字 ~1ms，非物理真机）"
+            % (PATHA_TCP_PORT, PATHA_TCP_HOST, PATHA_TCP_PORT))
     if pathb_tcp:
         log("[PATHB-TCP] 启用 TCP 直连（拓扑②）：PC MGBAX_TCP_LISTEN=%d，"
             "APP 待连 %s:%d（无需 adb forward）"
@@ -2267,6 +2286,16 @@ def main():
         shell(["am", "broadcast", "-a", "io.mgba.android.action.CLOUD",
                "--es", "user", app_user, "--es", "pass", app_pass])
         log("app 已以 host 身份广播 CLOUD，等待 advertised relay ... for room <R>")
+        if patha_tcp:
+            # mode A 本地 TCP 桥：APP 作 client 连 PC listen（10.0.2.2:15679）。
+            # 不置 officialMode（PATHA_TCP 广播由 EmulatorActivity 单独处理）。
+            shell(["am", "broadcast", "-a", PATHA_TCP_BROADCAST,
+                   "--es", "peer", "%s:%d" % (PATHA_TCP_HOST, PATHA_TCP_PORT),
+                   "--ei", "listen", str(PATHA_TCP_PORT)])
+            patha_tcp_ctx["broadcast_sent"] = True
+            patha_tcp_ctx["sent_at"] = time.time()
+            log("[PATHA-TCP] APP 广播已发 peer=%s:%d（mode A 真 SIO 字，本地桥）"
+                % (PATHA_TCP_HOST, PATHA_TCP_PORT))
         t = time.time()
         while time.time() - t < 120:
             # 始终取最新一条 relay 广告（多房并发时由 extract_room 消歧）。
@@ -2623,6 +2652,13 @@ def main():
             log("[PATHB-TCP] PC 设 MGBAX_TCP_LISTEN=%d + MGBAX_NO_DIRECT=1"
                 "（关 UDP 打洞以强制 TCP env 候选，listenAndAccept 20s）"
                 % PATHB_TCP_PORT)
+    if patha_tcp:
+        # mode A 本地 TCP 桥：PC 作 TCP server；门在 KCP 分派前置 TCP(跳过 relay)。
+        # 不设 NO_DIRECT —— UDP 候选仍执行，[direct] 身份源保留（B9 推荐）。
+        env["MGBAX_PATHA_TCP"] = "1"
+        env["MGBAX_TCP_LISTEN"] = str(PATHA_TCP_PORT)
+        log("[PATHA-TCP] PC 设 MGBAX_PATHA_TCP=1 + MGBAX_TCP_LISTEN=%d（不设NO_DIRECT）"
+            % PATHA_TCP_PORT)
     log("PC env: FAST_MIN_OK=%s FAST_MIN_OK_SLAVE=%s FAST_SLAVE_ALIGN=%s LinkRearm=1"
         % (env.get("MGBAX_FAST_MIN_OK", "<unset>"),
            env.get("MGBAX_FAST_MIN_OK_SLAVE", "<unset>"),

@@ -444,6 +444,21 @@ public class EmulatorActivity extends AppCompatActivity {
             link.startTcp(peer == null ? "" : peer);
         }
     };
+    /** mode A 本地 TCP 桥（MGBAX_PATHA_TCP）：--es peer host:port 加入，空=监听。
+     *  不置 officialMode——两端各跑真游戏核，SIO 字节走本地 TCP(~1ms)绕开 relay RTT 墙。 */
+    private final BroadcastReceiver pathaTcpReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (core == null || !core.isLoaded()) {
+                Log.i(TAG, "patha-tcp broadcast ignored: no rom loaded");
+                return;
+            }
+            String peer = intent.getStringExtra("peer");
+            int listenPort = intent.getIntExtra("listen", 15678);
+            Log.i(TAG, "patha-tcp broadcast peer=" + peer + " listen=" + listenPort);
+            ensureCloud().setPathATcp(peer, listenPort);
+        }
+    };
     /** 联机倍速（官方 type 9）：{@code --ei value 1|-1|2|4}，-1 = 0.5x。 */
     private final BroadcastReceiver speedReceiver = new BroadcastReceiver() {
         @Override
@@ -1030,6 +1045,12 @@ public class EmulatorActivity extends AppCompatActivity {
             registerReceiver(tcpReceiver, tcpFilter, Context.RECEIVER_EXPORTED);
         } else {
             registerReceiver(tcpReceiver, tcpFilter);
+        }
+        IntentFilter pathaTcpFilter = new IntentFilter("io.mgba.android.action.PATHA_TCP");
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(pathaTcpReceiver, pathaTcpFilter, Context.RECEIVER_EXPORTED);
+        } else {
+            registerReceiver(pathaTcpReceiver, pathaTcpFilter);
         }
         IntentFilter speedFilter = new IntentFilter("io.mgba.android.action.SPEED");
         if (Build.VERSION.SDK_INT >= 33) {

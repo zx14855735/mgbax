@@ -963,7 +963,21 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 			}
 		}
 	}
-	KcpChannel* link = nullptr;
+	ILink* link = nullptr;
+	/* 【MGBAX_PATHA_TCP mode A 本地 TCP 桥判别门，默认关零回归】
+	 * 门开时链路走本地 TCP（~1ms）而非 KCP relay（RTT 墙），字节仍是两端游戏真写
+	 * SIOMLT_SEND 的 20B 包（type-6 帧壳不变，startSioRelayBridge 传输无关）。
+	 * 不设 NO_DIRECT，UDP 候选仍执行、[direct] 身份源保留。 */
+	const bool pathaTcp = qgetenv("MGBAX_PATHA_TCP").toInt() != 0;
+	if (pathaTcp) {
+		QString tcpErr;
+		link = tryEnvTcpLink(&tcpErr);
+		if (link) {
+			GbCloud::debugLog(QStringLiteral("[patha-tcp] KCP→本地TCP桥，type6 帧壳透传"));
+		} else {
+			GbCloud::debugLog(QStringLiteral("[patha-tcp] 连接失败：%1").arg(tcpErr));
+		}
+	}
 	// 中继只试一次。以前"握不上就解散房间重建拿新节点"的玩法有两个致命副作用：
 	//   1) 房主重建房间会把已经在房间里等着的对方踢出去（服务器直接解散旧房间）；
 	//   2) 房号变了，两端的隧道 hello 打的是各自的房号，配对因此永远对不上。
@@ -972,7 +986,7 @@ void CloudLink::connectRelay(GbCloud::Session* sig, const QString& token, const 
 	// MGBAX_NO_RELAY 时跳过公共 KCP 中继，直接走服务器 WS 隧道（见 hostCreateRoom
 	// 注释）：两端在同一个已验证可用的信令通道上互换 hello，必然碰面，不受中继
 	// 回收池端口「只有一端能注册」的坑影响。
-	if (QString::fromLocal8Bit(qgetenv("MGBAX_NO_RELAY")).isEmpty()
+	if (!link && QString::fromLocal8Bit(qgetenv("MGBAX_NO_RELAY")).isEmpty()
 	    && !room->nodeAddress.isEmpty() && room->nodePort > 0) {
 		link = startRelayLink(room->nodeAddress, room->nodePort, room, sig, token, uuid, asHost,
 		                      RELAY_WINDOW_MS);
@@ -1902,7 +1916,7 @@ void CloudLink::startSioBridge(ILink* link, bool asHost) {
  * <p>房主侧顺带保留节点广播（新加入方要靠它拿中继地址），并监听对方的隧道
  * hello——对方的中继不可达时会切到 WS 隧道，本端跟随切换。</p>
  */
-void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
+void CloudLink::startSioRelayBridge(ILink* link, intptr_t local,
                                     GbCloud::Session* sig, const QString& token,
                                     Room* room, bool asHost) {
 	GBoyFrames::Reader relayReader;
@@ -1912,7 +1926,9 @@ void CloudLink::startSioRelayBridge(KcpChannel* link, intptr_t local,
 	       + QStringLiteral("\n云端联机已连接，你是 ")
 	       + (asHost ? QStringLiteral("1P") : QStringLiteral("2P")));
 	emit connected(asHost);
-	logPathDiag(QStringLiteral("A"), QStringLiteral("kcp-relay"),
+	logPathDiag(QStringLiteral("A"),
+	            (qgetenv("MGBAX_PATHA_TCP").toInt() != 0 && dynamic_cast<TcpDirectLink*>(link))
+	                ? QStringLiteral("tcp-direct") : QStringLiteral("kcp-relay"),
 	            QStringLiteral("type6-wrapped-20B-netLink"));
 	maybeSendInitialState([link](const QByteArray& frame) { link->send(frame); }, asHost);
 	qint64 lastDrain = 0;
