@@ -24,6 +24,10 @@
  * C 侧 producer 逐字节 GBAView8 读 ROM 真 party 序列化，不含任何预测字。 */
 #define GNP_ENEMY_PARTY_EW   0x0202A9A0u   /* gEnemyParty：收到的对端 party（rx） */
 #define GNP_PLAYER_PARTY_EW  0x0202A7C0u   /* gPlayerParty：本端真 party（tx） */
+/* nm 实测（rom.map: 0x0202a7bd gPlayerPartyCount / 0x0202a7c0 gPlayerParty，NGLATEST-02）。
+ * 旧的 SIO_EW(SIO_PLAYER_PARTY)+delta 读到 0x0202A8A8（偏 +0xE8）→ cnt 恒非 1..6 →
+ * provider empty。本轮 ROM 符号平移不均匀，必须用具名绝对地址、禁再套 delta。 */
+#define GNP_PLAYER_PARTY_COUNT_EW 0x0202A7BDu
 #define GNP_PARTY_BLOB_BYTES 480u          /* 6 * sizeof(Pokemon) = GNP_BLOB_SIZE */
 
 /* 参考锚（解析自同一 nm/map；禁作身份锚/信任根/游戏态写目标）：

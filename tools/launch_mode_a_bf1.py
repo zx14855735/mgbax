@@ -66,6 +66,8 @@ def main():
     ap.add_argument("--pc-sav", default=None,
                     help="B2: PC 端 sav（透传 driver --sav）。必须用有 6 只 party 的母本（如 rom_pc_diff.sav "
                          "party0=0006），否则 sioBuildNetPartyMailbox 因 gPlayerPartyCount=0 返回空、TYPE_PARTY 不发。默认 None=driver 默认。")
+    ap.add_argument("--gnp-manifest-src", action="store_true",
+                    help="V1: 用 gnp_manifest nm 实测绝对地址读真 gPlayerParty（修 SIO_EW delta 偏 +0xE8 致 cnt=0）。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -123,6 +125,8 @@ def main():
         args += ["--no-app-seat-walk"]
     if a.pc_sav:
         args += ["--sav", a.pc_sav]
+    if a.gnp_manifest_src:
+        gates.append("MGBAX_GNP_PARTY_MANIFEST_SRC=1")
     if not a.self_emulator:
         args += ["--no-emulator", "--serial", "emulator-5554"]
     else:

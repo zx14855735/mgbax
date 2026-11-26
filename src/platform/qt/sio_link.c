@@ -8431,14 +8431,44 @@ void sioLinkDiagCore(struct mCore* core) {
  * 不写 gEnemyParty/gEnemyPartyCount/gBattleMons/brs/rem/nr/st/CLOSED/MULTIUSE_STATE。 */
 static uint32_t s_gnpTxSeq = GNP_SEQ_INIT;   /* seq 从 1 起（0 被 ROM 拒收） */
 
+/* V1: GNP party 数据源具名门（默认关，三端同名同值，零回归）。
+ * 开=用 gnp_manifest.h 的 nm 实测绝对地址读真 gPlayerParty，不再套 SIO_EW delta
+ * （EWRAM 符号平移不均匀，gTasks delta 对 party 偏 +0xE8，致 cnt 恒非 1..6、provider empty）。
+ * 只读真游戏内存、不造值、不写游戏态。 */
+static bool gnpPartyManifestSrcOn(void) {
+    static int v = -1;
+    if (v < 0) {
+#ifndef MGBAX_GNP_PARTY_MANIFEST_SRC
+#define MGBAX_GNP_PARTY_MANIFEST_SRC 0
+#endif
+#if MGBAX_GNP_PARTY_MANIFEST_SRC != 0
+        v = 1;
+#else
+        const char* e = getenv("MGBAX_GNP_PARTY_MANIFEST_SRC");
+        v = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+    }
+    return v != 0;
+}
+
 size_t sioBuildNetPartyMailbox(struct GBA* gba, uint8_t* out, size_t cap) {
     GnpMvpMailboxHost mb;
     uint32_t partyBase;
     uint32_t off;
     uint8_t cnt;
     if (!gba || !gba->cpu || !out || cap < GNP_MB_SIZE) { return 0u; }
-    partyBase = SIO_EW(SIO_PLAYER_PARTY);                       /* 只读 gPlayerParty[6] */
-    cnt = (uint8_t) GBAView8(gba->cpu, SIO_EW(SIO_PLAYER_PARTY_COUNT));
+    if (gnpPartyManifestSrcOn()) {
+        /* nm 实测绝对地址（NGLATEST-02 rom.map），禁再套 delta */
+        partyBase = GNP_PLAYER_PARTY_EW;
+        cnt = (uint8_t) GBAView8(gba->cpu, GNP_PLAYER_PARTY_COUNT_EW);
+    } else {
+        partyBase = SIO_EW(SIO_PLAYER_PARTY);
+        cnt = (uint8_t) GBAView8(gba->cpu, SIO_EW(SIO_PLAYER_PARTY_COUNT));
+    }
+    if (rhVerbose() || getenv("MGBAX_GNP_PARTY_MANIFEST_SRC")) {
+        SIO_LOG("[GNP-SRC] manifest=%d cnt=%u partyBase=%08X",
+                gnpPartyManifestSrcOn() ? 1 : 0, (unsigned) cnt, (unsigned) partyBase);
+    }
     if (cnt < 1u || cnt > GNP_MONS_MAX) { return 0u; }
 
     memset(&mb, 0, sizeof(mb));                                 /* 所有 pad 写 0；tag 先归零作 fail-closed 基线 */
