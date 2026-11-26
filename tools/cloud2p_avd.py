@@ -1219,7 +1219,12 @@ def main():
             "menu_taps": 0,            # force 模式下按下的 A 次数
             "last_progress_taps": 0,   # 最近一次菜单进度时的 menu_taps
             "t0": time.time(),         # force 窗口起点
+            "counter_step": 0,         # NAV_COUNTER_APPROACH: 柜台 NPC 走位阶段 0=未走 1=已UP 2=已A
         }
+        # P0 入口轴具名门：游戏停 CB2_Overworld + map2.3 + pos(10,4) 柜台，cur_b=0 时
+        # 原地 tap A 不触发柜台 NPC(10,2) 交互。此门先 UP 走一格到 (10,3) 面向 NPC 再按 A
+        # 触发 Welcome→SelectCableClubRoom 菜单（受控方向键+A，不写游戏态）。默认关可逆。
+        nav_counter_approach = os.environ.get("MGBAX_NAV_COUNTER_APPROACH", "0") == "1"
 
         def menu_lock_done(s):
             """菜单走完（单调闩锁）：必须以「模式菜单 A 确认单打」为前提（NX3 §3.2-a）。
@@ -1494,6 +1499,20 @@ def main():
                 end_reason = "stuck-title"
                 app_nav_log("FATAL: START 后仍在标题: %s" % peek_brief(s))
                 break
+            elif (nav_counter_approach and cur_b == 0
+                  and s.get("map") == (2, 3) and s["pos"] in ((10, 4), (10, 3))
+                  and 0x081A227Au <= s["cb2"] < 0x081A22A4u):  # CB2_Overworld 段(081A2284)
+                # P0 入口轴: 游戏在大厅柜台(10,4) Overworld、cur_b=0,原地 A 不触发 NPC 交互。
+                # 先 UP 走一格到 (10,3) 面向 DirectCornerAttendant(10,2)，再 A 触发服务菜单。
+                if menu_ctx["counter_step"] == 0:
+                    action, hold, settle = AK_UP, 4.0, 1.5
+                    why = "柜台走位 UP 到(10,3)面向NPC"
+                    menu_ctx["counter_step"] = 1
+                elif menu_ctx["counter_step"] == 1:
+                    action, why = AK_A, "柜台 NPC 交互 A→触发服务菜单"
+                    menu_ctx["counter_step"] = 2
+                else:
+                    action, why = AK_A, "柜台菜单等待/推进 A"
             elif cur_b == 3:
                 # 服务菜单 0=交换中心 / 1=大竞技场
                 if cur_a == 0:
