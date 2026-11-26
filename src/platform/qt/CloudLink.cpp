@@ -719,10 +719,32 @@ void CloudLink::cleanupChannel() {
 
 bool CloudLink::waitAndProcess(int ms) {
 	QDeadlineTimer deadline{qint64(ms)};
+	/* B2 解耦：party 带外帧不依赖 serve()/SIO 协商。waitAndProcess 在入房、握手、
+	 * 协商各等待阶段都被调用，m_channel（当前 relay link）此时已可用。在这里轮询
+	 * MGBAX_SCRIPT_DIR/party_mailbox，命中即用 provider 只读导出真 gPlayerParty 并
+	 * 以 TYPE_PARTY 帧发出——即使 APP 还卡在座位走位、SIO 未联机也能预交换。
+	 * serve() 里的同名轮询保留（幂等：marker 一次消费）。 */
+	static qint64 s_lastPartyPoll = 0;
 	while (!deadline.hasExpired()) {
 		QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
 		if (m_closed.load(std::memory_order_relaxed)) {
 			return false;
+		}
+		qint64 now = QDateTime::currentMSecsSinceEpoch();
+		if (now - s_lastPartyPoll >= 250) {
+			s_lastPartyPoll = now;
+			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
+			if (!dir.isEmpty()) {
+				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
+				if (partyTrigger.exists()) {
+					partyTrigger.remove();
+					sendPartyMailboxSync([this](const QByteArray& frame) {
+						if (m_channel) {
+							m_channel->send(frame);
+						}
+					});
+				}
+			}
 		}
 		QThread::msleep(5);
 	}
