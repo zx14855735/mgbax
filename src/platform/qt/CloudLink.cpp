@@ -2880,11 +2880,21 @@ bool CloudLink::sendStateSync(const std::function<void(const QByteArray&)>& send
  * 字节来自 provider（CoreController::readNetPartyMailbox 的只读 builder）；
  * 本函数不写游戏态、不造 party、不碰 brs/rem/nr/st。 */
 bool CloudLink::sendPartyMailboxSync(const std::function<void(const QByteArray&)>& send) {
-	if (!netPartyMailboxEnabled() || !m_partyMailbox) { return false; }
+	if (!netPartyMailboxEnabled() || !m_partyMailbox) {
+		GbCloud::debugLog(QStringLiteral("[GNP-DIAG] fail: gate=%1 provider=%2")
+		                  .arg(netPartyMailboxEnabled() ? 1 : 0).arg(m_partyMailbox ? 1 : 0));
+		return false;
+	}
 	QByteArray mb = m_partyMailbox();
-	if (mb.isEmpty()) { return false; }
+	if (mb.isEmpty()) {
+		GbCloud::debugLog(QStringLiteral("[GNP-DIAG] fail: provider returned empty mailbox"));
+		return false;
+	}
 	QByteArray frame = GBoyFrames::partyFrame(mb);
-	if (frame.isEmpty()) { return false; }
+	if (frame.isEmpty()) {
+		GbCloud::debugLog(QStringLiteral("[GNP-DIAG] fail: partyFrame empty"));
+		return false;
+	}
 	send(frame);                                    // 复用现有 relay，不新开 socket
 	GbCloud::debugLog(QStringLiteral("[GNP] TX TYPE_PARTY bytes=%1 (mailbox-only)").arg(mb.size()));
 	return true;

@@ -2552,6 +2552,10 @@ def main():
         pc_guard_ctx["joined"] = False
         log("PC pid=%d  MGBAX_AUTOLINK=%s:…%s（不同账号 + 不同 uuid）"
             % (pc.pid, acc_user, (":" + link_room) if link_room else "(建房)"))
+        # B2 诊断：确认 party 触发目录真传给 PC（marker 消费前置）
+        log("[GNP-DIAG] PC env MGBAX_SCRIPT_DIR=%s party门=%s" %
+            (env.get("MGBAX_SCRIPT_DIR", "<unset>"),
+             env.get("MGBAX_NET_PARTY_MAILBOX", "<unset>")))
         return link_room
 
     if pathb_sync:
