@@ -31,28 +31,41 @@ final class TcpRawLink implements GBoyCloudLink.Link {
     private InputStream in;
     private OutputStream out;
 
-    /** 客户端连 host:port；peer 为空则作为服务端监听 port。 */
+    /** 客户端连 host:port（重试窗口覆盖 PC listen 晚起）；peer 为空则作为服务端监听。 */
     TcpRawLink(String peer, int listenPort) {
         Thread t = new Thread(() -> {
-            try {
-                if (peer != null && !peer.isEmpty()) {
-                    int colon = peer.lastIndexOf(':');
-                    String host = peer.substring(0, colon);
-                    int port = Integer.parseInt(peer.substring(colon + 1).trim());
-                    socket = new Socket();
-                    socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
-                } else {
-                    listener = new ServerSocket(listenPort);
-                    socket = listener.accept();
+            // APP 广播可能早于 PC listen（实测 PC listen 晚 ~60s）：客户端循环重试直到窗口耗尽。
+            final long deadline = System.currentTimeMillis() + 120000;  // 120s 重试窗
+            int tries = 0;
+            while (!closed && System.currentTimeMillis() < deadline) {
+                try {
+                    if (peer != null && !peer.isEmpty()) {
+                        int colon = peer.lastIndexOf(':');
+                        String host = peer.substring(0, colon);
+                        int port = Integer.parseInt(peer.substring(colon + 1).trim());
+                        socket = new Socket();
+                        socket.connect(new InetSocketAddress(host, port), 2000);
+                    } else {
+                        listener = new ServerSocket(listenPort);
+                        socket = listener.accept();
+                    }
+                    in = socket.getInputStream();
+                    out = socket.getOutputStream();
+                    android.util.Log.i(TAG, "[patha-tcp] link up " + socket.getRemoteSocketAddress()
+                            + " tries=" + tries);
+                    return;
+                } catch (Exception e) {
+                    ++tries;
+                    error = String.valueOf(e.getMessage());
+                    if ((tries & 0xF) == 1) {
+                        android.util.Log.i(TAG, "[patha-tcp] retry " + tries + ": " + error);
+                    }
+                    try { if (socket != null) { socket.close(); socket = null; } } catch (Exception ignored) {}
+                    try { Thread.sleep(1500); } catch (InterruptedException ignored) { break; }
                 }
-                in = socket.getInputStream();
-                out = socket.getOutputStream();
-                android.util.Log.i(TAG, "[patha-tcp] link up " + socket.getRemoteSocketAddress());
-            } catch (Exception e) {
-                error = String.valueOf(e.getMessage());
-                closed = true;
-                android.util.Log.e(TAG, "[patha-tcp] connect failed: " + error);
             }
+            closed = true;
+            android.util.Log.e(TAG, "[patha-tcp] connect give up after " + tries + ": " + error);
         }, "patha-tcp-connect");
         t.setDaemon(true);
         t.start();

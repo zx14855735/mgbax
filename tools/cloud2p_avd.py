@@ -2286,16 +2286,8 @@ def main():
         shell(["am", "broadcast", "-a", "io.mgba.android.action.CLOUD",
                "--es", "user", app_user, "--es", "pass", app_pass])
         log("app 已以 host 身份广播 CLOUD，等待 advertised relay ... for room <R>")
-        if patha_tcp:
-            # mode A 本地 TCP 桥：APP 作 client 连 PC listen（10.0.2.2:15679）。
-            # 不置 officialMode（PATHA_TCP 广播由 EmulatorActivity 单独处理）。
-            shell(["am", "broadcast", "-a", PATHA_TCP_BROADCAST,
-                   "--es", "peer", "%s:%d" % (PATHA_TCP_HOST, PATHA_TCP_PORT),
-                   "--ei", "listen", str(PATHA_TCP_PORT)])
-            patha_tcp_ctx["broadcast_sent"] = True
-            patha_tcp_ctx["sent_at"] = time.time()
-            log("[PATHA-TCP] APP 广播已发 peer=%s:%d（mode A 真 SIO 字，本地桥）"
-                % (PATHA_TCP_HOST, PATHA_TCP_PORT))
+        # mode A PATHA_TCP 广播延后到 PC listen 就绪后发（见 launch_pc 之后的分支），
+        # 否则 APP 此时 core==null 广播被丢弃、且 PC listen 尚未启动（PATHA-TCP-01 实证）。
         t = time.time()
         while time.time() - t < 120:
             # 始终取最新一条 relay 广告（多房并发时由 extract_room 消歧）。
@@ -2751,6 +2743,16 @@ def main():
         room_pc = room
     else:
         room_pc = launch_pc(room)
+        if patha_tcp and not patha_tcp_ctx["broadcast_sent"]:
+            # mode A 本地 TCP 桥：此刻 APP 已加载 ROM(core!=null)、PC 即将 listen。
+            # TcpRawLink 有 120s 重试窗覆盖 PC listen 晚起，广播可在此发。
+            shell(["am", "broadcast", "-a", PATHA_TCP_BROADCAST,
+                   "--es", "peer", "%s:%d" % (PATHA_TCP_HOST, PATHA_TCP_PORT),
+                   "--ei", "listen", str(PATHA_TCP_PORT)])
+            patha_tcp_ctx["broadcast_sent"] = True
+            patha_tcp_ctx["sent_at"] = time.time()
+            log("[PATHA-TCP] APP 广播已发(PC起后) peer=%s:%d（mode A 真 SIO 字）"
+                % (PATHA_TCP_HOST, PATHA_TCP_PORT))
         if pathb_tcp:
             # 非同步路径 PC 入房晚 ~20s；同样轮询 listen 日志（不猜延时）。
             # 注意 app 此时已 host 建房，CLOUD+TCP 会话共存须烟测，默认建议合用
