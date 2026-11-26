@@ -740,11 +740,13 @@ bool CloudLink::waitAndProcess(int ms) {
 				GbCloud::debugLog(QStringLiteral("[GNP-POLL] dir='%1' m_channel=%2")
 				                  .arg(dir).arg(m_channel ? 1 : 0));
 			}
-			if (!dir.isEmpty()) {
+			/* 关键：入房前 waitAndProcess 也被调用，此时 m_channel=null。若此时 remove marker
+			 * 会丢掉触发（后续 m_channel 就绪时再无 marker）。仅在 link 就绪时才消费+发送。 */
+			if (!dir.isEmpty() && m_channel) {
 				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
 				if (partyTrigger.exists()) {
 					partyTrigger.remove();
-					GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker consumed, sending"));
+					GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker consumed, link ready, sending"));
 					sendPartyMailboxSync([this](const QByteArray& frame) {
 						if (m_channel) {
 							m_channel->send(frame);
