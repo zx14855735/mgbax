@@ -1653,6 +1653,16 @@ def main():
                         app_nav_log("blocked 但移动核无对话框证据：不按 A，仅加档")
                     bias_of[key] = min(WALK_BIAS_CAP, bias_of[key] + WALK_HOLD_ADJ)
                     zero_of[key] = 0
+                    # B2 绕障：单轴贪心撞墙（如 (5,8)→(10,5) 直走 right 被墙挡）时，
+                    # 改走垂直轴朝目标一格绕行，否则永远卡住、APP 到不了 (10,5) 进战斗。
+                    if axis == "x":
+                        detour = "up" if y > ty else ("down" if y < ty else None)
+                    else:
+                        detour = "left" if x > tx else ("right" if x < tx else None)
+                    if detour:
+                        app_press(mask_for[detour], _tier_hold(1, detour), WALK_STEP_SETTLE)
+                        app_nav_log("绕障：改按 %s 一格（x=%d y=%d，目标 %d,%d）"
+                                    % (detour, x, y, tx, ty))
                 continue
             zero_of[key] = 0
             if delta * sign > 0:
