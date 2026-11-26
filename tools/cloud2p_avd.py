@@ -1714,7 +1714,9 @@ def main():
                 and s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
             walk_needed = False
             app_nav_log("POST-LINKUP rcvpl>=1 且 map=%d.%d（竞技场），跳过座位走位" % tuple(s["map"]))
-        if walk_needed and not app_nav_state["seat_ok"]:
+        if walk_needed and not app_nav_state["seat_ok"] and not args.no_app_seat_walk:
+            # B2: --no-app-seat-walk 此前只在 :2732/:2914 生效，app_post_linkup 这条路径漏了，
+            # 致 GNP 带外通道 run 仍卡在座位走位 pos(5,8)。补门判断（默认关零回归）。
             app_seat_walk()
         # 4) 待机室→战斗：踩 (10,5) coord_event 自动触发（0 A）；其后只按证据驱动
         #    条件 A，替换原盲 A×80。pt∈{3,4} 时逐只确认（A×2/只，选够后 A 关闭）。
