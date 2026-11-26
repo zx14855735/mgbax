@@ -79,6 +79,9 @@ def main():
     ap.add_argument("--seat-walk-always", action="store_true",
                     help="POST-LINKUP 竞技场但 pos≠(10,5) 时仍强制走位踩 coord_event 座位格"
                          "(默认因rcvpl漂移跳过走位致卡pos=5,8不进战斗)。配 --arena-linkup 用。默认关。")
+    ap.add_argument("--patha-tcp", action="store_true",
+                    help="mode A 本地 TCP 桥判别实验: 真 SIO 字走本地 TCP(~1ms)绕开 relay RTT 墙。"
+                         "只换传输(判别工具非已论证解法),本地桥非真机,不预设成功。默认关。")
     ap.add_argument("--seat-assist", action="store_true",
                     help="X1: 单开 SEAT_ASSIST(不 GRAY_ALL)手建 seat task→CB2_InitBattle，让 ROM NetParty 钩子"
                          "在 case1 rem 门前 Apply 真 party（不触 rem 红线）。默认关。")
@@ -201,6 +204,8 @@ def main():
         args += ["--attach-existing"]
     if a.force_full_menu:
         args += ["--force-full-menu"]
+    if a.patha_tcp:
+        args += ["--patha-tcp"]
     if a.no_seat_walk:
         args += ["--no-app-seat-walk"]
     if a.pc_sav:
