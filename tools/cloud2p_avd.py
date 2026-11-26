@@ -1722,10 +1722,12 @@ def main():
         walk_needed = True
         s = _walk_peek()
         # NAVORACLE-01：兼容竞技场 group==25 任一房间（实测 25.25，老精确 25.24 恒假）
-        if (s and s.get("raw_ok") and s.get("rcvpl", 0) >= 1
+        # B2: rcvpl 在竞技场采样不稳定（0/1 漂移），依赖它会偶发触发走位并把 APP 卡死在
+        # (5,8)。竞技场 map=group25 本身就是"已到位"的客观证据（warp 已完成），无条件跳过。
+        if (s and s.get("raw_ok")
                 and s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
             walk_needed = False
-            app_nav_log("POST-LINKUP rcvpl>=1 且 map=%d.%d（竞技场），跳过座位走位" % tuple(s["map"]))
+            app_nav_log("POST-LINKUP map=%d.%d（竞技场，已到位），跳过座位走位" % tuple(s["map"]))
         if walk_needed and not app_nav_state["seat_ok"] and not args.no_app_seat_walk:
             # B2: --no-app-seat-walk 此前只在 :2732/:2914 生效，app_post_linkup 这条路径漏了，
             # 致 GNP 带外通道 run 仍卡在座位走位 pos(5,8)。补门判断（默认关零回归）。

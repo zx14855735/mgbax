@@ -2737,12 +2737,17 @@ void CloudLink::serve(ILink* link) {
 		if (now - lastPartyPoll >= 250) {
 			lastPartyPoll = now;
 			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
-			if (!dir.isEmpty()) {
-				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
-				if (partyTrigger.exists()) {
-					partyTrigger.remove();
-					sendPartyMailboxSync([link](const QByteArray& frame) { link->send(frame); });
-				}
+			QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
+			static bool s_servePollLogged = false;
+			if (!s_servePollLogged) {
+				s_servePollLogged = true;
+				GbCloud::debugLog(QStringLiteral("[GNP-SERVE] poll reached dir='%1' exists=%2")
+				                  .arg(dir).arg(partyTrigger.exists() ? 1 : 0));
+			}
+			if (!dir.isEmpty() && partyTrigger.exists()) {
+				partyTrigger.remove();
+				GbCloud::debugLog(QStringLiteral("[GNP-SERVE] marker consumed, sending"));
+				sendPartyMailboxSync([link](const QByteArray& frame) { link->send(frame); });
 			}
 		}
 		// Host side: keep the signalling socket alive and re-broadcast the
