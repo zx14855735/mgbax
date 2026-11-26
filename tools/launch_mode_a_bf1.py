@@ -63,6 +63,9 @@ def main():
     ap.add_argument("--no-seat-walk", action="store_true",
                     help="B2: 跳过 LINKUP 后 APP 座位走位（卡在 pos(5,8)）——GNP 带外 party 不依赖物理座位；"
                          "透传 driver --no-app-seat-walk。默认关。")
+    ap.add_argument("--pc-sav", default=None,
+                    help="B2: PC 端 sav（透传 driver --sav）。必须用有 6 只 party 的母本（如 rom_pc_diff.sav "
+                         "party0=0006），否则 sioBuildNetPartyMailbox 因 gPlayerPartyCount=0 返回空、TYPE_PARTY 不发。默认 None=driver 默认。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -118,6 +121,8 @@ def main():
         args += ["--attach-existing"]
     if a.no_seat_walk:
         args += ["--no-app-seat-walk"]
+    if a.pc_sav:
+        args += ["--sav", a.pc_sav]
     if not a.self_emulator:
         args += ["--no-emulator", "--serial", "emulator-5554"]
     else:
