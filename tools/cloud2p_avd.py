@@ -1499,16 +1499,16 @@ def main():
                 end_reason = "stuck-title"
                 app_nav_log("FATAL: START 后仍在标题: %s" % peek_brief(s))
                 break
-            elif (nav_counter_approach and cur_b == 0 and s["lkst"] >= 4
+            elif (nav_counter_approach and cur_b == 0 and s["lkst"] <= 2
                   and s.get("map") == (2, 3) and s["pos"] in ((10, 4), (10, 3))
                   and 0x081A227A <= s["cb2"] < 0x081A22A4):  # CB2_Overworld 段(081A2284)
-                # P0 入口轴: 游戏在大厅柜台 Overworld、st4/pc2、cur_b=0,原地 A 不触发 NPC 交互。
-                # st<4 握手期方向键被 link task 锁 —— 必须等 st>=4 再走位。
+                # P0 入口轴 v3: 菜单必须**先于**握手。灰区门把 st 推到4会冻结 overworld 走位，
+                # 所以只在 st<=2(游戏未被 linkup task 锁)时走位到柜台 NPC 触发菜单，
+                # 菜单确认单打设 var8004 后由游戏自己调 TryBattleLinkup 建链(自然握手)。
                 # UP 走一格到 (10,3) 面向 DirectCornerAttendant(10,2)，再 A 触发服务菜单。
-                # hold=7s: 实测低 fps 走一格需 ~16 帧（coord_step AL1 同款）。
                 if menu_ctx["counter_step"] == 0:
                     action, hold, settle = AK_UP, 7.0, 2.0
-                    why = "柜台走位 UP 到(10,3)面向NPC (st>=4)"
+                    why = "柜台走位 UP 到(10,3)面向NPC (st<=2菜单先于握手)"
                     menu_ctx["counter_step"] = 1
                 elif menu_ctx["counter_step"] == 1:
                     action, why = AK_A, "柜台 NPC 交互 A→触发服务菜单"
