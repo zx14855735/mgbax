@@ -691,6 +691,45 @@ def main():
         akeys(0)
         time.sleep(settle)
 
+    def p2_confirm_a(s):
+        """W2: linkup 确认相位机（仅 MGBAX_NAV_CONFIRM_A_ONCE 门开时调用）。
+        主机在 st4/pc2/map2.3 柜台等待态，需按游戏任务窗口发两次 A 边沿：
+          mm=3（自动滚动框）→ 不按；mm=0（框隐藏）→ 一记 A 边沿（hold≥1模拟帧）；
+        第二次 mm=0 后再发一次 → adv 应 0→1（gShouldAdvanceLinkState，P2 命中判据）。
+        不写任何游戏态/不造数据，纯 KEYS 广播受控输入。返回 True=adv 已翻1（可进P3）。"""
+        if not confirm_a_ctx["entered"]:
+            confirm_a_ctx["entered"] = True
+            confirm_a_ctx["start"] = time.time()
+            confirm_a_ctx["adv_before"] = s.get("adv", 0)
+            app_nav_log("P2 确认相位机启动: st=%d pc=%d map=%d.%d mm=%d adv=%s"
+                        % (s["lkst"], s["lkpc"], s["map"][0], s["map"][1],
+                           s["mm"], confirm_a_ctx["adv_before"]))
+        # 止损：st 掉回 / map 跳 25.25 / 超时
+        if s["lkst"] < 4 or (s["map"] and s["map"][0] == SEAT_MAP_GROUP):
+            app_nav_log("P2 fail-closed: st=%d map=%s（脚本重开链/错图），停 A"
+                        % (s["lkst"], str(s["map"])))
+            return "stop"
+        if time.time() - confirm_a_ctx["start"] > 180:
+            app_nav_log("P2 fail-closed: 180s 超时 adv 未翻，停 A")
+            return "stop"
+        # adv 已翻 → P2 成功
+        if s.get("adv", 0) == 1 and confirm_a_ctx["adv_before"] == 0:
+            app_nav_log("P2 命中: adv 0→1（linkup 确认成功），转 P3")
+            return "done"
+        mm = s["mm"]
+        if mm == 3:
+            # 自动滚动框：不按 A（框自行隐藏，按了也不会命中边沿）
+            if confirm_a_ctx["phase"] != 3:
+                confirm_a_ctx["phase"] = 3
+                app_nav_log("P2: mm=3 自动滚动框，等待隐藏（不按 A）")
+            return "wait"
+        # mm==0：框隐藏窗口，发一记 A 边沿（hold 1.5s≈≥1模拟帧，settle 1.2s）
+        app_nav_log("P2: mm=0 框隐藏，发 A 边沿（phase %d→%d）"
+                    % (confirm_a_ctx["phase"], confirm_a_ctx["phase"] + 1))
+        app_press(AK_A, 1.5, 1.2)
+        confirm_a_ctx["phase"] += 1
+        return "wait"
+
     def discover_walk_tid():
         """W13/NX12：内容签名动态发现走位核 TID（fail-closed，命中不唯一返回 None）。
 
@@ -743,11 +782,14 @@ def main():
         (st, lkm, lkst, lkid, lkpc, px, py, mg, mn, cb2, mm, pt,
          s01a, s01b, slot, cura, curb) = m.groups()
         rcv = re.search(r"rcvpl=(-?\d+)", raw)
+        # W2: adv=gShouldAdvanceLinkState（link.c:1150）是 P2 linkup 确认命中的决定性判据
+        adv = re.search(r"\badv=(-?\d+)\b", raw)
         return {
             "line": raw, "raw_ok": True, "tid": recs[-1]["tid"],
             "st": int(st, 16), "lkm": int(lkm), "lkst": int(lkst),
             "lkid": int(lkid), "lkpc": int(lkpc),
             "rcvpl": int(rcv.group(1)) if rcv else 0,
+            "adv": int(adv.group(1)) if adv else 0,
             "pos": (int(px), int(py)), "map": (int(mg), int(mn)),
             "cb2": int(cb2, 16), "mm": int(mm), "pt": int(pt),
             "cur": (int(cura), int(curb)), "slot": int(slot),
@@ -783,6 +825,9 @@ def main():
     walk_ctx = {"tid": None}   # W81 走位核 TID 经此传给 _walk_peek（不重复 discover）
     pc_guard_ctx = {"last": 0.0, "resyncs": 0, "log_off": 0, "joined": False}
     linkup_ctx = {"seen": False, "master": False}
+    # W2: P2 linkup 确认相位机（按游戏任务阶段发 A，不按 st/pc 盲 tap）
+    confirm_a_ctx = {"entered": False, "phase": 0, "last_a": 0.0, "start": 0.0,
+                     "adv_before": None, "log": []}
 
     def app_linkup_seen():
         """LINKUP_OK 是一次性事件（PC 侧 lstate=4/pc=2 也印证），PEEK 的
@@ -1296,6 +1341,20 @@ def main():
                 end_reason = "battle"
                 app_nav_log("BATTLE cb2 命中: %s" % peek_brief(s))
                 break
+            # W2: P2 确认相位机优先（覆盖 menu_lock_done/linkup_hit 的 st4 早退判断）
+            if (os.environ.get("MGBAX_NAV_CONFIRM_A_ONCE", "0") == "1"
+                    and s["lkpc"] >= 2 and s["lkst"] >= 4):
+                _p2 = p2_confirm_a(s)
+                if _p2 == "done":
+                    linkup_ctx["seen"] = True
+                    end_reason = "linkup"
+                    app_nav_log("P2 确认完成，结束导航转 POST-LINKUP/P3")
+                    break
+                elif _p2 == "stop":
+                    app_nav_log("P2 fail-closed，停线（不换 tag 重跑）")
+                    return False
+                time.sleep(APP_NAV_POLL)
+                continue
             if menu_lock_done(s):
                 if s["lkpc"] >= 2 and s["lkst"] >= 4:
                     # 不因合成 st4/pc2 抢跑：须已有竞技场 map / 战斗窗客观证据（NX3 §3.2-b）

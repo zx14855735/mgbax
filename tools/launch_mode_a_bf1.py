@@ -68,6 +68,8 @@ def main():
                          "party0=0006），否则 sioBuildNetPartyMailbox 因 gPlayerPartyCount=0 返回空、TYPE_PARTY 不发。默认 None=driver 默认。")
     ap.add_argument("--gnp-manifest-src", action="store_true",
                     help="V1: 用 gnp_manifest nm 实测绝对地址读真 gPlayerParty（修 SIO_EW delta 偏 +0xE8 致 cnt=0）。默认关。")
+    ap.add_argument("--confirm-a", action="store_true",
+                    help="W2: P2 linkup 确认相位机——按 mm 3→0 发两次 A 边沿（替代盲 tap），adv 0→1 判定。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -93,6 +95,9 @@ def main():
     if a.nav_accept_st4:
         # F1: driver 自身读 os.environ（非 PC env），需在 launch 进程环境里设
         os.environ["MGBAX_NAV_ACCEPT_ST4"] = "1"
+    if a.confirm_a:
+        # W2: P2 相位机门（driver 自身读 os.environ），覆盖 NAV_ACCEPT_ST4
+        os.environ["MGBAX_NAV_CONFIRM_A_ONCE"] = "1"
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:

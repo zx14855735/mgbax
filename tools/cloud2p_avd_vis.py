@@ -661,11 +661,13 @@ def main():
         (st, lkm, lkst, lkid, lkpc, px, py, mg, mn, cb2, mm, pt,
          s01a, s01b, slot, cura, curb) = m.groups()
         rcv = re.search(r"rcvpl=(-?\d+)", raw)
+        adv = re.search(r"\badv=(-?\d+)\b", raw)   # W2 对称：gShouldAdvanceLinkState
         return {
             "line": raw, "raw_ok": True, "tid": recs[-1]["tid"],
             "st": int(st, 16), "lkm": int(lkm), "lkst": int(lkst),
             "lkid": int(lkid), "lkpc": int(lkpc),
             "rcvpl": int(rcv.group(1)) if rcv else 0,
+            "adv": int(adv.group(1)) if adv else 0,
             "pos": (int(px), int(py)), "map": (int(mg), int(mn)),
             "cb2": int(cb2, 16), "mm": int(mm), "pt": int(pt),
             "cur": (int(cura), int(curb)), "slot": int(slot),
