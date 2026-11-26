@@ -1501,7 +1501,7 @@ def main():
                 break
             elif (nav_counter_approach and cur_b == 0
                   and s.get("map") == (2, 3) and s["pos"] in ((10, 4), (10, 3))
-                  and 0x081A227Au <= s["cb2"] < 0x081A22A4u):  # CB2_Overworld 段(081A2284)
+                  and 0x081A227A <= s["cb2"] < 0x081A22A4):  # CB2_Overworld 段(081A2284)
                 # P0 入口轴: 游戏在大厅柜台(10,4) Overworld、cur_b=0,原地 A 不触发 NPC 交互。
                 # 先 UP 走一格到 (10,3) 面向 DirectCornerAttendant(10,2)，再 A 触发服务菜单。
                 if menu_ctx["counter_step"] == 0:
