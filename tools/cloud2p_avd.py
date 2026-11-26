@@ -1360,6 +1360,16 @@ def main():
                     return False
                 time.sleep(APP_NAV_POLL)
                 continue
+            # 竞技场客观证据优先门：游戏自走菜单(无 driver cur_b==4 确认点)后 singles_confirmed
+            # 未置、menu_lock_done 恒假，但 map group==25(竞技场)+st4/pc2 是客观 linkup 证据。
+            # MENUFIRST-01 实测此状态已出现(warp 到 25.25、PC brs 0001)，不该被 menu_lock 挡住。
+            if (os.environ.get("MGBAX_NAV_ARENA_LINKUP", "0") == "1"
+                    and s["lkpc"] >= 2 and s["lkst"] >= 4
+                    and s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
+                end_reason = "linkup"
+                app_nav_log("ARENA_LINKUP 达成(竞技场group25+st4/pc2,免singles_confirmed): %s"
+                            % peek_brief(s))
+                break
             if menu_lock_done(s):
                 if s["lkpc"] >= 2 and s["lkst"] >= 4:
                     # 不因合成 st4/pc2 抢跑：须已有竞技场 map / 战斗窗客观证据（NX3 §3.2-b）

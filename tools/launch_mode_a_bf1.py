@@ -73,6 +73,9 @@ def main():
     ap.add_argument("--counter-approach", action="store_true",
                     help="P0 入口轴: 游戏停大厅柜台(10,4) Overworld、cur_b=0 时,先 UP 走一格到(10,3)"
                          "面向柜台NPC(10,2)再按A触发服务菜单→var8004。受控方向键+A,默认关。")
+    ap.add_argument("--arena-linkup", action="store_true",
+                    help="游戏自走菜单 warp 竞技场(map group25)+st4/pc2 即判 linkup,免 singles_confirmed"
+                         "(游戏没经driver cur_b==4确认点)。配 --counter-approach 用。默认关。")
     ap.add_argument("--seat-assist", action="store_true",
                     help="X1: 单开 SEAT_ASSIST(不 GRAY_ALL)手建 seat task→CB2_InitBattle，让 ROM NetParty 钩子"
                          "在 case1 rem 门前 Apply 真 party（不触 rem 红线）。默认关。")
@@ -131,6 +134,9 @@ def main():
     if a.counter_approach:
         # P0 入口轴门（driver 自身读 os.environ）：柜台 NPC 走位触发菜单
         os.environ["MGBAX_NAV_COUNTER_APPROACH"] = "1"
+    if a.arena_linkup:
+        # 竞技场客观证据优先判 linkup（driver 自身读 os.environ）
+        os.environ["MGBAX_NAV_ARENA_LINKUP"] = "1"
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")
