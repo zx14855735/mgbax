@@ -73,6 +73,9 @@ def main():
     ap.add_argument("--seat-assist", action="store_true",
                     help="X1: 单开 SEAT_ASSIST(不 GRAY_ALL)手建 seat task→CB2_InitBattle，让 ROM NetParty 钩子"
                          "在 case1 rem 门前 Apply 真 party（不触 rem 红线）。默认关。")
+    ap.add_argument("--vpn-relay-only", action="store_true",
+                    help="VPN分流组合: 设 MGBAX_NO_DIRECT=1 关UDP打洞(避VPN隧道659ms P2P+BYE),"
+                         "两端走国内relay(各自出口IP仍不同→身份门可过)。默认关。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -104,6 +107,10 @@ def main():
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")
+    if a.vpn_relay_only:
+        # VPN分流组合: 关UDP打洞→不走VPN隧道659ms P2P+BYE,两端走国内relay
+        # (出口IP仍不同: PC miwifi / AVD VPN隧道→身份门可过)。具名默认关。
+        gates.append("MGBAX_NO_DIRECT=1")
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
