@@ -1365,6 +1365,22 @@ static bool sioBlock2222On(void) {
 	}
 	return v != 0;
 }
+/* 【PHASE-FIX 2026-11-25】具名门默认关：rem==1 后继续钉帧首相位。
+ * 病机：0x03002AC1(rem)=gReceivedRemoteLinkPlayers 只表示 trainer card 块收齐，
+ * 不是 party 块(B1 §①9 三次 160B 循环)收齐。sioAlignCmdFrameHeader 里
+ * `if (rem==1) return`（原注释"块已收齐"误注）在 party 块阶段 premature，
+ * 使 8888 帧首落地 sc=0/rc=0 不被钉正（FRESHALL-01 PC [RHALIGN] n=8 实证），
+ * party 块重组失败、brs 停 01。门开时忽略该 early return，让 sc/rc 继续被钉正。
+ * 只写 sendCmdIndex/recvCmdIndex 两个相位索引，不写 brs/rem/nr/party/信任位；
+ * 只搬运真帧首字相位，非伪造。与移动端 debug.mgbax.link.phase_fix 逐字对称。 */
+static bool sioPhaseFixOn(void) {
+	static int v = -1;
+	if (v < 0) {
+		const char* e = getenv("MGBAX_PHASE_FIX");
+		v = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关，显式 =1 打开 */
+	}
+	return v != 0;
+}
 /* 【path B / LocalBus 握手字保真】独立布尔门：默认开，MGBAX_BUS_HS_PRESERVE=0 秒回退。
  * PB4/PB5 实证：2 核 LocalBus 握手期，主机 sioDoneEvent 在 busGot<=0（从机未
  * push/广播 abort）重试 3 次后仍用全 FFFF 空槽收尾 → DoHandshake 第一槽 break、
@@ -4033,8 +4049,8 @@ static void sioAlignCmdFrameHeader(struct SioLink* sio, uint32_t remote) {
 		sio->sioCmdFrameAligned = false;
 		return;
 	}
-	if (GBAView8(cpu, SIO_IW(SIO_GLOBAL_REMOTE_ID)) == 1u) {
-		return;   /* 块已收齐，不必再校正 */
+	if (GBAView8(cpu, SIO_IW(SIO_GLOBAL_REMOTE_ID)) == 1u && !sioPhaseFixOn()) {
+		return;   /* rem==1 仅 trainer card 收齐；PHASE-FIX 门开时继续为 party 块钉正相位 */
 	}
 	/* 【ROOTHUNT 迭代 10】one-shot 只针对**同一个** opcode：0x2222 与
 	 * 0xBBBB 是两个独立的命令帧，各自需要一次相位对齐。旧实现 0x2222

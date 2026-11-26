@@ -2496,6 +2496,9 @@ def main():
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",
             "1" if env.get("MGBAX_2222_STICKY", "1") != "0" else "0")
+    # PHASE-FIX：rem==1 后继续钉 party 块帧首相位（具名默认关，与 C sioPhaseFixOn 对称）。
+    setprop("debug.mgbax.link.phase_fix",
+            "1" if env.get("MGBAX_PHASE_FIX", "0") == "1" else "0")
     # S1/B2: GNP 带外 party 邮槽门（宿端写口 mgba_mobile.c mobileGnpNetPartyOn，
     # 属性名逐字对齐 MGBAX_NET_PARTY_MAILBOX_PROP）。默认关；开=TYPE_PARTY 帧可写
     # IWRAM 邮槽→ROM PollRx/Apply 直装 gEnemyParty（writer=ROM，不造字）。

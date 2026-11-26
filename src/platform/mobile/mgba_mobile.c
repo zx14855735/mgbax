@@ -3564,6 +3564,7 @@ static bool mobileHsHoldOn(void);          /* 路线A 握手保持门，定义�
 static bool mobileMasterEchoOn(void);      /* BF1 主机字回环门，定义见下方（首次调用在 completeMultiTransfer） */
 static bool mobileHandshakeNoBarrierOn(void); /* 握手期跳过 400ms tick 栅栏门，定义见下方 */
 static bool mobileLabelAnyOn(void);           /* 宽松 label 取字门（对齐 PC MGBAX_LABEL_ANY），定义见下方 */
+static bool mobilePhaseFixOn(void);           /* PHASE-FIX: rem==1 后继续钉 party 块帧首相位，定义见下方 */
 static bool b7Verbose(void);                /* ROOTHUNT2 B7 打点门，定义见下方 */
 static void mobileBattleKeepAlive(struct MgbaMobile* emu);  /* 定义见下方 */
 static bool mobileInBattleStartup(struct MgbaMobile* emu);  /* 定义见下方 */
@@ -4344,8 +4345,8 @@ static void mobileAlignCmdFrameHeader(struct MgbaMobile* emu, uint32_t remote) {
 		emu->sioLastAlignHeader = 0;
 		return;
 	}
-	if (GBAView8(cpu, NAV_IW(MOBILE_GLOBAL_REMOTE_ID)) == 1u) {
-		return;
+	if (GBAView8(cpu, NAV_IW(MOBILE_GLOBAL_REMOTE_ID)) == 1u && !mobilePhaseFixOn()) {
+		return;   /* rem==1 仅 trainer card 收齐；PHASE-FIX 门开时继续为 party 块钉正相位 */
 	}
 	/* 【ROOTHUNT2 P0/X40 方案A1】BBBB 纳入每帧重钉，消除 one-shot 粘滞。 */
 	if (emu->sioCmdFrameAligned && emu->sioLastAlignHeader == w
@@ -5550,6 +5551,24 @@ static bool mobileBlock2222On(void) {
 #endif
 	}
 	return s_block2222 != 0;
+}
+/* 【PHASE-FIX 2026-11-25】具名门默认关，与 PC sioPhaseFixOn 逐字对称。
+ * rem==1 仅表示 trainer card 块收齐，不是 party 块(B1 §①9)收齐；门开时忽略
+ * mobileAlignCmdFrameHeader 的 `if (rem==1) return`，让 8888 帧首相位继续被钉正。
+ * 只写 sendCmdIndex/recvCmdIndex，不写 brs/rem/nr/party/信任位；只搬运真相位。 */
+static int s_phaseFix = -1;
+static bool mobilePhaseFixOn(void) {
+	if (s_phaseFix < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp("debug.mgbax.link.phase_fix", p);
+		s_phaseFix = (p[0] == '1') ? 1 : 0;   /* 默认关 */
+#else
+		const char* e = getenv("MGBAX_PHASE_FIX");
+		s_phaseFix = (e && atoi(e) == 1) ? 1 : 0;   /* 默认关 */
+#endif
+	}
+	return s_phaseFix != 0;
 }
 void mgbaMobileSetBlock2222(bool enabled) { s_block2222 = enabled ? 1 : 0; }
 /* 【path B / LocalBus 握手字保真】独立布尔门：默认开，=0 秒回退。与 PC

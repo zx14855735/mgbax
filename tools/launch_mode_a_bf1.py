@@ -87,6 +87,9 @@ def main():
                          "非纯零注入、CROSSED 可信度存疑、不进裁决。")
     ap.add_argument("--obs-chain", action="store_true",
                     help="OBS 打点总门(只读): 让移动端打 [OBSCHAIN][GATES]/[ST] open= 直证门缓存与 gLinkOpen。默认关。")
+    ap.add_argument("--phase-fix", action="store_true",
+                    help="PHASE-FIX(灰区/具名默认关): rem==1 仅 trainer card 收齐,继续为 party 块钉正 8888 帧首相位"
+                         "(修 FRESHALL PC [RHALIGN] n=8 sc=0 rc=0)。只写 sc/rc 索引,不写 brs/rem/nr/party。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -137,6 +140,9 @@ def main():
     if a.obs_chain:
         # 只读 OBS 打点门: 让移动端 [OBSCHAIN][GATES]/[ST] open= 直证门缓存与 gLinkOpen。
         gates.append("MGBAX_OBS_CHAIN=1")
+    if a.phase_fix:
+        # PHASE-FIX: rem==1 后继续钉 party 块帧首相位(灰区,只写 sc/rc 索引)。
+        gates.append("MGBAX_PHASE_FIX=1")
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
