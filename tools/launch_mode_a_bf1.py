@@ -81,6 +81,10 @@ def main():
                          "FORCEHS/REARM 关成 0，致 APP master 的 8FFF 不回环→卡 st=2(PC slave 已 st4)。"
                          "开此 flag 恢复四门为 1——只保真真握手字、不写 btlType/case1/brs/party/信任位。"
                          "非纯零注入、不进 CROSSED 裁决。")
+    ap.add_argument("--gray-lobby", action="store_true",
+                    help="C3 直写 gLinkOpen=1 灰区门(具名默认关): st=4 但 LinkMain2 没调 callback 装 2222 时，"
+                         "恢复链路打开态让 callback 执行。只写 gLinkOpen，不写 rem/nr/brs/party/信任位。"
+                         "非纯零注入、CROSSED 可信度存疑、不进裁决。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -124,6 +128,10 @@ def main():
                   "MGBAX_LINK_FORCEHS", "MGBAX_LINK_REARM"):
             gates = [g for g in gates if not g.startswith(k + "=")]
             gates.append(k + "=1")
+    if a.gray_lobby:
+        # C3 直写 gLinkOpen=1 灰区门: st=4 但 callback 没装 2222 时恢复链路打开态。
+        # 只写 gLinkOpen,不写 rem/nr/brs/party/信任位;非纯零注入、不进裁决。
+        gates.append("MGBAX_GRAY_LOBBY_OPEN=1")
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
