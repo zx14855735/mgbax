@@ -90,6 +90,10 @@ def main():
     ap.add_argument("--phase-fix", action="store_true",
                     help="PHASE-FIX(灰区/具名默认关): rem==1 仅 trainer card 收齐,继续为 party 块钉正 8888 帧首相位"
                          "(修 FRESHALL PC [RHALIGN] n=8 sc=0 rc=0)。只写 sc/rc 索引,不写 brs/rem/nr/party。")
+    ap.add_argument("--force-full-menu", action="store_true",
+                    help="强制走完 cable club 完整菜单(服务菜单→模式菜单→确认单打→游戏自然设"
+                         "var8004)，专治'nav-accept-st4 早退跳过菜单致 var8004=0/btlType=0/不进战斗'。"
+                         "透传 driver --force-full-menu，480s 窗口；默认关。")
     ap.add_argument("--iw-delta", type=str, default=None,
                     help="强制 PC IWRAM delta(十六进制,如 0x260)用于判据正确性验证: "
                          "默认签名扫描得 0x244,但 brs/rem/cb 三字段 map 真实地址需 0x260。默认 None=不强制。")
@@ -177,6 +181,8 @@ def main():
             "--app-sav", BOOT_SAV]
     if a.attach_existing:
         args += ["--attach-existing"]
+    if a.force_full_menu:
+        args += ["--force-full-menu"]
     if a.no_seat_walk:
         args += ["--no-app-seat-walk"]
     if a.pc_sav:
