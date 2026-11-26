@@ -70,6 +70,9 @@ def main():
                     help="V1: 用 gnp_manifest nm 实测绝对地址读真 gPlayerParty（修 SIO_EW delta 偏 +0xE8 致 cnt=0）。默认关。")
     ap.add_argument("--confirm-a", action="store_true",
                     help="W2: P2 linkup 确认相位机——按 mm 3→0 发两次 A 边沿（替代盲 tap），adv 0→1 判定。默认关。")
+    ap.add_argument("--counter-approach", action="store_true",
+                    help="P0 入口轴: 游戏停大厅柜台(10,4) Overworld、cur_b=0 时,先 UP 走一格到(10,3)"
+                         "面向柜台NPC(10,2)再按A触发服务菜单→var8004。受控方向键+A,默认关。")
     ap.add_argument("--seat-assist", action="store_true",
                     help="X1: 单开 SEAT_ASSIST(不 GRAY_ALL)手建 seat task→CB2_InitBattle，让 ROM NetParty 钩子"
                          "在 case1 rem 门前 Apply 真 party（不触 rem 红线）。默认关。")
@@ -125,6 +128,9 @@ def main():
     if a.confirm_a:
         # W2: P2 相位机门（driver 自身读 os.environ），覆盖 NAV_ACCEPT_ST4
         os.environ["MGBAX_NAV_CONFIRM_A_ONCE"] = "1"
+    if a.counter_approach:
+        # P0 入口轴门（driver 自身读 os.environ）：柜台 NPC 走位触发菜单
+        os.environ["MGBAX_NAV_COUNTER_APPROACH"] = "1"
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")
