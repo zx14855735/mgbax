@@ -1307,15 +1307,13 @@ def main():
                         break
                     app_nav_log("忽略LINKUP早退(st4/pc2真但地图/战斗窗未到): %s" % peek_brief(s))
             elif (s["lkpc"] >= 2 and s["lkst"] >= 4
-                  and os.environ.get("MGBAX_NAV_ACCEPT_ST4", "0") == "1"
-                  and s.get("map") and s["map"][0] == SEAT_MAP_GROUP):
-                # F1-60FPS 具名默认关门：st4/pc2 + 竞技场 map（group==25）才停 tap。
-                # 只 st4 就停会让菜单没走完（map 仍 2.3）、APP 退回 st1；必须等 tap
-                # 把游戏推进到竞技场（客观 map 证据）再停，APP 才保持 st4 进战斗。
+                  and os.environ.get("MGBAX_NAV_ACCEPT_ST4", "0") == "1"):
+                # B2 实测修正：gen8 cable club 联机就是在柜台 (10,4) 等待对方加入后直接进战斗，
+                # **不需要 warp 到竞技场**。map=2.3 st=4 是正确的联机等待态；此时继续 tap A
+                # 反而把 st4 踢回 st2（13:52 实测）。故 st4/pc2 真即停 tap，不再要求 map=25.x。
                 linkup_ctx["seen"] = True
                 end_reason = "linkup"
-                app_nav_log("NAV_ACCEPT_ST4: st=4 pc=2 map=%d.%d（竞技场），停 tap 让块交换自跑"
-                            % tuple(s["map"]))
+                app_nav_log("NAV_ACCEPT_ST4: st=4 pc=2（cable club 等待态），停 tap 等对方加入/进战斗")
                 break
             elif s["lkpc"] >= 2 and s["lkst"] >= 4:
                 app_nav_log("忽略LINKUP早退(st4/pc2真但菜单未走完): cb2=%08X seq=%s"
