@@ -734,10 +734,17 @@ bool CloudLink::waitAndProcess(int ms) {
 		if (now - s_lastPartyPoll >= 250) {
 			s_lastPartyPoll = now;
 			const QString dir = qEnvironmentVariable("MGBAX_SCRIPT_DIR");
+			static bool s_pollLogged = false;
+			if (!s_pollLogged) {
+				s_pollLogged = true;
+				GbCloud::debugLog(QStringLiteral("[GNP-POLL] dir='%1' m_channel=%2")
+				                  .arg(dir).arg(m_channel ? 1 : 0));
+			}
 			if (!dir.isEmpty()) {
 				QFile partyTrigger(dir + QStringLiteral("/party_mailbox"));
 				if (partyTrigger.exists()) {
 					partyTrigger.remove();
+					GbCloud::debugLog(QStringLiteral("[GNP-POLL] marker consumed, sending"));
 					sendPartyMailboxSync([this](const QByteArray& frame) {
 						if (m_channel) {
 							m_channel->send(frame);
