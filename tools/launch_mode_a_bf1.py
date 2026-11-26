@@ -76,6 +76,11 @@ def main():
     ap.add_argument("--vpn-relay-only", action="store_true",
                     help="VPN分流组合: 设 MGBAX_NO_DIRECT=1 关UDP打洞(避VPN隧道659ms P2P+BYE),"
                          "两端走国内relay(各自出口IP仍不同→身份门可过)。默认关。")
+    ap.add_argument("--hs-assist", action="store_true",
+                    help="握手保真门组合(灰区/具名默认关): GATES 把源码默认开的 HSBYPASS/HOLD/"
+                         "FORCEHS/REARM 关成 0，致 APP master 的 8FFF 不回环→卡 st=2(PC slave 已 st4)。"
+                         "开此 flag 恢复四门为 1——只保真真握手字、不写 btlType/case1/brs/party/信任位。"
+                         "非纯零注入、不进 CROSSED 裁决。")
     ap.add_argument("--runsec", type=int, default=600)
     a = ap.parse_args()
 
@@ -111,6 +116,14 @@ def main():
         # VPN分流组合: 关UDP打洞→不走VPN隧道659ms P2P+BYE,两端走国内relay
         # (出口IP仍不同: PC miwifi / AVD VPN隧道→身份门可过)。具名默认关。
         gates.append("MGBAX_NO_DIRECT=1")
+    if a.hs_assist:
+        # 握手保真门恢复源码默认(灰区/非纯零注入,不进裁决):
+        # GATES 把 HSBYPASS/HOLD/FORCEHS/REARM 关成 0,致 APP master 8FFF 不回环卡 st=2。
+        # 这里逐项覆盖为 1——只保真真握手字,不写任何游戏态/信任位/party/ brs。
+        for k in ("MGBAX_LINK_HSBYPASS", "MGBAX_HS_HOLD",
+                  "MGBAX_LINK_FORCEHS", "MGBAX_LINK_REARM"):
+            gates = [g for g in gates if not g.startswith(k + "=")]
+            gates.append(k + "=1")
     if a.b7_verbose:
         gates.append("MGBAX_B7_VERBOSE=1")
     if a.label_any:
