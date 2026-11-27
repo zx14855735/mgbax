@@ -1528,15 +1528,11 @@ def main():
                 # 所以只在 st<=2(游戏未被 linkup task 锁)时走位到柜台 NPC 触发菜单，
                 # 菜单确认单打设 var8004 后由游戏自己调 TryBattleLinkup 建链(自然握手)。
                 # UP 走一格到 (10,3) 面向 DirectCornerAttendant(10,2)，再 A 触发服务菜单。
-                if menu_ctx["counter_step"] == 0:
-                    action, hold, settle = AK_UP, 7.0, 2.0
-                    why = "柜台走位 UP 到(10,3)面向NPC (st<=2菜单先于握手)"
-                    menu_ctx["counter_step"] = 1
-                elif menu_ctx["counter_step"] == 1:
-                    action, why = AK_A, "柜台 NPC 交互 A→触发服务菜单"
-                    menu_ctx["counter_step"] = 2
-                else:
-                    action, why = AK_A, "柜台菜单等待/推进 A"
+                # v4: UP 走位实测 pos 恒 (10,4) 不动——柜台挡住/玩家本就站在交互格。
+                # 改为原地连续发 A 边沿（gen8 柜台站在下方朝上按 A 即交互 NPC）。
+                # 若 pos 真从 (10,4)→(10,3) 则也继续按 A（两种站位都能交互）。
+                action, why = AK_A, "柜台原地 A 交互(取消无效UP走位) st<=2菜单先于握手"
+                menu_ctx["counter_step"] = 2
             elif cur_b == 3:
                 # 服务菜单 0=交换中心 / 1=大竞技场
                 if cur_a == 0:
