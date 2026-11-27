@@ -2231,15 +2231,18 @@ static void logLinkDiag(struct GBA* gba) {
 	if (b7Verbose()) {
 		static int s_blockSrcTick;
 		if ((++s_blockSrcTick % 60) == 0) {
+			/* 地址纠正（项目地址误判纪律）：0x03002C54/0x02027BC8 是 frozen syms_nm.txt
+			 * 的**绝对链接地址**（已平移），不是旧基准，禁止再套 SIO_IW()/SIO_EW()+delta。
+			 * 之前多加 delta 读到 0x03002EB4 ⇒ "块全空"是地址错位假象。 */
 			fprintf(stderr, "[BLOCKSRC] magic1=%02X/%02X/%02X/%02X tid=%08X lp_type=%04X "
 			        "blk_size=%u st=%u\n",
-			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 0u),
-			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 1u),
-			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 2u),
-			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 3u),
-			        (unsigned) GBAView32(gba->cpu, SIO_EW(GNP_LOCAL_LP_EW) + 0u),
-			        (unsigned) GBAView16(gba->cpu, SIO_EW(GNP_LOCAL_LP_EW) + 0x14u),
-			        (unsigned) GBAView16(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 0x10u),
+			        (unsigned) GBAView8(gba->cpu, GNP_LOCAL_LP_BLOCK_IW + 0u),
+			        (unsigned) GBAView8(gba->cpu, GNP_LOCAL_LP_BLOCK_IW + 1u),
+			        (unsigned) GBAView8(gba->cpu, GNP_LOCAL_LP_BLOCK_IW + 2u),
+			        (unsigned) GBAView8(gba->cpu, GNP_LOCAL_LP_BLOCK_IW + 3u),
+			        (unsigned) GBAView32(gba->cpu, GNP_LOCAL_LP_EW + 0u),
+			        (unsigned) GBAView16(gba->cpu, GNP_LOCAL_LP_EW + 0x14u),
+			        (unsigned) GBAView16(gba->cpu, GNP_LOCAL_LP_BLOCK_IW + 0x10u),
 			        state);
 		}
 	}
