@@ -7592,6 +7592,22 @@ static bool beginMultiTransfer(struct SioLink* sio, struct GBASIODriver* driver)
 	}
 	struct GBA* gba = (struct GBA*) sio->core->board;
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	/* §3.6 跨层角色接口：与 mobile 对称，每帧把 netLink 角色写进 gLink.link_field_F(0x00F)。
+	 * gen8 CheckMasterOrSlave 具名门读它判主从（host=0→MASTER, join=1→SLAVE）。
+	 * 治 mode A 两端皆 MASTER 死锁。只写保留字段、不造字/信任位。 */
+	{
+		uint32_t roleAddr = SIO_IW(0x03002AF4u) + 0x0Fu;
+		uint32_t wIdx = (roleAddr - GBA_IWRAM_BASE) >> 2;
+		uint32_t bShift = ((roleAddr - GBA_IWRAM_BASE) & 3u) * 8u;
+		int role = netLinkPlayer(sio->link);   /* host=0, join=1 */
+		gba->memory.iwram[wIdx] = (gba->memory.iwram[wIdx] & ~(0xFFu << bShift))
+		                       | (((uint32_t) (role ? 1u : 0u)) << bShift);
+		static unsigned roleDiag;
+		if ((roleDiag++ & 0xFFF) == 0) {
+			SIO_LOG("[ROLEDIAG] player=%d role=%d addr=0x%08X written=%u",
+			        role, role ? 1 : 0, roleAddr, GBAView8(gba->cpu, roleAddr));
+		}
+	}
 	/* BF1: 握手期(st<4)扣下游戏真写的 8FFF，供 data[0] 自回环。只读真字，非造字。 */
 	if (sioMasterEchoOn()
 	    && GBAView8(gba->cpu, SIO_IW(SIO_GLINK_STATE) + SIO_GLINK_STATE_OFF) < SIO_LINK_STATE_CONN
@@ -7910,6 +7926,19 @@ static int gbaLinkDeviceId(struct GBASIODriver* driver) {
 
 static uint16_t gbaLinkWriteCnt(struct GBASIODriver* driver, uint16_t value) {
 	struct SioLink* sio = ((struct GbaLinkDriver*) driver)->sio;
+	/* §3.6 跨层角色接口：每个 MULTI 写都刷 gLink.link_field_F(0x00F) = netLinkPlayer
+	 * （host=0→MASTER, join=1→SLAVE）。从机起轮走这里而非 beginMultiTransfer，
+	 * 必须在此写才能让 gen8 CheckMasterOrSlave 读到真角色。只写保留字段、不造字。 */
+	if (driver->p && driver->p->mode == GBA_SIO_MULTI && sio->core
+	    && sio->core->platform(sio->core) == mPLATFORM_GBA) {
+		struct GBA* g = (struct GBA*) sio->core->board;
+		uint32_t roleAddr = SIO_IW(0x03002AF4u) + 0x0Fu;
+		uint32_t wIdx = (roleAddr - GBA_IWRAM_BASE) >> 2;
+		uint32_t bShift = ((roleAddr - GBA_IWRAM_BASE) & 3u) * 8u;
+		int role = netLinkPlayer(sio->link);
+		g->memory.iwram[wIdx] = (g->memory.iwram[wIdx] & ~(0xFFu << bShift))
+		                       | (((uint32_t) (role ? 1u : 0u)) << bShift);
+	}
 	static int wrDbg = 0;
 	if (wrDbg < 12) {
 		++wrDbg;

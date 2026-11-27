@@ -1603,6 +1603,15 @@ public final class GBoyCloudLink {
                             os.flush();
                             ++chunks;
                             rawBytes += pkt.length;
+                            // §3.6 诊断：写入 native socket 的真字 value（20B MBL1 包 offset 12）
+                            if ((chunks & 0x3F) == 0 && pkt.length >= 20) {
+                                StringBuilder hx = new StringBuilder();
+                                for (int bi = 0; bi < 20; bi++) {
+                                    hx.append(String.format("%02x", pkt[bi] & 0xFF));
+                                }
+                                Log.i(TAG, "[WRITEDIAG] ch=" + (active.get() == tunnel ? "ws" : "p2p")
+                                        + " seq=" + chunks + " hex=" + hx.toString());
+                            }
                             if ((chunks & 0xFF) == 0) {
                                 Log.i(TAG, "[PA-FRAME] ch=" + (active.get() == tunnel ? "ws" : "p2p")
                                         + " dir=rx chunks=" + chunks + " rawbytes=" + rawBytes
@@ -3027,13 +3036,23 @@ public final class GBoyCloudLink {
      * 再读链路本身。所有「读数据通道」的入口都必须走这里，否则暂存帧会被
      * 拖到新字节之后，等于换了顺序。
      */
+    private final int[] recvTypeCount = new int[16];
     private byte[] recvLink(Link link, long timeoutMs) {
         byte[] held = replayBytes.poll();
-        if (held != null) {
-            return held;
+        byte[] got = (held != null) ? held : link.recv(timeoutMs);
+        if (got != null && got.length >= 6) {
+            int ty = ((got[4]&0xFF)|((got[5]&0xFF)<<8));
+            if (ty >= 0 && ty < 16) recvTypeCount[ty]++;
+            if ((recvDiagN & 0x7F) == 0) {
+                StringBuilder sb = new StringBuilder("[TYPECOUNT]");
+                for (int ti = 0; ti < 16; ti++) if (recvTypeCount[ti] > 0) sb.append(" t").append(ti).append('=').append(recvTypeCount[ti]);
+                Log.i(TAG, sb.toString());
+            }
         }
-        return link.recv(timeoutMs);
+        ++recvDiagN;
+        return got;
     }
+    private long recvDiagN = 0;
 
     private boolean negotiateLinkMode(Room room, String where, Link link) {
         if (modeRejected) {

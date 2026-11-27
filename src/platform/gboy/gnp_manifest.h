@@ -17,7 +17,7 @@
 #define GNP_APPLIED_IW  0x03004E98u   /* gGnpMvpApplied */
 #define GNP_DIAG_EW     0x020298F8u   /* gNetGateDiag（EWRAM，NETGATE 诊断镜） */
 #define NET_TX_PORT_ABS 0x02029938u   /* gGnpTxPort（EWRAM，条件落地） */
-#define GNP_ROM_MD5_HEX  "3381F353A0449B78087D56808FCE391B"
+#define GNP_ROM_MD5_HEX  "67677B95F7A515688E6A90F3BDA444F2"
 
 /* party provenance：仅锚绝对地址参考，锚同值写。C 端 producer 逐字节 GBAView8 搬运，不做预知串。 */
 #define GNP_ENEMY_PARTY_EW   0x0202A9B0u   /* gEnemyParty：收到的对端 party（rx） */

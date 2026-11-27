@@ -7742,6 +7742,17 @@ static bool beginMultiTransfer(struct MgbaMobile* emu, struct GBASIODriver* driv
 	}
 	struct GBA* gba = (struct GBA*) emu->core->board;
 	uint16_t local = gba->memory.io[GBA_REG(SIOMLT_SEND)];
+	/* §3.6 跨层角色接口：每帧把 netLink 角色写进 gLink 保留字段 link_field_F(0x00F)，
+	 * 供 gen8 CheckMasterOrSlave 具名门读（host=0→MASTER, join=1→SLAVE）。
+	 * 治 mode A 两端 localId 皆 0 → 皆 MASTER 的握手死锁。只写保留字段、不造字/信任位。 */
+	{
+		uint32_t roleAddr = NAV_IW(0x03002AF4u) + 0x0Fu;
+		uint32_t wIdx = (roleAddr - GBA_IWRAM_BASE) >> 2;
+		uint32_t bShift = ((roleAddr - GBA_IWRAM_BASE) & 3u) * 8u;
+		int role = netLinkPlayer(emu->link);   /* host=0, join=1 */
+		gba->memory.iwram[wIdx] = (gba->memory.iwram[wIdx] & ~(0xFFu << bShift))
+		                       | (((uint32_t) (role ? 1u : 0u)) << bShift);
+	}
 	/* BF1: 握手期(st<4)扣下游戏真写的 8FFF，供 data[0] 自回环。只读真字，非造字。 */
 	if (mobileMasterEchoOn()
 	    && GBAView8(gba->cpu, NAV_IW(MOBILE_GLINK_STATE) + MOBILE_GLINK_STATE_OFF) < MOBILE_LINK_STATE_CONN

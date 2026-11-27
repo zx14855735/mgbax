@@ -89,6 +89,11 @@ def main():
                          "治冷启动在标题菜单盲按 A 走不到柜台。默认关。")
     ap.add_argument("--cb2-map", type=str, default=None,
                     help="cb2 地址解析来源 rom.map（新 ROM/移动靶须指向冻结 map；默认 None=主仓旧 map 零回归）。")
+    ap.add_argument("--link-log", action="store_true",
+                    help="诊断：设 PC MGBAX_LINK_LOG=<run目录>/pc_link.log，记录 netLink PUSH/PUSH value/req 真实字。默认关。")
+    ap.add_argument("--no-master-echo", action="store_true",
+                    help="§3.6 架构诊断：MGBAX_SIO_MASTER_ECHO=0，让 PC 不回环 8FFF、成从机响应 APP 主机。"
+                         "治'两端皆主机发 PUSH、无 REQ 响应'握手死锁。默认关(保持 BF1)。")
     ap.add_argument("--counter-walk", action="store_true",
                     help="P0 柜台走位门(具名默认关): NPC 在(10,2)玩家(10,4)相距2格,先长hold UP走到(10,3)"
                          "再A交互,治原地A够不到NPC。纯方向键+A输入,默认关。")
@@ -200,6 +205,15 @@ def main():
         # VPN分流组合: 关UDP打洞→不走VPN隧道659ms P2P+BYE,两端走国内relay
         # (出口IP仍不同: PC miwifi / AVD VPN隧道→身份门可过)。具名默认关。
         gates.append("MGBAX_NO_DIRECT=1")
+    if a.link_log:
+        # 诊断：PC netLink 字级打点落盘（确认 PC push 的真字 value）
+        gdir = os.path.join(BASE, ".zcode-tmp", "cloud2p", a.tag)
+        os.makedirs(gdir, exist_ok=True)
+        gates.append("MGBAX_LINK_LOG=" + os.path.join(gdir, "pc_link.log").replace("\\", "/"))
+    if a.no_master_echo:
+        # §3.6 架构诊断：关 PC master_echo，让 PC 成从机（不回环 8FFF、响应 APP 主机）
+        gates = [g for g in gates if not g.startswith("MGBAX_SIO_MASTER_ECHO=")]
+        gates.append("MGBAX_SIO_MASTER_ECHO=0")   # 只改 PC gates；APP 侧 setprop 不受影响
     if a.hs_assist:
         # 握手保真门恢复源码默认(灰区/非纯零注入,不进裁决):
         # GATES 把 HSBYPASS/HOLD/FORCEHS/REARM 关成 0,致 APP master 8FFF 不回环卡 st=2。
