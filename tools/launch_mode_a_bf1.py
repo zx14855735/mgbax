@@ -79,6 +79,31 @@ def main():
     ap.add_argument("--seat-walk-always", action="store_true",
                     help="POST-LINKUP 竞技场但 pos≠(10,5) 时仍强制走位踩 coord_event 座位格"
                          "(默认因rcvpl漂移跳过走位致卡pos=5,8不进战斗)。配 --arena-linkup 用。默认关。")
+    ap.add_argument("--seat-slowfps", action="store_true",
+                    help="P0 座位层低帧长按门(具名默认关): MGBAX_NAV_SEAT_WALK_SLOWFPS=1,"
+                         "app_seat_walk 用 AL1 实证的 7s/格长按档+300s 超时,治 0.55s 在低帧下一次走不动。"
+                         "只改 KEYS 按住时长,不写游戏态、不进 CROSSED 裁决。默认关。")
+    ap.add_argument("--shot-to-peek", action="store_true",
+                    help="P0 oracle 切换门(具名默认关): MGBAX_NAV_SCREENSHOT_TO_PEEK=1,"
+                         "冷启动截图 oracle 卡住时 PEEK 一旦读到有效 field 即切回 PEEK oracle,"
+                         "治冷启动在标题菜单盲按 A 走不到柜台。默认关。")
+    ap.add_argument("--cb2-map", type=str, default=None,
+                    help="cb2 地址解析来源 rom.map（新 ROM/移动靶须指向冻结 map；默认 None=主仓旧 map 零回归）。")
+    ap.add_argument("--counter-walk", action="store_true",
+                    help="P0 柜台走位门(具名默认关): NPC 在(10,2)玩家(10,4)相距2格,先长hold UP走到(10,3)"
+                         "再A交互,治原地A够不到NPC。纯方向键+A输入,默认关。")
+    ap.add_argument("--no-pc-restart", action="store_true",
+                    help="P0 诊断门(具名默认关): 禁用 pc_join_guard 运行期重启,治 PC 无限重启循环。默认关。")
+    ap.add_argument("--forcehs-on", action="store_true",
+                    help="P0 握手对照门: MGBAX_LINK_FORCEHS=1 打开握手字强制(主机8FFF/从机B9A0),"
+                         "sio_link.c state==2 时主机自槽定死8FFF(PUREBLOCK6曾得lstate=4)。默认关(历史A/B对照=0)。")
+    ap.add_argument("--rearm-on", action="store_true",
+                    help="P0 主从选举门: MGBAX_LINK_REARM=1 打开握手重选举(maybeRearmHandshake),"
+                         "治'两端进房差几十帧都退化从机都发B9A0无8FFF'。GATES默认=0(历史全关),本旗标改=1。默认关。")
+    ap.add_argument("--app-rom", type=str, default=None,
+                    help="新 ROM APP 母本（默认 None=driver 默认主仓 rom.gba）。配 --pc-rom/--cb2-map 跑重锚 ROM。")
+    ap.add_argument("--pc-rom", type=str, default=None,
+                    help="新 ROM PC 配对件（末字节 FE，uuid 与 APP 不同）。默认 None=driver 默认 rom_b.gba。")
     ap.add_argument("--patha-tcp", action="store_true",
                     help="mode A 本地 TCP 桥判别实验: 真 SIO 字走本地 TCP(~1ms)绕开 relay RTT 墙。"
                          "只换传输(判别工具非已论证解法),本地桥非真机,不预设成功。默认关。")
@@ -146,6 +171,28 @@ def main():
     if a.seat_walk_always:
         # 竞技场 pos≠座位格时仍强制走位踩格（driver 自身读 os.environ）
         os.environ["MGBAX_NAV_SEAT_WALK_ALWAYS"] = "1"
+    if a.seat_slowfps:
+        # P0 座位层低帧长按档（driver 自身读 os.environ，默认关可逆）
+        os.environ["MGBAX_NAV_SEAT_WALK_SLOWFPS"] = "1"
+    if a.shot_to_peek:
+        # P0 oracle 切换门（driver 自身读 os.environ，默认关可逆）
+        os.environ["MGBAX_NAV_SCREENSHOT_TO_PEEK"] = "1"
+    if a.counter_walk:
+        # P0 柜台走位门（driver 自身读 os.environ，默认关可逆）
+        os.environ["MGBAX_NAV_COUNTER_WALK"] = "1"
+    if a.no_pc_restart:
+        # P0 诊断门：禁用 PC 运行期重启（默认关可逆）
+        os.environ["MGBAX_NO_PC_RESTART"] = "1"
+    if a.forcehs_on:
+        # P0 握手对照门：把默认 MGBAX_LINK_FORCEHS=0 覆盖为 =1（state==2 强制主机8FFF自槽）
+        gates = [g for g in gates if not g.startswith("MGBAX_LINK_FORCEHS=")]
+        gates.append("MGBAX_LINK_FORCEHS=1")
+        os.environ["MGBAX_LINK_FORCEHS"] = "1"   # APP 侧 driver 也需读（若用到）
+    if a.rearm_on:
+        # P0 主从选举门：把默认 MGBAX_LINK_REARM=0 覆盖为 =1（两端进房差帧退化从机时重选举）
+        gates = [g for g in gates if not g.startswith("MGBAX_LINK_REARM=")]
+        gates.append("MGBAX_LINK_REARM=1")
+        os.environ["MGBAX_LINK_REARM"] = "1"
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")
@@ -206,6 +253,12 @@ def main():
         args += ["--force-full-menu"]
     if a.patha_tcp:
         args += ["--patha-tcp"]
+    if a.cb2_map:
+        args += ["--cb2-map", a.cb2_map]
+    if a.app_rom:
+        args += ["--app-rom", a.app_rom]
+    if a.pc_rom:
+        args += ["--pc-rom", a.pc_rom]
     if a.no_seat_walk:
         args += ["--no-app-seat-walk"]
     if a.pc_sav:

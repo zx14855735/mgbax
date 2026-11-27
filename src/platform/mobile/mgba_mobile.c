@@ -697,8 +697,21 @@ static void mobileResolveRomAddresses(void) {
 			resolved = true;
 		}
 		if (!resolved) {
-			MOBILE_LOGE("SIOEW 没找到可信 gTasks，EWRAM delta 沿用 0x%X",
-			            (unsigned) s_navEwDelta);
+			/* 移动靶 ROM 兜底：运行时引用计数扫描在新链接 ROM 上 cnt<100 找不到 gTasks
+			 * （EW delta 沿用 0x0 ⇒ PEEK 读错核 ⇒ cur=0/0 假值）。用 manifest 的 nm 实测
+			 * gTasks 绝对地址锚定 delta。具名宏、仅此 manifest 有裸 hex、三端同源。 */
+			#if defined(GNP_GTASKS_EW)
+			if (GNP_GTASKS_EW >= MOBILE_EW_BASE_GTASKS) {
+				s_navEwDelta = (GNP_GTASKS_EW - MOBILE_EW_BASE_GTASKS);
+				MOBILE_LOGI("SIOEW gTasks manifest 锚定=0x%08X delta=0x%X",
+				            (unsigned) GNP_GTASKS_EW, (unsigned) s_navEwDelta);
+				resolved = true;
+			}
+			#endif
+			if (!resolved) {
+				MOBILE_LOGE("SIOEW 没找到可信 gTasks，EWRAM delta 沿用 0x%X",
+				            (unsigned) s_navEwDelta);
+			}
 		}
 		/* AJ1 step 4.5: 独立锚定 gMain.callback2（不受 gTasks delta 失败影响）。
 		 * 启动期 gMain 可能未填真值，游戏态由 ensureCb2Anchor() 在 PEEK 块延迟重扫。 */

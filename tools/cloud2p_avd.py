@@ -99,6 +99,16 @@ INTRO_MAP_STREAK = 3              # 连续 N 次 map/pos 命中才放行（同 T
 # 不走格 → tookStep 恒 FALSE → coord_event 座位事件链不触发 → link.state 停 1。
 # 需 DOWN 离格→UP 踩回（2 次方向步）触发，方进 cable club 握手。
 NAV_COORD_STEP = os.environ.get("MGBAX_NAV_COORD_STEP", "0") == "1"
+# P0-ORACLE：冷启动 PEEK 初始读 (-1,-1) → oracle 选 SCREENSHOT，但 INTRO 后 PEEK 已可读
+# pos=10,4/map=2.3，截图 oracle 却继续盲按 start/a，永远走不到柜台菜单导航。
+# 新门（默认关可逆）：截图 oracle 一旦 PEEK 读到有效 field（pos 在游戏世界 + cb2 落 field 段
+# 连续稳定）即切回 app_nav_peek()，让冷启动也能走 counter-approach/服务菜单正确路径。
+NAV_SCREENSHOT_TO_PEEK = os.environ.get("MGBAX_NAV_SCREENSHOT_TO_PEEK", "0") == "1"
+# P0 柜台走位门（默认关）：DirectCornerAttendant NPC 在 (10,2)，玩家 warp 落点 (10,4)
+# 相距 2 格，原地 A 够不到（v4 删 UP 走位致 83 次盲 A 无效）。门开时先长 hold UP 走到
+# (10,3)（NPC 正下方 1 格、面朝上）再 A 交互。纯方向键+A 输入，不写游戏态、不造假。
+NAV_COUNTER_WALK = os.environ.get("MGBAX_NAV_COUNTER_WALK", "0") == "1"
+COUNTER_WALK_HOLD = 7.0   # AVD ~2.65fps 走一格需 6-7s（同 slowfps 档）
 # AQ1: peek-arena 放行门（默认关）。注入 club 档使 pos/map 立即=25.24，会在 UI 链跑完前
 # 提前放行→方向键被当菜单光标吞。默认走截图 template 等真主菜单，oracle 解耦。
 NAV_PEEK_ARENA = os.environ.get("MGBAX_NAV_PEEK_ARENA", "0") == "1"
@@ -263,6 +273,17 @@ WALK_BIAS_CAP    = 0.10   # 每轴学习偏置上限（±2 档）
 WALK_TIER_FAR    = 0.50   # d>=3 粗调
 WALK_TIER_MID    = 0.35   # d==2 中调
 WALK_TIER_FINE   = 0.22   # d==1 精调
+
+# ---- P0 入口轴/座位层攻克门（具名、默认关、可逆；driver-only，不改 C/ROM）----
+# 源码铁证（gen8/include/constants/map_groups.h 实测）：
+#   MAP_BATTLE_COLOSSEUM_2P = (24 | 25<<8) = 25.24 —— 战斗场，落点(6,8)，座位(10,5) coord_event 在此图
+#   MAP_TRADE_CENTER        = (25 | 25<<8) = 25.25 —— 交换中心，落点(5,8)，无战斗座位
+# 历史 ARENA_LINKUP/座位走位仅判 map[0]==25，把 25.25 错图当竞技场，导致在交换中心空走。
+MAP_NUM_COLOSSEUM_2P = 24   # 25.24 num（战斗竞技场）
+MAP_NUM_TRADE_CENTER = 25   # 25.25 num（交换中心）
+# 低帧长按档：AL1 实证 AVD emuFps≈2.65 走一格需 6-7s；旧 0.55s 不足 1 帧 ⇒ pos 不动。
+SEAT_SLOW_HOLD       = 7.0
+SEAT_SLOW_DEADLINE_S = 300
 
 
 
@@ -476,6 +497,9 @@ def main():
     ap.add_argument("--pc-acc", default=DEF_PC_ACC, help="PC 端 邮箱:密码[:房号]。")
     ap.add_argument("--app-rom", default=APP_ROM, help="推到 app 的原始 ROM（uuid 与 PC 不同）。")
     ap.add_argument("--pc-rom", default=PC_ROM, help="PC 端 ROM（填充字节改过 md5）。")
+    ap.add_argument("--cb2-map", default=None,
+                    help="cb2 地址解析来源 rom.map（具名符号 BattleMainCB2/CB2_Overworld/cable_club.o .text）。"
+                         "默认 None=用主仓 ROOT/rom.map + 旧基准宏（零回归）；新 ROM（移动靶）须指向冻结 map。")
     ap.add_argument("--sav", default=DEF_SAV, help="PC 端存档母本（每轮干净副本）。")
     ap.add_argument("--stable-sec", type=float, default=3.0)
     ap.add_argument("--fast-early", action="store_true",
@@ -1105,9 +1129,9 @@ def main():
         # AL1: INTRO 后若已 peek-arena 到竞技场（PEEK 现在可读 map=25.24/pos=10,5），
         # 切回 PEEK oracle——SCREENSHOT oracle 走不到 AD2 门/踩格分支，只会 timeout。
         # coord_step 门开时强制切（需要 PEEK 语义判座位格踩格）。
-        if (NAV_COORD_STEP
+        if ((NAV_COORD_STEP or NAV_SCREENSHOT_TO_PEEK)
                 and str(app_nav_state.get("intro_why", "")).startswith("peek")):
-            app_nav_log("AT1: field 已确认(%s) + coord_step 门开 → 切 PEEK oracle 踩格"
+            app_nav_log("AT1: field 已确认(%s) + 切 PEEK oracle 门开 → 切 PEEK oracle"
                         % app_nav_state.get("intro_why"))
             return app_nav_peek()
         deadline = time.time() + APP_NAV_TIMEOUT
@@ -1147,7 +1171,7 @@ def main():
             # AQ1 field-ready：截图 oracle 已走完 UI 链，PEEK 确认真进 field
             # (pos 在座位格 + cb2 落 field 区间且连续稳定) → 切 PEEK oracle 踩格。
             _cb2v = (ps.get("cb2", 0) & ~1) if ps else 0
-            if (NAV_COORD_STEP and ps and ps.get("raw_ok")
+            if ((NAV_COORD_STEP or NAV_SCREENSHOT_TO_PEEK) and ps and ps.get("raw_ok")
                     and ps.get("pos") == (SEAT_TX, SEAT_TY)
                     and ps.get("map") == SEAT_MAP
                     and _cb2v and NAV_FIELD_CB2_LO <= _cb2v < NAV_FIELD_CB2_HI):
@@ -1523,16 +1547,22 @@ def main():
                 break
             elif (nav_counter_approach and cur_b == 0 and s["lkst"] <= 2
                   and s.get("map") == (2, 3) and s["pos"] in ((10, 4), (10, 3))
-                  and 0x081A227A <= s["cb2"] < 0x081A22A4):  # CB2_Overworld 段(081A2284)
+                  and OW_LO <= s["cb2"] < OW_HI):  # CB2_Overworld 段（--cb2-map 运行时解析/旧基准宏回退）
                 # P0 入口轴 v3: 菜单必须**先于**握手。灰区门把 st 推到4会冻结 overworld 走位，
                 # 所以只在 st<=2(游戏未被 linkup task 锁)时走位到柜台 NPC 触发菜单，
                 # 菜单确认单打设 var8004 后由游戏自己调 TryBattleLinkup 建链(自然握手)。
                 # UP 走一格到 (10,3) 面向 DirectCornerAttendant(10,2)，再 A 触发服务菜单。
-                # v4: UP 走位实测 pos 恒 (10,4) 不动——柜台挡住/玩家本就站在交互格。
-                # 改为原地连续发 A 边沿（gen8 柜台站在下方朝上按 A 即交互 NPC）。
-                # 若 pos 真从 (10,4)→(10,3) 则也继续按 A（两种站位都能交互）。
-                action, why = AK_A, "柜台原地 A 交互(取消无效UP走位) st<=2菜单先于握手"
-                menu_ctx["counter_step"] = 2
+                # v4: 原地 A 83 次无效——NPC 在 (10,2)，玩家 (10,4) 相距 2 格，够不到。
+                # P0-COUNTER-WALK 门（默认关）：先长 hold UP 走到 (10,3)（NPC 正下方 1 格、
+                # 面朝上），再 A 交互。step 由 PEEK pos 闭环推进，纯游戏输入不写游戏态。
+                if NAV_COUNTER_WALK and s["pos"] == (10, 4):
+                    action, hold, settle = AK_UP, COUNTER_WALK_HOLD, 1.0
+                    why = "柜台走位 UP 长hold->(10,3) 面向NPC(10,2) step0"
+                    menu_ctx["counter_step"] = 1
+                    app_nav_log("P0-COUNTER-WALK: pos=(10,4) → UP %.1fs 走向 (10,3)" % COUNTER_WALK_HOLD)
+                else:
+                    action, why = AK_A, "柜台 A 交互(门关走v4原地A/step1已在10,3) st<=2菜单先于握手"
+                    menu_ctx["counter_step"] = 2
             elif cur_b == 3:
                 # 服务菜单 0=交换中心 / 1=大竞技场
                 if cur_a == 0:
@@ -1646,8 +1676,17 @@ def main():
         walk_ctx["tid"] = walk_tid   # W81 走位核 TID → 共享给 _walk_peek（保留 W81 读核）
         app_nav_log("座位走位开始，目标 (10,5)，走位核TID=%s" %
                     (walk_tid if walk_tid else "<未发现,退回全核>"))
+        # P0-SLOWFPS：默认关的可逆长按档（driver 自身 os.environ，不进 PC GATES、不改游戏态）。
+        # AL1 实证 AVD emuFps≈2.65 走一格需 6-7s；旧 0.55s 不足 1 帧 ⇒ pos 恒不动。
+        slowfps = os.environ.get("MGBAX_NAV_SEAT_WALK_SLOWFPS", "0") == "1"
+        app_nav_log("座位走位档位 slowfps=%d hold=%.1fs deadline=%ds"
+                    % (1 if slowfps else 0,
+                       SEAT_SLOW_HOLD if slowfps else WALK_HOLD_MAX,
+                       SEAT_SLOW_DEADLINE_S if slowfps else WALK_DEADLINE_S))
         # W22 距离档闭环 + W46 map 条件（两处到位判定一处不漏）
         def _tier_hold(d, key):
+            if slowfps:
+                return SEAT_SLOW_HOLD   # 长按档：短档 bias（0.22~0.55 标定）不再叠加
             base = (WALK_TIER_FAR if d >= 3 else
                     WALK_TIER_MID if d == 2 else WALK_TIER_FINE)
             return min(WALK_HOLD_MAX, max(WALK_HOLD_MIN, base + bias_of.get(key, 0.0)))
@@ -1680,9 +1719,19 @@ def main():
             return False
         app_nav_log("已到竞技场 map=%d.%d（座位 (10,5) 生效）" % SEAT_MAP)
 
+        # P0 诊断（只读，不改行为）：明确区分 25.24 战斗场 vs 25.25 交易中心。
+        # 交易中心 (5,8) 也有 (10,5) 坐标但无战斗 coord_event，走到也不会进战斗。
+        _s0num = s0["map"][1] if s0.get("map") else -1
+        if _s0num == MAP_NUM_TRADE_CENTER:
+            app_nav_log("警告：当前在 MAP_TRADE_CENTER(25.25 交易中心)，非战斗场 25.24；"
+                        "此处(10,5)无战斗 coord_event，走位到位也不会进战斗（服务菜单选错项）")
+        elif _s0num == MAP_NUM_COLOSSEUM_2P:
+            app_nav_log("地图确认：MAP_BATTLE_COLOSSEUM_2P(25.24)，座位 (10,5) coord_event 生效")
+
+        walk_limit = SEAT_SLOW_DEADLINE_S if slowfps else WALK_DEADLINE_S
         for i in range(WALK_STEP_LIMIT):
-            if time.time() - t0 > WALK_DEADLINE_S:
-                app_nav_log("座位走位超时（%.0fs），未到位" % WALK_DEADLINE_S)
+            if time.time() - t0 > walk_limit:
+                app_nav_log("座位走位超时（%.0fs），未到位" % walk_limit)
                 app_nav_state["overshoots"] = overshoots
                 return False
             s = _fresh_walk_pos(after_mark)
@@ -1710,8 +1759,8 @@ def main():
             before = y if axis == "y" else x
             d = dx + dy
             hold = _tier_hold(d, key)
-            app_nav_log("走位 i=%02d (%d,%d) d=%d key=%s hold=%.2f bias=%+.2f"
-                        % (i, x, y, d, key, hold, bias_of[key]))
+            app_nav_log("走位 i=%02d (%d,%d) d=%d key=%s hold=%.2f bias=%+.2f tid=%s"
+                        % (i, x, y, d, key, hold, bias_of[key], walk_ctx["tid"]))
             app_press(mask_for[key], hold, WALK_STEP_SETTLE)
 
             # 落点校验：press 后必须读到**新鲜**样本再判，不沿用 press 前的 s
@@ -1748,7 +1797,9 @@ def main():
                                     break
                         app_nav_log("blocked 且移动核有对话框证据：按 A 推进后重试")
                     else:
-                        app_nav_log("blocked 但移动核无对话框证据：不按 A，仅加档")
+                        # P0-SLOWFPS 判别信号：长按 7s 仍 blocked 则 H1(hold太短)证伪、H2(st4冻结/错核)升级。
+                        app_nav_log("blocked 且 slowfps 长按仍不动：疑似 st4 冻结/读错核，不按 A（不伪造）"
+                                    if slowfps else "blocked 但移动核无对话框证据：不按 A，仅加档")
                     bias_of[key] = min(WALK_BIAS_CAP, bias_of[key] + WALK_HOLD_ADJ)
                     zero_of[key] = 0
                     # B2 绕障：单轴贪心撞墙（如 (5,8)→(10,5) 直走 right 被墙挡）时，
@@ -2760,6 +2811,10 @@ def main():
         """app 导航可能耗时数分钟；期间 PC 若因房号失效（房间不存在）而退出/app 重开房，
         必须及时用**最新**房号重起 PC，否则 app 会在等待连接处空等到天荒地老。
         这里只重起 PC，绝不重发 CLOUD（single broadcast 纪律）。"""
+        # P0 诊断门（默认关）：禁用运行期重启，治 pc_join_guard 竞态导致的无限重启循环
+        # （实测 PC player_joined 成功后约 6s 仍被 taskkill 重启 25 次）。可逆、默认关。
+        if os.environ.get("MGBAX_NO_PC_RESTART", "0") == "1":
+            return
         if time.time() - pc_guard_ctx["last"] < 12:
             return
         pc_guard_ctx["last"] = time.time()
@@ -2800,27 +2855,48 @@ def main():
 
     # 严格战斗主循环窗口：CB2_InitBattle 后的初始化帧（如 app 的 080B376D）不算
     # 「真进战斗」，必须是 BattleMainCB2+1 起、下一个符号之前的精确区。
-    def resolve_strict_window():
+    _cb2_map_path = getattr(args, "cb2_map", None) or os.path.join(ROOT, "rom.map")
+
+    def _map_syms():
         try:
-            lines = open(os.path.join(ROOT, "rom.map"), encoding="utf-8",
-                         errors="replace").read().splitlines()
+            lines = open(_cb2_map_path, encoding="utf-8", errors="replace").read().splitlines()
         except OSError:
+            return None
+        return [(int(m.group(1), 16), m.group(2))
+                for ln in lines
+                for m in [re.match(r"\s*0x([0-9A-Fa-f]{8})\s+(\S+)", ln)] if m]
+
+    def resolve_strict_window():
+        syms = _map_syms()
+        if syms is None:
             return None, None, "rom.map-unavailable"
-        syms = []
-        for ln in lines:
-            m = re.match(r"\s*0x([0-9A-Fa-f]{8})\s+(\S+)", ln)
-            if m:
-                syms.append((int(m.group(1), 16), m.group(2)))
         for i, (addr, name) in enumerate(syms):
             if name == "BattleMainCB2":
                 hi = syms[i + 1][0] if i + 1 < len(syms) else addr + 0x1000
-                return addr + 1, hi, "rom.map:BattleMainCB2"
+                return addr + 1, hi, "%s:BattleMainCB2" % os.path.basename(_cb2_map_path)
         return None, None, "BattleMainCB2-not-found"
 
+    def resolve_overworld_window():
+        """CB2_Overworld 段（柜台判据用）。新 ROM 从 --cb2-map 解析，旧回退基准宏。"""
+        syms = _map_syms()
+        if syms:
+            for addr, name in syms:
+                if name == "CB2_OverworldBasic":
+                    return addr - 0x20, addr + 0x40, "%s:CB2_OverworldBasic" % os.path.basename(_cb2_map_path)
+                if name == "CB2_Overworld":
+                    return addr - 0x20, addr + 0x40, "%s:CB2_Overworld" % os.path.basename(_cb2_map_path)
+        return 0x081A227A, 0x081A22A4, "baseline-macro(CB2_Overworld 081A2284)"
+
     _map_lo, _map_hi, _map_src = resolve_strict_window()
+    OW_LO, OW_HI, OW_SRC = resolve_overworld_window()
+    log("CB2_Overworld 柜台段=[0x%X,0x%X) source=%s" % (OW_LO, OW_HI, OW_SRC))
     # ROOTHUNT 用 rom.elf 定标：只有 BattleMainCB2 本体才是真进战斗。
     # 080B310D=InitBattle / 080B376D=HandleStartBattle / 0816D8CD=错误屏，都不算。
-    S_LO, S_HI = gba.BATTLE_CB2_LO, gba.BATTLE_CB2_HI  # 统一宏（原值 0x080B4845 / 0x080B48A8）
+    # 新 ROM（--cb2-map）用运行时解析的 BattleMainCB2 段；默认仍用统一宏（零回归）。
+    if getattr(args, "cb2_map", None) and _map_lo is not None:
+        S_LO, S_HI = _map_lo, _map_hi
+    else:
+        S_LO, S_HI = gba.BATTLE_CB2_LO, gba.BATTLE_CB2_HI  # 统一宏（原值 0x080B4845 / 0x080B48A8）
     log("严格战斗窗口=[0x%X,0x%X) source=rom.elf:BattleMainCB2（rom.map 旁证 %s/%s）"
         % (S_LO, S_HI, _map_src,
            ("%08X-%08X" % (_map_lo, _map_hi)) if _map_lo else "n/a"))
@@ -2830,7 +2906,7 @@ def main():
     # 故禁裸 hex 写死，运行时从 rom.map 的 cable_club.o .text 段重解析。
     def resolve_cable_club_window():
         try:
-            lines = open(os.path.join(ROOT, "rom.map"), encoding="utf-8",
+            lines = open(_cb2_map_path, encoding="utf-8",
                          errors="replace").read().splitlines()
         except OSError:
             return CABLE_CLUB_CB2_LO, CABLE_CLUB_CB2_HI, "baseline-macros(rom.map-unavailable)"
@@ -3346,7 +3422,7 @@ def main():
         "room_resyncs=%d" % room_resyncs,
         "BATTLE=%s" % ("YES" if battle_yes else "NO"),
         "linkup_stable=%s master_source=%s" % (
-            linkup_stable, "APP" if linkup_ctx["master"] else ("PC" if master else "-")),
+            linkup_stable, "APP" if linkup_ctx["master"] else ("PC" if locals().get("master", False) else "-")),
         "in_battle_frame=%s battle_samples=%d" % (in_battle, BT.hits),
         "in_battle_cb2_PC=%s" % BT.last_a,
         # 用户硬标准：trainer 卡 ver=4003 + 上场 species 合法（非 0/FFFF）双证据才算真实。

@@ -80,6 +80,14 @@ APP_READY_WAIT = 15      # am start 后等 EmulatorActivity onResume 就绪：2s
 APP_NAV_TIMEOUT = 480    # title→等待连接 的总上限（s）；保存阶段掉到 6fps 需要墙钟余量
 APP_NAV_POLL = 1.2       # PEEK 采样间隔（oracle 本身约 2~5s 一条）
 APP_STABLE_N = 3         # 去抖：签名连续 N 次一致才按一次键（避免 PC 侧那种 A 振荡）
+# P0-ORACLE：与 cloud2p_avd.py 同名同值默认关。冷启动截图 oracle 卡住时，PEEK 一旦
+# 读到有效 field（pos 在游戏世界 + cb2 落 field 段）即切回 app_nav_peek()。
+NAV_SCREENSHOT_TO_PEEK = os.environ.get("MGBAX_NAV_SCREENSHOT_TO_PEEK", "0") == "1"
+# P0 柜台走位门（与 cloud2p_avd.py 同名同值；vis.py 旧导航无 counter-approach 分支，仅定义保持对称）
+NAV_COUNTER_WALK = os.environ.get("MGBAX_NAV_COUNTER_WALK", "0") == "1"
+COUNTER_WALK_HOLD = 7.0
+NAV_FIELD_CB2_LO = 0x081A0000
+NAV_FIELD_CB2_HI = 0x081E0000
 # --force-full-menu：主菜单→cable_club 路径长，放宽阈值但仍防死循环（默认关由 flag 控制）
 FORCE_MENU_TAP_LIMIT = 120       # force 模式 A 键硬上限
 FORCE_MENU_STALL_LIMIT = 30      # 连续 N 次 A 无菜单进度即判卡死
@@ -215,6 +223,13 @@ WALK_BIAS_CAP    = 0.10   # 每轴学习偏置上限（±2 档）
 WALK_TIER_FAR    = 0.50   # d>=3 粗调
 WALK_TIER_MID    = 0.35   # d==2 中调
 WALK_TIER_FINE   = 0.22   # d==1 精调
+
+# ---- P0 入口轴/座位层攻克门（与 cloud2p_avd.py 同名同值、行为对称）----
+# 25.24=MAP_BATTLE_COLOSSEUM_2P（战斗场，座位 coord_event）；25.25=MAP_TRADE_CENTER（交换中心）
+MAP_NUM_COLOSSEUM_2P = 24
+MAP_NUM_TRADE_CENTER = 25
+SEAT_SLOW_HOLD       = 7.0
+SEAT_SLOW_DEADLINE_S = 300
 
 
 
@@ -823,6 +838,14 @@ def main():
             ps = peek_state()
             if ps:
                 app_nav_state["final_peek"] = ps.get("line", "")
+            # P0-ORACLE 切换（门开时）：PEEK 已读到有效 field → 切回 PEEK oracle，别在截图菜单盲按。
+            _cb2v = ((ps or {}).get("cb2", 0) & ~1)
+            if (NAV_SCREENSHOT_TO_PEEK and ps and ps.get("raw_ok")
+                    and ps.get("pos") not in ((0, 0), (-1, -1))
+                    and ps.get("map") and _cb2v and NAV_FIELD_CB2_LO <= _cb2v < NAV_FIELD_CB2_HI):
+                app_nav_log("P0-ORACLE: PEEK field 已可读(pos=%s map=%s cb2=%08X) → 切 PEEK oracle"
+                            % (ps["pos"], ps["map"], ps["cb2"]))
+                return app_nav_peek()
             td = sig_dist(topmenu_sig(), shot[1])
             if not down_done and td >= 0 and td < 10:
                 ok, d = app_advance("down", AK_DOWN, 0.6, 0.9)
@@ -1200,8 +1223,16 @@ def main():
         walk_ctx["tid"] = walk_tid   # W81 走位核 TID → 共享给 _walk_peek（保留 W81 读核）
         app_nav_log("座位走位开始，目标 (10,5)，走位核TID=%s" %
                     (walk_tid if walk_tid else "<未发现,退回全核>"))
+        # P0-SLOWFPS：与 cloud2p_avd.py 同名同值默认关长按档（driver 自身 env，不改游戏态）
+        slowfps = os.environ.get("MGBAX_NAV_SEAT_WALK_SLOWFPS", "0") == "1"
+        app_nav_log("座位走位档位 slowfps=%d hold=%.1fs deadline=%ds"
+                    % (1 if slowfps else 0,
+                       SEAT_SLOW_HOLD if slowfps else WALK_HOLD_MAX,
+                       SEAT_SLOW_DEADLINE_S if slowfps else WALK_DEADLINE_S))
         # W22 距离档闭环 + W46 map 条件（两处到位判定一处不漏）
         def _tier_hold(d, key):
+            if slowfps:
+                return SEAT_SLOW_HOLD   # 长按档：与 cloud2p_avd.py 对称
             base = (WALK_TIER_FAR if d >= 3 else
                     WALK_TIER_MID if d == 2 else WALK_TIER_FINE)
             return min(WALK_HOLD_MAX, max(WALK_HOLD_MIN, base + bias_of.get(key, 0.0)))
@@ -1233,9 +1264,10 @@ def main():
             return False
         app_nav_log("已到竞技场 map=%d.%d（座位 (10,5) 生效）" % SEAT_MAP)
 
+        walk_limit = SEAT_SLOW_DEADLINE_S if slowfps else WALK_DEADLINE_S
         for i in range(WALK_STEP_LIMIT):
-            if time.time() - t0 > WALK_DEADLINE_S:
-                app_nav_log("座位走位超时（%.0fs），未到位" % WALK_DEADLINE_S)
+            if time.time() - t0 > walk_limit:
+                app_nav_log("座位走位超时（%.0fs），未到位" % walk_limit)
                 app_nav_state["overshoots"] = overshoots
                 return False
             s = _fresh_walk_pos(after_mark)
@@ -1301,9 +1333,20 @@ def main():
                                     break
                         app_nav_log("blocked 且移动核有对话框证据：按 A 推进后重试")
                     else:
-                        app_nav_log("blocked 但移动核无对话框证据：不按 A，仅加档")
+                        app_nav_log("blocked 且 slowfps 长按仍不动：疑似 st4 冻结/读错核，不按 A（不伪造）"
+                                    if slowfps else "blocked 但移动核无对话框证据：不按 A，仅加档")
                     bias_of[key] = min(WALK_BIAS_CAP, bias_of[key] + WALK_HOLD_ADJ)
                     zero_of[key] = 0
+                    # B2 绕障（与 cloud2p_avd.py 对称，仅 slowfps 门开时新增，默认路径零回归）
+                    if slowfps:
+                        if axis == "x":
+                            detour = "up" if y > ty else ("down" if y < ty else None)
+                        else:
+                            detour = "left" if x > tx else ("right" if x < tx else None)
+                        if detour:
+                            app_press(mask_for[detour], SEAT_SLOW_HOLD, WALK_STEP_SETTLE)
+                            app_nav_log("绕障(slowfps)：改按 %s 一格（x=%d y=%d，目标 %d,%d）"
+                                        % (detour, x, y, tx, ty))
                 continue
             zero_of[key] = 0
             if delta * sign > 0:
@@ -2736,7 +2779,7 @@ def main():
         "room_resyncs=%d" % room_resyncs,
         "BATTLE=%s" % ("YES" if battle_yes else "NO"),
         "linkup_stable=%s master_source=%s" % (
-            linkup_stable, "APP" if linkup_ctx["master"] else ("PC" if master else "-")),
+            linkup_stable, "APP" if linkup_ctx["master"] else ("PC" if locals().get("master", False) else "-")),
         "in_battle_frame=%s battle_samples=%d" % (in_battle, BT.hits),
         "in_battle_cb2_PC=%s" % BT.last_a,
         # 用户硬标准：trainer 卡 ver=4003 + 上场 species 合法（非 0/FFFF）双证据才算真实。
