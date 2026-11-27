@@ -109,6 +109,12 @@ NAV_SCREENSHOT_TO_PEEK = os.environ.get("MGBAX_NAV_SCREENSHOT_TO_PEEK", "0") == 
 # (10,3)（NPC 正下方 1 格、面朝上）再 A 交互。纯方向键+A 输入，不写游戏态、不造假。
 NAV_COUNTER_WALK = os.environ.get("MGBAX_NAV_COUNTER_WALK", "0") == "1"
 COUNTER_WALK_HOLD = 7.0   # AVD ~2.65fps 走一格需 6-7s（同 slowfps 档）
+# §3.6 柜台对话框门（默认关）：gen8 cable_club.c Task_EnterCableClubSeat case1 等
+# IsFieldMessageBoxHidden()（"请稍候"对话框被按 B 取消）才推进到 case2 联机结果判定。
+# driver 原地 A 无效（对话框不接受 A）。门开时柜台 A 交互 N 次后发一次 B 取消对话框，
+# 使其隐藏 → 推进。纯受控按键(B)，不写游戏态、不造假。
+NAV_COUNTER_B = os.environ.get("MGBAX_NAV_COUNTER_B", "0") == "1"
+COUNTER_A_BEFORE_B = 3    # A 交互次数后发 B 取消对话框
 # AQ1: peek-arena 放行门（默认关）。注入 club 档使 pos/map 立即=25.24，会在 UI 链跑完前
 # 提前放行→方向键被当菜单光标吞。默认走截图 template 等真主菜单，oracle 解耦。
 NAV_PEEK_ARENA = os.environ.get("MGBAX_NAV_PEEK_ARENA", "0") == "1"
@@ -1561,7 +1567,19 @@ def main():
                     menu_ctx["counter_step"] = 1
                     app_nav_log("P0-COUNTER-WALK: pos=(10,4) → UP %.1fs 走向 (10,3)" % COUNTER_WALK_HOLD)
                 else:
-                    action, why = AK_A, "柜台 A 交互(门关走v4原地A/step1已在10,3) st<=2菜单先于握手"
+                    # §3.6 柜台对话框门：A 交互若干次后发 B 取消"请稍候"对话框
+                    # （gen8 Task_EnterCableClubSeat case1 需 IsFieldMessageBoxHidden 才推进）
+                    if NAV_COUNTER_B:
+                        cb_n = menu_ctx.get("counter_a_n", 0) + 1
+                        menu_ctx["counter_a_n"] = cb_n
+                        if cb_n >= COUNTER_A_BEFORE_B:
+                            menu_ctx["counter_a_n"] = 0
+                            action, why = AK_B, "柜台 B 取消'请稍候'对话框→推进 IsFieldMessageBoxHidden (n=%d)" % cb_n
+                            app_nav_log("COUNTER-B: A×%d 后发 B 取消对话框 (st=%d cb2=%08X)" % (cb_n, s["lkst"], s["cb2"]))
+                        else:
+                            action, why = AK_A, "柜台 A 交互 (n=%d/%d)" % (cb_n, COUNTER_A_BEFORE_B)
+                    else:
+                        action, why = AK_A, "柜台 A 交互(门关走v4原地A/step1已在10,3) st<=2菜单先于握手"
                     menu_ctx["counter_step"] = 2
             elif cur_b == 3:
                 # 服务菜单 0=交换中心 / 1=大竞技场
@@ -2603,6 +2621,14 @@ def main():
     # 属性名与 C 侧 rhGetProp("debug.mgbax.link.block2222_sticky") 逐字对齐）。
     setprop("debug.mgbax.link.block2222_sticky",
             "1" if env.get("MGBAX_2222_STICKY", "1") != "0" else "0")
+    # GZ8 灰区（§3.5）：握手闭合瞬间写真值 gLinkCallback 修时序错配。默认关；
+    # 属性名逐字对齐 C 侧 MOBILE_CB_RESTORE_PROP。写真实函数地址非造假，产物标灰区。
+    setprop("debug.mgbax.link.cb_restore",
+            "1" if env.get("MGBAX_CB_RESTORE", "0") == "1" else "0")
+    # GZ9 灰区（§3.5）：驱动层写真实协议字 0x2222 到 sendCmd[0] 启动块交换。默认关；
+    # 属性名逐字对齐 C 侧 MOBILE_CMD2222_PROP。写真实命令字非造假，产物标灰区。
+    setprop("debug.mgbax.link.cmd2222",
+            "1" if env.get("MGBAX_CMD2222", "0") == "1" else "0")
     # PHASE-FIX：rem==1 后继续钉 party 块帧首相位（具名默认关，与 C sioPhaseFixOn 对称）。
     setprop("debug.mgbax.link.phase_fix",
             "1" if env.get("MGBAX_PHASE_FIX", "0") == "1" else "0")

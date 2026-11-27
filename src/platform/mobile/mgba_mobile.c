@@ -3693,6 +3693,46 @@ static bool mobileGrayLobbyOpenOn(void) {
 	return s_grayLobbyOpen != 0;
 }
 void mgbaMobileSetGrayLobbyOpen(bool enabled) { s_grayLobbyOpen = enabled ? 1 : 0; }
+/* GZ8（§3.5 灰区全解禁）：握手闭合瞬间写真值 gLinkCallback 修时序错配。
+ * 独立具名门默认关；PC env MGBAX_CB_RESTORE / Android debug.mgbax.link.cb_restore /
+ * iOS setter 三端对称。写的是真实 LinkCB_RequestPlayerDataExchange 函数地址（非造假）。 */
+#define MOBILE_CB_RESTORE_ENV  "MGBAX_CB_RESTORE"
+#define MOBILE_CB_RESTORE_PROP "debug.mgbax.link.cb_restore"
+static int s_cbRestore = -1;
+static bool mobileCbRestoreOn(void) {
+	if (s_cbRestore < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp(MOBILE_CB_RESTORE_PROP, p);
+		s_cbRestore = (p[0] == '1') ? 1 : 0;
+#else
+		const char* e = getenv(MOBILE_CB_RESTORE_ENV);
+		s_cbRestore = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+	}
+	return s_cbRestore != 0;
+}
+void mgbaMobileSetCbRestore(bool enabled) { s_cbRestore = enabled ? 1 : 0; }
+/* GZ9（§3.5 灰区全解禁）：驱动层写真实协议字 0x2222 到 sendCmd[0] 启动块交换。
+ * 独立具名门默认关；PC env MGBAX_CMD2222 / Android debug.mgbax.link.cmd2222 /
+ * iOS setter 三端对称。写真实协议命令字非造假，产物标灰区、不进 CROSSED 裁决。 */
+#define MOBILE_CMD2222_ENV  "MGBAX_CMD2222"
+#define MOBILE_CMD2222_PROP "debug.mgbax.link.cmd2222"
+static int s_cmd2222 = -1;
+static bool mobileCmd2222On(void) {
+	if (s_cmd2222 < 0) {
+#ifdef __ANDROID__
+		char p[PROP_VALUE_MAX] = {0};
+		rhGetProp(MOBILE_CMD2222_PROP, p);
+		s_cmd2222 = (p[0] == '1') ? 1 : 0;
+#else
+		const char* e = getenv(MOBILE_CMD2222_ENV);
+		s_cmd2222 = (e && atoi(e) == 1) ? 1 : 0;
+#endif
+	}
+	return s_cmd2222 != 0;
+}
+void mgbaMobileSetCmd2222(bool enabled) { s_cmd2222 = enabled ? 1 : 0; }
 /* ROOTHUNT2 零注入对照总闸：MGBAX_RH_OFF(PC getenv)/debug.mgbax.link.rh_off(移动端
  * property) =1 时关闭所有 ROOTHUNT2 数据/重绘/单端强推补丁，保留握手补丁。与 PC
  * rhPatchesOff() 同语义。用于 A/B 判断"补丁帮倒忙 vs 链路坏"。
@@ -8561,6 +8601,50 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 				            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_ISMASTER),
 				            (int) GBAView8(g->cpu, PEEK_LINK + PEEK_LK_LOCALID),
 				            hs, sic, m0, m1, netLinkPlayer(emu->link), stNow);
+				/* GZ8 灰区（§3.5 全解禁）：握手闭合瞬间写真值回调，修"回调晚装 3.5min"时序错配。
+				 * 仅在具名门开、且 gLinkCallback 当前非目标值时写一次；写真实函数地址非造假。
+				 * 产物标灰区、不进 CROSSED 裁决、门 FAIL/0/9 不变。 */
+				if (mobileCbRestoreOn()) {
+					uint32_t lc = (uint32_t) GBAView32(g->cpu, GNP_LINK_CALLBACK_IW);
+					uint32_t want = GNP_LCB_REQ_PLAYER_DATA | GNP_THUMB_BIT;
+					if (lc != want) {
+						GBAPatch32(g->cpu, GNP_LINK_CALLBACK_IW, (int32_t) want, NULL);
+						MOBILE_LOGI("[GZ8] cb-restore %08X->%08X st=%d pc=%d (灰区,GZ8,非纯零注入,不进CROSSED)",
+						            (unsigned) lc, (unsigned) want, st, pc);
+					}
+				}
+			}
+			/* GZ9（§3.5 灰区）：驱动层直接写真实协议字 0x2222 到 sendCmd[0] 启动块交换。
+			 * 仿 sioStandbyInject 写 0x2FFE 的既有先例：握手闭合(st>=4,pc=2,MASTER)后每
+			 * 30 tick 写一次，有界（最多 40 次）避免每帧覆盖。sticky2222 门会把帧首字逐拍推。
+			 * 0x2222 是游戏真实协议命令字（非造 party/信任位/CROSSED）；标灰区、不进裁决。 */
+			if (mobileCmd2222On() && emu->linkAttached && st >= 4 && pc == 2 && (stNow & 0x20u)) {
+				static int s_cmd2222Tick;
+				static int s_cmd2222Sent;
+				if (s_cmd2222Sent < 40 && ++s_cmd2222Tick >= 1) {
+					s_cmd2222Tick = 0;
+					/* GZ9 灰区：OBSCHAIN GATES 启动期快照早于 setprop，会把 s_block2222/
+					 * s_linkBtcfg 惰性锁死为 0（实测 sticky2222=0/btcfg=0）⇒ sticky 路由判据
+					 * 恒 false、0x2222 不出网。此处借已有 setter 强制解锁两门为 true，
+					 * 再注入队头字。仍标灰区、不进 CROSSED 裁决。
+					 * 注：mgbaMobileSet* 在同文件前置声明/定义，此处可见。 */
+					mgbaMobileSetBlock2222(true);
+					mgbaMobileSetLinkBtcfg(true);
+					/* sticky 块字路由读 sendQueue.data[0][队头]（sio_link.c:1764），
+					 * 故 0x2222 须写入队尾 (pos+cnt)%50（EnqueueSendCmd 写入点），非 gSendCmd[0]。 */
+					uint32_t glbase = NAV_IW(MOBILE_GLINK_STATE);
+					uint32_t sqpos = GBAView8(g->cpu, glbase + MOBILE_GLINK_SENDQ_POS_OFF);
+					uint32_t sqcnt = GBAView8(g->cpu, glbase + MOBILE_GLINK_SENDQ_CNT_OFF);
+					uint32_t tail = MOBILE_SENDQ_SLOT_TAIL(sqpos, sqcnt);
+					uint32_t dst = glbase + MOBILE_GLINK_SENDQ_WORD_OFF(0, tail);
+					GBAPatch16(g->cpu, dst, (int16_t) GNP_LINKCMD_SEND_TYPE, NULL);
+					++s_cmd2222Sent;
+					MOBILE_LOGI("[GZ9] n=%u write sendQ[0][%u]=2222 (pos=%u cnt=%u) st=%d pc=%d rrp=%d "
+					            "(灰区,GZ9,真实协议字,非纯零注入,不进CROSSED)",
+					            (unsigned) s_cmd2222Sent, (unsigned) tail,
+					            (unsigned) sqpos, (unsigned) sqcnt, st, pc,
+					            (int) GBAView8(g->cpu, GNP_RECV_REMOTE_PL_EW));
+				}
 			}
 		}
 		if ((++emu->sioPoll % 60) == 0) {
@@ -8612,8 +8696,31 @@ static bool mobileRunFramesLocked(struct MgbaMobile* emu, int count) {
 		            (int) GBAView8(g->cpu, NAV_EW(0x02032B00u)),
 		            (int) GBAView8(g->cpu, NAV_EW(0x02032B01u)),
 		            (int) (int8_t) GBAView8(g->cpu, NAV_EW(0x02032AC1u)),
-		            (int) GBAView8(g->cpu, NAV_EW(0x020296F2u)),
+		            /* cur_b 具名宏锚定真菜单光标 sMenu.cursorPos（绝对地址，不再套 delta） */
+		            (int) GBAView8(g->cpu, GNP_MENU_CURSOR_EW),
 		            (int) GBAView8(g->cpu, NAV_EW(0x020296F4u)));
+				/* §3.6 游戏层 trading state 逐帧 key code 交换诊断。
+				 * trd=sPlayerTradingStates[4]（0x82=UNK_2 就绪）、hk=gHeldKeyCodeToSend
+				 * （0x16=LINK_KEY_CODE_UNK_2 正在广播）、fplc/lid=参战人数/本地 id。
+				 * 判定柜台「请稍候」是否卡在 AreAllPlayersInTradingState(UNK_2)。 */
+				MOBILE_LOGI("TPEEK trd=%02X/%02X/%02X/%02X hk=%04X fplc=%d lid=%d res=%d "
+				            "rrp=%d b0=%d/%d/%d lcb=%04X bm=%d cb2=%08X st=%08X",
+				            (unsigned) GBAView8(g->cpu, GNP_TRADING_STATES_EW + 0u),
+				            (unsigned) GBAView8(g->cpu, GNP_TRADING_STATES_EW + 1u),
+				            (unsigned) GBAView8(g->cpu, GNP_TRADING_STATES_EW + 2u),
+				            (unsigned) GBAView8(g->cpu, GNP_TRADING_STATES_EW + 3u),
+				            (unsigned) GBAView16(g->cpu, GNP_HELD_KEY_EW),
+				            (int) GBAView8(g->cpu, GNP_FIELD_LINK_CNT_EW),
+				            (int) GBAView8(g->cpu, GNP_LOCAL_LINK_ID_EW),
+				            (int) GBAView16(g->cpu, GNP_SPECIAL_VAR_RESULT_EW),
+				            (int) GBAView8(g->cpu, GNP_RECV_REMOTE_PL_EW),
+				            (int) GBAView16(g->cpu, GNP_BLOCK_RECV_EW + 0u),
+				            (int) GBAView16(g->cpu, GNP_BLOCK_RECV_EW + 2u),
+				            (int) GBAView8(g->cpu, GNP_BLOCK_RECV_EW + 8u),
+				            (unsigned) GBAView16(g->cpu, GNP_LINK_CALLBACK_IW),
+				            (int) ((stNow & GNP_LINK_STAT_MASTER) ? 1 : 0),
+				            (uint32_t) GBAView32(g->cpu, NAV_CB2_PTR),
+				            stNow);
 			}
 #endif
 		}

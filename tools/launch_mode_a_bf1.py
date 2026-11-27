@@ -94,6 +94,17 @@ def main():
     ap.add_argument("--no-master-echo", action="store_true",
                     help="§3.6 架构诊断：MGBAX_SIO_MASTER_ECHO=0，让 PC 不回环 8FFF、成从机响应 APP 主机。"
                          "治'两端皆主机发 PUSH、无 REQ 响应'握手死锁。默认关(保持 BF1)。")
+    ap.add_argument("--counter-b", action="store_true",
+                    help="§3.6 柜台对话框门: MGBAX_NAV_COUNTER_B=1, 柜台A交互N次后发B取消'请稍候'对话框"
+                         "(gen8 Task_EnterCableClubSeat case1需IsFieldMessageBoxHidden才推进)。默认关。")
+    ap.add_argument("--cb-restore", action="store_true",
+                    help="GZ8 灰区(§3.5): MGBAX_CB_RESTORE=1, 握手闭合瞬间写真值 gLinkCallback="
+                         "LinkCB_RequestPlayerDataExchange 修'回调晚装3.5min'时序错配。"
+                         "写真实函数地址非造假;产物标灰区、不进CROSSED裁决。默认关。")
+    ap.add_argument("--cmd2222", action="store_true",
+                    help="GZ9 灰区(§3.5): MGBAX_CMD2222=1, 驱动层写真实协议字 0x2222 到 "
+                         "sendCmd[0] 启动块交换(仿 sioStandbyInject 写 0x2FFE 先例)。"
+                         "写真实命令字非造假;产物标灰区、不进CROSSED裁决。默认关。")
     ap.add_argument("--counter-walk", action="store_true",
                     help="P0 柜台走位门(具名默认关): NPC 在(10,2)玩家(10,4)相距2格,先长hold UP走到(10,3)"
                          "再A交互,治原地A够不到NPC。纯方向键+A输入,默认关。")
@@ -198,6 +209,15 @@ def main():
         gates = [g for g in gates if not g.startswith("MGBAX_LINK_REARM=")]
         gates.append("MGBAX_LINK_REARM=1")
         os.environ["MGBAX_LINK_REARM"] = "1"
+    if a.counter_b:
+        # §3.6 柜台对话框门（driver 自身读 os.environ）
+        os.environ["MGBAX_NAV_COUNTER_B"] = "1"
+    if a.cb_restore:
+        # GZ8 灰区：握手闭合瞬间写真值回调（driver 读 env 下发 setprop）
+        os.environ["MGBAX_CB_RESTORE"] = "1"
+    if a.cmd2222:
+        # GZ9 灰区：驱动层写 0x2222 到 sendCmd[0]（driver 读 env 下发 setprop）
+        os.environ["MGBAX_CMD2222"] = "1"
     if a.seat_assist:
         # X1: 单开 seat-assist（不 GRAY_ALL，避免 GZ7 rem-restore 红线）
         gates.append("MGBAX_SEAT_ASSIST=1")

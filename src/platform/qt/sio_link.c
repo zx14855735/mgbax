@@ -2138,10 +2138,11 @@ static void logLinkDiag(struct GBA* gba) {
 	 * 有线/无线俱乐部服务菜单，18 是「单打/双打/多人」模式菜单。
 	 * 有了这些字段，脚本能确定地判断 PC 是否停在菜单、光标在第几项、
 	 * 有没有把 DOWN 吃掉，而不是靠抓不到的 PrintWindow 画面猜。 */
-	uint8_t mCursor = GBAView8(gba->cpu, SIO_EW(0x020296F2u));
-	uint8_t mMin = GBAView8(gba->cpu, SIO_EW(0x020296F3u));
-	uint8_t mMax = GBAView8(gba->cpu, SIO_EW(0x020296F4u));
-	uint8_t mWin = GBAView8(gba->cpu, SIO_EW(0x020296F5u));
+	/* §3.6 具名宏锚定新 ROM sMenu 字段（绝对地址，不套 delta） */
+	uint8_t mCursor = GBAView8(gba->cpu, GNP_MENU_CURSOR_EW);
+	uint8_t mMin = GBAView8(gba->cpu, GNP_MENU_MIN_EW);
+	uint8_t mMax = GBAView8(gba->cpu, GNP_MENU_MAX_EW);
+	uint8_t mWin = GBAView8(gba->cpu, GNP_MENU_WIN_EW);
 	int mTask = -1;
 	int mChoice = -1;
 	for (int i = 0; i < 16; ++i) {
@@ -2186,6 +2187,7 @@ static void logLinkDiag(struct GBA* gba) {
 	        " lstate=%u pc=%u intr=%u ridx=%u sidx=%u lag=%u rn=%u qf=%u"
 	        " linkup=%u ltype=%u wl=%u px=%d py=%d"
 	        " menu=c%u/%u/%u/w%u mt=%d mid=%d"
+	        " trd=%02X/%02X/%02X/%02X hk=%04X fplc=%u res=%d rrp=%u b0=%u/%u/%u lcb=%04X bm=%u"
 	        " role=im%u/lid%u/hs%u sc=%04X/%u n8=%u n32=%u b8=%02X/%02X rdy=%u/%u/%u/%u rq=%u save=%u tasks=%s",
 	        state, brs01, brs23, rem, (unsigned) s_sioCmdGuard, cb, status,
 	        /* sLinkErrorBuffer.status@0x02027CEC：CheckErrorStatus() 在拆链前
@@ -2199,6 +2201,19 @@ static void logLinkDiag(struct GBA* gba) {
 	        (int) px, (int) py,
 	        (unsigned) mCursor, (unsigned) mMin, (unsigned) mMax, (unsigned) mWin,
 	        mTask, mChoice,
+	        (unsigned) GBAView8(gba->cpu, GNP_TRADING_STATES_EW + 0u),
+	        (unsigned) GBAView8(gba->cpu, GNP_TRADING_STATES_EW + 1u),
+	        (unsigned) GBAView8(gba->cpu, GNP_TRADING_STATES_EW + 2u),
+	        (unsigned) GBAView8(gba->cpu, GNP_TRADING_STATES_EW + 3u),
+	        (unsigned) GBAView16(gba->cpu, GNP_HELD_KEY_EW),
+	        (unsigned) GBAView8(gba->cpu, GNP_FIELD_LINK_CNT_EW),
+	        (int) GBAView16(gba->cpu, GNP_SPECIAL_VAR_RESULT_EW),
+	        (unsigned) GBAView8(gba->cpu, GNP_RECV_REMOTE_PL_EW),
+	        (unsigned) GBAView16(gba->cpu, GNP_BLOCK_RECV_EW + 0u),
+	        (unsigned) GBAView16(gba->cpu, GNP_BLOCK_RECV_EW + 2u),
+	        (unsigned) GBAView8(gba->cpu, GNP_BLOCK_RECV_EW + 8u),
+	        (unsigned) GBAView16(gba->cpu, GNP_LINK_CALLBACK_IW),
+	        (unsigned) ((status & GNP_LINK_STAT_MASTER) ? 1u : 0u),
 	        (unsigned) lkIsMaster, (unsigned) lkLocalId, (unsigned) lkHs,
 	        (unsigned) siocnt, (unsigned) (siocnt >> 2) & 0x3u,
 	        (unsigned) s_sioN8, (unsigned) s_sioN32,
@@ -2210,6 +2225,24 @@ static void logLinkDiag(struct GBA* gba) {
 	        GBAView16(gba->cpu, SIO_IW(0x03003AB4u)),
 	        GBAView8(gba->cpu, SIO_IW(0x03002AAEu)),
 	        s_sioTaskBuf);
+	/* GZ10 只读实测：PC 侧 gLocalLinkPlayerBlock 是否被真实填充（决定搬真块可行性）。
+	 * 纯 PEEK，不注入、不造假。magic1[0..3] 应为 "GameFr" 之类真值；trainerId 非 0。 */
+	/* 用 fprintf(stderr) 直写，确保进 driver 捕获的 pc_stdout.log（SIO_LOG/mLOG 会被日志级别过滤）。 */
+	if (b7Verbose()) {
+		static int s_blockSrcTick;
+		if ((++s_blockSrcTick % 60) == 0) {
+			fprintf(stderr, "[BLOCKSRC] magic1=%02X/%02X/%02X/%02X tid=%08X lp_type=%04X "
+			        "blk_size=%u st=%u\n",
+			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 0u),
+			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 1u),
+			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 2u),
+			        (unsigned) GBAView8(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 3u),
+			        (unsigned) GBAView32(gba->cpu, SIO_EW(GNP_LOCAL_LP_EW) + 0u),
+			        (unsigned) GBAView16(gba->cpu, SIO_EW(GNP_LOCAL_LP_EW) + 0x14u),
+			        (unsigned) GBAView16(gba->cpu, SIO_IW(GNP_LOCAL_LP_BLOCK_IW) + 0x10u),
+			        state);
+		}
+	}
 	/* 联机房间按键码握手（overworld.c / link.c）：
 	 * sPlayerTradingStates[4] 每一端都保存所有玩家状态，0x82=UNK_2 表示已准备好，
 	 * sub_8087214() 要求所有玩家都是 0x82 才会切到 Task_StartWiredCableClubBattle。 */
