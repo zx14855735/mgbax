@@ -126,7 +126,10 @@ final class LobbyLink {
 
     private let lock = NSLock()
     private var closedFlag = false
-    private var channel: LobbyKcpChannel?
+    /// 架构 D 三端对称：泛化为 ILink 式协议，允许 KCP 中继 / WSS 隧道 / TCP 直连
+    /// 三种通道共用同一收发循环（所有 channel 调用均在 LobbyDataLink 协议内；
+    /// retryHandshake 等 KCP 特有方法走局部 `link` 变量，不受影响）。
+    private var channel: LobbyDataLink?
     private var session: LobbySignaling.Session?
     private let reader = LobbyFrames.Reader()
     /// Last key state received from the peer; only transitions are logged.
