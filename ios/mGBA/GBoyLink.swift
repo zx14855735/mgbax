@@ -112,6 +112,13 @@ final class GBoyLink {
     /// 上层按倍率缩放帧循环（官方收到后写 AaHO0E.AZkASS 并重算帧闸）。
     /// Called from the reader thread.
     var onRemoteSpeed: (Int) -> Void = { _ in }
+    /**
+     * 架构 D 三端对称：ILink 式数据通道适配器的只读观测钩子。
+     * 在 readFrame() 之后、业务分发之前原样交出整条 wire frame（type+payload），
+     * 供 IOSTcpDirectLink.recv() 取帧。只读、不改任何游戏态/帧内容；
+     * 未接线时为 nil，对现有路径零影响。
+     */
+    var onWireFrame: (([UInt8]) -> Void)?
 
     private let lock = NSLock()
     /// 用户主动断开（只有 close() 会置位）。只有它能让 host 的 accept 循环退出：
@@ -541,6 +548,7 @@ final class GBoyLink {
         do {
             while isCurrent(session) {
                 let frame = try readFrame(fd)
+                onWireFrame?(frame)   // ILink 适配器只读观测（架构 D），不改帧/游戏态
                 let messageType = Self.type(frame)
                 if messageType == Self.msgKeys, frame.count >= 6 {
                     // 官方 0 = 按键掩码（AYUAbz case 0 → peer.BI9f7h.setKeys）。
@@ -856,6 +864,21 @@ final class GBoyLink {
         }
         Self.setBlocking(fd)
         return fd
+    }
+
+    /**
+     * 架构 D 三端对称：ILink 式数据通道适配器的发送口。
+     * payload = body（type+payload，不含 4 字节长度头），与 PC TcpDirectLink.send
+     * 的入参一致；内部复用同一个 send() 补 BE 长度头并带代次校验，不新增帧格式。
+     * 只搬运调用方给的真实字节，不生成/不伪造任何游戏态。
+     */
+    func sendBody(_ body: [UInt8]) throws {
+        lock.lock()
+        let fd = currentFd
+        let gen = currentGeneration
+        lock.unlock()
+        guard fd >= 0, gen == currentGeneration else { return }  // 会话已换人，不写旧 fd
+        try send(fd, body)
     }
 
     /** Thread-safe send: the pump and the UI-triggered reset share the wire. */

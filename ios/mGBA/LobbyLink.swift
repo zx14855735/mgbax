@@ -37,7 +37,7 @@ import Foundation
  * 这是 PC `ILink` / Android `ILink` 的 iOS 最小等价物：
  * `LobbyWsTunnel` 就是 PC `WsLink` / Android `WsLink` 的对位实现（见文件末尾）。
  */
-private protocol LobbyDataLink: AnyObject {
+protocol LobbyDataLink: AnyObject {
     func send(_ payload: Data)
     func recv(timeoutMs: Int) -> Data?
     var isClosed: Bool { get }
