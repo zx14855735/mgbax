@@ -229,7 +229,10 @@ static inline uint32_t navCb2Ptr(void) {
  * 初值 TRUE=未收齐；清 FALSE 唯一路径 HandleReceiveRemoteLinkPlayer(link.c:519)。
  * 经 NAV_IW 运行时 delta 解析，与 PC SIO_REMOTE_PLAYERS_NOT_RECEIVED 同名同值。 */
 #define MOBILE_REMOTE_PLAYERS_NOT_RECEIVED 0x03002A3Cu
-#define MOBILE_LINK_OPEN             0x02027BB0u   /* gLinkOpen (EWRAM, 经 NAV_EW) */
+/* gLinkOpen 旧基准修正：frozen ELF 真值 0x02027BC0，EWRAM delta=0x2CC ⇒ 旧基准 0x020278F4。
+ * 原值 0x02027BB0 经 NAV_EW(+0x2CC)=0x02027E7C 错位 ⇒ EnsureLinkOpen/PEEK 读写错址。
+ * 与 gTasks 基准(0x02033D0C+0x2CC=0x02033FD8)同口径，经 NAV_EW 还原真 gLinkOpen。 */
+#define MOBILE_LINK_OPEN             0x020278F4u   /* gLinkOpen 旧基准 (真值 0x02027BC0) */
 /* 【ROOTHUNT2 P0/X40 方案C1】gLink.checksum 偏移具名宏，禁裸 hex。 */
 #define MOBILE_GLINK_CHECKSUM_OFF    0x14u
 #define MOBILE_GLINK_CHECKSUM        (MOBILE_GLINK_STATE + MOBILE_GLINK_CHECKSUM_OFF) /* 0x03002B08 */
@@ -3382,7 +3385,7 @@ static void completeMultiTransferBus(struct MgbaMobile* emu, const uint32_t vals
 #define PEEK_LINK_STATUS NAV_IW(0x03002A9Cu)
 #define PEEK_LINK_STATE  NAV_IW(0x03002AD8u)
 #define PEEK_LINK        NAV_IW(0x03002AF4u)
-#define PEEK_LINK_OPEN   NAV_EW(0x02027BB0u) /* gLinkOpen（rom.map：0x02027BB0；
+#define PEEK_LINK_OPEN   NAV_EW(MOBILE_LINK_OPEN) /* gLinkOpen 旧基准(0x020278F4)，真值 0x02027BC0；
 	                                       旧值 0x02027B80 是 EWRAM 整体上移
 	                                       0x30 之前的老地址，漏改 ⇒ PEEK 的
 	                                       open= 一直在读 gBlockSendBuffer 那
