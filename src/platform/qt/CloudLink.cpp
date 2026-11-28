@@ -16,6 +16,7 @@
 #include "KcpChannel.h"
 #include "SioLinkHost.h"
 #include "TcpDirectLink.h"
+#include <cstdio>   /* P-ISYNC-1 诊断：fprintf(stderr) 直写使打点进 pc_stdout.log */
 #ifdef _WIN32
 #include "BtLink.h"
 #endif
@@ -2829,6 +2830,16 @@ void CloudLink::handle(const QByteArray& body) {
  * 的直接原因。因此这里不再按角色门控，两端各发一次。 */
 bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&)>& send, bool asHost) {
 	(void) asHost; /* 两端都发：见上面的 GBoy type 6 双向说明 */
+	/* P-ISYNC-1 阶段2诊断（PC 专属，非共享 C，无需三端对称）：fprintf(stderr) 直写
+	 * 使各 return 点判定进 pc_stdout.log（debugLog 写 %TEMP%/mgba_lobby_debug.log 不可靠）。
+	 * 具名门 MGBAX_ISYNC_SEND_DIAG 默认关、只打点不写游戏态、不造数据。 */
+	static const bool sendDiag = qgetenv("MGBAX_ISYNC_SEND_DIAG").toInt() != 0;
+#define ISEND_DIAG(fmt, ...) do { if (sendDiag) fprintf(stderr, "[ISEND] " fmt "\n", ##__VA_ARGS__); } while (0)
+	ISEND_DIAG("enter official=%d ready=%d snap=%d sent=%d",
+	           m_officialMode ? 1 : 0,
+	           (m_gboySession && m_gboySession->isReady()) ? 1 : 0,
+	           m_stateSnapshot ? 1 : 0,
+	           m_initialStateSent.load(std::memory_order_relaxed) ? 1 : 0);
 	/* official case 6（u32 长度头 + 整份 savestate）只属于 path B：本机多核 +
 	 * 网络只传按键，对端把它灌进代表本机的镜像核。path A（SIO 字节管道）里
 	 * type 6 借壳承载的是裸 20 字节 netLink 包，startSioRelayBridge / serve 的
@@ -2836,6 +2847,7 @@ bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&
 	 * 帧边界（两条路径同流还会耗死读线程，见本文件 608-610 的历史事故）。
 	 * 这里一次门控覆盖 path A 的全部调用点，避免以后新增调用点再漏。 */
 	if (!m_officialMode) {
+		ISEND_DIAG("RET pathA not official");
 		/* 机器可读证据：path A 从不把整份 savestate 塞进 type 6（那会破坏
 		 * 20 字节 netLink 帧边界）。每个进程只写一次，避免每 tick 刷屏。 */
 		static std::atomic<bool> s_pathASkipLogged{false};
@@ -2851,15 +2863,20 @@ bool CloudLink::maybeSendInitialState(const std::function<void(const QByteArray&
 	 * （PB12 现场：initial state 发出后 2.7 秒断链）。官方客户端也是先
 	 * 收到对端 1/2/3 才回灌 case 6，顺序一致。 */
 	if (!m_gboySession || !m_gboySession->isReady()) {
+		ISEND_DIAG("RET no session/isReady sess=%d", m_gboySession ? 1 : 0);
 		return false;
 	}
 	if (!m_stateSnapshot || m_initialStateSent.load(std::memory_order_relaxed)) {
+		ISEND_DIAG("RET no snapshot or sent snap=%d sent=%d", m_stateSnapshot ? 1 : 0,
+		           m_initialStateSent.load(std::memory_order_relaxed) ? 1 : 0);
 		return false;
 	}
 	QByteArray state = m_armSeedState.isEmpty() ? m_stateSnapshot() : m_armSeedState;
 	if (state.isEmpty()) {
+		ISEND_DIAG("RET state empty armSeed=%d", m_armSeedState.isEmpty() ? 0 : 1);
 		return false;   // core not ready yet; retry on the next tick
 	}
+	ISEND_DIAG("SEND state bytes=%d", state.size());
 	m_initialStateSent.store(true, std::memory_order_relaxed);
 	/* P0：门开且尚未缓存时，缓存首份发出的字节。仅拷贝成型 QByteArray，不生成
 	 * 新快照、不写游戏态；后续 arm 重发 / sync_state 复用它保持 seed 同源。 */

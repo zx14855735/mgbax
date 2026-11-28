@@ -91,7 +91,7 @@ def preflight():
     return True
 
 
-def launch(tag, intro_keypush, master_echo=False, phase_align=False):
+def launch(tag, intro_keypush, master_echo=False, phase_align=False, state_apply=False, send_diag=False):
     log("=== LAUNCH %s ===" % tag)
     gdir = os.path.join(CLOUD_DIR, tag)
     os.makedirs(gdir, exist_ok=True)
@@ -118,6 +118,15 @@ def launch(tag, intro_keypush, master_echo=False, phase_align=False):
                  "--env", "MGBAX_PHASE_GATE=0", "--env", "MGBAX_SYNCIDX=0",
                  "--env", "MGBAX_CS_FORGE=1"]
         log("P5相位对齐门: CMD_HARD=1 CMD_FRAMEALIGN=0 PHASE_GATE=0 SYNCIDX=0 CS_FORGE=1")
+    if send_diag:
+        # P-ISYNC-1 阶段2诊断：maybeSendInitialState 各 return 点 fprintf 直写进 pc_stdout.log
+        args += ["--env", "MGBAX_ISYNC_SEND_DIAG=1"]
+        log("MGBAX_ISYNC_SEND_DIAG=1（TYPE_STATE发送侧诊断打点，非游戏态）")
+    if state_apply:
+        # P-ISYNC-1 阶段2：开三端同名门 MGBAX_ISYNC_STATE_APPLY，让 mode B 下
+        # TYPE_STATE 对端真 savestate 种子到达时核未建好也有界重试 applied。
+        args += ["--env", "MGBAX_ISYNC_STATE_APPLY=1", "--isync-state-apply"]
+        log("MGBAX_ISYNC_STATE_APPLY=1（对端真savestate种子 applied 门，非造数据）")
     if intro_keypush:
         env["MGBAX_INTRO_KEYPUSH"] = "1"   # 受控输入辅助（非数据注入）
         log("MGBAX_INTRO_KEYPUSH=1（受控输入灰区，标注非纯玩家自然操作）")
@@ -191,6 +200,8 @@ def main():
     ap.add_argument("--intro-keypush", action="store_true")
     ap.add_argument("--master-echo", action="store_true", help="BF1 主机握手字真自回环门开验证")
     ap.add_argument("--phase-align", action="store_true", help="BG1 P5相位对齐门组合(CMD_HARD等)")
+    ap.add_argument("--state-apply", action="store_true", help="P-ISYNC-1阶段2: MGBAX_ISYNC_STATE_APPLY=1, mode B下对端真savestate种子applied(非造数据)")
+    ap.add_argument("--send-diag", action="store_true", help="P-ISYNC-1阶段2诊断: MGBAX_ISYNC_SEND_DIAG=1, TYPE_STATE发送侧各return点fprintf直写")
     ap.add_argument("--watch", action="store_true")
     ap.add_argument("--pid", type=int, default=0)
     ap.add_argument("--judge", action="store_true")
@@ -198,7 +209,7 @@ def main():
     if a.launch:
         if not preflight():
             return 2
-        launch(a.tag, a.intro_keypush, a.master_echo, a.phase_align)
+        launch(a.tag, a.intro_keypush, a.master_echo, a.phase_align, a.state_apply, a.send_diag)
         return 0
     if a.watch:
         return 0 if watch(a.tag, a.pid) else 1
